@@ -205,6 +205,10 @@ export interface Rebuild {
 /** Where a work item is, from its events. */
 export interface WorkItemState {
   ticket: PayloadOf<'ticket.opened'> | undefined;
+  /** The issue `issue.opened` last recorded, which the line's row should name too. */
+  issueRecorded: number | undefined;
+  /** Whether anything was ever planned, pushed, merged or sent back: never cleared, not even by a fresh pass. */
+  begun: boolean;
   /**
    * Martin's request, when the work item is an improvement he asked for: the line reads it only from his roles, and
    * takes the work item only when he opened it too (`queue.ts`). A request makes it an improvement, whatever else it
@@ -354,6 +358,8 @@ export interface WorkItemState {
 /** A work item with no events yet. */
 const initial = (): WorkItemState => ({
   ticket: undefined,
+  issueRecorded: undefined,
+  begun: false,
   request: undefined,
   spec: undefined,
   pullRequest: undefined,
@@ -415,6 +421,25 @@ function gateFailures(state: WorkItemState, from: Stage): Pick<Rebuild, 'failure
 /** A look again stands only under the hold or wait it was made under. */
 const forgetLook = (state: WorkItemState) => Object.assign(state, { rechecked: undefined, cleared: undefined });
 
+/**
+ * The planner's first step waits for the record of the issue the row names (`issue.opened`), which GitHub has: the
+ * disclosure is recorded before a spec that may name the move. A dry run's issue, which GitHub never had, has none.
+ */
+const BEGINS = new Set<LineEvent['type']>([
+  'spec.written',
+  'pull-request.pushed',
+  'pull-request.merged',
+  'work.returned',
+]);
+
+export function recordFirst(next: Next, state: WorkItemState, issue: number | null): Next {
+  // Only before anything was planned, pushed, merged or sent back: a work item that was has had its issue since, and
+  // nothing is backfilled.
+  if (next.do !== 'step' || next.agent !== 'planner' || state.begun || issue === null) return next;
+  if (issue >= DRY_RUN_NUMBERS_FROM || state.issueRecorded === issue) return next;
+  return { do: 'record-issue', issue };
+}
+
 export function fold(events: readonly LineEvent[]): WorkItemState {
   const state = initial();
   // Martin's answers so far, which `accepted` names its own among.
@@ -427,6 +452,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
     if (state.request && state.waiting && !state.waiting.ended && MOVES_ON.has(event.type)) {
       state.waiting = { ...state.waiting, ended: true };
     }
+    if (BEGINS.has(event.type)) state.begun = true;
     switch (event.type) {
       case 'ticket.opened':
         state.ticket = event.payload;
@@ -435,6 +461,9 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
       case 'ticket.rated':
         if (state.ticket)
           state.ticket = { ...state.ticket, severity: ticketSeverity(state.ticket.severity, [event.payload.severity]) };
+        break;
+      case 'issue.opened':
+        state.issueRecorded = event.payload.number;
         break;
       case 'improvement.requested':
         state.request = event.payload;
@@ -750,9 +779,9 @@ function endCanaryHold(state: WorkItemState): void {
  */
 function startAgain(state: WorkItemState): void {
   const { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore, closed } = state;
-  const { firstSense, seenOn, lastSpec, shipped, replan, outOfScope } = state;
+  const { firstSense, seenOn, lastSpec, shipped, replan, outOfScope, issueRecorded, begun } = state;
   Object.assign(state, initial(), { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore });
-  Object.assign(state, { closed, firstSense, seenOn, lastSpec, shipped, replan, outOfScope });
+  Object.assign(state, { closed, firstSense, seenOn, lastSpec, shipped, replan, outOfScope, issueRecorded, begun });
 }
 
 /**
@@ -860,6 +889,11 @@ const MOVES_ON = new Set<LineEvent['type']>([
 export type Next =
   /** Open the ticket's issue in the app's repository, as the work item enters Plan. */
   | { do: 'open-issue' }
+  /**
+   * Record the issue the row names, which GitHub has, as `issue.opened`, when its record failed as it opened: the line
+   * asks for it in place of the planner's first step, whose spec may name the move (`recordFirst`).
+   */
+  | { do: 'record-issue'; issue: number }
   /** Run an agent's step in a runner. A coder's later round resumes its own session. */
   | { do: 'step'; agent: LineAgent; round: number }
   /**

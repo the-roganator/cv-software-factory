@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { type BrowserContext, test as base, expect, type Locator, type Page } from '@playwright/test';
 import type { RawEvent } from '@software-factory/events';
 import { keptOnDevice as readDevice } from '../../factory/src/senses/device.ts';
-import { full } from './full.ts';
+import { full, own } from './full.ts';
 
 export const PORT = 18_321;
 /** A second server, with the console's milestone 4 test data (test/fixture) instead of the samples. */
@@ -24,8 +24,14 @@ export { MERGE_WAITING } from '../test/projection/support.ts';
 
 export const END = Date.parse((JSON.parse(lines.at(-1) ?? '{}') as { ts: string }).ts);
 
-/** #1335, the samples' vulnerable lockfile move: before its issue opened (at 05:13:40), its package withheld. */
-export const MOVE_WITHHELD = Date.parse('2026-10-06T05:13:30Z');
+/** #1335, the samples' vulnerable lockfile move: ten seconds before its issue opened, its package withheld. */
+export const MOVE_WITHHELD =
+  Date.parse(
+    lines
+      .map((line) => JSON.parse(line) as { work_item: string | null; type: string; ts: string })
+      .find((event) => event.work_item === '1335' && event.type === 'issue.opened')?.ts ?? '',
+  ) - 10_000;
+if (!Number.isFinite(MOVE_WITHHELD)) throw new Error('The samples have no issue opened for #1335');
 /** And at the samples' end, named from its issue, its pull request waiting for Martin's merge. */
 export const MOVE_NAMED = END;
 
@@ -287,7 +293,10 @@ export async function adminService(
  * events a test adds after them, sent once and then held open, as the service's is while nothing new happens. Every other stream is the browser's own.
  */
 async function fullStream(page: Page, extra: readonly RawEvent[], log: readonly string[]): Promise<void> {
-  const events = [...log.map((line) => full(JSON.parse(line) as RawEvent)), ...extra].map((e) => JSON.stringify(e));
+  // The samples' events are given back their own payloads first (a withheld move's); the attacks' data has none.
+  const read = (line: string) => JSON.parse(line) as RawEvent;
+  const given = log === lines ? log.map((line) => full(own(read(line)))) : log.map((line) => full(read(line)));
+  const events = [...given, ...extra].map((e) => JSON.stringify(e));
   await page.addInitScript((events: string[]) => {
     const Real = globalThis.EventSource;
     class Full extends EventTarget {

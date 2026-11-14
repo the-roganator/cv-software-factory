@@ -195,6 +195,7 @@ import {
   lookDue,
   type Next,
   needsHold,
+  recordFirst,
   STAGE_OF,
   type WorkItemState,
 } from './machine.ts';
@@ -211,7 +212,7 @@ import {
   zeroCounts,
 } from './metrics.ts';
 import { stepCalls, workItemSpend } from './model-calls.ts';
-import { type DisclosedMove, disclosedMove, type GateCounts, moveIssue } from './moves.ts';
+import { disclosedMove, type GateCounts, moveIssue } from './moves.ts';
 import { type Own, pagesFor } from './pictures.ts';
 import { type Pending, Queue, type QueueItem, type Takes, takesOf } from './queue.ts';
 import { type Carried, carried, Releases, type ReleaseWatchOptions } from './release.ts';
@@ -768,7 +769,9 @@ export class Line {
       // A ticket the line took while the sense looked at it beside another's fix: the look's to finish first.
       if (this.#beside.has(item.workItem)) return;
       const { events, last } = await this.#events(item.workItem);
-      const { stage, next } = decide(events, await this.#facts(item, events));
+      const decided = decide(events, await this.#facts(item, events));
+      const { stage } = decided;
+      const next = recordFirst(decided.next, fold(events), item.issue);
       if (fold(events).merged) await this.#dropVolume(item.workItem);
       // A kept handback is for the step the work item still needs, with nothing appended since; any other is over.
       const pending = item.effects;
@@ -951,27 +954,19 @@ export class Line {
     const { workItem } = item;
     switch (next.do) {
       case 'open-issue': {
-        const { number: issue, move } = state.request
-          ? { number: await this.#openImprovementIssue(workItem), move: undefined }
+        const issue = state.request
+          ? await this.#openImprovementIssue(workItem)
           : await this.#openIssue(workItem, state);
         // The row names the issue first, so a pass after a failure here goes on with it and never opens a second
-        // public issue. Then the disclosure is recorded: an append that fails leaves the move withheld in public,
-        // never named. A dry run's issue, which GitHub never had, records nothing; the line running live opens a real
-        // one, and records that.
+        // public issue; one whose record failed records it on the next pass, before the planner (`record-issue`).
         await this.#queue.setIssue(workItem, issue);
-        if (issue < DRY_RUN_NUMBERS_FROM) {
-          await this.#append(workItem, [
-            {
-              type: 'issue.opened',
-              actor: 'factory',
-              summary: `Opened issue #${issue} in ${this.#o.repo}`,
-              payload: { repository: this.#o.repo, number: issue, ...(move && { move }) },
-            },
-          ]);
-        }
         this.#o.log.info({ workItem, issue }, 'opened the work item’s issue');
+        if (issue < DRY_RUN_NUMBERS_FROM) await this.#recordIssue(workItem, state, issue);
         return;
       }
+      case 'record-issue':
+        await this.#recordIssue(workItem, state, next.issue);
+        return;
       case 'hand-over': {
         // Its volume first, gone at its merge as a rule: an ended row is never taken up again, so one that cannot be
         // deleted now keeps the row where it is, to try again on a later pass, before anything is said.
@@ -2075,14 +2070,12 @@ export class Line {
    * payload and its newest signal's scan (`moveIssue`), since the issue is where its package and advisories first
    * become public.
    */
-  async #openIssue(workItem: string, state: WorkItemState): Promise<{ number: number; move?: DisclosedMove }> {
+  async #openIssue(workItem: string, state: WorkItemState): Promise<number> {
     const ticket = await this.#publicTicket(workItem, state);
     const own = state.ticket;
     if (own && 'ecosystem' in own.fingerprint) {
       const signal = (await this.#signals(workItem)).findLast((each) => each.sense === 'dependency');
-      const issue = moveIssue(workItem, own, ticket, signal);
-      const number = await this.#o.github.act('openIssue', this.#o.repo, issue, { workItem });
-      return { number, move: disclosedMove(own.fingerprint, signal) };
+      return this.#o.github.act('openIssue', this.#o.repo, moveIssue(workItem, own, ticket, signal), { workItem });
     }
     const where =
       'class' in ticket.fingerprint
@@ -2102,7 +2095,30 @@ export class Line {
       '',
       'The factory is working on it: its fix will come as a pull request that refers here. The issue closes when the fix is verified in production.',
     ].join('\n');
-    return { number: await this.#o.github.act('openIssue', this.#o.repo, { title: ticket.title, body }, { workItem }) };
+    return this.#o.github.act('openIssue', this.#o.repo, { title: ticket.title, body }, { workItem });
+  }
+
+  /**
+   * Records the work item's issue, which GitHub has, as `issue.opened`: for a move, what its issue named, from the same
+   * ticket and newest signal (`disclosedMove`). It is the one moment of the move's disclosure in public.
+   */
+  async #recordIssue(workItem: string, state: WorkItemState, issue: number): Promise<void> {
+    const own = state.request ? undefined : state.ticket;
+    const move =
+      own && 'ecosystem' in own.fingerprint
+        ? disclosedMove(
+            own.fingerprint,
+            (await this.#signals(workItem)).findLast((each) => each.sense === 'dependency'),
+          )
+        : undefined;
+    await this.#append(workItem, [
+      {
+        type: 'issue.opened',
+        actor: 'factory',
+        summary: `Opened issue #${issue} in ${this.#o.repo}`,
+        payload: { repository: this.#o.repo, number: issue, ...(move && { move }) },
+      },
+    ]);
   }
 
   /**

@@ -56,7 +56,7 @@ export function publicSamples(): PublicEvent[] {
 const INVENTED_SECRETS = ['password=hunter2'];
 
 /** An address, a URL with credentials, or anything else that would be real in a sample: none may be in its private half. */
-const REAL = /[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z][a-z0-9+.-]*:\/\/[^\s/]*@/i;
+const REAL = /[\w.+-]+@[a-z][\w-]*(?:\.[\w-]+)*\.[a-z]{2,}\b|\b[a-z][a-z0-9+.-]*:\/\/[^\s/]*@/i;
 
 /**
  * Each sample's own summary and payload where its public view changes them, in the log's order. Refused when one holds

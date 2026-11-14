@@ -267,7 +267,7 @@ describe('a move’s disclosure, as its issue opens', () => {
     });
   });
 
-  it('opens no second issue when its record fails: the move stays withheld in public instead', async () => {
+  it('opens no second issue when its record fails, and records the first before the planner starts', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
     let refused = false;
     const failing = {
@@ -285,8 +285,10 @@ describe('a move’s disclosure, as its issue opens', () => {
     await pass();
     expect(refused).toBe(true);
     expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
-    expect(await types(workItem)).not.toContain('issue.opened');
-    expect(await types(workItem)).toContain('spec.written');
+    const recorded = await types(workItem);
+    expect(recorded.indexOf('issue.opened')).toBeGreaterThan(0);
+    expect(recorded.indexOf('issue.opened')).toBeLessThan(recorded.indexOf('spec.written'));
+    expect((await payloads(workItem, 'issue.opened'))[0]).toMatchObject({ number: 41, move: { name: 'invented-pkg' } });
   });
 
   it('records nothing for a dry run’s issue, which GitHub never had', async () => {

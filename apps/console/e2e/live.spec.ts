@@ -69,19 +69,19 @@ const now = (event: NewEvent) => ({ ...event, ts: new Date().toISOString() }) as
 
 test('moves an open console within a second of an append, with no refresh', async ({ page }) => {
   await page.goto('/?motion=off&debug=events');
-  await expect(page.locator('.transport .count')).toHaveText('27 of 27');
+  await expect(page.locator('.transport .count')).toHaveText('28 of 28');
   const [opened] = live();
   if (!opened) throw new Error('No events for #1302');
   const writer = new EventWriter(database.operator, { kind: 'sample', artifacts });
   const appended = Date.now();
   await writer.append(now(opened));
-  await expect(page.locator('.transport .count')).toHaveText('28 of 28', { timeout: 1000 });
+  await expect(page.locator('.transport .count')).toHaveText('29 of 29', { timeout: 1000 });
   console.log(`The console showed the new work item ${Date.now() - appended} ms after the append`);
 });
 
 test('resumes after the stream drops mid-play, with nothing missed and nothing twice', async ({ page }) => {
   await page.goto('/?motion=off&debug=events');
-  await expect(page.locator('.transport .count')).toHaveText('28 of 28');
+  await expect(page.locator('.transport .count')).toHaveText('29 of 29');
   const writer = new EventWriter(database.operator, { kind: 'sample', artifacts });
   const rest = live().slice(1);
   const half = Math.floor(rest.length / 2);

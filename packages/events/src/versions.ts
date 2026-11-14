@@ -131,7 +131,9 @@ export const RELEASE_TYPES: readonly EventType[] = [
  * The line's record of what a release did: the types only the line's role may append (row security on `events`,
  * `0039_release-events-the-lines.sql`), save samples from Martin's command line. The rollback proof, the line's
  * security count and the console's Canary panel trust them for that: row security is what holds them to the line. A
- * release's start is not among them: the line records it, and nothing trusts it but beside these.
+ * release's start is not among them: the line records it, and nothing trusts it but beside these. With them, the record
+ * of a work item's issue (`0052_issue-opened-the-lines.sql`), whose public view is the event whole: for a move, the
+ * moment its package and advisories become public.
  */
 export const LINE_ONLY_TYPES: readonly EventType[] = [
   'canary.stepped',
@@ -140,6 +142,7 @@ export const LINE_ONLY_TYPES: readonly EventType[] = [
   'release.rolled-back',
   'release.aborted',
   'release.errored',
+  'issue.opened',
 ];
 
 /**

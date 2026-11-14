@@ -291,6 +291,33 @@ describe('a move’s disclosure, as its issue opens', () => {
     expect((await payloads(workItem, 'issue.opened'))[0]).toMatchObject({ number: 41, move: { name: 'invented-pkg' } });
   });
 
+  it('records what the issue named on a later pass, though a newer scan came in since', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    let refused = false;
+    const failing = {
+      append: (async (batch: Parameters<typeof events.append>[0]) => {
+        const list = Array.isArray(batch) ? batch : [batch];
+        if (!refused && list.some((e) => e.type === 'issue.opened')) {
+          refused = true;
+          throw new Error('The store refused the append');
+        }
+        return events.append(batch);
+      }) as typeof events.append,
+    };
+    const { pass, github } = line({ planner }, failing);
+    await pass();
+    await events.append([event(workItem, 'signal.received', signal('2.0.2', 'GHSA-0000-0000-0002'), 'triage')]);
+    await pass();
+    expect(refused).toBe(true);
+    const { body } = (github.acts.find((a) => a.action === 'openIssue')?.args ?? { body: '' }) as { body: string };
+    expect(body).toContain('`2.0.1`');
+    expect(body).not.toContain('GHSA-0000-0000-0002');
+    expect((await payloads(workItem, 'issue.opened'))[0]?.move).toMatchObject({
+      to: '2.0.1',
+      findings: [expect.objectContaining({ advisory: 'GHSA-0000-0000-0001' })],
+    });
+  });
+
   it('records nothing for a dry run’s issue, which GitHub never had', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
     const { pass, github } = line({ planner });

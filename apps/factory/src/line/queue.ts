@@ -77,6 +77,8 @@ export interface QueueItem {
   failures: number;
   failure: string | null;
   issue: number | null;
+  /** The dependency signal (its seq) a move's issue was written from, which the issue's record discloses. */
+  issueSignal: number | null;
   session: string | null;
   effects: Pending | null;
 }
@@ -88,6 +90,7 @@ interface Row {
   failures: number;
   failure: string | null;
   issue: number | null;
+  issue_signal: string | null;
   session: string | null;
   effects: Pending | null;
 }
@@ -99,11 +102,12 @@ const item = (row: Row): QueueItem => ({
   failures: row.failures,
   failure: row.failure,
   issue: row.issue,
+  issueSignal: row.issue_signal === null ? null : Number(row.issue_signal),
   session: row.session,
   effects: row.effects,
 });
 
-const COLUMNS = ['work_item', 'stage', 'steps', 'failures', 'failure', 'issue', 'session', 'effects'];
+const COLUMNS = ['work_item', 'stage', 'steps', 'failures', 'failure', 'issue', 'issue_signal', 'session', 'effects'];
 
 /** Where a moved row was, and for how long, as the update that moved it saw it before (`was`). */
 interface Left {
@@ -257,7 +261,7 @@ export class Queue {
     const rows = await sql<Left[]>`
       with was as (select work_item, stage, moved_at from line where work_item = ${workItem} for update)
       update line l set stage = 'plan', moved_at = clock_timestamp(), failures = 0, failure = null, effects = null,
-                        session = null, ${forgetIssue ? sql`issue = null,` : sql``}
+                        session = null, ${forgetIssue ? sql`issue = null, issue_signal = null,` : sql``}
                         reopened = (select max(r.seq) from events r
                                     where r.work_item = l.work_item and r.type = 'work-item.reopened')
       from was
@@ -402,8 +406,9 @@ export class Queue {
       where work_item = ${workItem} and effects is not null`;
   }
 
-  async setIssue(workItem: string, issue: number): Promise<void> {
-    await this.#sql`update line set issue = ${issue} where work_item = ${workItem}`;
+  /** Names the work item's issue, and for a move the dependency signal (its seq) the issue was written from. */
+  async setIssue(workItem: string, issue: number, signal: number | null = null): Promise<void> {
+    await this.#sql`update line set issue = ${issue}, issue_signal = ${signal} where work_item = ${workItem}`;
   }
 
   async setSession(workItem: string, session: string | null): Promise<void> {

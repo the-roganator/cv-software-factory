@@ -351,6 +351,9 @@ const retryAfterMs = (tries: number) => Math.min(30_000 * 2 ** (tries - 1), 600_
  * The app's own words as plain text in an issue's Markdown: a page's passage or a link's words may hold anything the
  * app shows, and an `@name` there would notify that account, or a bracket make a link.
  */
+/** A move's ticket, not an improvement's: one whose issue is written from its dependency signal. */
+const movedBy = (state: WorkItemState) =>
+  !state.request && state.ticket !== undefined && 'ecosystem' in state.ticket.fingerprint;
 const asText = (words: string) => words.replace(/[\\`*_[\]<>#|~@]/g, '\\$&');
 
 export class Line {
@@ -954,19 +957,28 @@ export class Line {
     const { workItem } = item;
     switch (next.do) {
       case 'open-issue': {
+        // A move's issue and its record are written from one read of its newest dependency signal, so a scan appended
+        // in between is never disclosed by the record when the issue did not name it.
+        const dependency = movedBy(state) ? await this.#dependencySignal(workItem) : undefined;
         const issue = state.request
           ? await this.#openImprovementIssue(workItem)
-          : await this.#openIssue(workItem, state);
-        // The row names the issue first, so a pass after a failure here goes on with it and never opens a second
-        // public issue; one whose record failed records it on the next pass, before the planner (`record-issue`).
-        await this.#queue.setIssue(workItem, issue);
+          : await this.#openIssue(workItem, state, dependency?.signal);
+        // The row names the issue first, with the signal it was written from, so a pass after a failure here goes on
+        // with it and never opens a second public issue; one whose record failed records it on the next pass, before
+        // the planner (`record-issue`), from that same signal.
+        await this.#queue.setIssue(workItem, issue, dependency?.seq ?? null);
         this.#o.log.info({ workItem, issue }, 'opened the work item’s issue');
-        if (issue < DRY_RUN_NUMBERS_FROM) await this.#recordIssue(workItem, state, issue);
+        if (issue < DRY_RUN_NUMBERS_FROM) await this.#recordIssue(workItem, state, issue, dependency?.signal);
         return;
       }
-      case 'record-issue':
-        await this.#recordIssue(workItem, state, next.issue);
+      case 'record-issue': {
+        const dependency =
+          movedBy(state) && item.issueSignal !== null
+            ? await this.#dependencySignal(workItem, item.issueSignal)
+            : undefined;
+        await this.#recordIssue(workItem, state, next.issue, dependency?.signal);
         return;
+      }
       case 'hand-over': {
         // Its volume first, gone at its merge as a rule: an ended row is never taken up again, so one that cannot be
         // deleted now keeps the row where it is, to try again on a later pass, before anything is said.
@@ -2067,14 +2079,13 @@ export class Line {
 
   /**
    * Opens the ticket's issue in the app's repository, from the ticket's public view; a move's from the ticket's own
-   * payload and its newest signal's scan (`moveIssue`), since the issue is where its package and advisories first
-   * become public.
+   * payload and its newest dependency signal's scan (`moveIssue`), since the issue is where its package and advisories
+   * first become public.
    */
-  async #openIssue(workItem: string, state: WorkItemState): Promise<number> {
+  async #openIssue(workItem: string, state: WorkItemState, signal: Signal | undefined): Promise<number> {
     const ticket = await this.#publicTicket(workItem, state);
     const own = state.ticket;
     if (own && 'ecosystem' in own.fingerprint) {
-      const signal = (await this.#signals(workItem)).findLast((each) => each.sense === 'dependency');
       return this.#o.github.act('openIssue', this.#o.repo, moveIssue(workItem, own, ticket, signal), { workItem });
     }
     const where =
@@ -2100,17 +2111,12 @@ export class Line {
 
   /**
    * Records the work item's issue, which GitHub has, as `issue.opened`: for a move, what its issue named, from the same
-   * ticket and newest signal (`disclosedMove`). It is the one moment of the move's disclosure in public.
+   * ticket and the signal its issue was written from (`disclosedMove`); with none, the package alone, which every move's
+   * issue names. It is the one moment of the move's disclosure in public.
    */
-  async #recordIssue(workItem: string, state: WorkItemState, issue: number): Promise<void> {
+  async #recordIssue(workItem: string, state: WorkItemState, issue: number, signal: Signal | undefined): Promise<void> {
     const own = state.request ? undefined : state.ticket;
-    const move =
-      own && 'ecosystem' in own.fingerprint
-        ? disclosedMove(
-            own.fingerprint,
-            (await this.#signals(workItem)).findLast((each) => each.sense === 'dependency'),
-          )
-        : undefined;
+    const move = own && 'ecosystem' in own.fingerprint ? disclosedMove(own.fingerprint, signal) : undefined;
     await this.#append(workItem, [
       {
         type: 'issue.opened',
@@ -2416,6 +2422,21 @@ export class Line {
    * a fixed field the schema bounds, never an advisory's text. Of a dependency's signals only the newest is told: triage
    * joins a changed target or changed findings as a later signal, and the move is to that one (`#moveOf`).
    */
+  /**
+   * A move's dependency signal, as its own payload: the newest, or the one at `seq`, which the row names as the one its
+   * issue was written from. None when there is none.
+   */
+  async #dependencySignal(workItem: string, seq?: number): Promise<{ seq: number; signal: Signal } | undefined> {
+    const [row] = await this.#o.sql<{ seq: string; payload: PayloadOf<'signal.received'> }[]>`
+      select seq, payload from events
+      where work_item = ${workItem} and type = 'signal.received' and payload->>'sense' = 'dependency'
+        ${seq === undefined ? this.#o.sql`` : this.#o.sql`and seq = ${seq}`}
+      order by seq desc limit 1`;
+    if (!row) return undefined;
+    const { report: _report, ...signal } = row.payload;
+    return { seq: Number(row.seq), signal };
+  }
+
   async #signals(workItem: string): Promise<Signal[]> {
     const rows = await this.#o.sql<
       { payload: PayloadOf<'signal.received'>; public: { payload: PayloadOf<'signal.received'> } }[]
@@ -2720,6 +2741,7 @@ const untaken = (workItem: string): QueueItem => ({
   failures: 0,
   failure: null,
   issue: null,
+  issueSignal: null,
   session: null,
   effects: null,
 });

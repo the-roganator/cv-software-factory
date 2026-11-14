@@ -86,7 +86,7 @@ export const STORE_GRANTS = {
       line: [
         'select',
         'insert (work_item, stage)',
-        'update (stage, moved_at, held_by, held_until, steps, failures, failure, effects, reopened, issue, session)',
+        'update (stage, moved_at, held_by, held_until, steps, failures, failure, effects, reopened, issue, session, issue_signal)',
       ],
       job_tokens: ['select', 'insert (token_sha256, job, work_item, agent, traceparent)', 'update (ended_at)'],
       step_logs: ['select', 'insert (job, work_item, agent, part, pod, hash, size, ending, reason)'],

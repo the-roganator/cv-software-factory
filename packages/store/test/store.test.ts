@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { NewEvent } from '@software-factory/events';
+import { type NewEvent, VERSIONS } from '@software-factory/events';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DiskArtifacts } from '../src/artifacts.ts';
@@ -327,7 +327,7 @@ describe('appending', () => {
       ...opened(item),
       id: uuid(),
       type: 'work-item.reopened',
-      version: 3,
+      version: VERSIONS['work-item.reopened'],
       actor: 'triage',
       summary: 'Reopened: the probe saw it again',
       payload: {

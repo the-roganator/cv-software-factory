@@ -219,7 +219,7 @@ describe('validation', () => {
       reason: 'Back',
       dryRun: false,
     };
-    const event = { ...opened, type: 'work-item.reopened', version: 3, actor: 'triage', payload: back };
+    const event = { ...opened, type: 'work-item.reopened', version: 4, actor: 'triage', payload: back };
     expect(validate(event)).toEqual({ ok: true });
     expect(validate({ ...event, payload: { ...back, sense: 'report' } })).toEqual({
       ok: false,
@@ -234,7 +234,12 @@ describe('validation', () => {
     const { dryRun: _, ...v2 } = back;
     expect(upcast({ type: 'work-item.reopened', version: 2, payload: v2 })).toMatchObject({
       ok: true,
-      event: { version: 3, payload: back },
+      event: { version: 4, payload: back },
+    });
+    // A version 3 reopening named a route, and reads as it was.
+    expect(upcast({ type: 'work-item.reopened', version: 3, payload: back })).toMatchObject({
+      ok: true,
+      event: { version: 4, payload: back },
     });
   });
 

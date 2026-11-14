@@ -2,7 +2,7 @@
 
 An agent: turns signals into tickets. Part of the [factory plane](README.md#agents).
 
-- **Reads:** probe, crawler, telemetry and canary signals; user reports; the planner's findings.
+- **Reads:** probe, crawler, telemetry and canary signals; the dependency sense's moves; user reports; the planner's findings.
 - **Produces:** deduplicated, classified tickets with evidence.
 - **v1:** `packages/triage`, run by `factory triage`. It takes signals from [the inbox](ORCHESTRATOR.md#the-inbox).
 
@@ -65,6 +65,17 @@ Triage decides one signal at a time, holding an advisory lock on a connection of
 
 A store it cannot reach, such as Postgres restarting, is waited out, not exited on, as triage starts too: 1 s after the first failure, then twice as long each time, up to 30 s. The lock goes with its connection, so after any failure triage lets go of it and takes it again on a new connection before it takes another signal, and it asks that connection before each pass, and appends on it, in a transaction of its own: a copy that has lost the lock appends nothing, gives back the signal it had in hand with its attempt, due at once for the copy that holds the lock, and waits while another holds it. A signal in hand when the store went is taken again once its lease is up, as after a restart; its events have ids from the signal, so none is appended twice. Twelve failures in a row, three and a half minutes with nothing triaged, is no blip: triage exits, and its restarts page Martin (`WorkerCrashLooping`, unless `StoreDown` already has).
 
+## A move
+
+The [dependency sense](PATCHING.md#the-dependency-sense) sends each of the app's moves for the line as a `dependency` signal: the move (its repository, name, ecosystem, from, to and pins) where every other sense names a route, and the scan's findings as evidence. No model judges it, and nothing of it is held: a day's moves arrive together by design, so the [burst](#a-burst) hold does not count this sense, and it reads nothing [triage looks at](#what-a-sense-reads).
+
+- **One move, one open ticket.** Its fingerprint is the move's name and ecosystem, with no version and no advisory, so every target and finding of one move is one ticket's. A lockfile's move is named by its package, so each package of the lockfile has a ticket of its own.
+- **Its ticket.** A work item of kind `dependency-update`, with its pin (`dependency`: name, ecosystem, from, to, and whether a vulnerability is why), and its ticket, category `security`, whose severity is the policy's reading of the move's worst finding with a fix (`vulnerableSeverity`: High or Critical `broken`, Medium `degraded`, Low `cosmetic`), from the scan's ratings alone. An advisory's words are never read: only a finding's fixed fields.
+- **The same move again** (the next day's scan, or the sense restarted, as every deploy of the `factory` image restarts it) is counted, with no event, while it says what the ticket's last signal said: the same target, and the same findings by their advisory, package, ratings and fixed versions, with the same counts of the rest. A deadline that moved is not a change.
+- **A new target or new findings** join the ticket as evidence. When the worst finding with a fix is worse than the ticket's severity, triage raises it (`ticket.rated`: the severity and what it was), and the line's queue, its agents' ticket and the console read the worst of the ticket's opening and its ratings. A better day lowers nothing.
+- **A ticket closed** any way but verified (by hand, `make close-work-item`, as Martin's) leaves the move with no open ticket: its next signal opens a new one. One closed as verified [reopens](#reopening-a-verified-ticket) on a signal seen after the close, naming its move in place of a route, and its severity rises if the move is worse.
+- **In public** a ticket's events name no advisory, no finding's package and no version that fixes one, and a vulnerable lockfile move's package and versions are withheld, always: its signal names its lockfile ("a package in `pnpm-lock.yaml`"), its ticket's title reads "Move a package in `pnpm-lock.yaml`", as the [day's moves](PATCHING.md#the-day) do, and the issue the line opens from the private payloads is where they become public. An image's or Node's move keeps its name and versions, as the day's moves show them.
+
 ## Matching an open ticket
 
 A sense's signal on an open ticket adds its evidence (`signal.received`) the first time that sense sees it in each version of the app. So the ticket records every version the problem was seen in, so every version of the app rolled back on it, and the planner is told each. Within a version, the inbox counts it (outcome `counted`) and nothing is appended: the events grow with tickets and releases, not with the minutes a defect stays unfixed.
@@ -76,7 +87,7 @@ Nothing reads a counted signal again, so triage deletes each three days after it
 
 ## Reopening a verified ticket
 
-A sense's signal that no open ticket has, on the exact fingerprint of a ticket closed as verified, reopens it (`work-item.reopened`, then the signal): the same defect came back, and [the line](ORCHESTRATOR.md#a-ticket-that-reopens) takes the work item back into Plan.
+A sense's signal that no open ticket has, on the exact fingerprint of a ticket closed as verified, reopens it (`work-item.reopened`, naming its route, or a move's name and ecosystem; then the signal): the same defect came back, and [the line](ORCHESTRATOR.md#a-ticket-that-reopens) takes the work item back into Plan.
 
 It counts as a repeat on that ticket instead when:
 

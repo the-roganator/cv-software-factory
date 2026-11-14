@@ -108,7 +108,9 @@ import {
   pointWords,
   ROUTE_SENSES,
   returnWords,
+  type Severity,
   scopesOverlap,
+  ticketSeverity,
   upcast,
   WORDS_LEAVE_HELD,
   workItemsWords,
@@ -602,9 +604,11 @@ export class Line {
         this.#o.log.warn({ workItem }, 'a ticket a dry run verified has no signal to reopen it on');
         return;
       }
-      // A move's ticket names no route to reopen it on, and work-item.reopened takes a route's sense alone.
-      if (first.sense === 'dependency') {
-        this.#o.log.warn({ workItem }, 'a dependency’s ticket a dry run verified names no route to reopen it on');
+      // A move's ticket reopens on its move, its fingerprint, where any other's reopens on its route.
+      const fingerprint = fold(events).ticket?.fingerprint;
+      const move = first.sense === 'dependency' && fingerprint && 'ecosystem' in fingerprint ? fingerprint : undefined;
+      if (first.sense === 'dependency' && !move) {
+        this.#o.log.warn({ workItem }, 'a dependency’s signal a dry run verified has no move’s ticket to reopen');
         return;
       }
       await this.#append(workItem, [
@@ -615,7 +619,7 @@ export class Line {
           payload: {
             sense: first.sense,
             check: cutAt(first.check, 80),
-            route: first.route,
+            ...(move ? { move: { name: move.name, ecosystem: move.ecosystem } } : { route: first.route }),
             version: left.against,
             reason: 'A dry run verified it, and its fix never shipped: the line, running live, takes it again',
             dryRun: true,
@@ -2283,11 +2287,20 @@ export class Line {
     }
   }
 
-  /** The ticket as its public view has it: what anyone may read, and so what may reach GitHub or an agent. */
+  /**
+   * The ticket as its public view has it: what anyone may read, and so what may reach GitHub or an agent. Its severity
+   * is the worst of its opening's and every rating's since (`ticket.rated`, public whole).
+   */
   async #publicTicket(workItem: string, state: WorkItemState): Promise<PayloadOf<'ticket.opened'>> {
-    const [row] = await this.#o.sql<{ public: { payload: PayloadOf<'ticket.opened'> } }[]>`
-      select public from events where work_item = ${workItem} and type = 'ticket.opened' order by seq limit 1`;
-    return row?.public.payload ?? need(state.ticket, 'a ticket');
+    const rows = await this.#o.sql<
+      { type: string; public: { payload: PayloadOf<'ticket.opened'> | PayloadOf<'ticket.rated'> } }[]
+    >`
+      select type, public from events where work_item = ${workItem} and type in ('ticket.opened', 'ticket.rated')
+      order by seq`;
+    const opened = rows.find((row) => row.type === 'ticket.opened')?.public.payload as PayloadOf<'ticket.opened'>;
+    if (!opened) return need(state.ticket, 'a ticket');
+    const rated = rows.flatMap((row) => (row.type === 'ticket.rated' ? [row.public.payload.severity as Severity] : []));
+    return { ...opened, severity: ticketSeverity(opened.severity, rated) };
   }
 
   /**

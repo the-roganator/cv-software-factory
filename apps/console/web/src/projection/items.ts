@@ -12,7 +12,14 @@ import type {
   Screenshot,
   Stage,
 } from '@software-factory/events';
-import { clearedOnWords, SENSES, STAGES, sameVersion, WORDS_LEAVE_HELD } from '@software-factory/events';
+import {
+  clearedOnWords,
+  SENSES,
+  STAGES,
+  sameVersion,
+  ticketSeverity,
+  WORDS_LEAVE_HELD,
+} from '@software-factory/events';
 import { shortVersion } from '../format.ts';
 import { ATTACK_RULES, type AttackState, citedElsewhere, isFinish, isLaunch, unconfirmed } from './attacks.ts';
 import { flagWaits } from './flags.ts';
@@ -552,6 +559,13 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         enter('plan', time);
         state.latest.plan = event;
         state.queued = true;
+        break;
+      case 'ticket.rated':
+        // Triage raised the ticket's severity: a move's worst finding is worse. It never lowers it, and it moves the
+        // work item nowhere.
+        if (state.ticket) {
+          state.ticket = { ...state.ticket, severity: ticketSeverity(state.ticket.severity, [event.payload.severity]) };
+        }
         break;
       case 'defect.injected':
         state.versions.from = event.payload.version;

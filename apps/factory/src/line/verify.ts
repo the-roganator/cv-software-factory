@@ -623,8 +623,14 @@ export function reopeningComment(reopened: PayloadOf<'work-item.reopened'>, work
       `The factory’s work item #${workItem} is open again, and goes back to Plan for a fix that ships.`,
     ].join('\n');
   }
-  const where =
-    reopened.route !== '*' ? `\`${reopened.route}\`` : reopened.sense === 'canary' ? CANARY_ANY_ROUTE : 'every page';
+  // A move's reopening names its move in place of a route.
+  const where = reopened.move
+    ? `the move of \`${reopened.move.name}\`, in ${reopened.move.ecosystem}`
+    : reopened.route !== '*'
+      ? `\`${reopened.route}\``
+      : reopened.sense === 'canary'
+        ? CANARY_ANY_ROUTE
+        : 'every page';
   return [
     `It came back after its fix was verified: the ${reopened.sense} saw “${reopened.check}” again on ${where}, in version ${short(reopened.version)}.`,
     '',

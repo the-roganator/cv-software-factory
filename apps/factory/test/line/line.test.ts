@@ -328,6 +328,15 @@ describe('the line', () => {
     );
   });
 
+  it('gives the issue and the planner the severity triage raised the ticket to', async () => {
+    const workItem = await ticket('degraded');
+    await events.append([event(workItem, 'ticket.rated', { severity: 'broken', was: 'degraded' }, 'triage')]);
+    const { pass, steps, github } = line(AGENTS, events);
+    await pass();
+    expect(String(github.acts[0]?.args.body)).toContain('- Severity: broken');
+    expect(steps.requests[0]?.prompt).toContain('Category errors, severity broken');
+  });
+
   it('carries a ticket through plan, build, gates, review and description to Martin’s merge', async () => {
     const workItem = await ticket();
     const probes = new FakeProbes({ outcome: 'cleared', version: 'v0.9.4', runs: ['passed', 'passed'] });

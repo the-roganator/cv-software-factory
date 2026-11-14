@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { GitHub, GitHubError } from '../../src/github/client.ts';
@@ -182,6 +184,13 @@ describe('the scan’s moves', () => {
     expect(JSON.stringify(moves)).not.toMatch(/invented advisory|nothing here names/);
   });
 
+  it('answer the recorded day byte for byte as the door sends it, read whole or served again', async () => {
+    const reads = new LiveReads(client(routes()).github);
+    const whole = JSON.stringify({ result: await reads.moves(REPO) });
+    await expect(whole).toMatchFileSnapshot('fixtures/scanning/answer.txt');
+    expect(JSON.stringify({ result: await reads.moves(REPO) })).toBe(whole);
+  });
+
   it('keep each finding’s advisory’s own fixed versions, never the move’s target in their place', async () => {
     // The image moves to 1.2.1; its package's advisory is fixed in 3.0.2. A finding with no fix yet of its own, which
     // a newer image clears, has none.
@@ -220,6 +229,36 @@ describe('the scan’s moves', () => {
     const moves = await read({ pages: [filler, alerts()] });
     expect(moves.moves.flatMap((m) => m.findings.map((f) => f.alert))).toEqual([101, 102, 103, 104]);
   });
+
+  it('read the pages of alerts plainly, so the client keeps none of their text for a conditional read', async () => {
+    const sent: Sent[] = [];
+    const day: Day = { pages: [alerts()] };
+    // GitHub gives each page an ETag, which a polled read would keep with the page's text.
+    const page: Route = {
+      method: 'GET',
+      path: ALERTS_PATH(1),
+      answer: () => ({ body: alerts(), headers: { etag: '"page-1"' } }),
+    };
+    const reads = new LiveReads(client([page, ...routes(day)], sent).github);
+    await reads.moves(REPO);
+    // An alert changed: a whole read again, which asks for each page afresh.
+    day.latest = [{ number: 104, state: 'open', updated_at: '2026-11-10T07:00:00Z' }];
+    await reads.moves(REPO);
+    const pages = sent.filter((s) => s.path === ALERTS_PATH(1));
+    expect(pages).toHaveLength(2);
+    for (const each of pages) expect(each.headers['if-none-match']).toBeUndefined();
+  });
+
+  it('read as many alerts as the cap in a heap of 32 MB: a read holds what it keeps and a page, never every alert', async () => {
+    // A process of its own, its heap fixed: a read that held every page or every alert, as GitHub sends them, needs
+    // several times this for the cap's 100,000 (scanning-memory.ts).
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ['--max-old-space-size=32', join(import.meta.dirname, 'scanning-memory.ts')],
+      { timeout: 60_000 },
+    );
+    expect(JSON.parse(stdout)).toMatchObject({ pages: 1000, findings: [101, 102, 103, 104] });
+  }, 90_000);
 
   it('read exactly as many alerts as the cap, and fail on one more', async () => {
     const filler = (from: number) => Array.from({ length: 100 }, (_, i) => ({ ...alerts()[4], number: from + i }));

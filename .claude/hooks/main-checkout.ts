@@ -1,24 +1,28 @@
 #!/usr/bin/env node
 // A PreToolUse hook on the Bash tool (.claude/settings.json): keeps a git command that moves HEAD or rewrites the index
 // or tree out of the main checkout, which sessions share; each works in a worktree of its own (scratch/worktrees/<key>).
-// It reads no shell syntax, so no quoting or here-document can hide a command from it. It decides from three things:
+// It guards against an accident, not against a command written to get past it. It reads no shell syntax, so no quoting
+// or here-document hides a command from it. It decides from three things:
 //   1. Where the command starts (the call's cwd): the main checkout (git's directory is the common one, and it is the
 //      project's repository), a worktree, another repository, or no repository.
-//   2. Whether the text names git or gh and, anywhere after, a refused subcommand (REFUSED, or gh's `repo sync`),
-//      code and quoted text alike. If not, the command passes: reading is never refused.
+//   2. Whether the text holds a refused command: `git`, its options, then a refused subcommand (REFUSED) as the next
+//      word; or `gh pr checkout`, `gh pr merge` or `gh repo sync`. Code and quoted text alike. If not, the command
+//      passes: reading is never refused, nor is a word like "commit" or "add" anywhere else in the text.
 //   3. Whether the text moves where commands act: cd, pushd, popd, -C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE,
-//      as whole words.
+//      as whole words. A variable in a target is followed only when the command begins by setting it to a literal
+//      absolute path, in a statement of its own (`WT=/a/worktree; git -C $WT …`), and nothing after could change it.
 // From a worktree, another repository or none, with no such word, it passes, whatever the text: a commit there is the
 // common case. From the main checkout with none, it refuses, but `git pull --ff-only` (or `… origin main`) alone with
 // HEAD on main. With such words, each target must be a literal path (no variable, no `cd -`, no popd), and only the
 // first may be relative, as the others would be read from a directory the hook cannot know. From elsewhere, a target
 // must not be the main checkout. From the main checkout, every target must exist and be a worktree or another
-// repository, and either the text starts `cd <target> &&` or every `git` in it is `git -C <target>` and no gh command
-// is refused. A lone `&` with such words is refused too: what follows a backgrounded list runs where it started.
+// repository, and either the text starts `cd <target> &&` (after the variables it sets) or every refused git command
+// in it has a `-C <target>` and no gh command is refused. A lone `&` with such words is refused too: what follows a backgrounded list runs where it started.
 // A --work-tree or GIT_WORK_TREE target is a checkout directory, judged as a cd target is. Anything else is refused,
-// with what to do instead: false refusals are accepted, false passes are not. Known false refusals: from the main
-// checkout, any text naming a refused word (`git log --grep revert`, a message saying " & "); from anywhere, a text
-// with a refused word and a move word whose target is a variable, or a second relative target, or a lone `&`.
+// with what to do instead. Known false refusals: from the main checkout, text that spells a refused command out (a
+// note saying "git commit"); from anywhere, a refused command with a move word whose target is a variable the command
+// does not set first, or a second relative target, or a lone `&`. Known false passes: git reached by another name (an
+// alias, `$GIT checkout`, `eval`), which no session writes by accident.
 // Should the hook throw, it refuses if step 2 matched; should node be missing, Claude Code takes the failed hook as no
 // decision, and the call runs: the hook needs mise's Node on PATH.
 import { spawnSync } from 'node:child_process';
@@ -28,11 +32,39 @@ import { isAbsolute, resolve } from 'node:path';
 
 const REFUSED =
   'checkout|switch|reset|stash|rebase|merge|cherry-pick|revert|apply|am|restore|clean|commit|add|rm|mv|bisect|update-index|read-tree|checkout-index|update-ref|symbolic-ref|pull';
-// `worktree add` and `remote add` change no checkout: their `add` is not the refused one.
-const NAMES = new RegExp(
-  `\\b(git|gh)\\b[\\s\\S]*(?<!\\b(worktree|remote)\\s+)\\b(${REFUSED})\\b|\\bgh\\b[\\s\\S]*\\brepo\\s+sync\\b`,
-);
-const NAMES_GH = new RegExp(`\\bgh\\b[\\s\\S]*\\b(${REFUSED}|sync)\\b`);
+const WORD = `(?:"[^"]*"|'[^']*'|\\S+)`;
+// git, then its own options (`-C <path>`, `-c <setting>`, `--git-dir <path>`, `--no-pager`, …), then the subcommand as
+// the next word. So `git worktree add`, `git log --grep revert` and `gh api …/commits` are not refused commands.
+const GIT = `\\bgit(?:\\s+(?:-[Cc]\\s+${WORD}|--(?:git-dir|work-tree|namespace)(?:=|\\s+)${WORD}|-[-\\w]+(?:=\\S+)?))*\\s+(?:${REFUSED})(?![-\\w])`;
+const GH = `\\bgh\\s+(?:(?:-R|--repo)(?:=|\\s+)\\S+\\s+)?(?:pr\\s+(?:checkout|merge)|repo\\s+sync)\\b`;
+const NAMES = new RegExp(`${GIT}|${GH}`);
+const NAMES_GIT = new RegExp(GIT, 'g');
+const NAMES_GH = new RegExp(GH);
+// A statement a command may begin with that sets a variable to a literal absolute path: `WT=/a/b; ` or `WT="/a b" && `.
+const SETS = /^\s*([A-Za-z_]\w*)=("\/[^"$`\\]*"|'\/[^']*'|\/[^\s;&|()<>$`"'\\]*)\s*(?:;|&&|\n)/;
+
+/**
+ * The command after the variables it sets at its start, each put in where it is used. One the rest could change (set
+ * again, or named by for, read, unset, local, declare, export or typeset) is left as written, so a target that uses
+ * it is one the hook cannot follow.
+ */
+export function expand(command: string): string {
+  const values = new Map<string, string | undefined>();
+  let rest = command;
+  for (let m = SETS.exec(rest); m; m = SETS.exec(rest)) {
+    const name = m[1] as string;
+    values.set(name, values.has(name) ? undefined : (m[2] as string).replace(/^["']|["']$/g, ''));
+    rest = rest.slice(m[0].length);
+  }
+  for (const [name, value] of values) {
+    const changed = new RegExp(
+      `\\b${name}=|\\b(for|read|unset|local|declare|export|typeset)\\b[^;\\n&|]*\\b${name}\\b`,
+    );
+    if (value === undefined || changed.test(rest)) continue;
+    rest = rest.replace(new RegExp(`\\$\\{${name}\\}|\\$${name}(?!\\w)`, 'g'), () => value);
+  }
+  return rest;
+}
 /** A word that moves where commands act, and the target it takes (after a space, or after `=`). */
 const MOVES = /(?<=^|[\s;&|(])(cd|pushd|popd|-C|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE)(?=$|[\s;&|)=])/g;
 const TARGET = /^(?:"([^"]*)"|'([^']*)'|([^\s;&|()<>]*))/;
@@ -73,8 +105,9 @@ const ADVICE =
   'Run it from your worktree, or as `cd /full/path/to/worktree && …` or `git -C /full/path/to/worktree …`, the path written out.';
 
 /** Why the command is refused, or undefined to let it run. */
-export function judge(command: string, cwd: string, mainGitDir: string): string | undefined {
-  if (!NAMES.test(command)) return undefined;
+export function judge(written: string, cwd: string, mainGitDir: string): string | undefined {
+  if (!NAMES.test(written)) return undefined;
+  const command = expand(written);
   const from = placeOf(cwd, mainGitDir);
   if (from === 'missing') return `the hook cannot find ${cwd}, where the command starts. ${ADVICE}`;
   const moves = [...command.matchAll(MOVES)];
@@ -114,8 +147,7 @@ export function judge(command: string, cwd: string, mainGitDir: string): string 
   }
   if (from !== 'main') return undefined;
   if (/^\s*(cd|pushd)\s/.test(command) && targets[0]?.at === command.search(/\S/)) return undefined;
-  const gits = [...command.matchAll(/\bgit\b/g)];
-  const covered = gits.every((g) => /^\s+-C\s/.test(command.slice((g.index as number) + 3)));
+  const covered = [...command.matchAll(NAMES_GIT)].every((g) => /\s-C\s/.test(g[0]));
   if (covered && !NAMES_GH.test(command) && !targets.some((t) => t.word !== '-C')) return undefined;
   return `from the main checkout, start with \`cd <worktree> &&\`, or give every git \`-C <worktree>\`. ${ADVICE}`;
 }

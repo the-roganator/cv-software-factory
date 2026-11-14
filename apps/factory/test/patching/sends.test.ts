@@ -143,6 +143,31 @@ describe("the sense's sends", () => {
     expect(validateSignal(send?.signal)).toEqual({ ok: true });
   });
 
+  it('sends a finding whose fixed versions do not fit without them, and keeps it among the worst', () => {
+    // A range, which no signal's versions hold, on the move's only critical finding.
+    const findings = [found(3, 'CRITICAL', image.to, '>= 3.5.1'), found(5, 'LOW', image.to, '1.0.1')];
+    const { sends, skipped } = sendsOf(read([{ ...image, findings }]), '2026-11-11T04:59:00Z');
+    expect(skipped).toEqual(['move 2: 1 findings whose fixed versions do not fit a signal, sent without them']);
+    const scan = sends[0]?.signal.evidence?.[0];
+    expect(scan?.kind === 'scan' ? scan.findings : []).toEqual([
+      { advisory: 'CVE-2026-1003', package: 'left-pad', severity: { scanner: 'critical' } },
+      { advisory: 'CVE-2026-1005', package: 'left-pad', severity: { scanner: 'low' }, fixed: '1.0.1' },
+    ]);
+    expect(validateSignal(sends[0]?.signal)).toEqual({ ok: true });
+  });
+
+  it('gives a finding’s fixed versions each once, lowest first, however its alert ordered them', () => {
+    const AT = '2026-11-11T04:59:00Z';
+    const one = sendsOf(read([{ ...image, findings: [found(3, 'HIGH', image.to, '3.10.0, 3.9.1, 3.9.1')] }]), AT);
+    const two = sendsOf(read([{ ...image, findings: [found(3, 'HIGH', image.to, '3.9.1, 3.10.0')] }]), AT);
+    const fixedIn = (sends: typeof one.sends) => {
+      const scan = sends[0]?.signal.evidence?.[0];
+      return scan?.kind === 'scan' ? scan.findings[0]?.fixed : undefined;
+    };
+    expect(fixedIn(one.sends)).toBe('3.9.1, 3.10.0');
+    expect(fixedIn(two.sends)).toBe('3.9.1, 3.10.0');
+  });
+
   it('sends nothing for another lane, or a move with no target', () => {
     const none = [
       { ...image, lane: 'worker' as const },

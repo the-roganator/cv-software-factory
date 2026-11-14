@@ -21,6 +21,7 @@ import type { InboxSignal } from '@software-factory/events';
 import { validateSignal } from '@software-factory/events/schemas';
 import { uuidFrom } from '@software-factory/triage/events';
 import type { MoveFinding, Moves, ReadMove } from '../github/scanning.ts';
+import { compareVersions } from '../vulnerabilities/deadlines.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
 import type { Severity } from '../vulnerabilities/sarif.ts';
 
@@ -86,19 +87,31 @@ function moveOf(repository: string, read: ReadMove): Move | string {
   return { repository, name: read.name, ecosystem, from: read.from, to, pins: read.pins };
 }
 
-/** The scan's evidence of a move: its findings worst first, at most eight, and the rest, the move leaves among them. */
+/**
+ * The scan's evidence of a move: its findings worst first, at most eight, and the rest, the move leaves among them. A
+ * finding whose fixed versions do not fit the signal's shape is sent without them (`unfixed`), never dropped for them;
+ * one that does not fit even so is counted with the rest (`misfits`).
+ */
 function scanOf(
   reads: ReadMove[],
   fits: (finding: Scan['findings'][number]) => boolean,
-): { evidence: Scan; misfits: number } {
+): { evidence: Scan; misfits: number; unfixed: number } {
   const rest = Object.fromEntries(ORDER.map((r) => [r, 0])) as Scan['rest'];
   const findings: Scan['findings'] = [];
   let misfits = 0;
+  let unfixed = 0;
   const sorted = reads
     .flatMap((read) => read.findings)
     .sort((a, b) => ORDER.indexOf(RATING[a.severity]) - ORDER.indexOf(RATING[b.severity]) || a.alert - b.alert);
   for (const finding of sorted) {
-    const made = findingOf(finding);
+    let made = findingOf(finding);
+    if (made.fixed && !fits(made)) {
+      const { fixed: _, ...without } = made;
+      if (fits(without)) {
+        made = without;
+        unfixed++;
+      }
+    }
     const fit = fits(made);
     if (!fit) misfits++;
     if (findings.length < MOST_FINDINGS && fit) findings.push(made);
@@ -107,14 +120,21 @@ function scanOf(
   for (const read of reads)
     for (const [rating, count] of Object.entries(read.leaves))
       rest[RATING[rating as Severity] ?? 'unknown'] += count as number;
-  return { evidence: { kind: 'scan', findings, rest }, misfits };
+  return { evidence: { kind: 'scan', findings, rest }, misfits, unfixed };
 }
+
+/** A finding's fixed versions, each once, lowest first: the same versions read in another order say the same. */
+const fixedOf = (fixed: string) =>
+  [...new Set(fixed.split(', ').filter(Boolean))]
+    .sort((a, b) => compareVersions(a, b) || (a < b ? -1 : a > b ? 1 : 0))
+    .join(', ');
 
 /**
  * A finding as a signal names it: of the advisory only what its alert says, its id, package, rating and the versions
  * that fix it. The move's target is the move's `to`, never a finding's `fixed`: for an image they differ.
  */
-function findingOf({ fixed, ...finding }: MoveFinding): Scan['findings'][number] {
+function findingOf(finding: MoveFinding): Scan['findings'][number] {
+  const fixed = finding.fixed && fixedOf(finding.fixed);
   return {
     advisory: finding.advisory,
     package: finding.package,
@@ -190,6 +210,8 @@ export function sendsOf(moves: Moves, observedAt: string): Sends {
       continue;
     }
     const scan = scanOf(reads, (finding) => validateSignal(signalWith([finding])).ok);
+    if (scan.unfixed)
+      skipped.push(`${where}: ${scan.unfixed} findings whose fixed versions do not fit a signal, sent without them`);
     if (scan.misfits)
       skipped.push(`${where}: ${scan.misfits} findings that do not fit a signal, counted with the rest`);
     if (!scan.evidence.findings.length) {

@@ -6,28 +6,28 @@
  * reason, which the hold names beside its `dependency-change` tag:
  *
  * 1. **Pins only.** The change is what the merge makes: the head merged onto main's tip, against that tip. Every file it
- *    changes is one of the app's pins, modified in place, regular, with its mode: `pnpm-lock.yaml`; `package.json`, a
- *    dependency's version range alone, of a package already there; the `Dockerfile`'s `FROM` lines, each its image's
- *    tag and digest alone, in the same repository; `mise.toml`'s Node, with its entry in `mise.lock` (the version, the
- *    checksums and nodejs.org's download URLs for that version), forward on its major. The lockfile is read as YAML,
- *    document by document: everything but its importers, packages and snapshots is the same; each importer the same
- *    but in its dependencies' ranges and versions, every version a registry's (never an alias, a `link:`, a `file:`, a
- *    tarball or a git source); every package's entry a registry's integrity alone, and one that stays at a version the
- *    same. No package goes; a package whose versions change moves each forward on its major.
+ *    changes is one of the app's pins, modified in place, regular, with its mode: `pnpm-lock.yaml` and `package.json`;
+ *    the `Dockerfile`'s `FROM` lines, each its image's tag and digest alone, in the same repository; `mise.toml`'s Node,
+ *    with its entry in `mise.lock` (the version, the checksums and nodejs.org's download URLs for that version), forward
+ *    on its major. A package's move is never read from the head's lockfile: the gate works out the move (`theMove`: a
+ *    package its scanner rates Critical in the base's lockfile, and the version the head gives it, two words, checked),
+ *    writes the lockfile for it on the base with the pin step's own code and pnpm (`CriticalFixIO.derive`), and passes
+ *    only a head whose `pnpm-lock.yaml` and `package.json` are those bytes (`asDerived`).
  * 2. **Forward on its line.** Each `FROM` it moves is the same tag at its index digest now, or the newest tag on its line
  *    at its index digest now (`imageForward`, as a pin move's), never a major and never back.
  * 3. **The scans show the fix.** The gate's pinned Trivy, on a fresh database, on the lockfile at both sides and on each
  *    moved image at both sides on each platform we run, and Node's own database on the Node mise pins at both sides, as
  *    the daily scan reads Node: a finding the scanner rates Critical at the base, with a fix, is gone at the head, and
- *    its package is still there at or above its fixed version. The publisher's rating is never read: it can hold a
- *    change, never release one. Every package the base's scan lists is in the head's, and the Node binary where an image
- *    names one: a finding that disappears with its package is not a fix. A report that does not parse, or reads
- *    nothing, holds. The Criticals it fixes are in one package: two is a group.
+ *    its package is still there at or above its fixed version, in its own format's order (`critical-fix-versions.ts`).
+ *    The publisher's rating is never read but for Node, whose only rating is its own database's. Every package the
+ *    base's scan lists is in the head's, and the Node binary where an image names one: a finding that disappears with
+ *    its package is not a fix. A report that does not parse, reads nothing, or has a finding with no package or advisory,
+ *    holds. The Criticals it fixes are in one package: two is a group.
  * 4. **Nothing new.** No scan of the head finds anything at High or above the base's did not.
- * 5. **Only what the fix needs moves.** For a package: every package whose versions change, and every one the lockfile
- *    adds, is the fixed one or one its new version requires, by the head's snapshots; no image and no Node moves. For
- *    Node: mise's pin and every `FROM` move, nothing in the lockfile, and every image whose Node the scan reads runs the
- *    Node mise pins. For an image's own package: that image's `FROM` lines alone, its Node unchanged.
+ * 5. **Only what the fix needs moves.** For a package: the package fixed is the move's, and what else its lockfile moves
+ *    is what pnpm moved for it (condition 1); no image and no Node moves. For Node: mise's pin and every `FROM` move,
+ *    nothing in the lockfile, and every image whose Node the scan reads runs the Node mise pins. For an image's own
+ *    package: that image's `FROM` lines alone, its Node unchanged.
  * 6. **Every gate passes.** GitHub Actions' latest run at the head of each of the app's required checks but the gate's
  *    own succeeded, made by the workflow that has that job, for this pull request (`workflowsOf`, as a pin move reads
  *    its runs): its gates, its tests (`test/node-pins.test.ts` holds mise's Node to each `FROM`), and `image builds`,
@@ -36,12 +36,13 @@
  *
  * It trusts nothing the pull request says of itself (its title, label, description, branch or advisory): the fix is
  * read from the gate's own scans of its two commits, and the code that reads them is main's. Its head is data: no
- * line of it is run, built or installed. A fact that could not be read holds.
+ * line of it is run, built or installed, and only a package's name and a version cross from it into what runs, pnpm
+ * on the base. A fact that could not be read holds.
  */
-import { parse as parseYaml } from 'yaml';
-import { documents } from '../apps/factory/src/gates/lockfile-scan.ts';
-import { satisfies } from '../apps/factory/src/vulnerabilities/node.ts';
+
 import { repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
+import { compareVersions, lockedVersions, type Move, PinsHeld, PinsRefused } from '../apps/runner/src/pins.ts';
+import { compareIn } from './critical-fix-versions.ts';
 import { imageForward } from './pin-move-forward.ts';
 import { ACTIONS, type Run } from './pin-move-ran.ts';
 import { exactOrder, majorOf, sameMajor, short } from './pin-move-shared.ts';
@@ -56,6 +57,11 @@ export interface Finding {
   fixed?: string;
   /** The scanner's rating, never the publisher's. */
   severity: string;
+  /**
+   * The order its versions are in, from what Trivy says of the target it scanned (`formatOf`): `npm` where none is
+   * given (a lockfile's packages, and Node's), `dpkg` or `apk` for an OS's, `unread:…` for one the gate does not order.
+   */
+  format?: string;
 }
 
 /** What one scan read: every package, by name and version, and every finding. */
@@ -76,11 +82,13 @@ export interface CriticalFixIO {
   image(reference: string, platform: string): Promise<Scan>;
   /** Node's own advisories that a Node version has, from Node's database, as the daily scan reads them. */
   node(version: string): Promise<Finding[]>;
+  /** The versions the registry publishes of a package. */
+  versions(name: string): Promise<string[]>;
   /**
-   * What a package's version requires by its manifest on the registry, by name, with the range it asks for: its
-   * dependencies, optional and peer.
+   * The pin step's own derivation of a move on the base (`writePins`, apps/runner/src/pins.ts, run by the same pnpm):
+   * each file it changes, with the text it writes. Throws `PinsRefused` or `PinsHeld` where the pin step would.
    */
-  manifest(name: string, version: string): Promise<Record<string, string>>;
+  derive(move: PackageMove): Promise<Record<string, string>>;
   /** The checks the app's ruleset requires of `main`, by name. */
   required(): Promise<string[]>;
   /** Every tag of an image's repository. */
@@ -127,9 +135,9 @@ const sev = (severity: string) => severity.toUpperCase();
 
 /** The pins the change writes, read from its files' text. */
 export interface Pins {
+  /** The lockfile and the manifest, each as text: proved only by being what the gate writes itself (`asDerived`). */
   lockfile?: { before: string; after: string };
-  /** A dependency's range in package.json, by name: from one range to another. */
-  ranges: Map<string, { from: string; to: string }>;
+  manifest?: { before: string; after: string };
   /** Each `FROM` the Dockerfile moves, by line, and how many `FROM` lines it has. */
   images: { line: number; from: string; to: string }[];
   froms: number;
@@ -150,49 +158,8 @@ function rewritten(path: string, before: string, after: string): { line: number;
   return lines;
 }
 
-/** A package's name as npm writes one, scoped or not. */
-const NAME = '(?:@[a-z0-9][\\w.-]*/)?[a-z0-9][\\w.-]*';
 /** A version a registry publishes: numbers, and a prerelease or build after them. */
 const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/;
-/** A range in package.json the rule moves: a registry version, exact, `^` or `~`. */
-const RANGE_LINE = new RegExp(`^(\\s*)"(${NAME})": "([~^]?)(\\d+\\.\\d+\\.\\d+)"(,?)$`);
-const SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
-
-/** The ranges package.json moves, or why it changes more: each changed line a dependency's version, nothing else. */
-export function manifestRanges(before: string, after: string): Map<string, { from: string; to: string }> | Reason {
-  const lines = rewritten(MANIFEST, before, after);
-  if ('reason' in lines) return lines;
-  const ranges = new Map<string, { from: string; to: string }>();
-  for (const { line, was, now } of lines) {
-    const [a, b] = [RANGE_LINE.exec(was), RANGE_LINE.exec(now)];
-    if (!a || !b || a[1] !== b[1] || a[2] !== b[2] || a[3] !== b[3] || a[5] !== b[5])
-      return no(`${MANIFEST}:${line} is not a dependency's version: ${short(now.trim())}`);
-    ranges.set(a[2] as string, { from: `${a[3]}${a[4]}`, to: `${b[3]}${b[4]}` });
-  }
-  // Read as JSON too: the lines changed are those dependencies' ranges, and everything else is the same.
-  let was: Record<string, unknown>;
-  let now: Record<string, unknown>;
-  try {
-    [was, now] = [JSON.parse(before), JSON.parse(after)];
-  } catch {
-    return no(`${MANIFEST} is not JSON the gate reads`);
-  }
-  const put = { ...now };
-  for (const section of SECTIONS) {
-    const [x, y] = [was[section], now[section]];
-    if (!x || !y || typeof x !== 'object' || typeof y !== 'object') continue;
-    const copy: Record<string, unknown> = { ...(y as Record<string, unknown>) };
-    for (const [name, range] of Object.entries(x as Record<string, unknown>)) {
-      const moved = ranges.get(name);
-      if (moved && range === moved.from && copy[name] === moved.to) copy[name] = range;
-    }
-    put[section] = copy;
-  }
-  if (JSON.stringify(put) !== JSON.stringify(was))
-    return no(`${MANIFEST} changes more than its dependencies' version ranges`);
-  return ranges;
-}
-
 /** A `FROM` line the rule moves: an image by tag and digest, and its stage's name if it has one. */
 const FROM_LINE = /^FROM\s+([^\s@]+)@(sha256:[0-9a-f]{64})((?:\s+AS\s+[\w.-]+)?)\s*$/i;
 
@@ -285,7 +252,7 @@ export function miseLockNode(before: string, after: string): { from: string; to:
 export function pinsOnly(raw: string, files: readonly Rewritten[]): Pins | Reason {
   const entries = raw.split('\n').filter((line) => line.startsWith(':'));
   if (!entries.length) return no('it changes no file');
-  const pins: Pins = { ranges: new Map(), images: [], froms: 0 };
+  const pins: Pins = { images: [], froms: 0 };
   let [node, locked]: ({ from: string; to: string } | undefined)[] = [];
   for (const entry of entries) {
     const [meta = '', ...rest] = entry.split('\t');
@@ -299,11 +266,8 @@ export function pinsOnly(raw: string, files: readonly Rewritten[]): Pins | Reaso
     if (!file) return no(`the gate did not read ${path} at both commits`);
     if (file.before.includes('\0') || file.after.includes('\0')) return no(`${path} is binary`);
     if (path === LOCKFILE) pins.lockfile = { before: file.before, after: file.after };
-    else if (path === MANIFEST) {
-      const ranges = manifestRanges(file.before, file.after);
-      if ('reason' in ranges) return ranges;
-      pins.ranges = ranges;
-    } else if (path === DOCKERFILE) {
+    else if (path === MANIFEST) pins.manifest = { before: file.before, after: file.after };
+    else if (path === DOCKERFILE) {
       const moved = dockerfileMoves(file.before, file.after);
       if ('reason' in moved) return moved;
       Object.assign(pins, moved);
@@ -321,242 +285,122 @@ export function pinsOnly(raw: string, files: readonly Rewritten[]): Pins | Reaso
       return no(`Node moves from ${node.from} to ${node.to}, not forward on its major`);
     pins.node = node;
   }
-  if (pins.ranges.size && !pins.lockfile) return no(`${MANIFEST} moves a range the lockfile does not`);
+  if (pins.manifest && !pins.lockfile) return no(`${MANIFEST} changes, and ${LOCKFILE} does not`);
   return pins;
 }
 
-// 1. Pins only: the lockfile, as YAML.
+// 1. Pins only: a package's move, and the lockfile the gate writes for it.
 
-/** A package's `name@version` key, split: the name may start with `@`. */
-export function splitKey(key: string): { name: string; version: string } | undefined {
-  const at = key.lastIndexOf('@');
-  if (at <= 0) return undefined;
-  return { name: key.slice(0, at), version: key.slice(at + 1) };
-}
+/** The hold's words when the head's lockfile is not the gate's own. */
+export const NOT_DERIVED = 'the lockfile is not the one this move writes';
 
-/** A version an importer or a snapshot resolves to, with its peers' suffix: a registry's, or none. */
-const registryVersion = (version: unknown) =>
-  typeof version === 'string' && VERSION.test(version.replace(/\(.*\)$/, ''))
-    ? version.replace(/\(.*\)$/, '')
-    : undefined;
+/** A package's move, as the pin step takes one: the words that cross from the head, each checked. */
+export type PackageMove = Move & { ecosystem: 'npm' };
 
-/** What the lockfile moves, read from both sides. */
-export interface LockMoves {
-  /** By name: the versions it no longer has and those it gains, each a package already there. */
-  moved: Map<string, { removed: string[]; added: string[] }>;
-  /** Packages it adds that were not there at any version, each with its versions. */
-  added: Map<string, string[]>;
-  /** The ranges its importers change, by name. */
-  ranges: Map<string, { from: string; to: string }>;
-  /** The head's snapshots: each `name@version` and the `name@version`s it requires. */
-  requires: Map<string, string[]>;
-  /**
-   * Each snapshot the head adds, of a version the base does not have: its `name@version`, and the names it requires,
-   * which the registry's published manifest of that version must name (`manifestsHold`).
-   */
-  fresh: { name: string; version: string; requires: Record<string, string>; ranges?: Record<string, string> }[];
+/** A version as the pin step moves to one: numbers, and a prerelease after them, never a build or a range. */
+const MOVE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+/** The fields of package.json whose range pins what is installed, as the pin step moves them. */
+const PINNED = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
+
+/** The range package.json gives a package, where it gives one: a word, read from JSON, never a fact about the graph. */
+function rangeOf(manifest: string | undefined, name: string): string | undefined {
+  if (manifest === undefined) return undefined;
+  let json: Record<string, unknown>;
+  try {
+    json = JSON.parse(manifest) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  for (const field of PINNED) {
+    const range = record(json[field])[name];
+    if (typeof range === 'string') return range;
+  }
+  return undefined;
 }
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-/** An importer with every dependency's version and range set aside, after each version is read as a registry's. */
-function importerShape(
-  importer: Record<string, unknown>,
-  seen: (name: string, entry: Record<string, unknown>) => string | undefined,
-): Record<string, unknown> | string {
-  const shape: Record<string, unknown> = {};
-  for (const [section, deps] of Object.entries(importer)) {
-    if (!/[dD]ependencies$/.test(section)) {
-      shape[section] = deps;
-      continue;
-    }
-    const kept: Record<string, unknown> = {};
-    for (const [name, value] of Object.entries(record(deps))) {
-      const entry = record(value);
-      const wrong = seen(name, entry);
-      if (wrong) return wrong;
-      const { version: _v, specifier: _s, ...rest } = entry;
-      kept[name] = rest;
-    }
-    shape[section] = kept;
-  }
-  return shape;
-}
-
-/** What the lockfile moves between the two sides, or why it is not a move of registry versions alone. */
-export function lockMoves(before: string, after: string): LockMoves | Reason {
-  const [a, b] = [documents(before), documents(after)];
-  if (a.length !== b.length) return no(`${LOCKFILE} has ${b.length} documents at the head and ${a.length} at the base`);
-  const parse = (doc: string) => record(parseYaml(doc, { uniqueKeys: true, prettyErrors: false }));
-  const result: LockMoves = { moved: new Map(), added: new Map(), ranges: new Map(), requires: new Map(), fresh: [] };
-  const snapshots: { which: string; was: Record<string, unknown>; now: Record<string, unknown> }[] = [];
-  const versions = (side: Record<string, unknown>[]) => {
-    const all = new Map<string, Set<string>>();
-    for (const doc of side)
-      for (const key of Object.keys(record(doc.packages))) {
-        const split = splitKey(key);
-        if (split) all.set(split.name, new Set([...(all.get(split.name) ?? []), split.version]));
-      }
-    return all;
-  };
-  let docs: [Record<string, unknown>[], Record<string, unknown>[]];
-  try {
-    docs = [a.map(parse), b.map(parse)];
-  } catch (error) {
-    return no(`${LOCKFILE} is not YAML the gate reads (${short(String(error).split('\n')[0] ?? '')})`);
-  }
-  for (const [i, was] of docs[0].entries()) {
-    const now = docs[1][i] as Record<string, unknown>;
-    const which = a.length > 1 ? `${LOCKFILE}'s document ${i + 1}` : LOCKFILE;
-    if (!same(Object.keys(was), Object.keys(now))) return no(`${which} has other sections at the head`);
-    for (const key of Object.keys(was))
-      if (!['importers', 'packages', 'snapshots'].includes(key) && !same(was[key], now[key]))
-        return no(`${which} changes its ${key}, which is not a package's version`);
-    // Importers: the same, but in each dependency's range and its version, which is a registry's on both sides.
-    const [wi, ni] = [record(was.importers), record(now.importers)];
-    if (!same(Object.keys(wi), Object.keys(ni))) return no(`${which} has other importers at the head`);
-    for (const id of Object.keys(wi)) {
-      const ranges = new Map<string, string>();
-      const look = (side: 'base' | 'head') => (name: string, entry: Record<string, unknown>) => {
-        if (!registryVersion(entry.version))
-          return `${which} resolves ${name} to ${short(String(entry.version))} at the ${side}: not a registry's version (an alias, a link, a file, a tarball or git)`;
-        if (side === 'base') ranges.set(name, String(entry.specifier));
-        else if (ranges.get(name) !== String(entry.specifier))
-          result.ranges.set(name, { from: ranges.get(name) ?? '', to: String(entry.specifier) });
-        return undefined;
-      };
-      const [x, y] = [importerShape(record(wi[id]), look('base')), importerShape(record(ni[id]), look('head'))];
-      if (typeof x === 'string') return no(x);
-      if (typeof y === 'string') return no(y);
-      if (!same(x, y)) return no(`${which}'s importer ${id} changes more than its dependencies' versions`);
-    }
-    // Packages: a registry's integrity alone at the head, and the same entry at a version both sides have.
-    const [wp, np] = [record(was.packages), record(now.packages)];
-    for (const [key, entry] of Object.entries(np)) {
-      const split = splitKey(key);
-      if (!split || !VERSION.test(split.version))
-        return no(`${which} has a package that is no registry's version: ${short(key)}`);
-      const resolution = record(record(entry).resolution);
-      if (!same(Object.keys(resolution), ['integrity']) || typeof resolution.integrity !== 'string')
-        return no(`${which} resolves ${short(key)} from somewhere other than the registry, by its integrity`);
-      if (key in wp && !same(wp[key], entry)) return no(`${which} changes ${short(key)}'s entry at the same version`);
-    }
-    // Snapshots: what pnpm installs each package with. Every one is of a package at the head, and every package it
-    // requires is a registry's version the head has: never an alias, a link, a file, a tarball or git.
-    for (const [key, entry] of Object.entries(record(now.snapshots))) {
-      const at = stripPeers(key);
-      if (!(at in np)) return no(`${which} has a snapshot of ${short(key)}, which is no package of its own`);
-      const edges: string[] = [];
-      for (const [name, version] of Object.entries(edgesOf(entry))) {
-        const v = registryVersion(version);
-        // Its peers' suffix too: the edge names one snapshot the head has, whole.
-        if (!v || !(`${name}@${v}` in np) || !(`${name}@${String(version)}` in record(now.snapshots)))
-          return no(
-            `${which}'s snapshot ${short(key)} requires ${name} at ${short(String(version))}: no registry's version it has`,
-          );
-        edges.push(`${name}@${v}`);
-      }
-      // Two snapshots of one version with other peers each require what they do: the union.
-      result.requires.set(at, [...new Set([...(result.requires.get(at) ?? []), ...edges])]);
-    }
-    snapshots.push({ which, was: record(was.snapshots), now: record(now.snapshots) });
-  }
-  const [was, now] = [versions(docs[0]), versions(docs[1])];
-  for (const [name, at] of was) {
-    const then = now.get(name);
-    if (!then) return no(`${name} is gone from the lockfile: a package removed is no fix`);
-    const removed = [...at].filter((v) => !then.has(v));
-    const added = [...then].filter((v) => !at.has(v));
-    if (!removed.length && !added.length) continue;
-    // Each version it no longer has is replaced by one forward of it on its major, so nothing is left behind.
-    for (const v of removed)
-      if (!added.some((n) => sameMajor(n, v) && exactOrder(n, v) === 1))
-        return no(`${name} ${v} goes, with nothing forward of it on its major in its place`);
-    result.moved.set(name, { removed, added });
-  }
-  for (const [name, at] of now) if (!was.has(name)) result.added.set(name, [...at]);
-  // Every snapshot of a version both sides have is the same, but where it names a version that moves: so no package
-  // that stays is rewired to another, older or new. Each the head adds is held to its published manifest instead.
-  const moving = (name: string, version: string) => {
-    const m = result.moved.get(name);
-    return Boolean(m?.removed.includes(version) || m?.added.includes(version) || result.added.has(name));
-  };
-  const norm = (text: string) =>
-    text.replace(/(^|\()((?:@[^@()/]+\/)?[^@()]+)@([^()]+)/g, (whole, open: string, name: string, version: string) =>
-      moving(name, version) ? `${open}${name}@*` : whole,
-    );
-  const steady = (side: Record<string, unknown>) => {
-    const kept = new Map<string, string>();
-    for (const [key, entry] of Object.entries(side)) {
-      const split = splitKey(stripPeers(key));
-      if (!split || moving(split.name, split.version)) continue;
-      const shape = { ...record(entry) };
-      for (const field of EDGE_FIELDS)
-        if (field in shape)
-          shape[field] = Object.fromEntries(
-            Object.entries(record(shape[field])).map(([name, version]) => [name, norm(`${name}@${String(version)}`)]),
-          );
-      kept.set(norm(key), JSON.stringify(shape));
-    }
-    return kept;
-  };
-  for (const { which, was: before, now: after } of snapshots) {
-    const [x, y] = [steady(before), steady(after)];
-    for (const [key, entry] of y)
-      if (x.get(key) !== entry) return no(`${which} rewires ${short(key)}'s snapshot, a package that does not move`);
-    for (const key of x.keys()) if (!y.has(key)) return no(`${which} drops ${short(key)}'s snapshot`);
-    for (const [key, entry] of Object.entries(after)) {
-      const split = splitKey(stripPeers(key));
-      if (split && moving(split.name, split.version))
-        result.fresh.push({
-          ...split,
-          requires: Object.fromEntries(
-            Object.entries(edgesOf(entry)).map(([name, version]) => [name, registryVersion(version) ?? '']),
-          ),
-        });
-    }
-  }
-  return result;
-}
-
-/** The fields of a snapshot that name what it requires. */
-const EDGE_FIELDS = ['dependencies', 'optionalDependencies'];
-const edgesOf = (entry: unknown): Record<string, unknown> =>
-  Object.assign({}, ...EDGE_FIELDS.map((field) => record(record(entry)[field])));
-/** A snapshot's key without its peers' suffix: its package's `name@version`. */
-const stripPeers = (key: string) => key.replace(/\(.*\)$/, '');
-
-/** Whether a version is in a range, as the daily scan reads Node's ranges; a range it cannot read is no. */
-const inRange = (version: string, range: string) => {
-  try {
-    return satisfies(version, range);
-  } catch {
-    return false;
-  }
-};
+/** The fixed versions an advisory names on a version's major, as the scanner writes them. */
+const fixesOnMajor = (fixed: string, version: string) =>
+  fixed
+    .split(/[\s,|]+/)
+    .map((v) => v.replace(/^(>=|\^|~|=|v)+/, ''))
+    .filter((v) => VERSION.test(v) && majorOf(v) !== undefined && majorOf(v) === majorOf(version));
 
 /**
- * Whether each snapshot the head adds requires only what its version's published manifest names (its dependencies,
- * optional and peer dependencies), each at a version in the range the manifest asks for, read from the registry by
- * main's code: the head's own graph never vouches for itself. The snapshots of versions both sides have are held the
- * same as the base's (`lockMoves`), so with this every edge of the graph the head installs is the base's or the
- * registry's. Each fresh snapshot keeps the ranges it was held to, for `onlyTheFix`.
+ * The one move a package's change makes, worked out by the gate: a package its own scanner rates Critical in the base's
+ * lockfile, with a fix, and the version the head gives it, from its manifest's range where that moves and its
+ * lockfile's keys where it does not (`lockedVersions`, the pin step's own reading). Only those two words cross from the
+ * head, and each is checked here: a version as the pin step takes one, forward, at or above every Critical's fix, never
+ * across a major the fix does not need. They steer the derivation and decide nothing: the head passes only if its files
+ * are what the derivation writes (`asDerived`).
  */
-export async function manifestsHold(lock: LockMoves, manifest: CriticalFixIO['manifest']): Promise<string | undefined> {
-  const read = new Map<string, Promise<Record<string, string>>>();
-  for (const fresh of lock.fresh) {
-    const key = `${fresh.name}@${fresh.version}`;
-    if (!read.has(key)) read.set(key, manifest(fresh.name, fresh.version));
-    const ranges = (await read.get(key)) ?? {};
-    for (const [dep, version] of Object.entries(fresh.requires)) {
-      const range = ranges[dep];
-      if (range === undefined) return `${key}'s snapshot requires ${dep}, which its published manifest does not name`;
-      if (!inRange(version, range))
-        return `${key}'s snapshot requires ${dep} at ${version}, outside the ${short(range)} its published manifest asks for`;
-    }
-    fresh.ranges = ranges;
+export function theMove(
+  was: Scan,
+  lock: { before: string; after: string },
+  manifest?: { before: string; after: string },
+): PackageMove | Reason {
+  const criticals = new Map<string, Finding[]>();
+  for (const f of was.findings)
+    if (sev(f.severity) === 'CRITICAL' && f.fixed && (f.format ?? 'npm') === 'npm')
+      criticals.set(f.pkg, [...(criticals.get(f.pkg) ?? []), f]);
+  const moves = (name: string) =>
+    !same(lockedVersions(lock.before, name), lockedVersions(lock.after, name)) ||
+    rangeOf(manifest?.before, name) !== rangeOf(manifest?.after ?? manifest?.before, name);
+  const moved = [...criticals.keys()].filter(moves);
+  // The scanner's rating alone: a package it rates High, whatever its publisher says, is no Critical's move.
+  const high = was.findings.find((f) => sev(f.severity) === 'HIGH' && f.fixed && moves(f.pkg));
+  if (!moved.length && high)
+    return no(
+      `the scans show no Critical fixed: the worst it fixes is ${high.pkg}'s ${high.id}, which the gate's scanner rates HIGH`,
+    );
+  if (!moved.length)
+    return no(
+      `the scans show no fix: it moves no package the gate's scanner rates Critical in the base's ${LOCKFILE}${criticals.size ? ` (${[...criticals.keys()].join(', ')})` : ''}`,
+    );
+  if (moved.length > 1) return no(`a group: it moves ${moved.join(' and ')}, each Critical, one move at a time`);
+  const name = moved[0] as string;
+  const findings = criticals.get(name) ?? [];
+  const from = findings.map((f) => f.version).sort(compareVersions)[0] ?? '';
+  const range = rangeOf(manifest?.after, name);
+  let to: string | undefined;
+  if (range !== undefined && range !== rangeOf(manifest?.before, name)) {
+    to = /^[\^~]?(.*)$/.exec(range)?.[1];
+    if (!to || !MOVE_VERSION.test(to))
+      return no(`pins only: ${MANIFEST} gives ${name} ${short(range)}, not a version the pin step moves a range to`);
+  } else {
+    const base = new Set(lockedVersions(lock.before, name));
+    to = lockedVersions(lock.after, name).find((v) => !base.has(v));
+    if (!to) return no(`pins only: the head gives ${name} no version its base does not have`);
+  }
+  if (!MOVE_VERSION.test(from)) return no(`pins only: ${name} is found at ${short(from)}, not a version it moves from`);
+  if (compareVersions(to, from) <= 0) return no(`pins only: ${name} goes from ${from} to ${to}, not forward`);
+  for (const f of findings) {
+    if (!atOrAbove(to, f.fixed as string))
+      return no(`pins only: ${name} ${to} is not at or above ${short(f.fixed as string)}, its fix for ${f.id}`);
+    if (fixesOnMajor(f.fixed as string, from).length && !sameMajor(to, from))
+      return no(`pins only: ${name} goes from ${from} to ${to}, across a major its fix for ${f.id} does not need`);
+  }
+  return { ecosystem: 'npm', name, from, to };
+}
+
+/**
+ * Whether the head's lockfile files are, byte for byte, those the pin step's derivation wrote from the base for the
+ * move: every one either changes is changed by both, to the same text. A lockfile or manifest of any other kind is no
+ * pin (`pinsOnly`), so with this the only lockfile that passes is the gate's own.
+ */
+export function asDerived(files: readonly Rewritten[], derived: Readonly<Record<string, string>>): string | undefined {
+  const head = new Map(files.filter((f) => f.path === LOCKFILE || f.path === MANIFEST).map((f) => [f.path, f.after]));
+  for (const path of new Set([...head.keys(), ...Object.keys(derived)].sort())) {
+    const [ours, theirs] = [derived[path], head.get(path)];
+    if (ours === undefined) return `the head changes ${path}, and the move does not`;
+    if (theirs === undefined) return `the move changes ${path}, and the head does not`;
+    if (ours === theirs) continue;
+    const [a, b] = [ours.split('\n'), theirs.split('\n')];
+    const line = a.findIndex((text, i) => text !== b[i]);
+    return `${path} differs from the gate's own at line ${(line < 0 ? a.length : line) + 1}`;
   }
   return undefined;
 }
@@ -570,8 +414,20 @@ export interface Target {
   now: Scan;
 }
 
-/** Whether a version is at or above an advisory's fixed version: one on its major, or every one it names. */
-export function atOrAbove(version: string, fixed: string): boolean | undefined {
+/**
+ * Whether a version is at or above an advisory's fixed version, in the format the scanner read it in: for npm's, one on
+ * its major, or every one it names; for an OS's, any one it names, each by its package manager's order. Nothing when
+ * the format is not one the gate orders, or no version parses in it.
+ */
+export function atOrAbove(version: string, fixed: string, format = 'npm'): boolean | undefined {
+  if (format !== 'npm') {
+    const orders = fixed
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map((f) => compareIn(format, version, f));
+    if (!orders.length || orders.some((o) => o === undefined)) return undefined;
+    return orders.some((o) => (o as number) >= 0);
+  }
   const named = fixed
     .split(/[\s,|]+/)
     .map((v) => v.replace(/^(>=|\^|~|=|v)+/, ''))
@@ -615,7 +471,16 @@ export function scansShow(targets: readonly Target[]): Fixed | Reason {
         continue;
       }
       const at = now.packages.filter((p) => p.name === f.pkg).map((p) => p.version);
-      if (!at.length || at.some((v) => !atOrAbove(v, f.fixed as string)))
+      const orders = at.map((v) => atOrAbove(v, f.fixed as string, f.format));
+      if (orders.includes(undefined)) {
+        const format = f.format ?? 'npm';
+        return no(
+          format.startsWith('unread:')
+            ? `the scans show no fix the gate reads: ${f.pkg}'s ${f.id} in ${label} is in ${format.slice(7)}'s versions, an order the gate does not read`
+            : `the scans show no fix the gate reads: ${f.pkg} at ${at.join(', ')}, or its fix ${short(f.fixed as string)} for ${f.id}, is not a version in ${format}'s format`,
+        );
+      }
+      if (!at.length || orders.some((ok) => !ok))
         return no(
           `the scans show no fix: ${f.pkg} is at ${at.join(', ') || 'no version'} in ${label} at the head, not at or above ${short(f.fixed)}, its fix for ${f.id}`,
         );
@@ -655,56 +520,14 @@ export function scansShow(targets: readonly Target[]): Fixed | Reason {
 
 // 5. Only what the fix needs.
 
-/** Every `name@version` a package's versions require, by the head's snapshots, followed to the end. */
-export function required(name: string, versions: readonly string[], requires: Map<string, string[]>): Set<string> {
-  const seen = new Set<string>();
-  const queue = versions.map((v) => `${name}@${v}`);
-  while (queue.length) {
-    const next = queue.shift() as string;
-    for (const dep of requires.get(next) ?? [])
-      if (!seen.has(dep)) {
-        seen.add(dep);
-        queue.push(dep);
-      }
-  }
-  return seen;
-}
-
-/** Whether only what the fix needs moves, or what else does. */
-export function onlyTheFix(fixed: Fixed, pins: Pins, lock: LockMoves | undefined): string | undefined {
-  const inLockfile = fixed.where.includes(LOCKFILE);
-  if (inLockfile) {
+/** Whether only what the fix needs moves, or what else does. A package's graph is pnpm's, proved by `asDerived`. */
+export function onlyTheFix(fixed: Fixed, pins: Pins, move: PackageMove | undefined): string | undefined {
+  if (fixed.where.includes(LOCKFILE)) {
     if (pins.images.length || pins.node) return "it moves an image or Node too, which a package's fix does not need";
-    if (!lock) return 'the lockfile does not move';
-    const moved = lock.moved.get(fixed.pkg);
-    if (!moved) return `the lockfile does not move ${fixed.pkg}`;
-    const needs = required(fixed.pkg, moved.added, lock.requires);
-    const needed = (name: string, version: string) => name === fixed.pkg || needs.has(`${name}@${version}`);
-    for (const [name, { added }] of lock.moved)
-      for (const v of added)
-        if (!needed(name, v)) return `it moves ${name} to ${v} too, which ${fixed.pkg}'s fix does not need`;
-    for (const [name, at] of lock.added)
-      for (const v of at)
-        if (!needed(name, v)) return `it adds ${name} ${v}, which ${fixed.pkg}'s new version does not require`;
-    // A package already there moves only where a new version requires a range its old version is outside.
-    const asking = lock.fresh.filter((f) => f.name === fixed.pkg || needs.has(`${f.name}@${f.version}`));
-    for (const [name, { removed }] of lock.moved) {
-      if (name === fixed.pkg || !removed.length) continue;
-      const forced = asking.some((f) => {
-        const range = f.ranges?.[name];
-        return f.requires[name] !== undefined && range !== undefined && removed.every((r) => !inRange(r, range));
-      });
-      if (!forced)
-        return `it moves ${name} from ${removed.join(', ')}, which ${fixed.pkg}'s new version did not need moved`;
-    }
-    for (const [name, range] of [...pins.ranges, ...lock.ranges])
-      if (name !== fixed.pkg)
-        return `it moves ${name}'s range to ${range.to} too, which ${fixed.pkg}'s fix does not need`;
-    const [manifest, locked] = [pins.ranges.get(fixed.pkg)?.to, lock.ranges.get(fixed.pkg)?.to];
-    if (manifest !== locked) return `${MANIFEST} and ${LOCKFILE} do not move ${fixed.pkg}'s range alike`;
+    if (!move || move.name !== fixed.pkg) return `it fixes ${fixed.pkg}, and moves ${move?.name ?? 'no package'}`;
     return undefined;
   }
-  if (pins.lockfile || pins.ranges.size) return "it moves a package too, which an image's fix does not need";
+  if (pins.lockfile || pins.manifest) return "it moves a package too, which an image's fix does not need";
   if (fixed.pkg === 'node') {
     if (!pins.node) return "Node is fixed in an image, and mise's Node does not move with it";
     if (pins.images.length !== pins.froms)
@@ -765,13 +588,6 @@ export async function criticalFix(io: CriticalFixIO, head: string): Promise<Crit
   const { raw, files } = await io.diff();
   const pins = pinsOnly(raw, files);
   if ('reason' in pins) return no(`pins only: ${pins.reason}`);
-  const lock = pins.lockfile ? lockMoves(pins.lockfile.before, pins.lockfile.after) : undefined;
-  if (lock && 'reason' in lock) return no(`pins only: ${lock.reason}`);
-  const unpublished = lock && (await manifestsHold(lock, io.manifest));
-  if (unpublished) return no(`pins only: ${unpublished}`);
-  if (lock)
-    for (const [name] of pins.ranges)
-      if (!lock.ranges.has(name)) return no(`pins only: ${MANIFEST} moves ${name}'s range, and the lockfile does not`);
   // 2. Forward on its line.
   for (const { from, to } of pins.images) {
     const back = await imageForward(from, to, io);
@@ -779,9 +595,28 @@ export async function criticalFix(io: CriticalFixIO, head: string): Promise<Crit
   }
   // 3 and 4. The scans, each side of each target.
   const targets: Target[] = [];
+  let move: PackageMove | undefined;
   if (pins.lockfile) {
-    const [was, now] = await Promise.all([io.lockfile(pins.lockfile.before), io.lockfile(pins.lockfile.after)]);
-    targets.push({ label: LOCKFILE, was, now });
+    // The base's scan names the move; the gate writes the lockfile for it; the head passes only as those bytes.
+    const was = await io.lockfile(pins.lockfile.before);
+    const found = theMove(was, pins.lockfile, pins.manifest);
+    if ('reason' in found) return found;
+    move = found;
+    if (!(await io.versions(move.name)).includes(move.to))
+      return no(`pins only: ${move.to} is not a version the registry publishes of ${move.name}`);
+    let derived: Record<string, string>;
+    try {
+      derived = await io.derive(move);
+    } catch (error) {
+      if (!(error instanceof PinsRefused || error instanceof PinsHeld)) throw error;
+      return no(
+        `pins only: ${NOT_DERIVED} (the pin step would not write ${move.name} ${move.to}: ${short(error.message)})`,
+      );
+    }
+    const differs = asDerived(files, derived);
+    if (differs) return no(`pins only: ${NOT_DERIVED} (${differs})`);
+    // The head's lockfile is now the gate's own bytes: the scan reads what pnpm wrote, and no hand shaped.
+    targets.push({ label: LOCKFILE, was, now: await io.lockfile(pins.lockfile.after) });
   }
   const scanned = await Promise.all(
     pins.images.flatMap(({ from, to }) =>
@@ -811,7 +646,7 @@ export async function criticalFix(io: CriticalFixIO, head: string): Promise<Crit
   if ('reason' in shown)
     return no(shown.reason.startsWith('it brings') ? `nothing new: ${shown.reason}` : shown.reason);
   // 5. Only what the fix needs moves.
-  const stray = onlyTheFix(shown, pins, lock);
+  const stray = onlyTheFix(shown, pins, move);
   if (stray) return no(`only what the fix needs: ${stray}`);
   // 6. Every gate passes, last: a fix that waits only on its gates says so with every other condition proved.
   const gates = gatesPass(await io.runs(), head, await io.required());

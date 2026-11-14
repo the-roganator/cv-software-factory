@@ -4,9 +4,11 @@
  * Docker, on a fresh database, as the daily scan runs it (`readLockfile`, its image arguments); and Node's own database,
  * as the daily scan reads it. Main's code, on the two commits as data: nothing of the head is run, built or installed.
  */
+import { execFile } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   advisoriesFor,
   entries,
@@ -23,12 +25,20 @@ import {
   type TrivyReport,
 } from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
+import { lockedPnpm } from '../apps/runner/scripts/install-pnpm.ts';
+import { git } from '../apps/runner/src/git.ts';
+import { pnpmIn, writePins } from '../apps/runner/src/pins.ts';
 import type { CriticalFixIO, Finding, Scan } from './critical-fix.ts';
+import { formatOf } from './critical-fix-versions.ts';
 import { type RealOptions, realPinMoveIO, removeWork } from './pin-move-readers.ts';
 import { ROOT } from './pin-move-shared.ts';
 import { tagAndDigest } from './pin-move-sides.ts';
 
-/** What Trivy's report read: every package, every finding by the scanner's own rating, and an image's Node. */
+/**
+ * What Trivy's report read: every package, every finding by the scanner's own rating, each in the format of the target
+ * it was found in (`formatOf`, from the result's class and type), and an image's Node. A finding with no package or no
+ * advisory is a report the gate cannot read whole: it throws, and the fix holds.
+ */
 export function scanOf(reports: readonly TrivyReport[]): Scan {
   const results = reports.flatMap((report) => report.Results ?? []);
   const node = reports.map((r) => nodeInConfig(r.Metadata?.ImageConfig) ?? nodeInPackages(r.Results)).find(Boolean);
@@ -37,20 +47,21 @@ export function scanOf(reports: readonly TrivyReport[]): Scan {
       (result.Packages ?? []).flatMap((p) => (p.Name ? [{ name: p.Name, version: p.Version ?? '' }] : [])),
     ),
     findings: results.flatMap((result) =>
-      (result.Vulnerabilities ?? []).flatMap((v): Finding[] =>
-        v.VulnerabilityID && v.PkgName
-          ? [
-              {
-                id: v.VulnerabilityID,
-                pkg: v.PkgName,
-                version: v.InstalledVersion ?? '',
-                ...(v.FixedVersion ? { fixed: v.FixedVersion } : {}),
-                // Trivy's own rating, never `VendorSeverity`'s publisher's (scan.ts's `publisherOf`).
-                severity: v.Severity ?? 'UNKNOWN',
-              },
-            ]
-          : [],
-      ),
+      (result.Vulnerabilities ?? []).map((v): Finding => {
+        if (!v.VulnerabilityID || !v.PkgName)
+          throw new Error(
+            `Trivy gave a finding with no ${v.PkgName ? 'advisory' : 'package'} in ${result.Target ?? 'a target'}`,
+          );
+        return {
+          id: v.VulnerabilityID,
+          pkg: v.PkgName,
+          version: v.InstalledVersion ?? '',
+          ...(v.FixedVersion ? { fixed: v.FixedVersion } : {}),
+          // Trivy's own rating, never `VendorSeverity`'s publisher's (scan.ts's `publisherOf`).
+          severity: v.Severity ?? 'UNKNOWN',
+          format: formatOf(result.Class, result.Type),
+        };
+      }),
     ),
     ...(node ? { node } : {}),
   };
@@ -61,6 +72,22 @@ function trivyImage() {
   const pinned = trivyPin(readFileSync(join(ROOT, 'deploy/images/trivy/Dockerfile'), 'utf-8'))?.[1];
   if (!pinned) throw new Error("the gate's checkout pins no Trivy it can read");
   return pinned;
+}
+
+const exec = promisify(execFile);
+
+/**
+ * The pnpm the pin step runs: the version the gate's own mise.lock holds, which is the runner image's
+ * (`install-pnpm.ts`), found by mise from the gate's checkout and never from the app's, so neither the app's
+ * `packageManager` nor its mise.toml picks it, and refused unless it says it is that version.
+ */
+export async function pinnedPnpm(root = ROOT): Promise<string> {
+  const version = lockedPnpm(readFileSync(join(root, 'mise.lock'), 'utf-8'), 'linux-x64').version;
+  const path = (await exec('mise', ['which', 'pnpm'], { cwd: root, timeout: 60_000 })).stdout.trim();
+  if (!path.startsWith('/') || basename(path) !== 'pnpm') throw new Error(`mise names no pnpm executable: ${path}`);
+  const runs = (await exec(path, ['--version'], { cwd: root, timeout: 60_000 })).stdout.trim();
+  if (runs !== version) throw new Error(`the gate's pnpm is ${runs}, and its mise.lock holds ${version}`);
+  return path;
 }
 
 /** The readers on two commits of `repo`, fetched into a directory of their own, as data. */
@@ -96,21 +123,48 @@ export async function realCriticalFixIO(
     },
     diff: () => commits.diff(),
     tags: (repository) => commits.tags(repository),
-    // The registry's own manifest of a version, read anonymously: what it requires, by name.
-    async manifest(name, version) {
-      const path = `${name.startsWith('@') ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name)}/${encodeURIComponent(version)}`;
+    // The registry's own list of a package's versions, read anonymously.
+    async versions(name) {
+      const path = name.startsWith('@') ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name);
       const answer = await tools.retry(async () => {
-        const response = await fetch(`https://registry.npmjs.org/${path}`, { signal: AbortSignal.timeout(30_000) });
-        if (!response.ok) throw new Error(`the registry answered ${response.status} for ${name}@${version}`);
-        return (await response.json()) as Record<string, unknown>;
+        const response = await fetch(`https://registry.npmjs.org/${path}`, {
+          headers: { accept: 'application/vnd.npm.install-v1+json' },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!response.ok) throw new Error(`the registry answered ${response.status} for ${name}`);
+        return (await response.json()) as { versions?: unknown };
       });
-      const ranges: Record<string, string> = {};
-      for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
-        const named = answer[field];
-        if (!named || typeof named !== 'object' || Array.isArray(named)) continue;
-        for (const [dep, range] of Object.entries(named)) if (typeof range === 'string') ranges[dep] ??= range;
-      }
-      return ranges;
+      if (!answer.versions || typeof answer.versions !== 'object') throw new Error(`the registry lists no ${name}`);
+      return Object.keys(answer.versions);
+    },
+    // The pin step's own derivation (apps/runner/src/pins.ts), on a checkout of the base alone, by the pin step's pnpm,
+    // with no secret in its environment and a home of its own: the base's package.json and pnpm-workspace.yaml, its
+    // .npmrc moved aside as the pin step moves it, and the registry on the command line.
+    async derive(move) {
+      const [repo, dir, aside, home] = ['derive-repo', 'derive', 'aside', 'home'].map((d) => join(work, d)) as string[];
+      for (const d of [repo, aside, home]) mkdirSync(d as string);
+      await git(repo as string, 'init', '--quiet');
+      await git(
+        repo as string,
+        'fetch',
+        '--quiet',
+        '--depth=1',
+        '--no-tags',
+        options.remote ?? `https://github.com/${options.repo}.git`,
+        options.base,
+      );
+      await git(repo as string, 'worktree', 'add', '--quiet', '--detach', dir as string, options.base);
+      const pnpm = await pinnedPnpm();
+      const env = { PATH: `${dirname(pnpm)}:${process.env.PATH ?? ''}`, HOME: home as string };
+      await writePins(dir as string, move, { pnpm: pnpmIn(env), get: fetch, aside: aside as string });
+      await git(dir as string, 'add', '--all');
+      const changed = await git(dir as string, 'diff', '--cached', '--name-only', '--no-renames', '-z');
+      return Object.fromEntries(
+        changed
+          .split('\0')
+          .filter(Boolean)
+          .map((path) => [path, readFileSync(join(dir as string, path), 'utf-8')]),
+      );
     },
     digest: (reference) => commits.digest(reference),
     runs: options.runs,

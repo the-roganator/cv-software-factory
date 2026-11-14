@@ -7,10 +7,8 @@ import {
   criticalFix,
   dockerfileMoves,
   type Finding,
-  manifestRanges,
   type Scan,
   scansShow,
-  splitKey,
 } from './critical-fix.ts';
 import { scanOf } from './critical-fix-readers.ts';
 import type { Run } from './pin-move-ran.ts';
@@ -22,6 +20,12 @@ import { fixTagsHold } from './review-routing.ts';
  */
 
 const HEAD = 'a'.repeat(40);
+
+/** A lockfile's `name@version` key, split as Trivy reads it: the name may start with `@`. */
+function splitKey(key: string): { name: string; version: string } | undefined {
+  const at = key.lastIndexOf('@');
+  return at > 0 ? { name: key.slice(0, at), version: key.slice(at + 1) } : undefined;
+}
 
 const LOCK = `lockfileVersion: '9.0'
 
@@ -112,10 +116,13 @@ function io(lock: string, over: Partial<CriticalFixIO> = {}): CriticalFixIO {
       throw new Error('no tag');
     },
     runs: async () => passedGates(),
-    // The registry's manifest of the fixed version, and the app's ruleset: what the head cannot write.
-    manifest: async (name, version) =>
-      // A package the registry publishes with nothing it requires, but the fixed version, which requires long.
-      `${name}@${version}` === 'protobufjs@7.6.6' ? { long: '^5.0.0' } : {},
+    // Changed from the read: the registry's manifests are no longer read. The registry's versions, and the pin step's
+    // derivation of the move on the base, which writes the honest fix: what the head cannot write.
+    versions: async (name) => (name === 'protobufjs' ? ['7.6.4', '7.6.5', '7.6.6'] : []),
+    derive: async (move) => {
+      if (`${move.name}@${move.to}` !== 'protobufjs@7.6.6') throw new Error('no such move');
+      return { 'pnpm-lock.yaml': FIXED_LOCK };
+    },
     required: async () => [...Object.keys(APP_GATES), 'review'],
     ...over,
   };
@@ -244,26 +251,28 @@ describe('a Critical fix, read adversarially: these pass today and should be hel
 });
 
 describe('a Critical fix, read adversarially: these are held', () => {
+  // Changed from the read: the reasons the lockfile's own reading gave are gone with it; each is now held as a lockfile
+  // the move does not write.
   it('a dependency added to an importer, moved to devDependencies, or given a peer-less alias', async () => {
     const extra = FIXED_LOCK.replace(
       '      pino:\n',
       '      long:\n        specifier: ^5.3.2\n        version: 5.3.2\n      pino:\n',
     );
-    expect(await said(extra)).toMatch(/importer \. changes more/);
+    expect(await said(extra)).toMatch(/the lockfile is not the one this move writes/);
     const dev = FIXED_LOCK.replace('    dependencies:\n      pino:', '    devDependencies:\n      pino:');
-    expect(await said(dev)).toMatch(/importer|sections/);
+    expect(await said(dev)).toMatch(/the lockfile is not the one this move writes/);
     const importer = FIXED_LOCK.replace(
       'packages:',
       '  tools:\n    dependencies:\n      long:\n        specifier: ^5.3.2\n        version: 5.3.2\n\npackages:',
     );
-    expect(await said(importer)).toMatch(/other importers/);
+    expect(await said(importer)).toMatch(/the lockfile is not the one this move writes/);
     const range = FIXED_LOCK.replace('specifier: ^7.6.4', 'specifier: npm:left-pad-evil@^7.6.4');
-    expect(await said(range)).toMatch(/do not move protobufjs's range alike/);
+    expect(await said(range)).toMatch(/the lockfile is not the one this move writes/);
     const patched = FIXED_LOCK.replace(
       'settings:',
       'patchedDependencies:\n  long@5.3.2:\n    hash: abc\n    path: patches/long.patch\n\nsettings:',
     );
-    expect(await said(patched)).toMatch(/other sections/);
+    expect(await said(patched)).toMatch(/the lockfile is not the one this move writes/);
   });
 
   it('an older second version of the fixed package kept beside the new one', async () => {
@@ -272,18 +281,34 @@ describe('a Critical fix, read adversarially: these are held', () => {
       '  protobufjs@7.6.4:\n    resolution: {integrity: sha512-p764}\n\n  protobufjs@7.6.6:\n    resolution: {integrity: sha512-p766}',
     );
     // Held either way: the old version's snapshot gone, or its finding still there.
-    expect(await said(both)).toMatch(/no Critical fixed|drops protobufjs@7\.6\.4's snapshot/);
+    expect(await said(both)).toMatch(/the lockfile is not the one this move writes/);
   });
 
-  it('package.json: an override, a peer, a version, a registry in publishConfig, written as a range line', () => {
+  // Changed from the read: package.json is no longer read line by line (`manifestRanges` is gone). A change to it the
+  // move does not write is held, whatever its lines look like.
+  it('package.json: an override, a peer, a version, a registry in publishConfig, written as a range line', async () => {
     const before =
       '{\n  "version": "1.0.0",\n  "dependencies": {\n    "a": "1.0.0"\n  },\n  "pnpm": {\n    "overrides": {\n      "a": "1.0.0"\n    }\n  },\n  "peerDependencies": {\n    "a": "1.0.0"\n  }\n}\n';
     for (const [line, now] of [
       ['  "version": "1.0.0"', '  "version": "1.0.1"'],
       ['      "a": "1.0.0"\n    }\n  },', '      "a": "1.0.1"\n    }\n  },'],
       ['"peerDependencies": {\n    "a": "1.0.0"', '"peerDependencies": {\n    "a": "1.0.1"'],
-    ] as const)
-      expect(manifestRanges(before, before.replace(line, now))).toHaveProperty('reason');
+    ] as const) {
+      const after = before.replace(line, now);
+      const result = await criticalFix(
+        io(FIXED_LOCK, {
+          diff: async () => ({
+            raw: ':100644 100644 1111111 2222222 M\tpackage.json\n:100644 100644 1111111 2222222 M\tpnpm-lock.yaml',
+            files: [
+              { path: 'package.json', before, after },
+              { path: 'pnpm-lock.yaml', before: LOCK, after: FIXED_LOCK },
+            ],
+          }),
+        }),
+        HEAD,
+      );
+      expect(result).toHaveProperty('reason');
+    }
   });
 
   it('a Dockerfile FROM with a flag, another registry’s copy of the image, or a stage renamed', () => {

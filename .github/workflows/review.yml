@@ -40,7 +40,9 @@
 # below works it out as the pin move job does, in the app alone, with no secret and read-only permissions (`actions:
 # read` among them, which a caller grants), and hands the gate one answer for each pull request it would judge, which
 # the gate takes only for a pull request of the App's there that carries a dependency's change and is no exact pin. It
-# never builds, installs or runs the change: it reads its lockfile and images as data.
+# never builds, installs or runs the change: it reads its images as data, and writes the lockfile for a package's move
+# itself, the pin step's own derivation on main's tip (apps/runner/src/pins.ts), passing the head's only if it is those
+# bytes. pnpm runs there on the base alone, with no script, no pnpmfile and no secret, given a name and a version.
 #
 # Only main's copy runs with the App's key. `workflow_run` runs the workflow as main has it, with GITHUB_REF main, and
 # the key is in the `review` environment, which only main may use: a run on any other ref, a pull request's merge ref
@@ -186,7 +188,8 @@ jobs:
           version: 2026.10.17
           # The ZAP job's set of tools, so its cache, which toolchain-cache.yml warms on main: never the gate's.
           cache_save: ${{ github.ref == 'refs/heads/main' }}
-          # pnpm for the yaml package the lockfile is read with; Trivy runs in its pinned image through Docker.
+          # pnpm, at the version mise.lock holds, is the runner image's: the one the pin step writes a lockfile with, and
+          # the gate writes one with on the base for a package's move. Trivy runs in its pinned image through Docker.
           install_args: node pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - id: fixes

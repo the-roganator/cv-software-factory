@@ -77,7 +77,9 @@ describe('the files a release changes', () => {
       // own, written for a scratch repository to try it on.
       'scripts/check-kind.sh',
       'scripts/check-kind.test.ts',
-      // The review gate's Critical fix, which reads package.json's dependencies' ranges alone, and its tests.
+      // The review gate's Critical fix, which reads a dependency's range in package.json and has the pin step write it
+      // on the base, and its tests.
+      'scripts/critical-fix-readers.ts',
       'scripts/critical-fix.adversarial.test.ts',
       'scripts/critical-fix.test.ts',
       'scripts/critical-fix.ts',

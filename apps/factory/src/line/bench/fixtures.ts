@@ -453,6 +453,66 @@ const PINO_SIGNALS: Signal[] = [
   },
 ];
 
+/** The pin step's move of pino to 10.4.1, inside the manifest's range, so the lockfile alone moves. */
+const PINO_PIN = `diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -198,7 +198,7 @@ importers:
+         version: 0.300.0(@opentelemetry/api@1.10.0)
+       pino:
+         specifier: ^10.4.0
+-        version: 10.4.0
++        version: 10.4.1
+     devDependencies:
+       '@biomejs/biome':
+         specifier: ^2.6.3
+@@ -1056,8 +1056,8 @@ packages:
+   pino-std-serializers@7.1.0:
+     resolution: {integrity: sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw==}
+ 
+-  pino@10.4.0:
+-    resolution: {integrity: sha512-bk1ZMTwG/Vymx+zPoa28MhNzucFvXJWp3csrSuxuHPSMeUettaCoQ5Jvg07mtC4JGNpcfTwz41oVCnNgBK9+vA==}
++  pino@10.4.1:
++    resolution: {integrity: sha512-c2iSUvm3tEx0hBKjX9yQe4Qx8zP1L5n6f0dRk7Wb3HsJgTmYyNaVuZo4pD2qE8rFj5sGhAk9lCtM1wX7vB0nKw==}
+     hasBin: true
+ 
+   postcss@8.5.32:
+@@ -1909,7 +1909,7 @@ snapshots:
+ 
+   pino-std-serializers@7.1.0: {}
+ 
+-  pino@10.4.0:
++  pino@10.4.1:
+     dependencies:
+       '@pinojs/redact': 0.4.0
+       atomic-sleep: 1.0.0
+`;
+
+/** The planner's spec for the pino move, its criteria quoting the signal's lines as its prompt asks. */
+const PINO_SPEC: PayloadOf<'spec.written'> = {
+  outcome: 'pino moves from 10.4.0 to 10.4.1, which fixes the scan’s two findings with a fix, and every gate passes.',
+  criteria: [
+    {
+      given: 'the change’s lockfile',
+      when: 'the scan gates scan it',
+      expect: 'neither finding the move fixes is found',
+      from: 'signal 1',
+      quote: 'GHSA-9x2c-q4m7-r8vw in pino: high, high by its publisher; fixed in 10.4.1',
+    },
+    {
+      given: 'the change',
+      when: 'every required check runs on it',
+      expect: 'each passes',
+      from: 'signal 1',
+      quote: 'pino (npm) in the-roganator/cv-worlds-worst-website, from 10.4.0 to 10.4.1',
+    },
+  ],
+  scope: ['src/log.ts', 'test/logging.test.ts'],
+  risks: ['dependency-change'],
+  rollout:
+    'A patch release inside the range the manifest asks for: the app’s logging is unchanged, and it ships as it is.',
+};
+
 /** The shop sends neither a Content-Security-Policy nor an X-Frame-Options, and no test asks for either. */
 const HEADERS_SEED = `diff --git a/src/headers.ts b/src/headers.ts
 --- a/src/headers.ts
@@ -2101,6 +2161,29 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
     },
   },
   describer: {
+    'dependency-fix': {
+      about:
+        'the pin step’s move of pino, 10.4.0 to 10.4.1, which the gates and the reviewer passed: the description and the summary name pino, and no version, advisory or count',
+      commit: APP_MAIN,
+      change: { patch: PINO_PIN, message: 'fix(deps): move pino to 10.4.1' },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PINO_TICKET },
+        signals: PINO_SIGNALS,
+        spec: PINO_SPEC,
+        pullRequest: 105,
+        title: 'fix(deps): move pino to 10.4.1',
+        reviews: [
+          {
+            pullRequest: 105,
+            verdict: 'approved',
+            note: 'The lockfile moves pino alone, to the version that fixes both findings, and nothing in the app’s code needed to change.',
+            findings: [],
+          },
+        ],
+        returns: [],
+      },
+    },
     'wrong-price': {
       about: "the coder's fix for the wrong price, which the gates and the reviewer passed in one round",
       commit: APP_MAIN,

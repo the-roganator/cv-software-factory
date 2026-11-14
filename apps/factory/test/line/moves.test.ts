@@ -7,10 +7,24 @@ import { readFileSync } from 'node:fs';
 import type { PayloadOf } from '@software-factory/events';
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
+import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import { moveIssue, moveSection, pinChanges, replacedPull } from '../../src/line/moves.ts';
-import { CODED, database, event, events, handback, justOne, line, PATCH, SPEC, withLineStore } from './harness.ts';
+import {
+  CODED,
+  database,
+  event,
+  events,
+  handback,
+  justOne,
+  line,
+  PATCH,
+  payloads,
+  SPEC,
+  types,
+  withLineStore,
+} from './harness.ts';
 
 withLineStore();
 
@@ -202,6 +216,65 @@ describe('a move’s issue and prompts, while its public views withhold the pack
       return args.body.replace(`#${workItem}`, '#N');
     };
     expect(await opened(true)).toBe(await opened(false));
+  });
+});
+
+describe('a move’s disclosure, as its issue opens', () => {
+  it('records what the issue named in `issue.opened`, before the line goes on to the planner', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    await withholdPublic(workItem);
+    const { pass, github } = line({ planner, coder: () => handback(CODED, PATCH) });
+    await pass();
+    expect(await types(workItem)).toEqual([
+      'work-item.opened',
+      'ticket.opened',
+      'signal.received',
+      'issue.opened',
+      'model.called',
+      'spec.written',
+    ]);
+    const [opened] = await payloads(workItem, 'issue.opened');
+    expect(opened).toEqual({
+      repository: REPO,
+      number: 41,
+      move: {
+        ...MOVE,
+        pins: PINS,
+        findings: [
+          { advisory: 'GHSA-0000-0000-0001', package: 'invented-pkg', severity: { scanner: 'high' }, fixed: '2.0.1' },
+        ],
+      },
+    });
+    // Every name it records is one the issue gave: it records what was disclosed, and no more.
+    const { body } = (github.acts.find((a) => a.action === 'openIssue')?.args ?? { body: '' }) as { body: string };
+    for (const word of [opened?.move?.name, opened?.move?.from, opened?.move?.to, 'GHSA-0000-0000-0001']) {
+      expect(body).toContain(`\`${word}\``);
+    }
+    // Its public view is the event whole: it is the disclosure.
+    const [row] = await database.owner<{ public: { payload: unknown } }[]>`
+      select public from events where work_item = ${workItem} and type = 'issue.opened'`;
+    expect(row?.public.payload).toEqual(opened);
+  });
+
+  it('names the fingerprint’s move alone while triage has joined no signal', async () => {
+    const workItem = await moveTicket();
+    const { pass } = line({ planner });
+    await pass();
+    expect((await payloads(workItem, 'issue.opened'))[0]).toEqual({
+      repository: REPO,
+      number: 41,
+      move: { name: 'invented-pkg', ecosystem: 'npm' },
+    });
+  });
+
+  it('records nothing for a dry run’s issue, which GitHub never had', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, github } = line({ planner });
+    github.issueNumber = DRY_RUN_NUMBERS_FROM;
+    await pass();
+    expect(github.acts.map((a) => a.action)).toContain('openIssue');
+    expect(await types(workItem)).not.toContain('issue.opened');
+    expect(await types(workItem)).toContain('spec.written');
   });
 });
 

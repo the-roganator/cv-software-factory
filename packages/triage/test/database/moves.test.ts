@@ -233,8 +233,25 @@ describe("a move's signal", () => {
     const shown = JSON.stringify(rows.map((r) => r.public));
     expect(shown).not.toContain('left-pad');
     expect(shown).not.toContain('GHSA-aaaa-bbbb-cccc');
-    expect(shown).not.toContain('812');
     expect(shown).toContain('Move a package in `pnpm-lock.yaml`');
+    // A version's digits are in no field that could carry one: an event's id, which is random, may hold any digits.
+    type Shown = {
+      payload: {
+        move?: { from: string; to: string; pins: { line: number }[] };
+        dependency?: { from: string; to: string };
+        evidence?: { kind: string; findings?: object[] }[];
+      };
+    };
+    const payloads = rows.map((r) => (r.public as Shown).payload);
+    const moved = payloads.flatMap((p) => (p.move ? [p.move] : []));
+    expect(moved.length).toBeGreaterThan(0);
+    for (const m of moved) expect([m.from, m.to, ...m.pins.map((pin) => pin.line)]).toEqual(['', '', 0]);
+    for (const d of payloads.flatMap((p) => (p.dependency ? [p.dependency] : []))) {
+      expect([d.from, d.to]).toEqual(['', '']);
+    }
+    const findings = payloads.flatMap((p) => p.evidence?.flatMap((e) => e.findings ?? []) ?? []);
+    expect(findings.length).toBeGreaterThan(0);
+    for (const f of findings) expect(Object.keys(f)).not.toContain('fixed');
     // The public view is the event's own, made once at the append: the same as the view of its payload now.
     const [ticket] = await writer<{ payload: PayloadOf<'ticket.opened'>; public: { payload: object } }[]>`
       select payload, public from events where work_item = ${item} and type = 'ticket.opened'`;

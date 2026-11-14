@@ -416,6 +416,7 @@ describe('the line', () => {
     expect(await types(workItem)).toEqual([
       'work-item.opened',
       'ticket.opened',
+      'issue.opened',
       'model.called',
       'spec.written',
       'model.called',
@@ -1216,6 +1217,7 @@ describe('the line', () => {
     expect(await types(workItem)).toEqual([
       'work-item.opened',
       'ticket.opened',
+      'issue.opened',
       'model.called',
       'model.called',
       'hold.started',
@@ -1706,6 +1708,7 @@ describe('the line', () => {
     expect(await types(workItem)).toEqual([
       'work-item.opened',
       'ticket.opened',
+      'issue.opened',
       'model.called',
       'spec.written',
       'model.called',
@@ -1819,6 +1822,8 @@ describe('the line', () => {
       expect(describer).toMatchObject({ commit: MAIN, base: MAIN });
       expect(describer?.commits?.map((c) => c.patch)).toEqual([PATCH, expect.stringContaining('+newer')]);
       expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ kind: 'approval', cause: 'merge' });
+      // Its issue is the dry run's, which GitHub never had: nothing was disclosed, so nothing records it.
+      expect(await types(workItem)).not.toContain('issue.opened');
 
       clock.now += mergeAfterMs;
       await pass(); // the dry run merges it, and the work item waits at Release for the dry run's release, not held
@@ -1897,7 +1902,7 @@ describe('the line', () => {
     await pass(); // capped: nothing starts
     expect(steps.requests).toHaveLength(1);
     // The calls it made are recorded; nothing holds it.
-    expect(await types(workItem)).toEqual(['work-item.opened', 'ticket.opened', 'model.called']);
+    expect(await types(workItem)).toEqual(['work-item.opened', 'ticket.opened', 'issue.opened', 'model.called']);
     const failures = async () =>
       (await database.as.line<{ failures: number }[]>`select failures from line where work_item = ${workItem}`)[0]
         ?.failures;
@@ -1993,7 +1998,7 @@ describe('the line', () => {
     const unfinished = { ...handback({ verdict: 'spec', spec: SPEC }), ending: 'max-turns' as const };
     const { pass, steps } = line({ ...AGENTS, planner: () => unfinished });
     await pass();
-    expect(await types(workItem)).toEqual(['work-item.opened', 'ticket.opened', 'model.called']);
+    expect(await types(workItem)).toEqual(['work-item.opened', 'ticket.opened', 'issue.opened', 'model.called']);
     expect(await failures(workItem)).toEqual({ failures: 1, failure: 'The planner ran out of turns' });
     await pass();
     expect(steps.requests.map((r) => r.attempt)).toEqual([1, 2]);
@@ -2023,6 +2028,7 @@ describe('the line', () => {
     expect(await types(workItem)).toEqual([
       'work-item.opened',
       'ticket.opened',
+      'issue.opened',
       'model.called',
       'spec.written',
       'model.called',

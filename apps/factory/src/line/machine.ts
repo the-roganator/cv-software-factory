@@ -156,6 +156,7 @@ type Payloads = {
     | 'ticket.opened'
     | 'ticket.rated'
     | 'improvement.requested'
+    | 'issue.opened'
     | 'spec.written'
     | 'pull-request.pushed'
     | 'suggestions.answered'

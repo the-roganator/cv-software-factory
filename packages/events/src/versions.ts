@@ -21,6 +21,7 @@ export const VERSIONS = {
   'ticket.opened': 3,
   'ticket.rated': 1,
   // Plan and build
+  'issue.opened': 1,
   'spec.written': 5,
   'pull-request.pushed': 3,
   'suggestions.answered': 1,

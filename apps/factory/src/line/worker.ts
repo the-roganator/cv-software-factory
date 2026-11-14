@@ -211,7 +211,7 @@ import {
   zeroCounts,
 } from './metrics.ts';
 import { stepCalls, workItemSpend } from './model-calls.ts';
-import { type GateCounts, moveIssue } from './moves.ts';
+import { type DisclosedMove, disclosedMove, type GateCounts, moveIssue } from './moves.ts';
 import { type Own, pagesFor } from './pictures.ts';
 import { type Pending, Queue, type QueueItem, type Takes, takesOf } from './queue.ts';
 import { type Carried, carried, Releases, type ReleaseWatchOptions } from './release.ts';
@@ -951,9 +951,22 @@ export class Line {
     const { workItem } = item;
     switch (next.do) {
       case 'open-issue': {
-        const issue = state.request
-          ? await this.#openImprovementIssue(workItem)
+        const { number: issue, move } = state.request
+          ? { number: await this.#openImprovementIssue(workItem), move: undefined }
           : await this.#openIssue(workItem, state);
+        // The issue is the disclosure: recorded before the row names it, so a crash in between opens another and
+        // records that, never an issue the store does not know. A dry run's, which GitHub never had, records nothing;
+        // the line running live opens a real one, and records that.
+        if (issue < DRY_RUN_NUMBERS_FROM) {
+          await this.#append(workItem, [
+            {
+              type: 'issue.opened',
+              actor: 'factory',
+              summary: `Opened issue #${issue} in ${this.#o.repo}`,
+              payload: { repository: this.#o.repo, number: issue, ...(move && { move }) },
+            },
+          ]);
+        }
         await this.#queue.setIssue(workItem, issue);
         this.#o.log.info({ workItem, issue }, 'opened the work item’s issue');
         return;
@@ -2061,13 +2074,14 @@ export class Line {
    * payload and its newest signal's scan (`moveIssue`), since the issue is where its package and advisories first
    * become public.
    */
-  async #openIssue(workItem: string, state: WorkItemState): Promise<number> {
+  async #openIssue(workItem: string, state: WorkItemState): Promise<{ number: number; move?: DisclosedMove }> {
     const ticket = await this.#publicTicket(workItem, state);
     const own = state.ticket;
     if (own && 'ecosystem' in own.fingerprint) {
       const signal = (await this.#signals(workItem)).findLast((each) => each.sense === 'dependency');
       const issue = moveIssue(workItem, own, ticket, signal);
-      return this.#o.github.act('openIssue', this.#o.repo, issue, { workItem });
+      const number = await this.#o.github.act('openIssue', this.#o.repo, issue, { workItem });
+      return { number, move: disclosedMove(own.fingerprint, signal) };
     }
     const where =
       'class' in ticket.fingerprint
@@ -2087,7 +2101,7 @@ export class Line {
       '',
       'The factory is working on it: its fix will come as a pull request that refers here. The issue closes when the fix is verified in production.',
     ].join('\n');
-    return this.#o.github.act('openIssue', this.#o.repo, { title: ticket.title, body }, { workItem });
+    return { number: await this.#o.github.act('openIssue', this.#o.repo, { title: ticket.title, body }, { workItem }) };
   }
 
   /**

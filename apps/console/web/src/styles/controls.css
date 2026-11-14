@@ -212,7 +212,10 @@ button.pill.fresh:disabled {
   background: var(--surface);
 }
 
-/* The bottom row: Needs you on the left, and Controls, Flags and Spend one above the other on the right, under the reel. */
+/*
+ * The bottom row: Needs you on the left, and Controls, Flags, the summaries of Patching and Guardrails, and Spend one
+ * above the other on the right, under the reel.
+ */
 .bottom {
   display: grid;
   grid-template-columns: 1fr 1fr;

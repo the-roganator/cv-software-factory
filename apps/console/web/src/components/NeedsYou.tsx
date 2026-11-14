@@ -20,7 +20,7 @@
  *
  * A move that waits on Martin has a card among them (`PatchCard`): a pin the review gate holds for his approval, one
  * only his cluster's own command applies, one no pull request of the App's can write, or what the sense found running
- * that nothing scanned. It names the move, what it clears and when it is due, and opens its row in the Patching panel,
+ * that nothing scanned. It names the move, what it clears and when it is due, and opens Patching's sheet at its row,
  * where the rest of it is: a move is not a work item.
  *
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
@@ -34,7 +34,6 @@ import type { Admin } from '../admin.ts';
 import { clock, count, inWords, shortVersion, when } from '../format.ts';
 import { previewHref } from '../profile.ts';
 import {
-  askRow,
   type CanaryNeed,
   dueWords,
   type FlagNeed,
@@ -44,7 +43,6 @@ import {
   type Move,
   type Need,
   type NeedsView,
-  OPEN_ROW,
   type PatchNeed,
   SAMPLE_PULL,
   STAGE_NAME,
@@ -570,7 +568,17 @@ const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: strin
  * A move that waits on Martin: what it is and why it waits, from the sense's day, and the way to its row in Patching,
  * which holds its pins, what it clears in full, and what to do. The same for a visitor, who reads who moves it.
  */
-function PatchCard({ need, now, martin }: { need: PatchNeed; now: number; martin: boolean }) {
+function PatchCard({
+  need,
+  now,
+  martin,
+  onRow,
+}: {
+  need: PatchNeed;
+  now: number;
+  martin: boolean;
+  onRow: (key: string) => void;
+}) {
   const id = useId();
   const his = (words: string) => words.replace('{his}', martin ? 'your' : 'Martin’s');
   const [whose, title, why] = PATCH_WORDS[need.kind];
@@ -594,14 +602,7 @@ function PatchCard({ need, now, martin }: { need: PatchNeed; now: number; martin
       {(need.runs || need.to) && <p className="words">{need.runs ? need.runs.image : `${need.from} → ${need.to}`}</p>}
       {need.deadline !== undefined && <p className="help">Left as it is, the scan fails from {when(need.deadline)}.</p>}
       <div className="need-foot">
-        <button
-          type="button"
-          className="linkish"
-          onClick={() => {
-            askRow(need.key);
-            window.dispatchEvent(new CustomEvent(OPEN_ROW, { detail: need.key }));
-          }}
-        >
+        <button type="button" className="linkish" onClick={() => onRow(need.key)}>
           Open its row in Patching
         </button>
         {!martin && <span>Martin moves it, on GitHub or his cluster</span>}
@@ -749,11 +750,13 @@ interface NeedsYouProps {
   /** The time the view is at, which a move's deadline is said from. */
   now: number;
   onOpen: (item: string) => void;
+  /** Opens Patching's sheet at a move's row, by its key. */
+  onRow: (key: string) => void;
   /** A flag was moved: the page asks again soon whether the app holds it. */
   onMoved: () => void;
 }
 
-export function NeedsYou({ needs, flags, admin, app, now, onOpen, onMoved }: NeedsYouProps) {
+export function NeedsYou({ needs, flags, admin, app, now, onOpen, onRow, onMoved }: NeedsYouProps) {
   const martin = admin.kind === 'martin';
   const { holds, canary, patches, answered } = needs;
   // A deploy that is not his to merge yet keeps its card, but does not wait on him.
@@ -777,7 +780,7 @@ export function NeedsYou({ needs, flags, admin, app, now, onOpen, onMoved }: Nee
         <div className="needs-list">
           {cards.map(({ key, hold, flag, canary, patch }) =>
             patch ? (
-              <PatchCard key={key} need={patch} now={now} martin={martin} />
+              <PatchCard key={key} need={patch} now={now} martin={martin} onRow={onRow} />
             ) : canary ? (
               <CanaryCard key={key} need={canary} admin={admin} onOpen={onOpen} />
             ) : flag ? (

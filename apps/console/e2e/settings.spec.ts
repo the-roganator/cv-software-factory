@@ -181,7 +181,7 @@ test('the Spend panel shows the spend against today’s caps, for everyone, with
 });
 
 for (const [width, viewport] of Object.entries(WIDTHS)) {
-  test(`the bottom row on ${width}: Needs you, then Controls, Flags and Spend one above the other`, async ({
+  test(`the bottom row on ${width}: Needs you, then Controls, Flags, Patching, Guardrails and Spend one above the other`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
@@ -193,22 +193,28 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       if (!found) throw new Error(`no ${name}`);
       return found;
     };
-    const [needs, controls, flags, spend] = await Promise.all([
+    const [needs, controls, flags, patching, guardrails, spend] = await Promise.all([
       box('Needs you'),
       box('Controls'),
       box('Flags'),
+      box('Patching'),
+      box('Guardrails'),
       box('Spend'),
     ]);
-    // In order, each under the one before.
-    expect(flags.y).toBeGreaterThan(controls.y + controls.height);
-    expect(spend.y).toBeGreaterThan(flags.y + flags.height);
-    for (const panel of [flags, spend]) expect(panel.x).toBe(controls.x);
+    // In order, each under the one before, and as wide.
+    const column = [controls, flags, patching, guardrails, spend];
+    for (const [above, below] of column.slice(0, -1).map((panel, i) => [panel, column[i + 1]] as const)) {
+      if (!below) continue;
+      expect(below.y).toBeGreaterThan(above.y + above.height);
+      expect(below.x).toBe(controls.x);
+      expect(below.width).toBe(controls.width);
+    }
     if (width === 'phone') {
       // One column: Needs you above them all, as wide as they are.
       expect(controls.y).toBeGreaterThan(needs.y + needs.height);
       expect(controls.x).toBe(needs.x);
     } else {
-      // Two columns: Needs you on the left, the three on the right, from the top of the row.
+      // Two columns: Needs you on the left, the five on the right, from the top of the row.
       expect(controls.x).toBeGreaterThan(needs.x + needs.width);
       expect(controls.y).toBe(needs.y);
     }

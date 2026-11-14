@@ -2,20 +2,21 @@
  * Patching, as a pure function of the events and a time: the dependency sense's last `patching.read` by t, which only
  * its role may append (`PATCHING_ONLY_TYPES`), and the line's work items, which carry an app's move down the line. One
  * row for each move and each row the sense made of what the cluster runs, what waits on Martin first, then by earliest
- * deadline, then those with none; the day's scan in a line; and four figures for the findings no row can clear.
+ * deadline, then those with none; the day's scan in a line; every open finding and what the moves clear, by severity;
+ * and four figures for the findings no row can clear.
  *
  * It says only what the events say. A move nobody has opened a pull request for reads as who moves it; the states a pull
  * request of the factory's own goes through (checks running, in the merge queue, merged and running) arrive with the
  * pin watch's events, and nothing here draws them before then.
  *
- * The Patching panel's chunk carries it, so the first view carries none of it: plain TypeScript, which Node tests
- * directly.
+ * Patching's summary and its sheet read it, in chunks the first view does not carry: plain TypeScript, which Node
+ * tests directly.
  */
 import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-factory/events';
 import type { ItemState } from './items.ts';
 import { DAY, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
 
-export { dueSoon, dueWords, OPEN_ROW, PATCHING_ROLE, takeAskedRow, targetWords } from './patch-needs.ts';
+export { dueSoon, dueWords, PATCHING_ROLE, targetWords } from './patch-needs.ts';
 
 /** The sense's last day by t, from its own role. */
 export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent<'patching.read'> | undefined {
@@ -138,6 +139,14 @@ export type PatchingView =
        */
       nothing: 'unjudged' | 'failed' | 'cleared' | undefined;
       figures: { noFix: number; cleared: number; excepted: number; overdue: number; clearingMoves: number };
+      /**
+       * Every open finding by severity, both repositories' together, as the scan counts them: those a move clears and
+       * those with no fix yet, not those excepted. Undefined when either repository's day lacks it, a scan made before
+       * it counted them: nothing here works it out from anything else.
+       */
+      open: Counts | undefined;
+      /** What the moves clear, by severity: the sum of their rows' counts. */
+      clears: Counts;
       /** Whether the cluster was compared with the lists, and how many containers. */
       compared: boolean;
       containers: number;
@@ -280,6 +289,35 @@ export function ordered(rows: readonly PatchingRow[]): PatchingRow[] {
     .map(({ row }) => row);
 }
 
+const NONE: Counts = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+const plus = (a: Counts, b: Counts): Counts => ({
+  critical: a.critical + b.critical,
+  high: a.high + b.high,
+  medium: a.medium + b.medium,
+  low: a.low + b.low,
+  unknown: a.unknown + b.unknown,
+});
+
+/** Every open finding, both repositories' together, or undefined if either's day did not count them. */
+function openOf(repositories: readonly Repository[]): Counts | undefined {
+  let open = NONE;
+  for (const r of repositories) {
+    const counted = r.totals?.open;
+    if (!counted) return undefined;
+    open = plus(open, counted);
+  }
+  return open;
+}
+
+/** The row whose deadline comes first, met or past: what the summary names as next due. */
+export function nextDue(rows: readonly PatchingRow[]): PatchingRow | undefined {
+  let first: PatchingRow | undefined;
+  for (const row of rows) {
+    if (row.deadline !== undefined && (first?.deadline === undefined || row.deadline < first.deadline)) first = row;
+  }
+  return first;
+}
+
 const sum = (repositories: readonly Repository[], field: 'noFix' | 'excepted' | 'overdue' | 'dueWithinDay') =>
   repositories.reduce((n, r) => n + (r.totals?.[field] ?? 0), 0);
 
@@ -351,6 +389,8 @@ export function dayView(day: Day, at: number, items: readonly ItemState[]): Patc
       overdue: sum(day.repositories, 'overdue'),
       clearingMoves: clearing.length,
     },
+    open: openOf(day.repositories),
+    clears: moves.reduce((n, row) => (row.clears ? plus(n, row.clears) : n), NONE),
     compared: day.compared,
     containers: day.containers,
   };

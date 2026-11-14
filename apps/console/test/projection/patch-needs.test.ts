@@ -2,7 +2,7 @@ import type { PayloadOf, PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { foldItems } from '../../web/src/projection/items.ts';
 import { needsView } from '../../web/src/projection/needs.ts';
-import { askRow, PATCHING_ROLE, patchNeeds, takeAskedRow } from '../../web/src/projection/patch-needs.ts';
+import { PATCHING_ROLE, patchNeeds } from '../../web/src/projection/patch-needs.ts';
 import { patchingView } from '../../web/src/projection/patching.ts';
 import { END, SAMPLES } from './support.ts';
 
@@ -39,7 +39,7 @@ describe('Needs you’s moves, projected from the samples', () => {
     ]);
   });
 
-  it('keys each card as the Patching panel keys its row, so the card opens that row', () => {
+  it('keys each card as Patching’s sheet keys its row, so the card opens that row', () => {
     const keys = patchingView(SAMPLES, foldItems(SAMPLES), END);
     if (keys.state !== 'read') throw new Error('no day read');
     const waiting = keys.rows.filter((row) => row.waits).map((row) => row.key);
@@ -149,13 +149,6 @@ describe('Needs you’s moves, over the days', () => {
       readAt('2026-10-05T04:20:00.000Z', oneJudged),
     ]);
     expect(cleared.map((need) => need.name)).toEqual(['example/debug-shell:1.4']);
-  });
-
-  it('keeps the row a card asks for until the panel takes it, so a click before the panel listens is not lost', () => {
-    askRow('a key');
-    askRow('the-roganator/cv-software-factory k3s');
-    expect(takeAskedRow()).toBe('the-roganator/cv-software-factory k3s');
-    expect(takeAskedRow()).toBeUndefined();
   });
 
   it('reads only the sense’s own role, and has nothing before its first day', () => {

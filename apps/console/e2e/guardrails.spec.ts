@@ -1,5 +1,7 @@
 /**
- * Guardrails (milestone 7, tasks 22 and 23): the checklist's head and rows, one row open at a time in place, a guardrail
+ * Guardrails (milestone 7, tasks 22 and 23): its summary in the bottom row, how many hold, the eleven as a strip, the
+ * last proof and the last attack, opening its sheet, as Controls' line on the guardrails does; and in the sheet the
+ * checklist's head and rows, one row open at a time in place, a guardrail
  * that did not hold and why, each guardrail's refusals in the last seven days, and each attack in its guardrail's row. Against the samples, as the cluster is now: no attack can
  * be launched (`policy/attacks.ts`): every one is, and the samples launch none, so each card says it has not been
  * launched yet, with Launch for Martin and a label for a visitor.
@@ -16,33 +18,209 @@ import { ATTACKS_END, adminService, attacksAvailable, attacksUrl, consoleUrl, ex
 /** After the attacks' one in flight has passed its limit, unfinished: every Launch is free again. */
 const AFTER_LIMIT = ATTACKS_END + 15 * 60_000;
 
+const summary = (page: Page) => page.locator('#guardrails-summary');
+const sheet = (page: Page) => page.getByRole('dialog', { name: 'Guardrails' });
 const panel = (page: Page) => page.locator('#guardrails');
 const rowButton = (page: Page, n: number) =>
   panel(page)
     .locator('.gr > button')
     .filter({ has: page.locator(`.n:text-is("${n}")`) });
 
-/** The samples' checklist. */
+/** The samples' checklist, in its sheet, opened from its summary. */
 async function guardrails(page: Page) {
   await page.goto(consoleUrl());
   await ready(page);
-  await panel(page).scrollIntoViewIfNeeded();
+  await summary(page).getByRole('button', { name: 'All eleven guardrails' }).click();
+  await panel(page).waitFor();
 }
 
-/** The attacks' test data's checklist, every attack available, at their last moment or another. */
+/** The attacks' test data's checklist, every attack available, at their last moment or another, in its sheet. */
 async function attacks(page: Page, at?: number) {
   await attacksAvailable(page);
-  await page.goto(attacksUrl({ at }));
-  await ready(page);
-  await panel(page).scrollIntoViewIfNeeded();
+  await page.goto(`${attacksUrl({ at })}&sheet=guardrails`);
+  await panel(page).waitFor();
 }
+
+test('the summary says how many hold, the eleven as one picture, the last proof and attack, and why it needs Martin', async ({
+  page,
+}) => {
+  await page.goto(consoleUrl());
+  await ready(page);
+  const card = summary(page);
+  await expect(card.getByRole('heading', { level: 2 })).toHaveText('Guardrails');
+  await expect(card.locator('.panel-head .label')).toHaveText('9 held · 1 did not · 1 not proved yet');
+  await expect(card.locator('.panel-head .label')).toHaveClass(/tone-attn/);
+  // A guardrail that did not hold is the one reason it needs Martin: Needs you's rule, and its line in attn.
+  await expect(card).toHaveClass(/\battn\b/);
+  const strip = card.getByRole('img');
+  await expect(strip).toHaveAccessibleName(/^The eleven, in order: 1 held, 2 held, .*5 did not hold, .*not proved/);
+  await expect(strip.locator('> span')).toHaveCount(11);
+  await expect(strip.locator('> span.is-attn')).toHaveText(['5']);
+  const lines = card.locator('.sum-lines li');
+  await expect(lines.first()).toHaveClass(/tone-attn/);
+  await expect(lines.first()).toContainText('5 did not hold');
+  await expect(lines.first()).toContainText('Agent sandboxes are disposable and fenced. Martin was paged.');
+  await expect(lines.nth(1)).toContainText(/^Last proved .+ · make guardrails proves the rest$/);
+  await expect(lines.nth(2)).toHaveText('No attack launched yet');
+
+  const scan = await new AxeBuilder({ page })
+    .include('#guardrails-summary')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+  expect(scan.violations).toEqual([]);
+
+  // Controls' line on the guardrails opens the same sheet, and focus comes back to it.
+  const link = page.getByRole('article', { name: 'Controls' }).getByRole('button', { name: 'Guardrails' });
+  await link.click();
+  await expect(sheet(page)).toBeVisible();
+  await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText(
+    '9 held · 1 did not · 1 not proved yet · Read only',
+  );
+  await page.keyboard.press('Escape');
+  await expect(sheet(page)).toHaveCount(0);
+  await expect(link).toBeFocused();
+});
+
+test('with attacks run, the summary says the last attack, and Martin reads that he was paged', async ({ page }) => {
+  await adminService(page, 'martin', [], 'attacks');
+  await attacksAvailable(page);
+  await page.goto(attacksUrl());
+  await ready(page);
+  const lines = summary(page).locator('.sum-lines li');
+  await expect(lines.first()).toContainText('You were paged.');
+  await expect(lines.last()).toHaveText('An attack is running: Shipping an image it built itself');
+});
+
+test('a work item’s link hands the sheet over with no gap, while the work item’s code is still on its way', async ({
+  page,
+}) => {
+  // The work item's sheet's code, slow to come.
+  await page.route('**/assets/Sheet-*.js', async (route) => {
+    await new Promise((done) => setTimeout(done, 800));
+    await route.continue();
+  });
+  await page.goto(`${consoleUrl()}&open=7`);
+  await expect(sheet(page)).toBeVisible();
+  // From here on, any moment with no sheet, or with the page behind it free to scroll, is recorded.
+  await page.evaluate(() => {
+    const scope = globalThis as unknown as { sfGap: boolean };
+    scope.sfGap = false;
+    const look = () => {
+      if (!document.body.classList.contains('locked') || !document.querySelector('[role="dialog"]')) scope.sfGap = true;
+    };
+    new MutationObserver(look).observe(document.body, { subtree: true, childList: true, attributes: true });
+  });
+  await panel(page).locator('.more .reflist').getByRole('button', { name: '#1319' }).click();
+  // The checklist stays while the work item's code comes, then the work item's sheet takes its place.
+  await expect(sheet(page)).toBeVisible();
+  await expect(page.getByRole('dialog', { name: /The wishlist empties itself/ })).toBeVisible();
+  await expect(sheet(page)).toHaveCount(0);
+  expect(await page.evaluate(() => (globalThis as unknown as { sfGap: boolean }).sfGap)).toBe(false);
+});
+
+test('a close the checklist started does not close the work item’s sheet that took its place', async ({ page }) => {
+  // With motion, a close waits for the sheet to sink before it ends.
+  await page.goto(`${consoleUrl({ motion: true })}&open=7`);
+  await expect(sheet(page)).toBeVisible();
+  // The work item's code first, so the handover is at once.
+  await page.locator('#guardrails .more .reflist').getByRole('button', { name: '#1319' }).click();
+  const item = page.getByRole('dialog', { name: /The wishlist empties itself/ });
+  await expect(item).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await summary(page).getByRole('button', { name: 'All eleven guardrails' }).click();
+  await rowButton(page, 7).click();
+  // Escape starts the checklist's close, and the work item's link is pressed before it has sunk.
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    [...document.querySelectorAll<HTMLButtonElement>('#guardrails .reflist button')]
+      .find((button) => button.textContent === '#1319')
+      ?.click();
+  });
+  await expect(item).toBeVisible();
+  // Well past the close's 420 ms, the work item's sheet is still open.
+  await page.waitForTimeout(1000);
+  await expect(item).toBeVisible();
+});
+
+test('closing the checklist while the work item’s code is on its way closes it, and nothing opens after', async ({
+  page,
+}) => {
+  await page.route('**/assets/Sheet-*.js', async (route) => {
+    await new Promise((done) => setTimeout(done, 1000));
+    await route.continue();
+  });
+  await page.goto(`${consoleUrl()}&open=7`);
+  await panel(page).locator('.more .reflist').getByRole('button', { name: '#1319' }).click();
+  // Still the checklist while the work item's code comes; Escape closes it.
+  await expect(sheet(page)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  // Well after the code has come, nothing has opened, and the page scrolls again.
+  await page.waitForTimeout(2000);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/locked/);
+});
+
+test('a work item’s sheet whose code never comes takes the checklist away, and its notice has focus and Escape', async ({
+  page,
+}) => {
+  await page.route('**/assets/Sheet-*.js', (route) => route.fulfill({ status: 404 }));
+  await page.goto(`${consoleUrl()}&open=7`);
+  await panel(page).locator('.more .reflist').getByRole('button', { name: '#1319' }).click();
+  const notice = page.locator('.notice.over');
+  await expect(notice).toContainText('The work item’s sheet couldn’t be shown.');
+  // No sheet over it holding focus: the page is free, and the notice's Close has focus.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/locked/);
+  await expect(notice.getByRole('button', { name: 'Close' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(notice).toHaveCount(0);
+});
+
+test('a work item’s sheet stepped to while its close is under way is risen, and the page stays behind it', async ({
+  page,
+}) => {
+  // With motion, a close waits for the sheet to sink before it ends.
+  await page.goto(`${consoleUrl({ motion: true, item: '1319', sheet: true })}`);
+  const item = page.getByRole('dialog', { name: /The wishlist empties itself/ });
+  await expect(item).toBeVisible();
+  await expect(page.locator('.sheet.open')).toHaveCount(1);
+  // Escape starts its close, and Previous is pressed before it has sunk.
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    dialog?.querySelector<HTMLButtonElement>('[aria-label="Previous work item"]')?.click();
+  });
+  // Well past the close's 420 ms, the work item before it is open, risen and in view, with the page held behind it.
+  await page.waitForTimeout(1000);
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(item).toHaveCount(0);
+  await expect(page.locator('.sheet.open')).toHaveCount(1);
+  await expect(page.locator('.sheet.open')).toBeInViewport();
+  await expect(page.locator('body')).toHaveClass(/locked/);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/locked/);
+});
+
+test('the address opens the sheet at a guardrail: opened, scrolled to and focused', async ({ page }) => {
+  await page.goto(`${consoleUrl()}&open=9`);
+  await expect(sheet(page)).toBeVisible();
+  await expect(rowButton(page, 9)).toHaveAttribute('aria-expanded', 'true');
+  await expect(rowButton(page, 9)).toBeFocused();
+  await expect(rowButton(page, 9)).toBeInViewport();
+});
 
 test('a visitor reads the checklist: how many hold, one row open at a time, and why one did not hold', async ({
   page,
 }) => {
   await guardrails(page);
-  await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('Guardrails');
-  await expect(panel(page).locator('.panel-head .label')).toHaveText('9 held · 1 did not · 1 not proved yet');
+  await expect(sheet(page).getByRole('heading', { level: 2 })).toHaveText('Guardrails');
+  await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText(
+    '9 held · 1 did not · 1 not proved yet · Read only',
+  );
   await expect(panel(page).locator('.gr > button .name')).toHaveCount(11);
   await expect(panel(page).locator('.gr.failed .name')).toHaveText(['Agent sandboxes are disposable and fenced']);
 
@@ -109,9 +287,14 @@ test('a visitor reads each guardrail’s refusals in the week, checked by the se
   await expect(details().locator('.label').filter({ hasText: 'Refusals' })).toHaveText('Refusals · 7 days · 3');
   await expect(lines().locator('.mech')).toHaveText('gateway');
   await expect(lines()).toContainText('A model call by the coder agent, the work item’s cap · 3 times');
+  // It opens in the sheet's place; closed, the page is back, and the summary opens the checklist again.
   await lines().getByRole('button', { name: '#1319' }).click();
   await expect(page.getByRole('dialog', { name: /The wishlist empties itself/ })).toBeVisible();
+  await expect(sheet(page)).toHaveCount(0);
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(summary(page).getByRole('button', { name: 'All eleven guardrails' })).toBeFocused();
+  await summary(page).getByRole('button', { name: 'All eleven guardrails' }).click();
 
   // Guardrail 6: nothing refused this week.
   await rowButton(page, 6).click();
@@ -177,13 +360,14 @@ for (const as of ['martin', 'visitor'] as const) {
         await expect(attack.locator('.ro')).toHaveText('Launch');
       }
     }
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    // No attack's dialog opened: the one dialog is the sheet.
+    await expect(page.locator('dialog')).toHaveCount(0);
   });
 }
 
 test('with attacks run, a visitor reads each one’s last run in its guardrail’s row', async ({ page }) => {
   await attacks(page);
-  await expect(panel(page).locator('.panel-head .label')).toHaveText('10 held · 1 did not');
+  await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText('10 held · 1 did not · Read only');
   await rowButton(page, 5).click();
   const details = panel(page).locator('.more');
   await expect(details.locator('p.attn')).toContainText('Attack #1333 was not refused: something it tried got through');
@@ -274,5 +458,5 @@ test('the service’s refusal of an attack not available is said in its words', 
   await dialog.getByRole('button', { name: 'Launch' }).click();
   // A 403 that is not the passkey's asks for no passkey: it is said, and the dialog stays.
   await expect(dialog.getByRole('alert')).toHaveText('This attack is not available yet.');
-  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(page.locator('dialog')).toHaveCount(1);
 });

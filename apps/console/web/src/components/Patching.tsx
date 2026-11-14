@@ -1,55 +1,50 @@
 /**
- * Patching: what must move, and who moves it, full width above Guardrails, for everyone (the design system's README,
- * "Patching"). One row for each move of a pin the daily scan found a fix for, in either repository, and each row the
+ * Patching's sheet: what must move, and who moves it, whole, for everyone (the design system's README, "Patching"),
+ * opened from its summary in the bottom row (`Summaries.tsx`), or at a row by a card in Needs you or the address
+ * (`?move=`). One row for each move of a pin the daily scan found a fix for, in either repository, and each row the
  * dependency sense made of what the cluster runs: what waits on Martin first, then by deadline. A row is Guardrails'
  * row with more columns, opening in place, one at a time: its state as a glyph and a word, what moves and where its
  * pin is, from and to, what it clears by severity, its deadline and who moves it. Above the rows, the day's scan in a
- * line; under them, four figures for the findings no row can clear.
+ * line; the Clears column under the headers C, H, M and L, and All open under the rows as its total; under them, four
+ * figures for the findings no row can clear.
  *
- * It is a chunk of its own, with its stylesheet and its projection (`projection/patching.ts`), which the console loads
- * once the first view has shown, as it does the bottom row's and Guardrails', and draws under the bottom row once that
- * has drawn: the first view carries none of it. The view is worked out here, from the events, and kept while what it
- * reads is the same, so an event that changes nothing here renders nothing here.
+ * It is a chunk of its own, with its stylesheet, which the console loads when the sheet first opens: neither the first
+ * view nor the summary carries it. The view is the summary's, worked out once for both (`patching-view.ts`), kept while
+ * what it reads is the same, so an event that changes nothing here renders nothing here.
  *
  * A visitor reads all of it, read-only, with "Martin" for "you", no link into code scanning, and a lockfile's package
  * withheld until its pull request is open, as the public view withholds it.
  */
-import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useId, useRef, useState } from 'react';
 import type { Admin } from '../admin.ts';
-import { clock, count, dayLabel, plural, startOfDay, when } from '../format.ts';
-import { foldOf, type View } from '../projection/index.ts';
-import type { ItemState } from '../projection/items.ts';
+import { clock, count, plural, when } from '../format.ts';
+import type { View } from '../projection/index.ts';
 import {
   APP_REPOSITORY,
-  type Counts,
-  dayView,
   dueSoon,
   dueWords,
-  lastRead,
   type MoveState,
-  OPEN_ROW,
   type PatchingRow,
   type PatchingView,
   pinText,
-  takeAskedRow,
   total,
 } from '../projection/patching.ts';
 import { renders } from '../renders.ts';
+import { CountsHead, SeverityCounts, severityWords } from './Counts.tsx';
 import { Glyph, type GlyphName } from './Glyph.tsx';
+import { movesWords, onDay, runningWords, waitWords, you } from './panel-words.ts';
+import { patchingNow } from './patching-view.ts';
+import { bringIntoSheet, SheetFrame } from './SheetFrame.tsx';
 import '../styles/patching.css';
 
 const FACTORY = 'https://github.com/the-roganator/cv-software-factory';
 const repoUrl = (repository: string | undefined) =>
   `https://github.com/${repository ?? 'the-roganator/cv-software-factory'}`;
 
-/** The row a link opened (`?move=`), as the mockup's: which move to show opened, by its key. */
-const asked = new URLSearchParams(location.search).get('move') ?? undefined;
-
 /** Who a word names: Martin, signed in, reads "you"; everyone else reads "Martin". */
 interface Who {
   martin: boolean;
 }
-const you = ({ martin }: Who) => (martin ? 'you' : 'Martin');
 const your = ({ martin }: Who) => (martin ? 'Your' : 'Martin’s');
 const yours = ({ martin }: Who) => (martin ? 'your' : 'Martin’s');
 
@@ -79,7 +74,7 @@ function reads(row: PatchingRow, who: Who): [word: string, tone: string, glyph: 
   const state: MoveState = row.state;
   switch (state.kind) {
     case 'waits':
-      return [`Waits on ${you(who)}`, 'attn', 'ring'];
+      return [`Waits on ${you(who.martin)}`, 'attn', 'ring'];
     case 'opened':
       return ['Opened', 'signal', 'ring'];
     case 'stage':
@@ -129,32 +124,13 @@ function pinAt(row: PatchingRow): string {
     .join(', ')}${more}`;
 }
 
-const SEVERITY_WORDS = ['Critical', 'High', 'Medium', 'Low'] as const;
-const columns = (c: Counts) => [c.critical, c.high, c.medium, c.low];
-/** "2 Critical, 45 High, 60 Medium, 12 Low", with the unrated after, when there are any. */
-const severityWords = (c: Counts) =>
-  [
-    ...columns(c).map((n, i) => `${count(n)} ${SEVERITY_WORDS[i]}`),
-    ...(c.unknown ? [`${count(c.unknown)} unrated`] : []),
-  ].join(', ');
-
-/** What a row clears, in four fixed columns of tabular mono, a zero wholly muted. */
+/** What a row clears, in the Clears column: four counts under C, H, M and L, or why it has none. */
 function Clears({ row }: { row: PatchingRow }) {
   if (!row.clears) return <span className="clr none">not scanned</span>;
   if (row.source.kind === 'move' && row.source.lane === 'none' && total(row.clears) === 0) {
     return <span className="clr none">nothing: no fix yet</span>;
   }
-  return (
-    <span className="clr">
-      <span className="sr">clears {severityWords(row.clears)}</span>
-      {columns(row.clears).map((n, i) => (
-        <span key={SEVERITY_WORDS[i]} className={n === 0 ? 'zero' : undefined} aria-hidden="true">
-          {count(n)}
-          <i>{'CHML'[i]}</i>
-        </span>
-      ))}
-    </span>
-  );
+  return <SeverityCounts counts={row.clears} words="clears" />;
 }
 
 /** Its pull request or work item, after who moves it. */
@@ -344,9 +320,6 @@ function Row({
   );
 }
 
-/** "today", or the day it was, as the line says when the scan ran. */
-const onDay = (at: number, t: number) => (startOfDay(at) === startOfDay(t) ? 'today' : `on ${dayLabel(at)}`);
-
 /** A count in the day's line: a zero muted, a count above zero in `attn` where it asks for a look. */
 const Figure = ({ n, warm = false }: { n: number; warm?: boolean }) => (
   <span className={n === 0 ? 'zero' : warm ? 'tone-attn' : undefined}>{count(n)}</span>
@@ -408,84 +381,75 @@ function DayLine({ view, t }: { view: Extract<PatchingView, { state: 'read' }>; 
 
 /** What the head says: how many moves, the rows the sense made, and how many wait. */
 function headWords(view: Extract<PatchingView, { state: 'read' }>) {
-  const { running } = view;
-  return [
-    plural(view.moves, 'move'),
-    running['unlisted-image'] > 0 && `${plural(running['unlisted-image'], 'unscanned image')} running`,
-    running['unscanned-digest'] > 0 && `${plural(running['unscanned-digest'], 'digest')} no scan read`,
-    running['not-running'] > 0 && `${plural(running['not-running'], 'pin')} not running yet`,
-  ].filter(Boolean) as string[];
+  return [movesWords(view.moves), ...runningWords(view)];
 }
 
-const Panel = memo(function Panel({
+/** The sheet's kicker: how many moves, the rows the sense made, and how many wait on Martin. */
+function Kicker({ view, martin }: { view: PatchingView; martin: boolean }) {
+  const readOnly = !martin && ' · Read only';
+  if (view.state === 'unread') {
+    return (
+      <span className="label panel-count">
+        No read yet
+        {readOnly}
+      </span>
+    );
+  }
+  return (
+    <span className="label panel-count">
+      {headWords(view).join(' · ')}
+      {view.waiting > 0 && (
+        <>
+          {' · '}
+          <span className="tone-attn">{waitWords(view.waiting, martin)}</span>
+        </>
+      )}
+      {readOnly}
+    </span>
+  );
+}
+
+const Body = memo(function Body({
   view,
   t,
   martin,
+  row: asked,
   onOpen,
 }: {
   view: PatchingView;
   t: number;
   martin: boolean;
+  row: string | undefined;
   onOpen: (item: string) => void;
 }) {
-  renders.patching = (renders.patching ?? 0) + 1;
+  renders.patchingSheet = (renders.patchingSheet ?? 0) + 1;
   const who: Who = { martin };
   const [open, setOpen] = useState<string | undefined>(asked);
-  const panel = useRef<HTMLElement>(null);
-  const asking = useRef(false);
-  // A card in Needs you asks for its row: it opens, as a click on it would, and comes into view once it has. Needs you
-  // draws before this panel's chunk has arrived, so a row asked for before it listened is taken as it mounts.
+  const list = useRef<HTMLDivElement>(null);
+  // The row it was opened at comes into view, focused, as the sheet opens, and is lined up again as it settles until
+  // the sheet closes or the viewer opens or closes a row.
+  const settling = useRef(() => {});
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs as the sheet opens
   useEffect(() => {
-    const ask = () => {
-      const key = takeAskedRow();
-      if (key === undefined) return;
-      asking.current = true;
-      setOpen(key);
-    };
-    ask();
-    window.addEventListener(OPEN_ROW, ask);
-    return () => window.removeEventListener(OPEN_ROW, ask);
+    if (asked !== undefined)
+      settling.current = bringIntoSheet(list.current?.querySelector<HTMLElement>('.pm > button[aria-expanded="true"]'));
+    return () => settling.current();
   }, []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the row to bring into view is the one just opened
   useEffect(() => {
-    if (!asking.current) return;
-    asking.current = false;
-    const row = panel.current?.querySelector('.pm > button[aria-expanded="true"]') ?? panel.current;
-    row?.scrollIntoView({ block: 'start' });
-  }, [open]);
-  const readOnly = !martin && <> · Read only</>;
+    if (open !== asked) settling.current();
+  }, [open, asked]);
   if (view.state === 'unread') {
     return (
-      <section className="panel patching" id="patching" aria-labelledby="patching-title" ref={panel}>
-        <div className="panel-head">
-          <h2 id="patching-title">Patching</h2>
-          <span className="label">No read yet{readOnly}</span>
-        </div>
+      <section className="patching" id="patching" aria-labelledby="sheet-title">
         <p className="patch-empty">
           The dependency sense has not read a day’s scan yet. It reads each morning, after the scan, and when it starts.
         </p>
       </section>
     );
   }
-  const head = headWords(view);
   const empty = view.rows.length === 0;
   return (
-    <section className="panel patching" id="patching" aria-labelledby="patching-title" ref={panel}>
-      <div className="panel-head">
-        <h2 id="patching-title">Patching</h2>
-        <span className="label">
-          {head.join(' · ')}
-          {view.waiting > 0 && (
-            <>
-              {' · '}
-              <span className="tone-attn">
-                {count(view.waiting)} wait{view.waiting === 1 ? 's' : ''} on {you(who)}
-              </span>
-            </>
-          )}
-          {readOnly}
-        </span>
-      </div>
+    <section className="patching" id="patching" aria-labelledby="sheet-title">
       {!empty && (
         <p className="help">
           Everything the factory and the app build or run is scanned every day. A finding with a fix has a deadline by
@@ -513,7 +477,12 @@ const Panel = memo(function Panel({
         </p>
       ) : (
         <>
-          <div className="pm-list">
+          {/* The Clears column's headers, over its counts; narrower, where they cannot stand over them, each count
+              follows its letter. */}
+          <div className="pm-head" aria-hidden="true">
+            <CountsHead />
+          </div>
+          <div className="pm-list" ref={list}>
             {view.rows.map((row) => (
               <Row
                 key={row.key}
@@ -526,6 +495,11 @@ const Panel = memo(function Panel({
               />
             ))}
           </div>
+          {/* Every open finding, under the rows, in the Clears column: the column's total. */}
+          <p className="pm-total">
+            <span className="label">All open</span>
+            <SeverityCounts counts={view.open} words="All open:" />
+          </p>
           <div className="patch-counts">
             <div>
               <b className={view.figures.noFix === 0 ? 'zero' : undefined}>{count(view.figures.noFix)}</b>
@@ -572,40 +546,39 @@ const Panel = memo(function Panel({
   );
 });
 
-/**
- * What the view reads of the work items: those that carry a dependency, by where each stands. Two folds that agree on
- * this give the same view, so a new event elsewhere keeps it.
- */
-const carriedKey = (items: readonly ItemState[]) =>
-  items
-    .filter((item) => item.dependency)
-    .map((item) => `${item.number}:${item.stage}:${item.closedAt ?? ''}:${item.dependency?.name}`)
-    .join(' ');
-
-/** A minute's resolution is all a deadline's words need. */
-const MINUTE = 60_000;
-
-/** The panel, from the fold the console's view was drawn from: the events by its time and the work items. */
-export function Patching({
+/** The sheet, from the fold the console's view was drawn from. */
+export function PatchingSheet({
   view: drawn,
   admin,
+  row,
   onOpen,
+  motion,
+  rise,
+  onClose,
 }: {
   view: View;
   admin: Admin;
-  /** Opens a work item's sheet, as the console's other panels do. */
+  /** The row it opens at, by its key, opened, scrolled to and focused; none opens it at its top. */
+  row: string | undefined;
+  /** Opens a work item's sheet, in this one's place. */
   onOpen: (item: string) => void;
+  motion: boolean;
+  rise: boolean;
+  onClose: () => void;
 }) {
-  const { seen: events, items } = foldOf(drawn);
-  const t = drawn.t;
-  // The fold holds the events by t already, so the newest day from the sense's role in it is the one to show.
-  const read = lastRead(events, t);
-  const carried = carriedKey(items);
-  const minute = Math.floor(t / MINUTE) * MINUTE;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the view reads only the day and the carried work items, and is kept while they are the same
-  const view: PatchingView = useMemo(
-    () => (read ? dayView(read.payload, Date.parse(read.ts), items) : { state: 'unread' }),
-    [read, carried],
+  const { view, t } = patchingNow(drawn);
+  const martin = admin.kind === 'martin';
+  return (
+    <SheetFrame
+      kicker={<Kicker view={view} martin={martin} />}
+      title="Patching"
+      motion={motion}
+      rise={rise}
+      onClose={onClose}
+    >
+      <div className="wrap sheet-whole">
+        <Body view={view} t={t} martin={martin} row={row} onOpen={onOpen} />
+      </div>
+    </SheetFrame>
   );
-  return <Panel view={view} t={minute} martin={admin.kind === 'martin'} onOpen={onOpen} />;
 }

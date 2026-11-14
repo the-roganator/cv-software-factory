@@ -5,6 +5,7 @@ import {
   dayView,
   dueSoon,
   dueWords,
+  nextDue,
   ordered,
   type PatchingRow,
   type PatchingView,
@@ -100,10 +101,53 @@ describe('Patching, projected from the samples', () => {
     expect(view.figures).toEqual({ noFix: 15056, cleared: 1732, excepted: 0, overdue: 0, clearingMoves: 10 });
   });
 
+  it('counts every open finding by severity, both repositories’ together, as the scan counted them', () => {
+    expect(view.open).toEqual({ critical: 12, high: 1392, medium: 11141, low: 4178, unknown: 0 });
+  });
+
+  it('sums what the moves clear, by severity, to the figure of what they clear', () => {
+    const { critical, high, medium, low, unknown } = view.clears;
+    expect(critical + high + medium + low + unknown).toBe(view.figures.cleared);
+  });
+
+  it('names the row due first as next due', () => {
+    const next = nextDue(view.rows);
+    const deadlines = view.rows.flatMap((row) => (row.deadline === undefined ? [] : [row.deadline]));
+    expect(next?.deadline).toBe(Math.min(...deadlines));
+  });
+
   it('reads only the sense’s own role, and nothing before its first day', () => {
     const forged = SAMPLES.map((e) => (e.type === 'patching.read' ? { ...e, appended_by: 'factory_line' } : e));
     expect(patchingView(forged, [], END)).toEqual({ state: 'unread' });
     expect(patchingView(SAMPLES, [], Date.parse('2026-10-06T05:00:00Z'))).toEqual({ state: 'unread' });
+  });
+});
+
+describe('a day from a scan that did not count every open finding', () => {
+  const sample = day();
+  if (!sample) throw new Error('the samples have no patching.read');
+
+  it('has no open count at all when one repository’s day lacks it, rather than one worked out from the rest', () => {
+    const older: Day = {
+      ...sample.payload,
+      repositories: sample.payload.repositories.map((r, i) => {
+        if (i !== 1 || !r.totals) return r;
+        const { open: _, ...totals } = r.totals;
+        return { ...r, totals };
+      }),
+    };
+    const view = read(dayView(older, END, []));
+    expect(view.open).toBeUndefined();
+    // What the moves clear is the rows' own, and still there.
+    expect(view.clears.high).toBeGreaterThan(0);
+  });
+
+  it('has none when a repository’s day has no totals at all', () => {
+    const none: Day = {
+      ...sample.payload,
+      repositories: sample.payload.repositories.map((r, i) => (i === 0 ? { ...r, totals: null } : r)),
+    };
+    expect(read(dayView(none, END, [])).open).toBeUndefined();
   });
 });
 

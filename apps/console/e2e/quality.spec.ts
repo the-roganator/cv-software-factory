@@ -78,7 +78,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       test.use({ viewport });
 
       for (const as of ['martin', 'visitor'] as const) {
-        test(`the header, Controls, Flags and Spend, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
+        test(`the header, Controls, Flags, the summaries and Spend, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
           page,
         }) => {
           await adminService(page, as);
@@ -89,6 +89,8 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
             .include('header.top')
             .include('article.controls')
             .include('article.flags-panel')
+            .include('#patching-summary')
+            .include('#guardrails-summary')
             .include('article.spend');
           expect((await panels.analyze()).violations).toEqual([]);
         });

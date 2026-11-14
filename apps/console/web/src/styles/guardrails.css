@@ -1,14 +1,15 @@
 /*
- * Guardrails: a checklist of spec 6's eleven, full width under the bottom row, in two columns from 1180 up and one
- * below. A row is one line and a button that opens its details in place, one at a time: what holds it, its last proof,
- * its refusals in the last seven days, a line each, and its attack, a `raised` card with Launch. A guardrail that did not hold takes the `attn` rule down its row's left
- * edge, as an attack that was not refused does down its card's.
+ * Guardrails' sheet: a checklist of spec 6's eleven, the sheet's width, in two columns from 1180 up and one below. It
+ * arrives with the sheet's chunk, so the first view's stylesheet carries none of it. A row is one line and a button
+ * that opens its details in place, one at a time: what holds it, its last proof, its refusals in the last seven days, a
+ * line each, and its attack, a `raised` card with Launch. A guardrail that did not hold takes the `attn` rule down its
+ * row's left edge, as an attack that was not refused does down its card's.
  */
 .guardrails {
-  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
-.guardrails .panel-head .label.tone-attn,
 .gr .more .tone-attn {
   color: var(--attn);
 }
@@ -148,6 +149,8 @@ html[data-motion="on"] .gr .chev {
   color: var(--attn);
 }
 .reflist .go {
+  /* It ends where the row's age does, short of its chevron, so its last letter stays inside the column. */
+  margin-right: 26px;
   font-size: 12px;
   white-space: nowrap;
   color: var(--text);
@@ -261,6 +264,9 @@ html[data-motion="on"] .gr .chev {
   .reflist > li {
     grid-template-columns: 58px minmax(0, 1fr) auto;
     gap: 8px;
+  }
+  .reflist .go {
+    margin-right: 20px;
   }
   .gr-attack {
     grid-template-columns: 1fr;

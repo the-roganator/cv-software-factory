@@ -17,11 +17,13 @@
  * and the sheet, its card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan,
  * for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
  * Part C's canary paused for Martin, with auto-rollback off: the Canary panel, its card in Needs you, and the switch.
- * Task 22's Guardrails: the checklist with a guardrail that did not hold opened, for a visitor and for Martin, task
- * 23's refusals in a row, the attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
- * each way one stands (refused twice, a refusal cut at five lines, not refused, running), and a sheet's refusals whole.
- * Task 32's Patching from the samples' day, in Paper and Ink at laptop and phone width, for Martin and for a visitor, and
- * a row opened; and its cards in Needs you, a held pin's for Martin and a running pod's for a visitor, the same.
+ * Task 22's Guardrails, in its sheet: the checklist with a guardrail that did not hold opened, for a visitor and for
+ * Martin, task 23's refusals in a row, the attack in flight in its row, and Launch's dialog for each, at all three
+ * widths and in Ink; and an attack's card for each way one stands (refused twice, a refusal cut at five lines, not
+ * refused, running), and a sheet's refusals whole. Task 32's Patching from the samples' day, in its sheet, in Paper and
+ * Ink at all three widths, for Martin and for a visitor, a row opened, and All open under the rows; its summary in the
+ * right column where it is narrowest, beside Needs you; and its cards in Needs you, a held pin's for Martin and a
+ * running pod's for a visitor, the same. The summaries themselves are in the bottom row's.
  */
 import type { Page } from '@playwright/test';
 import { STAGES as KINDS } from '@software-factory/events';
@@ -266,7 +268,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       await page.goto(consoleUrl());
       await page.getByText('Watching, nothing yet').waitFor();
       // The panels under the reel arrive in chunks of their own, after the first view: the page is whole once the last is in.
-      await page.locator('#guardrails').waitFor();
+      await page.locator('#guardrails-summary').waitFor();
       await page.evaluate(() => document.fonts.ready);
       await expect(page).toHaveScreenshot(`m04-empty-real-${width}.png`, { fullPage: true });
     });
@@ -1323,9 +1325,18 @@ async function settingsPage(page: Page, theme: 'paper' | 'ink' = 'paper') {
   await page.evaluate(() => document.fonts.ready);
 }
 
+/** The sheet settled: its fonts in, and the row it opened at lined up again once they are (`bringIntoSheet`). */
+async function settled(page: Page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  });
+}
+
 /**
- * Task 22: Guardrails, opened at a row (`?open=`), for a visitor or for Martin: from the samples, where no attack can be
- * launched, or from the attacks' test data with every attack available, as the flag will make them.
+ * Task 22: Guardrails' sheet, opened at a row (`?open=`), for a visitor or for Martin: from the samples, where no
+ * attack can be launched, or from the attacks' test data with every attack available, as the flag will make them. The
+ * sheet holds the row in view; the snapshot is the screen.
  */
 async function guardrailsAt(
   page: Page,
@@ -1343,8 +1354,7 @@ async function guardrailsAt(
   await ready(page);
   const panel = page.locator('#guardrails');
   await panel.locator('.more').waitFor();
-  await panel.scrollIntoViewIfNeeded();
-  await page.evaluate(() => document.fonts.ready);
+  await settled(page);
   return panel;
 }
 
@@ -1353,19 +1363,19 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
     test.use({ viewport });
 
     test('the checklist, a guardrail that did not hold opened, for a visitor', async ({ page }) => {
-      const panel = await guardrailsAt(page, 'visitor', 5);
-      await expect(panel).toHaveScreenshot(`m07-guardrails-visitor-${width}.png`);
+      await guardrailsAt(page, 'visitor', 5);
+      await expect(page).toHaveScreenshot(`m07-guardrails-visitor-${width}.png`);
     });
 
     test('a guardrail’s refusals in the week opened, one unverified, for a visitor', async ({ page }) => {
       const panel = await guardrailsAt(page, 'visitor', 1);
       await panel.locator('.reflist small').first().waitFor();
-      await expect(panel).toHaveScreenshot(`m07-guardrails-refusals-${width}.png`);
+      await expect(page).toHaveScreenshot(`m07-guardrails-refusals-${width}.png`);
     });
 
     test('the checklist for Martin, the attack in flight in its row', async ({ page }) => {
-      const panel = await guardrailsAt(page, 'martin', 3, { from: 'attacks' });
-      await expect(panel).toHaveScreenshot(`m07-guardrails-martin-${width}.png`);
+      await guardrailsAt(page, 'martin', 3, { from: 'attacks' });
+      await expect(page).toHaveScreenshot(`m07-guardrails-martin-${width}.png`);
     });
 
     test('Launch’s dialog, for Martin and for a visitor', async ({ page }) => {
@@ -1430,46 +1440,76 @@ test.describe('Guardrails in Ink', () => {
   test.use({ viewport: WIDTHS.desktop });
 
   test('the checklist, a guardrail that did not hold opened', async ({ page }) => {
-    const panel = await guardrailsAt(page, 'martin', 5, { theme: 'ink' });
-    await expect(panel).toHaveScreenshot('m07-guardrails-ink.png');
+    await guardrailsAt(page, 'martin', 5, { theme: 'ink' });
+    await expect(page).toHaveScreenshot('m07-guardrails-ink.png');
   });
 });
 
-/** Task 32: Patching from the samples' day, for Martin or a visitor, with a row opened (`?move=`, its key) or none. */
+/**
+ * Task 32: Patching's sheet from the samples' day, for Martin or a visitor, opened at a row (`?move=`, its key) or at
+ * its top (`?sheet=patching`). The snapshot is the screen.
+ */
 async function patchingAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' | 'ink', move?: string) {
   await adminService(page, as);
-  await page.goto(`${consoleUrl({ theme })}${move ? `&move=${encodeURIComponent(move)}` : ''}`);
+  await page.goto(`${consoleUrl({ theme })}${move ? `&move=${encodeURIComponent(move)}` : '&sheet=patching'}`);
   await ready(page);
   const panel = page.locator('#patching');
   await panel.locator('.pm').first().waitFor();
   if (move) await panel.locator('.pm .more').waitFor();
-  await panel.scrollIntoViewIfNeeded();
-  await page.evaluate(() => document.fonts.ready);
+  await settled(page);
   return panel;
 }
 
-for (const width of ['laptop', 'phone'] as const) {
+for (const [width, viewport] of Object.entries(WIDTHS)) {
   test.describe(`${width}, Patching`, () => {
-    test.use({ viewport: WIDTHS[width] });
+    test.use({ viewport });
 
     for (const theme of THEMES) {
       test(`the day’s moves for Martin, in ${theme}`, async ({ page }) => {
-        const panel = await patchingAt(page, 'martin', theme);
-        await expect(panel).toHaveScreenshot(`m07-patching-martin-${theme}-${width}.png`);
+        await patchingAt(page, 'martin', theme);
+        await expect(page).toHaveScreenshot(`m07-patching-martin-${theme}-${width}.png`);
       });
 
       test(`the day’s moves for a visitor, in ${theme}`, async ({ page }) => {
-        const panel = await patchingAt(page, 'visitor', theme);
-        await expect(panel).toHaveScreenshot(`m07-patching-visitor-${theme}-${width}.png`);
+        await patchingAt(page, 'visitor', theme);
+        await expect(page).toHaveScreenshot(`m07-patching-visitor-${theme}-${width}.png`);
       });
     }
 
     test('a move that waits on Martin opened, for him', async ({ page }) => {
-      const panel = await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory example-logs');
-      await expect(panel).toHaveScreenshot(`m07-patching-open-${width}.png`);
+      await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory example-logs');
+      await expect(page).toHaveScreenshot(`m07-patching-open-${width}.png`);
+    });
+
+    test('All open under the rows, as the Clears column’s total, for a visitor', async ({ page }) => {
+      const panel = await patchingAt(page, 'visitor', 'paper');
+      // The last rows, and the total under them, at the top of the sheet's view.
+      await panel.locator('.pm-total').evaluate((total) => {
+        const scroller = total.closest('.sheet-scroll');
+        if (scroller)
+          scroller.scrollTop += total.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 240;
+      });
+      await expect(page).toHaveScreenshot(`m07-patching-total-${width}.png`);
     });
   });
 }
+
+test.describe('Patching’s summary beside Needs you, where the right column is narrowest', () => {
+  test.use({ viewport: { width: 760, height: 900 } });
+
+  for (const as of ['martin', 'visitor'] as const) {
+    test(`each label on a line of its own above its counts, for ${as === 'martin' ? 'Martin' : 'a visitor'}`, async ({
+      page,
+    }) => {
+      await adminService(page, as);
+      await page.goto(consoleUrl());
+      await ready(page);
+      const summary = page.locator('#patching-summary');
+      await summary.scrollIntoViewIfNeeded();
+      await expect(summary).toHaveScreenshot(`m07-patching-summary-narrow-${as}.png`);
+    });
+  }
+});
 
 /** Task 32: a move's card in Needs you, from the samples' day, by its title. */
 async function patchCardAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' | 'ink', title: string) {

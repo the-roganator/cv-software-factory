@@ -144,6 +144,67 @@ test('a close the checklist started does not close the work item’s sheet that 
   await expect(item).toBeVisible();
 });
 
+test('closing the checklist while the work item’s code is on its way closes it, and nothing opens after', async ({
+  page,
+}) => {
+  await page.route('**/assets/Sheet-*.js', async (route) => {
+    await new Promise((done) => setTimeout(done, 1000));
+    await route.continue();
+  });
+  await page.goto(`${consoleUrl()}&open=7`);
+  await panel(page).locator('.more .reflist').getByRole('button', { name: '#1319' }).click();
+  // Still the checklist while the work item's code comes; Escape closes it.
+  await expect(sheet(page)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  // Well after the code has come, nothing has opened, and the page scrolls again.
+  await page.waitForTimeout(2000);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/locked/);
+});
+
+test('a work item’s sheet whose code never comes takes the checklist away, and its notice has focus and Escape', async ({
+  page,
+}) => {
+  await page.route('**/assets/Sheet-*.js', (route) => route.fulfill({ status: 404 }));
+  await page.goto(`${consoleUrl()}&open=7`);
+  await panel(page).locator('.more .reflist').getByRole('button', { name: '#1319' }).click();
+  const notice = page.locator('.notice.over');
+  await expect(notice).toContainText('The work item’s sheet couldn’t be shown.');
+  // No sheet over it holding focus: the page is free, and the notice's Close has focus.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/locked/);
+  await expect(notice.getByRole('button', { name: 'Close' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(notice).toHaveCount(0);
+});
+
+test('a work item’s sheet stepped to while its close is under way is risen, and the page stays behind it', async ({
+  page,
+}) => {
+  // With motion, a close waits for the sheet to sink before it ends.
+  await page.goto(`${consoleUrl({ motion: true, item: '1319', sheet: true })}`);
+  const item = page.getByRole('dialog', { name: /The wishlist empties itself/ });
+  await expect(item).toBeVisible();
+  await expect(page.locator('.sheet.open')).toHaveCount(1);
+  // Escape starts its close, and Previous is pressed before it has sunk.
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    dialog?.querySelector<HTMLButtonElement>('[aria-label="Previous work item"]')?.click();
+  });
+  // Well past the close's 420 ms, the work item before it is open, risen and in view, with the page held behind it.
+  await page.waitForTimeout(1000);
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(item).toHaveCount(0);
+  await expect(page.locator('.sheet.open')).toHaveCount(1);
+  await expect(page.locator('.sheet.open')).toBeInViewport();
+  await expect(page.locator('body')).toHaveClass(/locked/);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/locked/);
+});
+
 test('the address opens the sheet at a guardrail: opened, scrolled to and focused', async ({ page }) => {
   await page.goto(`${consoleUrl()}&open=9`);
   await expect(sheet(page)).toBeVisible();

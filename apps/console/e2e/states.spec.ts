@@ -210,7 +210,9 @@ test('a panel’s sheet whose chunk never arrives says so over the page, and ope
   const open = page.locator('#patching-summary').getByRole('button', { name: /^All \d+ moves$/ });
   await open.click();
   const notice = page.locator('.notice.over');
-  await expect(notice).toContainText('Patching’s sheet couldn’t be shown. Close this and open it again to try again.');
+  await expect(notice).toContainText(
+    'Patching’s sheet couldn’t be shown. Close this and open it again to try again, or reload the page.',
+  );
   await expect(notice).toBeInViewport();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await notice.getByRole('button', { name: 'Close' }).click();

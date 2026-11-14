@@ -37,15 +37,18 @@ describe('a row of counts’ label', () => {
   const none = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
 
   it('is the row’s name, and “Nothing to clear” only when the moves clear nothing at all', () => {
-    expect(countsLabel('All open', { ...none, high: 4 })).toBe('All open');
-    expect(countsLabel('All open', undefined)).toBe('All open');
-    expect(countsLabel('The moves clear', none)).toBe('Nothing to clear');
-    expect(countsLabel('The moves clear', { ...none, low: 1 })).toBe('The moves clear');
+    expect(countsLabel('All open', { ...none, high: 4 })).toEqual({ label: 'All open', nothing: false });
+    expect(countsLabel('All open', undefined)).toEqual({ label: 'All open', nothing: false });
+    expect(countsLabel('The moves clear', none)).toEqual({ label: 'Nothing to clear', nothing: true });
+    expect(countsLabel('The moves clear', { ...none, low: 1 })).toEqual({ label: 'The moves clear', nothing: false });
   });
 
-  it('says the findings of no rating, which no column draws, beside it', () => {
-    expect(countsLabel('The moves clear', { ...none, unknown: 3 })).toBe('The moves clear · 3 unrated');
-    expect(countsLabel('All open', { ...none, high: 2, unknown: 1200 })).toBe('All open · 1,200 unrated');
+  it('says the findings of no rating, which no column draws, beside it, and counts them as something', () => {
+    expect(countsLabel('The moves clear', { ...none, unknown: 3 })).toEqual({
+      label: 'The moves clear · 3 unrated',
+      nothing: false,
+    });
+    expect(countsLabel('All open', { ...none, high: 2, unknown: 1200 }).label).toBe('All open · 1,200 unrated');
   });
 });
 
@@ -82,6 +85,12 @@ describe('Patching’s view, shared by its summary and its sheet', () => {
     expect(patchingOf(drawn)).toBe(first);
     // Another drawn view, a minute on, with nothing new for Patching: the same view, so nothing renders.
     expect(patchingOf(project(SAMPLES, END + 60_000, ALL))).toBe(first);
+  });
+
+  it('is not given up for another caller’s day, so the order views are asked for in does not matter', () => {
+    const first = patchingOf(project(SAMPLES, END, ALL));
+    patchingOf(project(ATTACKS, ATTACKS_END, ALL));
+    expect(patchingOf(project(SAMPLES, END + 120_000, ALL))).toBe(first);
   });
 
   it('is another for a new day', () => {

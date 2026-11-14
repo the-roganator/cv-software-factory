@@ -8,7 +8,7 @@
  * it arrives, and only its failure is its own. A sheet's notice stands over the page, where the sheet would have risen,
  * with Close.
  */
-import { Component, type ReactNode, Suspense } from 'react';
+import { Component, type ReactNode, Suspense, useEffect, useRef } from 'react';
 
 interface LaterProps {
   /** What the part is, in the notice's words: "Needs you, Controls, Flags, Patching, Guardrails and Spend". */
@@ -22,7 +22,11 @@ interface LaterProps {
   children: ReactNode;
 }
 
-/** The notice in a part's place: what couldn't be shown, and how it may come back. */
+/**
+ * The notice in a part's place: what couldn't be shown, and how it may come back. A sheet's stands over the page with
+ * Close, which takes focus as it appears, so the keyboard and a screen reader are on it; Close or Escape takes it away
+ * and gives focus back to where it was.
+ */
 export function NotLoaded({
   what,
   again,
@@ -34,12 +38,26 @@ export function NotLoaded({
   /** For a sheet: the notice stands over the page, and Close takes it away. */
   onDismiss?: (() => void) | undefined;
 }) {
+  const close = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!onDismiss) return;
+    const back = document.activeElement;
+    close.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onDismiss();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (back instanceof HTMLElement && document.contains(back)) back.focus({ preventScroll: true });
+    };
+  }, [onDismiss]);
   return (
     <p className={onDismiss ? 'notice over' : 'notice'} role="status">
       <span className="label">Not loaded</span>
       {what} couldn’t be shown. {again}
       {onDismiss && (
-        <button type="button" className="linkish" onClick={onDismiss}>
+        <button type="button" className="linkish" ref={close} onClick={onDismiss}>
           Close
         </button>
       )}

@@ -25,10 +25,11 @@ import { factoryOf } from './profile.ts';
 import { foldOf, project, settingsAt } from './projection/index.ts';
 import { useRefusalChecks } from './refusals.ts';
 import { type Theme, ticks, useMotion, useTheme, useTime } from './settings.ts';
-import { loadSheet, sheetCode } from './sheet-chunks.ts';
+import { sheetCode } from './sheet-chunks.ts';
 import { askedSheet, type SheetAsk } from './sheets.ts';
 import { type Origin, origin, useEvents } from './source.ts';
 import { useHeld } from './use-held.ts';
+import { useSheet } from './use-sheet.ts';
 
 const params = new URLSearchParams(location.search);
 
@@ -159,42 +160,16 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   // The reel rests on the latest work item unless the viewer moves it, or asked for one in the address.
   const item = params.get('item');
   const [centre, setCentre] = useState<number | undefined>(undefined);
-  // What the sheet holds, if it is open: a work item, or a panel whole.
-  const [sheet, setSheet] = useState<SheetAsk | undefined>(undefined);
+  // What the sheet holds, if it is open: a work item, or a panel whole, and the hand-over from one to the next.
+  const { shown, failed, open: openSheet, close: closeSheet, dismiss } = useSheet();
   const setOpen = useCallback(
-    (number: string | undefined) => setSheet(number ? { kind: 'item', item: number } : undefined),
-    [],
+    (number: string | undefined) => openSheet(number ? { kind: 'item', item: number } : undefined),
+    [openSheet],
   );
   // Each held steady, so a summary drawn with one renders only when what it shows changes.
-  const openPatching = useCallback(() => setSheet({ kind: 'patching' }), []);
-  const openGuardrails = useCallback(() => setSheet({ kind: 'guardrails' }), []);
-  const openRow = useCallback((row: string) => setSheet({ kind: 'patching', row }), []);
-  // The sheet drawn: the one asked for once its code is in (`sheet-chunks.ts`), and until then the one before, so one
-  // sheet hands over to the next with no moment between them where neither is drawn.
-  const [, setArrived] = useState(0);
-  const [failed, setFailed] = useState<SheetAsk | undefined>(undefined);
-  const before = useRef<SheetAsk | undefined>(undefined);
-  const drawn = !sheet ? undefined : sheetCode(sheet.kind) ? sheet : before.current;
-  // Whether a sheet was drawn as the page last drew: one that takes its place is there at once, rather than rising.
-  useEffect(() => {
-    before.current = drawn;
-  });
-  useEffect(() => {
-    if (!sheet || sheetCode(sheet.kind)) return;
-    let current = true;
-    loadSheet(sheet.kind).then(
-      () => current && setArrived((n) => n + 1),
-      (error: unknown) => {
-        console.error(`${SHEET_NAME[sheet.kind]}:`, error);
-        if (current) setFailed(sheet);
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [sheet]);
-  // A sheet closes only itself: a close it started does not close one opened in its place meanwhile.
-  const closing = useCallback((shown: SheetAsk) => () => setSheet((now) => (now === shown ? undefined : now)), []);
+  const openPatching = useCallback(() => openSheet({ kind: 'patching' }), [openSheet]);
+  const openGuardrails = useCallback(() => openSheet({ kind: 'guardrails' }), [openSheet]);
+  const openRow = useCallback((row: string) => openSheet({ kind: 'patching', row }), [openSheet]);
   const atNow = useRef(true);
   const resting = Math.max(0, Math.min(n - 1, centre ?? n - 1));
 
@@ -213,8 +188,8 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   useEffect(() => {
     if (!settled || !panelAsked.current) return;
     panelAsked.current = false;
-    setSheet(askedFor);
-  }, [settled]);
+    openSheet(askedFor);
+  }, [settled, openSheet]);
 
   // Following the line: a viewer watching now stays at now as new work items arrive.
   useEffect(() => {
@@ -245,14 +220,14 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   };
 
   /** A sheet whose code is in: a work item's, or a panel's whole. */
-  const drawSheet = (shown: SheetAsk, rise: boolean, onClose: () => void) => {
-    if (shown.kind === 'item') {
+  const drawSheet = (ask: SheetAsk, rise: boolean, onClose: () => void) => {
+    if (ask.kind === 'item') {
       const Sheet = sheetCode('item');
       return (
         Sheet && (
           <Sheet
             view={view}
-            item={shown.item}
+            item={ask.item}
             motion={motion}
             rise={rise}
             onStep={(index) => {
@@ -267,14 +242,14 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
         )
       );
     }
-    if (shown.kind === 'patching') {
+    if (ask.kind === 'patching') {
       const PatchingSheet = sheetCode('patching');
       return (
         PatchingSheet && (
           <PatchingSheet
             view={view}
             admin={admin}
-            row={shown.row}
+            row={ask.row}
             onOpen={setOpen}
             motion={motion}
             rise={rise}
@@ -290,7 +265,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
           view={view.guardrails}
           now={view.t}
           admin={admin}
-          row={shown.row}
+          row={ask.row}
           onOpen={setOpen}
           motion={motion}
           rise={rise}
@@ -465,21 +440,18 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
         </div>
       </main>
       <Footer signIn={signedIn.kind === 'visitor'} />
-      {drawn && (
-        // A sheet that throws as it draws says so over the page too.
-        <Later key={drawn.kind} what={SHEET_NAME[drawn.kind]} one onDismiss={() => setSheet(undefined)}>
-          {drawSheet(drawn, before.current === undefined, closing(drawn))}
+      {shown && (
+        // Keyed by which sheet it is, so each is a frame of its own; one that throws as it draws says so over the page.
+        <Later key={shown.n} what={SHEET_NAME[shown.ask.kind]} one onDismiss={closeSheet}>
+          {drawSheet(shown.ask, shown.rise, closeSheet)}
         </Later>
       )}
-      {/* A sheet's chunk that never came says so over the page, with Close; opening it again asks for it again. */}
-      {failed && failed === sheet && (
+      {/* A sheet whose code never came says so over the page, in its place, with Close; opening it again asks again. */}
+      {failed && (
         <NotLoaded
           what={SHEET_NAME[failed.kind]}
-          again="Close this and open it again to try again."
-          onDismiss={() => {
-            setFailed(undefined);
-            setSheet(undefined);
-          }}
+          again="Close this and open it again to try again, or reload the page."
+          onDismiss={dismiss}
         />
       )}
     </OriginContext.Provider>

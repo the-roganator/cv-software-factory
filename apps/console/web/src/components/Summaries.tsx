@@ -88,7 +88,7 @@ const PatchingCard = memo(function PatchingCard({
   // Each row the sense made waits on Martin, so an unscanned image running is counted among those that wait.
   const needs = view.waiting > 0 || soon || failed;
   const clears = view.clears;
-  const clearsLabel = countsLabel('The moves clear', clears);
+  const clearing = countsLabel('The moves clear', clears);
   return (
     <article
       className={needs ? 'panel summary attn' : 'panel summary'}
@@ -113,16 +113,12 @@ const PatchingCard = memo(function PatchingCard({
           <CountsHead />
         </div>
         <div>
-          <span>{countsLabel('All open', view.open)}</span>
+          <span>{countsLabel('All open', view.open).label}</span>
           <SeverityCounts counts={view.open} words="All open:" />
         </div>
         <div>
-          <span>{clearsLabel}</span>
-          <SeverityCounts
-            counts={clears}
-            words={clearsLabel.startsWith('Nothing') ? 'Nothing to clear:' : 'The moves clear'}
-            cleared
-          />
+          <span>{clearing.label}</span>
+          <SeverityCounts counts={clears} words={clearing.nothing ? 'Nothing to clear:' : 'The moves clear'} cleared />
         </div>
       </div>
       <ul className="sum-lines">

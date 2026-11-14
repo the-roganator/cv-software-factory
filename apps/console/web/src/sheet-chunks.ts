@@ -2,8 +2,10 @@
  * Each kind of sheet's code, in a chunk of its own that arrives the first time one of its kind opens: a work item's
  * (`Sheet.tsx`, with the sheet's projection), Patching's and Guardrails'. The page asks for a chunk here and draws a
  * sheet only once its code is in, so the sheet already open stays until the next can take its place, with no moment
- * between them where neither is drawn. A chunk that never came is asked for again the next time, not remembered as
- * failed.
+ * between them where neither is drawn (`use-sheet.ts`). A chunk that never came is asked for again the next time, not
+ * remembered as failed. Chromium, which the tests run, fetches it again, as `states.spec.ts` shows; an engine that
+ * keeps a failed module fetch fails again at once, so the notice says reloading the page brings it back too. A query on the chunk's address would force a fetch everywhere, but the chunk's name is the
+ * bundler's to choose and this code never sees it.
  */
 import type { GuardrailsSheet } from './components/Guardrails.tsx';
 import type { PatchingSheet } from './components/Patching.tsx';

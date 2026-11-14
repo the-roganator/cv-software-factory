@@ -85,13 +85,16 @@ export function runningWords(view: Extract<PatchingView, { state: 'read' }>): st
 }
 
 /**
- * A row of counts' label, and the findings of no rating it holds, which no column draws: said beside the label
- * ("· 3 unrated"), so a row is never read as less than it is. What the moves clear is "Nothing to clear" only when it
- * clears nothing at all.
+ * A row of counts' label, and whether it counts nothing at all. The findings of no rating it holds, which no column
+ * draws, are said beside the label ("· 3 unrated"), so a row is never read as less than it is. What the moves clear is
+ * "Nothing to clear" only when it clears nothing at all.
  */
-export function countsLabel(label: 'All open' | 'The moves clear', counts: Counts | undefined): string {
-  if (!counts) return label;
-  const all = counts.critical + counts.high + counts.medium + counts.low + counts.unknown;
-  const named = label === 'The moves clear' && all === 0 ? 'Nothing to clear' : label;
-  return counts.unknown > 0 ? `${named} · ${count(counts.unknown)} unrated` : named;
+export function countsLabel(
+  label: 'All open' | 'The moves clear',
+  counts: Counts | undefined,
+): { label: string; nothing: boolean } {
+  if (!counts) return { label, nothing: false };
+  const nothing = counts.critical + counts.high + counts.medium + counts.low + counts.unknown === 0;
+  const named = label === 'The moves clear' && nothing ? 'Nothing to clear' : label;
+  return { label: counts.unknown > 0 ? `${named} · ${count(counts.unknown)} unrated` : named, nothing };
 }

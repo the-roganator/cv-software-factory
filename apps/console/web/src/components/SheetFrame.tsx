@@ -140,20 +140,28 @@ export function SheetFrame({
 /**
  * Brings a row a panel's sheet opened at into view, just under the sheet's head, and gives it focus, as an address or a
  * card in Needs you asks: the sheet moves, not the page under it. What is above the row can still change as the sheet
- * settles (a stylesheet or a font arriving), so it is lined up again then, unless the viewer has scrolled meanwhile.
+ * settles (a stylesheet or a font arriving), so it is lined up again then, unless the viewer has scrolled meanwhile;
+ * the function it returns stops that.
  */
-export function bringIntoSheet(row: HTMLElement | null | undefined) {
-  if (!row) return;
-  const scroller = row.closest('.sheet-scroll');
-  row.focus({ preventScroll: true });
-  if (!scroller) return;
+export function bringIntoSheet(row: HTMLElement | null | undefined): () => void {
+  const scroller = row?.closest('.sheet-scroll');
+  row?.focus({ preventScroll: true });
+  if (!row || !scroller) return () => {};
   let placed = -1;
+  let done = false;
   const align = () => {
-    if (placed >= 0 && scroller.scrollTop !== placed) return;
+    if (done || !row.isConnected || (placed >= 0 && scroller.scrollTop !== placed)) return;
     scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 24;
     placed = scroller.scrollTop;
   };
   align();
-  requestAnimationFrame(() => requestAnimationFrame(align));
+  let frame = requestAnimationFrame(() => {
+    frame = requestAnimationFrame(align);
+  });
   void document.fonts?.ready.then(align);
+  // Called as the sheet closes, or as what it holds changes: nothing more is lined up.
+  return () => {
+    done = true;
+    cancelAnimationFrame(frame);
+  };
 }

@@ -426,12 +426,18 @@ const Body = memo(function Body({
   const who: Who = { martin };
   const [open, setOpen] = useState<string | undefined>(asked);
   const list = useRef<HTMLDivElement>(null);
-  // The row it was opened at comes into view, focused, as the sheet opens.
+  // The row it was opened at comes into view, focused, as the sheet opens, and is lined up again as it settles until
+  // the sheet closes or the viewer opens or closes a row.
+  const settling = useRef(() => {});
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs as the sheet opens
   useEffect(() => {
     if (asked !== undefined)
-      bringIntoSheet(list.current?.querySelector<HTMLElement>('.pm > button[aria-expanded="true"]'));
+      settling.current = bringIntoSheet(list.current?.querySelector<HTMLElement>('.pm > button[aria-expanded="true"]'));
+    return () => settling.current();
   }, []);
+  useEffect(() => {
+    if (open !== asked) settling.current();
+  }, [open, asked]);
   if (view.state === 'unread') {
     return (
       <section className="patching" id="patching" aria-labelledby="sheet-title">

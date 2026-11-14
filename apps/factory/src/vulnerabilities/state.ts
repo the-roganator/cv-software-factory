@@ -47,11 +47,13 @@ export interface StateFinding {
   line: number;
   /** Its item's repository: a lockfile's path, or an image's name without its tag or digest (deadlines.ts's place). */
   repository: string;
+  /** Trivy's type of the result it was in (`pnpm`, `debian`…), which tells two findings of one place apart. */
+  type: string;
   /** As the scan rated the result, which its message says. */
   severity: Severity;
   /** The versions the advisory says fix it, as the message gives them; absent for `no fix yet`. */
   fixed?: string | undefined;
-  /** When it was first seen, UTC to the second. */
+  /** When it was first seen, itself, UTC to the second: its place's day is the earliest of its findings'. */
   seen: string;
   /** What fixes it, as fixes.ts writes a target, and the day that was first installable, UTC to the second. */
   fix?: { target: string; day: string } | undefined;
@@ -146,8 +148,10 @@ function problemOf(state: unknown, repository: string, run: string): string | un
     const at = `finding ${index + 1}`;
     if (typeof each !== 'object' || each === null) return `has no ${at}`;
     const f = each as Record<string, unknown>;
-    for (const name of ['advisory', 'package', 'installed', 'file', 'repository'])
+    for (const name of ['advisory', 'package', 'file', 'repository', 'type'])
       if (!isText(f[name])) return `gives ${at} no ${name}`;
+    // Trivy gives some packages no installed version, and the scan writes that as it reads it.
+    if (f.installed !== '' && !isText(f.installed)) return `gives ${at} no installed version`;
     if (!Number.isInteger(f.line) || (f.line as number) < 0) return `gives ${at} no line`;
     if (!SEVERITIES.includes(f.severity as Severity)) return `gives ${at} no severity`;
     if (f.fixed !== undefined && !isText(f.fixed)) return `gives ${at} a fixed version that is not text`;

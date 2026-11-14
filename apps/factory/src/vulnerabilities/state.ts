@@ -10,8 +10,9 @@
  * the default branch, which is how its readers find it. The seal also binds the repository and the run, so a file
  * moved from another run or repository does not open.
  *
- * Losing it loses no day: a scan that finds no state it can open reads the alerts, as a proving run always does
- * (deadlines.ts's `seen` and `stated`), and writes the next.
+ * Losing it resets no deadline: a scan that finds no state it can open reads the alerts, as a proving run always does
+ * (deadlines.ts's `seen` and `stated`), and writes the next. The alerts hold every day but a renamed item's from
+ * before its rename.
  *
  *     node apps/factory/src/vulnerabilities/state.ts new        a key, base64, for SCAN_STATE_KEY
  *
@@ -181,9 +182,8 @@ export interface StateApi {
   bytes(path: string): Promise<Buffer | undefined>;
 }
 
-/** The most runs looked through for the last that kept a state. */
-const RUNS_PER_PAGE = 20;
-const RUN_PAGES = 3;
+/** The most runs of each event looked through for the last that kept a state. */
+const RUNS_PER_EVENT = 20;
 
 interface Runs {
   workflow_runs?: {
@@ -205,8 +205,9 @@ export interface Kept {
 
 /**
  * The newest state a run of the scan kept, sealed still: from the scan's own workflow's runs on the default branch,
- * by schedule, push or hand and from the repository itself, before the run given (its own), newest first. Undefined
- * when none of those looked through kept one that is still there.
+ * by schedule, push or hand and from the repository itself, before the run given (its own), newest first. Each event's
+ * runs are asked for by that event, so no pull request's run, a fork's from a branch of the same name among them,
+ * takes a place among those looked through. Undefined when none of them kept one that is still there.
  */
 export async function latest(
   api: StateApi,
@@ -214,23 +215,32 @@ export async function latest(
   branch: string,
   before?: string,
 ): Promise<Kept | undefined> {
-  for (let page = 1; page <= RUN_PAGES; page++) {
-    const path = `/repos/${repository}/actions/workflows/${SCAN_WORKFLOW}/runs?branch=${encodeURIComponent(branch)}&exclude_pull_requests=true&per_page=${RUNS_PER_PAGE}&page=${page}`;
-    const runs = ((await api.json(path)) as Runs).workflow_runs ?? [];
-    for (const run of runs) {
-      if (typeof run.id !== 'number' || !SCAN_EVENTS.includes(run.event ?? '')) continue;
-      if (run.head_branch !== branch || run.head_repository?.full_name !== repository) continue;
-      if (before !== undefined && BigInt(run.id) >= BigInt(before)) continue;
-      const listed = (await api.json(
-        `/repos/${repository}/actions/runs/${run.id}/artifacts?name=${STATE_ARTIFACT}&per_page=10`,
-      )) as Artifacts;
-      const artifact = listed.artifacts?.find((each) => each.name === STATE_ARTIFACT && !each.expired);
-      if (typeof artifact?.id !== 'number') continue;
-      if ((artifact.size_in_bytes ?? 0) > MAX_SEALED_BYTES) throw new StateError(`run ${run.id}'s state is too large`);
-      const archive = await api.bytes(`/repos/${repository}/actions/artifacts/${artifact.id}/zip`);
-      if (archive) return { run: String(run.id), archive };
-    }
-    if (runs.length < RUNS_PER_PAGE) break;
+  const lists = await Promise.all(
+    SCAN_EVENTS.map(async (event) => {
+      const path = `/repos/${repository}/actions/workflows/${SCAN_WORKFLOW}/runs?branch=${encodeURIComponent(branch)}&event=${event}&per_page=${RUNS_PER_EVENT}`;
+      return ((await api.json(path)) as Runs).workflow_runs ?? [];
+    }),
+  );
+  const runs = lists
+    .flat()
+    .filter(
+      (run): run is typeof run & { id: number } =>
+        typeof run.id === 'number' &&
+        SCAN_EVENTS.includes(run.event ?? '') &&
+        run.head_branch === branch &&
+        run.head_repository?.full_name === repository &&
+        (before === undefined || BigInt(run.id) < BigInt(before)),
+    )
+    .sort((a, b) => b.id - a.id);
+  for (const run of runs) {
+    const listed = (await api.json(
+      `/repos/${repository}/actions/runs/${run.id}/artifacts?name=${STATE_ARTIFACT}&per_page=10`,
+    )) as Artifacts;
+    const artifact = listed.artifacts?.find((each) => each.name === STATE_ARTIFACT && !each.expired);
+    if (typeof artifact?.id !== 'number') continue;
+    if ((artifact.size_in_bytes ?? 0) > MAX_SEALED_BYTES) throw new StateError(`run ${run.id}'s state is too large`);
+    const archive = await api.bytes(`/repos/${repository}/actions/artifacts/${artifact.id}/zip`);
+    if (archive) return { run: String(run.id), archive };
   }
   return undefined;
 }

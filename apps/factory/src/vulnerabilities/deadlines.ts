@@ -1172,7 +1172,8 @@ export function verdict(all: Row[], prove = false, moves: Move[] = []) {
 /** The whole judgement of a scan's hand-off, against the time given: each result's row, its fix and its move. */
 export async function assess(handoff: Handoff, sources: Sources, now: number, log: (line: string) => void = () => {}) {
   const findings = handoff.findings;
-  // The state the last scan kept, or, with none to read, the alerts, which hold the same days: no day is lost with it.
+  // The state the last scan kept, or, with none to read, the alerts, which hold the same days (but a renamed
+  // item's from before its rename): losing the state resets no other clock.
   const kept = (sources.state?.() ?? Promise.resolve({ none: 'this run reads none' })).then(async (answer) => {
     if ('state' in answer) return { state: answer.state };
     log(`No state to read (${answer.none}): each day is read from the alerts.`);

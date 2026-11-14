@@ -947,3 +947,98 @@ describe('a look again that cleared a held work item whose pull request cannot b
     expect(await stage(workItem)).toBe('ended');
   });
 });
+
+describe('a move’s look again', () => {
+  /** A move's work item held for Martin's merge, its first signal the dependency sense's, with a finding the move fixes. */
+  async function moveHeld(github: FakeGitHub): Promise<string> {
+    const workItem = await nextWorkItem(database.as.triage);
+    const move = { name: 'invented-pkg', ecosystem: 'npm' as const, from: '2.0.0', to: '2.0.1' };
+    await events.append([
+      event(
+        workItem,
+        'work-item.opened',
+        {
+          kind: 'dependency-update',
+          title: 'Move invented-pkg',
+          sample: false,
+          category: 'security',
+          dependency: { ...move, security: true },
+        },
+        'triage',
+      ),
+      event(
+        workItem,
+        'ticket.opened',
+        {
+          title: 'Move invented-pkg, in npm',
+          category: 'security',
+          severity: 'broken',
+          fingerprint: { name: 'invented-pkg', ecosystem: 'npm' },
+          traces: [],
+        },
+        'triage',
+      ),
+      event(
+        workItem,
+        'signal.received',
+        {
+          sense: 'dependency',
+          check: 'vulnerabilities',
+          version: OLD,
+          symptom: 'vulnerable-dependency',
+          move: {
+            repository: 'the-roganator/cv-worlds-worst-website',
+            ...move,
+            pins: [{ file: 'pnpm-lock.yaml', line: 40 }],
+          },
+          evidence: [
+            {
+              kind: 'scan',
+              findings: [
+                {
+                  advisory: 'GHSA-0000-0000-0001',
+                  package: 'invented-pkg',
+                  severity: { scanner: 'high' },
+                  fixed: '2.0.1',
+                },
+              ],
+              rest: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+            },
+          ],
+        },
+        'triage',
+      ),
+      event(workItem, 'hold.started', {
+        stage: 'review',
+        kind: 'approval',
+        cause: 'merge',
+        reason: 'Held for the test',
+      }),
+    ]);
+    github.pulls.set(12, {
+      number: 12,
+      state: 'open',
+      merged: false,
+      mergeCommit: null,
+      mergedBy: null,
+    } as unknown as ReturnType<FakeGitHub['pulls']['get']> & object);
+    return workItem;
+  }
+
+  it('reads the app’s scan of the release, as Verify does, and never says it has no way to it', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    let read = 0;
+    // Each read of the scan's moves is counted; with none recorded, the read fails, and the look cannot tell yet.
+    Object.defineProperty(github, 'moves', {
+      get: () => {
+        read += 1;
+        return undefined;
+      },
+    });
+    await moveHeld(github);
+    await promoted(null);
+    await pass(it);
+    await pass(it);
+    expect(read).toBeGreaterThan(0);
+  });
+});

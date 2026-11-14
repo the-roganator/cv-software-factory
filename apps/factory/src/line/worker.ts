@@ -223,6 +223,7 @@ import {
   type FirstSignal,
   type FlagChecksPort,
   type Look,
+  type LookOptions,
   look,
   reopeningComment,
   type Target,
@@ -1306,6 +1307,16 @@ export class Line {
     }
   }
 
+  /** How a look reaches the app's scan of a release: the GitHub worker's moves, and its comparison of two commits. */
+  #scans(): NonNullable<LookOptions['scans']> {
+    return {
+      moves: (repo) => this.#o.github.read('moves', repo, {}),
+      // Whether main's later commit has the release's: GitHub's comparison of the two.
+      carries: async (repo, base, head) =>
+        ['ahead', 'identical'].includes((await this.#o.github.read('commits', repo, { base, head })).status),
+    };
+  }
+
   /** Whether a work item at Verify may be looked at: never twice at once, and not before a look that could not tell. */
   #lookDue(workItem: string): boolean {
     if (this.#inFlight.has(workItem)) return false;
@@ -1323,12 +1334,7 @@ export class Line {
     let found: Look;
     try {
       found = await look(first, target, {
-        scans: {
-          moves: (repo) => this.#o.github.read('moves', repo, {}),
-          // Whether main's later commit has the release's: GitHub's comparison of the two.
-          carries: async (repo, base, head) =>
-            ['ahead', 'identical'].includes((await this.#o.github.read('commits', repo, { base, head })).status),
-        },
+        scans: this.#scans(),
         ...this.#o.verify,
         now,
         dryRun: this.#o.dryRun,
@@ -1503,7 +1509,14 @@ export class Line {
     const target = await this.#stableTarget(promotion, promotion.previous);
     let found: Look;
     try {
-      found = await look(first, target, { ...this.#o.verify, now, dryRun: this.#o.dryRun, signal });
+      // A move's look again reads the scan of the release, as Verify's look does.
+      found = await look(first, target, {
+        scans: this.#scans(),
+        ...this.#o.verify,
+        now,
+        dryRun: this.#o.dryRun,
+        signal,
+      });
     } catch (error) {
       found = { kind: 'wait', why: `the sense could not be asked: ${messageOf(error)}` };
     }

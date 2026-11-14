@@ -1,11 +1,16 @@
 /**
- * Each open finding's deadline, worked out afresh on every run from what the scan read, the registries and code
- * scanning, with no state of its own; and the run's verdict on them. With `--memo`, the registries' and the releases'
- * answers are asked once a day and kept in that file for the day's other runs (memo.ts); code scanning, and Trivy on
- * the scan's database, are read every run.
+ * Each open finding's deadline, worked out on every run from what the scan read, the registries and the days the last
+ * run kept; and the run's verdict on them. With `--state <default branch>`, a run that writes reads those days from the
+ * state the newest earlier run kept, sealed, as its artifact (state.ts, ADR 0021), and seals the next beside what it
+ * uploads; any other run, and one that finds no state it can open, reads them from code scanning's alerts, which hold
+ * the same. With `--memo`, the registries' and the releases' answers are asked once a day and kept in that file for the
+ * day's other runs (memo.ts); Trivy on the scan's database is read every run.
  *
  *     node apps/factory/src/vulnerabilities/deadlines.ts <scan's out dir> --checkout <dir> --trivy-pin <Dockerfile>
- *       (--write | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]
+ *       (--write [--state <default branch>] | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]
+ *
+ * `--state` takes the key from SCAN_STATE_KEY and the run from GITHUB_RUN_ID, and fails before it reads anything
+ * without them.
  *
  * - **Severity** is the higher of Trivy's and the publisher's (`Finding.publisher`: Trivy's `VendorSeverity` for the
  *   advisory's own source, or Node's own rating for Node's).
@@ -23,10 +28,11 @@
  *   an image with such a finding that Trivy says is fixed has its line's newest scanned, each once, and nothing is
  *   uploaded for it; a newest that gives no time it was made (a reproducible build says 1970) gives no day. While no
  *   fix is installable there is no deadline.
- * - **The clock starts** on the later of the fix being installable and the creation of the finding's alert, read from
- *   code scanning with the job's token; a finding with no alert before today is first seen today. A rename keeps its
- *   clock: when an item is new to the list, and an alert of the same package and advisory belongs to an item no longer
- *   on it (open, or closed by this run's upload), the new finding takes that alert's day. An exception's expiry does
+ * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
+ *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
+ *   first seen today. A rename keeps its clock: when an item is new to the list, and a finding of the same package and
+ *   advisory belonged to an item no longer on it (in the state; or, in the alerts, one open or closed by this run's
+ *   upload), the new finding takes that day. An exception's expiry does
  *   not restart it: an excepted finding's alert is dismissed, not closed, and keeps its day. Critical 2 days, High 7,
  *   Medium 30, Low 90; a finding no source rates takes Low's. An excepted finding has no deadline.
  * - **The run fails** on a new High or Critical (first seen today) with a fix installable, on one due within a day,
@@ -46,7 +52,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { retried } from '../gates/retry.ts';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
-import { type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
+import { dayText, type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
 import { dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
 import {
@@ -86,6 +92,20 @@ import {
   type TrivyReport,
   trivyPin,
 } from './scan.ts';
+import {
+  fixOf,
+  latest,
+  openKept,
+  readKey,
+  readStateFix,
+  realStateApi,
+  STATE_FILE,
+  STATE_KEY,
+  STATE_VERSION,
+  type State,
+  StateError,
+  seal,
+} from './state.ts';
 
 const run = promisify(execFile);
 const DAY = 86_400_000;
@@ -166,8 +186,13 @@ export interface Sources {
   k3s(release: string): Promise<{ published: string; images: string[] } | undefined>;
   /** A file of the scanned checkout, or undefined. */
   file(path: string): string | undefined;
-  /** The scan's alerts: open, dismissed, and closed as fixed. */
+  /** The scan's alerts: open, dismissed, and closed as fixed. Read only when there is no state to read. */
   alerts(): Promise<Alert[]>;
+  /**
+   * The state the last scan kept (state.ts), opened, or why there is none to read: a run that holds no key (a proving
+   * run), no run that kept one, or one that does not open. Absent, there is none.
+   */
+  state?(): Promise<{ state: State } | { none: string }>;
 }
 
 /** The higher of Trivy's rating and the publisher's. */
@@ -355,7 +380,8 @@ const renameKey = (place: Place) =>
  */
 const SPLIT = 10 * 60_000;
 
-const placeKey = (place: Place) => JSON.stringify([place.advisory, place.file, place.package, place.repository]);
+const placeKey = (place: Pick<Place, 'advisory' | 'file' | 'package' | 'repository'>) =>
+  JSON.stringify([place.advisory, place.file, place.package, place.repository]);
 const itemKey = (place: Pick<Place, 'file' | 'repository'>) => JSON.stringify([place.file, place.repository]);
 const time = (text: string | null | undefined) => (text ? Date.parse(text) : Number.NaN);
 
@@ -891,7 +917,6 @@ export async function installable(
  */
 export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[], now: number, started: number) {
   if (Number.isNaN(started)) throw new Error('the scan gave no time it started');
-  const today = Math.floor(now / DAY) * DAY;
   const onList = new Set(targets.map((target) => itemKey({ file: target.file, repository: itemOf(target.label) })));
   // Each place's alerts: the earliest open or dismissed, and those closed as fixed, newest first.
   const live = new Map<string, { at: number; item: string }>();
@@ -922,9 +947,6 @@ export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[]
       if (alert.created < day && Math.abs(day - alert.fixed) <= SPLIT) day = alert.created;
     first.set(key, day);
   }
-  // The items on the list before today: those with an alert, carried back as above, made before it.
-  const itemsBefore = new Set<string>();
-  for (const [key, { item }] of live) if ((first.get(key) ?? now) < today) itemsBefore.add(item);
   // Alerts of items no longer on the list, by package and advisory: open still, or closed by this run's upload.
   const gone = new Map<string, number>();
   for (const alert of alerts) {
@@ -935,9 +957,48 @@ export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[]
     const key = renameKey(place);
     gone.set(key, Math.min(gone.get(key) ?? at, at));
   }
+  const days = new Map([...live].map(([key, { item }]) => [key, { day: first.get(key) ?? now, item }]));
+  return clocked(findings, days, gone, now);
+}
+
+/**
+ * When each result was first seen, from the state the last scan kept: its place's day there; or, for an item new to
+ * the list, the day of a finding of the same package and advisory whose item is no longer on it; or now. The state
+ * holds what the last run found and nothing older, so a finding that was fixed and came back starts afresh.
+ */
+export function seenIn(findings: Finding[], targets: ReadTarget[], state: State, now: number) {
+  const onList = new Set(targets.map((target) => itemKey({ file: target.file, repository: itemOf(target.label) })));
+  const days = new Map<string, { day: number; item: string }>();
+  const gone = new Map<string, number>();
+  for (const each of state.findings) {
+    const day = Date.parse(each.seen);
+    const key = placeKey(each);
+    if (day < (days.get(key)?.day ?? Number.POSITIVE_INFINITY)) days.set(key, { day, item: itemKey(each) });
+    if (onList.has(itemKey(each))) continue;
+    const renamed = renameKey(each);
+    gone.set(renamed, Math.min(gone.get(renamed) ?? day, day));
+  }
+  return clocked(findings, days, gone, now);
+}
+
+/**
+ * Each result's clock, from each place's first day and its item, and the first day of each package and advisory whose
+ * item is no longer on the list: a place seen before today keeps its day; a result of an item with nothing before
+ * today takes a renamed item's; anything else is first seen today.
+ */
+function clocked(
+  findings: Finding[],
+  days: Map<string, { day: number; item: string }>,
+  gone: Map<string, number>,
+  now: number,
+) {
+  const today = Math.floor(now / DAY) * DAY;
+  // The items on the list before today: those with a place first seen before it.
+  const itemsBefore = new Set<string>();
+  for (const { day, item } of days.values()) if (day < today) itemsBefore.add(item);
   return findings.map((finding) => {
     const place = placeOf(finding);
-    const own = first.get(placeKey(place));
+    const own = days.get(placeKey(place))?.day;
     if (own !== undefined && own < today) return { seen: own, firstSeenToday: false };
     const renamed = itemsBefore.has(itemKey(place)) ? undefined : gone.get(renameKey(place));
     if (renamed !== undefined) return { seen: renamed, firstSeenToday: false };
@@ -968,6 +1029,19 @@ function stated(findings: Finding[], alerts: Alert[], log: (line: string) => voi
     if (!seenFix || fix.day < seenFix.day) byPlace.set(key, fix);
   }
   if (unread) log(`::warning::${unread} alerts end with a fix the grammar does not read: their day is read afresh.`);
+  return findings.map((finding) => byPlace.get(placeKey(placeOf(finding))));
+}
+
+/** The fix each result's place had in the state the last scan kept: the earliest, where a place has several. */
+function statedIn(findings: Finding[], state: State) {
+  const byPlace = new Map<string, Fix>();
+  for (const each of state.findings) {
+    if (!each.fix) continue;
+    const fix = readStateFix(each.fix);
+    const key = placeKey(each);
+    const seenFix = byPlace.get(key);
+    if (!seenFix || fix.day < seenFix.day) byPlace.set(key, fix);
+  }
   return findings.map((finding) => byPlace.get(placeKey(placeOf(finding))));
 }
 
@@ -1098,7 +1172,13 @@ export function verdict(all: Row[], prove = false, moves: Move[] = []) {
 /** The whole judgement of a scan's hand-off, against the time given: each result's row, its fix and its move. */
 export async function assess(handoff: Handoff, sources: Sources, now: number, log: (line: string) => void = () => {}) {
   const findings = handoff.findings;
-  const [found, alerts] = await Promise.all([
+  // The state the last scan kept, or, with none to read, the alerts, which hold the same days: no day is lost with it.
+  const kept = (sources.state?.() ?? Promise.resolve({ none: 'this run reads none' })).then(async (answer) => {
+    if ('state' in answer) return { state: answer.state };
+    log(`No state to read (${answer.none}): each day is read from the alerts.`);
+    return { ours: (await sources.alerts()).filter(isOurs) };
+  });
+  const [found, read] = await Promise.all([
     installable(
       findings,
       handoff.targets,
@@ -1108,21 +1188,20 @@ export async function assess(handoff: Handoff, sources: Sources, now: number, lo
       now,
       handoff.kubeVersion,
     ),
-    sources.alerts(),
+    kept,
   ]);
-  const ours = alerts.filter(isOurs);
-  const fixes = fixesOf(found.at, found.fixes, stated(findings, ours, log), now);
+  if (read.state)
+    log(`Each day read from the state run ${read.state.run} kept: ${read.state.findings.length} findings.`);
+  const states = read.state ? statedIn(findings, read.state) : stated(findings, read.ours, log);
+  const seens = read.state
+    ? seenIn(findings, handoff.targets, read.state, now)
+    : seen(findings, handoff.targets, read.ours, now, time(handoff.started));
+  const fixes = fixesOf(found.at, found.fixes, states, now);
   // A fix's day where it has one; a fix still inside pnpm's wait keeps its time, so its row starts no clock yet.
   const installableAt = fixes.map((fix, index) =>
     fix && fix.target.kind !== 'unbuilt' ? fix.day : (found.at[index] ?? 0) > now ? found.at[index] : undefined,
   );
-  const judgedRows = rows(
-    findings,
-    new Set(handoff.excepted),
-    installableAt,
-    seen(findings, handoff.targets, ours, now, time(handoff.started)),
-    now,
-  );
+  const judgedRows = rows(findings, new Set(handoff.excepted), installableAt, seens, now);
   const judged: Judged[] = judgedRows.map((row, index) => {
     const where = found.places[index] ?? {
       kind: 'third-party' as Kind,
@@ -1170,7 +1249,21 @@ export function skopeoName(repository: string) {
 }
 
 /** The sources as the workflow has them: npm, Node's index, skopeo, Trivy on the scan's database, the API. */
-function realSources(handoff: Handoff, checkout: string, trivyImage: string, work: string, token?: string): Sources {
+/** What a run that keeps a state reads the last one with: the key, its own run, and the default branch. */
+interface Keeps {
+  key: Buffer;
+  run: string;
+  branch: string;
+}
+
+function realSources(
+  handoff: Handoff,
+  checkout: string,
+  trivyImage: string,
+  work: string,
+  token?: string,
+  keeps?: Keeps,
+): Sources {
   const tools = realTools(trivyImage, handoff.cache, work);
   // Read once, outside any retry: a record that cannot be read fails the run with its own cause.
   const apiVersions = apiVersionsOf(checkout);
@@ -1392,6 +1485,30 @@ function realSources(handoff: Handoff, checkout: string, trivyImage: string, wor
       });
       return [...open, ...dismissed, ...fixed];
     },
+    async state() {
+      if (!keeps) return { none: 'this run holds no key' };
+      if (!token) throw new Error('no token to read the last state with');
+      const direct = realStateApi(token);
+      const named = (error: unknown) => {
+        const status = Number(/: (\d{3})\b/.exec(error instanceof Error ? error.message : '')?.[1]);
+        return status ? answered("the scan's runs", status) : new Error(`the scan's runs: ${reason(error)}`);
+      };
+      const api = {
+        json: (path: string) =>
+          transient(() => direct.json(path).catch((error: unknown) => Promise.reject(named(error)))),
+        bytes: (path: string) =>
+          transient(() => direct.bytes(path).catch((error: unknown) => Promise.reject(named(error)))),
+      };
+      try {
+        const kept = await latest(api, handoff.repository, keeps.branch, keeps.run);
+        if (!kept) return { none: 'no earlier run kept one that is still there' };
+        return { state: openKept(kept, keeps.key, handoff.repository) };
+      } catch (error) {
+        // A state that does not open is a state lost, never a reason to lose a day: the alerts hold them all.
+        if (error instanceof StateError) return { none: error.message };
+        throw error;
+      }
+    },
   };
 }
 
@@ -1526,6 +1643,28 @@ export function rewrite(file: Sarif, excepted: Record<string, string>, findings:
   return { file, excepted: keys };
 }
 
+/** The state a run keeps: each result as it was judged, with its day, its fix and its move's place. */
+export function stateOf(repository: string, run: string, rows: Row[], findings: Finding[]): State {
+  return {
+    version: STATE_VERSION,
+    repository,
+    run,
+    findings: findings.map((finding, index) => ({
+      advisory: finding.advisory,
+      package: finding.package,
+      installed: finding.installed,
+      file: finding.file,
+      line: finding.line,
+      repository: itemOf(finding.label),
+      severity: finding.severity,
+      ...(finding.fixed ? { fixed: finding.fixed } : {}),
+      seen: dayText(rows[index]?.seen ?? Number.NaN),
+      ...(finding.fix ? { fix: fixOf(finding.fix) } : {}),
+      ...(finding.fix && finding.move ? { move: finding.move.index } : {}),
+    })),
+  };
+}
+
 /** The verdict a scan's step after the upload fails on: written before it, read after. */
 interface Saved {
   passes: boolean;
@@ -1533,7 +1672,7 @@ interface Saved {
 }
 
 const USAGE =
-  'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]\n' +
+  'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write [--state <branch>] | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]\n' +
   '       deadlines.ts --verdict <scan out dir>';
 
 export async function main(args: string[]): Promise<number> {
@@ -1550,7 +1689,7 @@ export async function main(args: string[]): Promise<number> {
     return saved.passes ? 0 : 1;
   }
   const [dir] = args.filter(
-    (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin|memo|memo-day)$/),
+    (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin|memo|memo-day|state)$/),
   );
   const checkout = option('--checkout');
   const pinFile = option('--trivy-pin');
@@ -1559,11 +1698,14 @@ export async function main(args: string[]): Promise<number> {
   const memoFile = option('--memo');
   // The day the workflow keyed the file by, so a run that crosses midnight keeps the answers under the key it read.
   const memoDay = option('--memo-day');
+  // The default branch, for a run that keeps a state: it reads the last one kept there, and writes the next.
+  const branch = option('--state');
   if (
     !dir ||
     !checkout ||
     !pinFile ||
     prove === write ||
+    (args.includes('--state') && (!branch || branch.startsWith('--') || !write)) ||
     (args.includes('--memo') && !memoFile) ||
     (memoDay !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(memoDay))
   ) {
@@ -1576,10 +1718,25 @@ export async function main(args: string[]): Promise<number> {
     return 1;
   }
   const handoff = JSON.parse(readFileSync(join(dir, 'deadlines.json'), 'utf-8')) as Handoff;
+  const run = /^\d+$/.test(process.env.GITHUB_RUN_ID ?? '') ? process.env.GITHUB_RUN_ID : undefined;
+  let keeps: Keeps | undefined;
+  if (branch) {
+    // A run that keeps a state and cannot is stopped here, before anything is read: a scan with no state to hand on
+    // would have the next read the alerts every day, and say nothing.
+    try {
+      if (!run) throw new StateError('GITHUB_RUN_ID names no run to keep the state on');
+      keeps = { key: readKey(process.env[STATE_KEY] ?? ''), run, branch };
+      // Read once: nothing this starts (Trivy, skopeo, Helm) inherits it.
+      delete process.env[STATE_KEY];
+    } catch (error) {
+      console.error(`::error::The state cannot be kept: ${firstLine(error)}. The run fails, and nothing is uploaded.`);
+      return 1;
+    }
+  }
   const work = join(resolve(dir), 'deadlines');
   mkdirSync(work, { recursive: true });
   const now = Date.now();
-  const real = realSources(handoff, checkout, pin[1], mkdtempSync(join(work, 'work-')), process.env.GH_TOKEN);
+  const real = realSources(handoff, checkout, pin[1], mkdtempSync(join(work, 'work-')), process.env.GH_TOKEN, keeps);
   const memo = memoFile ? readMemo(memoFile, memoDay ?? dayOf(now)) : undefined;
   const asked: MemoCount = { kept: 0, asked: 0 };
   // The Helm that renders a chart, from this repository's mise.lock, in the key of each rendering kept.
@@ -1607,7 +1764,6 @@ export async function main(args: string[]): Promise<number> {
   };
   const list = moves(judged.judged, context);
   // Each result in a move names its place in moves.json and the run, after its fix (fixes.ts), so the alerts tie to it.
-  const run = /^\d+$/.test(process.env.GITHUB_RUN_ID ?? '') ? process.env.GITHUB_RUN_ID : undefined;
   let scanned: ScannedImage[];
   try {
     scanned = await scannedImages(handoff.targets, sources);
@@ -1654,6 +1810,12 @@ export async function main(args: string[]): Promise<number> {
     writeFileSync(sarifPath, JSON.stringify(rewritten.file));
     writeFileSync(exceptionsPath, JSON.stringify({ ...exceptions, excepted: rewritten.excepted }));
     writeFileSync(join(dir, 'verdict.json'), JSON.stringify({ passes, lines: lines.slice(3) } satisfies Saved));
+    // The state the next scan and the worker read, sealed: what was judged, as it is uploaded.
+    if (keeps) {
+      const state = stateOf(handoff.repository, keeps.run, judged.rows, findings);
+      writeFileSync(join(dir, STATE_FILE), seal(state, keeps.key));
+      console.log(`State kept for the next run: ${state.findings.length} findings, sealed.`);
+    }
   }
   if (process.env.GITHUB_STEP_SUMMARY)
     appendFileSync(

@@ -2,59 +2,18 @@ import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { GitHub, GitHubError } from '../../src/github/client.ts';
 import { branchPin, ecosystemsOf, groupMovesTo, rewrittenLines } from '../../src/github/dependabot.ts';
 import { LiveReads } from '../../src/github/reads.ts';
 import { ScanReads, SETTLED_MS } from '../../src/github/scanning.ts';
-import { zipEntry } from '../../src/github/zip.ts';
+import { zipEntry } from '../../src/vulnerabilities/zip.ts';
+import { zipOf } from '../vulnerabilities/zip-of.ts';
 import { CLIENT_ID, client, fakeGitHub, PRIVATE_KEY, quiet, REPO, type Route, type Sent } from './fake.ts';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'scanning');
 const fixture = (name: string) => JSON.parse(readFileSync(join(FIXTURES, name), 'utf8'));
 const CONFIG = readFileSync(join(FIXTURES, 'dependabot.yml'), 'utf8');
-
-/** A zip archive, as upload-artifact makes one: each file deflated, or stored. */
-function zipOf(files: Record<string, string>, method: 0 | 8 = 8): Buffer {
-  const locals: Buffer[] = [];
-  const centrals: Buffer[] = [];
-  let offset = 0;
-  for (const [name, text] of Object.entries(files)) {
-    const data = Buffer.from(text);
-    const packed = method === 8 ? deflateRawSync(data) : data;
-    const nameBytes = Buffer.from(name);
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(method, 8);
-    local.writeUInt32LE(crc32(data), 14);
-    local.writeUInt32LE(packed.length, 18);
-    local.writeUInt32LE(data.length, 22);
-    local.writeUInt16LE(nameBytes.length, 26);
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 4);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(method, 10);
-    central.writeUInt32LE(crc32(data), 16);
-    central.writeUInt32LE(packed.length, 20);
-    central.writeUInt32LE(data.length, 24);
-    central.writeUInt16LE(nameBytes.length, 28);
-    central.writeUInt32LE(offset, 42);
-    locals.push(local, nameBytes, packed);
-    centrals.push(central, nameBytes);
-    offset += local.length + nameBytes.length + packed.length;
-  }
-  const directory = Buffer.concat(centrals);
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(Object.keys(files).length, 8);
-  end.writeUInt16LE(Object.keys(files).length, 10);
-  end.writeUInt32LE(directory.length, 12);
-  end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...locals, directory, end]);
-}
 
 const RUNS_PATH = `/repos/${REPO}/actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&exclude_pull_requests=true&per_page=20&page=1`;
 const ALERTS_PATH = (page: number) =>

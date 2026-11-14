@@ -1,0 +1,47 @@
+# 0021: The daily scan keeps its state between runs in a sealed artifact, and the alerts remain its record
+
+## Decision
+
+The daily scan (ADR 0013) keeps what it must remember from one run to the next in one file of its own: each finding as the run judged it, with the day it was first seen, what fixes it and the day that became installable, and its move's place in `moves.json`. The file is the artifact `state` of the run that wrote it, uploaded before the results (`apps/factory/src/vulnerabilities/state.ts`). The next scan reads it for its clocks, and the GitHub worker for what `moves.json` withholds. Neither pages code scanning's alerts for what the scan itself wrote there.
+
+- **Sealed.** Both repositories are public, and so are their runs' artifacts. The file is AES-256-GCM over the gzipped JSON, with a key of the repository's own, 32 random bytes. The seal binds the repository and the run.
+- **The key is held in two places.** The scan takes it from the environment `scan-state`, which only `main` may use, in its `scan` job alone, and gives it to the one step that runs `deadlines.ts`. The GitHub worker takes it from a Secret only it mounts. `make scan-state-key` makes it once and gives both the same.
+- **A state is the scan's by where it is, not by what it says.** Its readers find it on a run of `vulnerabilities.yml` on the default branch, by schedule, push or hand, from the repository itself: the same place, found the same way, that `moves.json` is trusted from. The seal is for secrecy, and is not what makes a state trusted.
+- **Code scanning stays the record.** Every finding is still an alert, each message still ends with its fix, and the exceptions are still held there. A scan that finds no state it can open reads the alerts, which hold every day, and seals the next; so does the proving run, which holds no key. Losing the state, or its key, resets no deadline.
+- **The worker has no second source.** With no state it can open, its read of the scan's moves fails, as it fails on any disagreement, until the next scan. It reads no alert.
+
+## Why
+
+- **The alerts were the only private place the scan had,** so its memory went through them: about 10,000 open alerts, paged a hundred at a time, by the scan before every upload and by the worker on every read, some 100 seconds each, to read back what the scan had written. One file is one request.
+- **The worker's read was a join of two things that change at different times.** The artifact is whole when it is uploaded; the alerts change for minutes after, as code scanning processes the upload's twenty categories and the run dismisses the excepted. The read had to tell an upload half processed from a disagreement, keep nothing while a run was going, and settle for a minute after the last change. A state uploaded with `moves.json`, on the same run, is never out of step with it.
+- **The worker trusted text anyone with `security-events: write` could put in an alert,** held to a grammar and to the artifact's counts. A sealed file on the scan's own run is written by that run alone.
+- **A symmetric key, because the scan reads its own state.** A key pair would keep the worker from writing a state, but the scan's job must hold the half that opens one either way, and nothing that can read the key can attach an artifact to a run of the scan on the default branch. One key, and Node's own `crypto`: the scan's scripts run with no dependency.
+- **An artifact, not a cache.** A cache has no API to read one from outside a workflow, so the worker could not; and a pull request's run restores the default branch's caches, a fork's too.
+- **One key for each repository,** so the app's scan, which calls this workflow, cannot open the factory's state, nor the factory's the app's.
+
+## The threat model
+
+What is protected is the list of what is known to be vulnerable and not yet fixed, in each repository, and the deadlines the factory works to. What is at stake if a state is wrong is what the worker tells the line to patch, and when the scan fails a run.
+
+| Who | What they can do | What stops it, or bounds it |
+|---|---|---|
+| Anyone | Download every run's artifacts. | The seal: without the key the file shows its size and nothing else. `moves.json`, beside it, names no package or advisory of a lockfile's, as before. |
+| Anyone | Open a pull request from a fork, with their own copy of the workflow. | A fork's run is given no secret, and waits for Martin's approval. Its artifacts are on a pull request's run, which no reader looks at. |
+| A branch of the repository (the factory's App pushes them, and Dependabot) | Change the workflow to name the secret, or the environment. | GitHub gives an environment's secrets only to a run on `main`: the branch policy is `scripts/github-settings.ts`'s, and the drift check reads it weekly. The App cannot write a workflow file (it has no `workflows` permission), and a change to the workflow, to `deadlines.ts` or to `state.ts` is Martin's to approve (CODEOWNERS). |
+| A pull request's run of the scan (the proving run) | Upload an artifact named `state`. | Readers take a state only from a run on the default branch by schedule, push or hand; and it would not open. |
+| Whoever can write an alert (`security-events: write`) | Put any text in a Trivy alert. | The worker reads no alert. The scan reads them only with no state to open, as it always did, by its one grammar, and takes from them only days and fixes, never an instruction; a day can be made earlier or a finding first seen today, which fails a run or starts a clock late by at most the time since the state was lost. |
+| Whoever can delete artifacts or runs (`actions: write`: Martin, and `copilot-held-runs.yml`, which deletes held review runs alone) | Delete the state. | The next scan reads the alerts. No deadline moves. |
+| What runs in the scan's job: Trivy, skopeo, cosign, Helm rendering third-party charts | Read the job's environment or files. | The key is in one step's environment, of a script that deletes it from its own before starting any of them; nothing of the scanned repository runs. The findings themselves are in that job's files, as they always were. |
+| Someone with the key (it leaked from the cluster's Secret, or from GitHub) | Open every state sealed with it, past and future, until it is changed. | They learn what an attacker who scanned the public repository with Trivy would learn, with the deadlines. They cannot make a state a reader takes: that needs a run of the scan on the default branch. `make scan-state-key`, after the Secret's entry is deleted, makes a new key; the old states stay open to the old key until GitHub expires them, 90 days at most. |
+| The GitHub worker, compromised | Open the states; no more than its App's token already reads (the alerts). | It cannot write one. |
+
+What this does not protect: a scan run by hand on the default branch by someone who can push there writes a state as any run does, and Trivy's own answer is trusted as it always was. Both were true of the alerts.
+
+## Consequences
+
+- `vulnerabilities.yml`'s `scan` job uses the environment `scan-state` and may read Actions (`actions: read`). It is the third workflow that holds a secret, and the only one of them a pull request can start: `scripts/workflows.test.ts` holds the key to that one job, which a pull request's run skips, and to its one step. Each run of the scan is listed as a deployment to `scan-state` in the repository's sidebar, as the review gate's are to `review`.
+- The app's repository needs its own `scan-state` environment and key before it calls a commit of the workflow that keeps a state, and its caller grants `actions: read`. `github-settings.ts` makes the environment in both, and `--check` reports one missing, open to another branch, or without its key.
+- A scan with `--state` and no key fails before it reads anything, and uploads nothing: a scan that kept no state would have every reader fall back, and say nothing.
+- A state holds what the last run found and nothing older. A finding that was fixed and came back starts afresh, as it did; a renamed item's finding keeps its clock on the day of the rename and after, since the day is carried in the state.
+- The first scan after the key is made, or changed, or after 90 days with no run, reads the alerts once.
+- The alerts' paging stays in three places: the proving run, a scan with no state, and `alerts.ts`, which reads the dismissed alerts on every run and the open ones only while something is excepted.

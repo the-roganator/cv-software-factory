@@ -20,6 +20,7 @@ import {
   scannedImages,
   severityOf,
   skopeoName,
+  stateOf,
   toolOf,
   toolUrl,
   UNBUILT_DAYS,
@@ -35,6 +36,7 @@ import {
   type ReadTarget,
   type TrivyReport,
 } from '../../src/vulnerabilities/scan.ts';
+import type { State } from '../../src/vulnerabilities/state.ts';
 
 /**
  * Each finding's deadline (deadlines.ts), on invented findings, alerts in the shape code scanning's API gives them, and
@@ -111,6 +113,8 @@ interface World {
   targets?: ReadTarget[];
   excepted?: Finding[];
   alerts?: Alert[];
+  /** The state the last scan kept; with none, the sources have no state to read. */
+  state?: State;
   published?: Record<string, string>;
   releases?: { version: string; date: string }[];
   tags?: Record<string, string[]>;
@@ -177,7 +181,12 @@ function sourcesOf(world: World) {
       return world.toolReports?.[`${tool}@${version}`];
     },
     file: (path) => world.files?.[path],
-    alerts: async () => world.alerts ?? [],
+    async alerts() {
+      // A run with a state to read never reads the alerts.
+      if (world.state) throw new Error('the alerts were read, with a state to read');
+      return world.alerts ?? [];
+    },
+    ...(world.state && { state: async () => ({ state: world.state as State }) }),
   };
   return { sources, asked };
 }
@@ -194,8 +203,17 @@ async function judge(world: World, now = NOW) {
     kubeVersion: world.kubeVersion,
   };
   const { sources, asked } = sourcesOf(world);
-  const { rows, fixes, judged } = await assess(handoff, sources, now);
-  return { rows, fixes, judged, asked, verdict: verdict(rows) };
+  const lines: string[] = [];
+  const { rows, fixes, judged } = await assess(handoff, sources, now, (line) => lines.push(line));
+  /** The state this run would keep, as run 1's. */
+  const kept = () =>
+    stateOf(
+      REPOSITORY,
+      '1',
+      rows,
+      judged.map((each) => each.finding),
+    );
+  return { rows, fixes, judged, asked, lines, kept, verdict: verdict(rows) };
 }
 
 /** A Trivy report of an image made at the time given, with the findings given. */
@@ -780,6 +798,182 @@ describe('the clock', () => {
     const before = npm({ line: 120, installed: '0.9.0' });
     const { rows } = await judge({ findings: [finding], alerts: [alertOf(before, '2026-10-01T00:00:00Z')] });
     expect(rows[0]?.seen).toBe(at('2026-10-01T00:00:00Z'));
+  });
+});
+
+describe('the clock, from the state the last scan kept', () => {
+  const published = { 'example-a@1.0.1': '2025-01-01T00:00:00Z' };
+  const target = (file: string): ReadTarget => ({ key: `lockfile ${file}`, kind: 'lockfile', file, label: file });
+  const lockfile = (file: string, over: Partial<Finding> = {}) =>
+    npm({ item: `lockfile ${file}`, label: file, file, ...over });
+
+  it('reads each day from the state, and never the alerts', async () => {
+    const finding = npm();
+    const first = await judge({ findings: [finding], published, alerts: [alertOf(finding, '2026-10-01T00:00:00Z')] });
+    const next = await judge({ findings: [finding], published, state: first.kept() }, NOW + DAY);
+    expect(next.rows[0]?.seen).toBe(at('2026-10-01T00:00:00Z'));
+    expect(next.rows[0]?.due).toBe(first.rows[0]?.due);
+    expect(next.lines).toContain('Each day read from the state run 1 kept: 1 findings.');
+  });
+
+  it('reads the alerts when there is no state, and says why: no day is lost with it', async () => {
+    const finding = npm();
+    const { sources } = sourcesOf({
+      findings: [finding],
+      published,
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+    });
+    const lines: string[] = [];
+    const handoff: Handoff = {
+      repository: REPOSITORY,
+      started: new Date(NOW - 600_000).toISOString(),
+      cache: '/nowhere',
+      findings: [finding],
+      excepted: [],
+      targets: [LOCKFILE],
+    };
+    const lost = { ...sources, state: async () => ({ none: 'the state does not open with this key' }) };
+    const { rows } = await assess(handoff, lost, NOW, (line) => lines.push(line));
+    expect(rows[0]?.seen).toBe(at('2026-10-01T00:00:00Z'));
+    expect(lines).toContain(
+      'No state to read (the state does not open with this key): each day is read from the alerts.',
+    );
+  });
+
+  it('judges a day the same from the state as from the alerts', async () => {
+    const old = npm();
+    const fresh = os({ severity: 'CRITICAL' });
+    const none = npm({ package: 'example-n', advisory: 'CVE-2099-20007', fixed: undefined });
+    const world = {
+      findings: [old, fresh, none],
+      published,
+      tags: { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'] },
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-08T00:00:00Z') },
+    };
+    const alerts = [
+      alertOf(old, '2026-10-01T00:00:00Z'),
+      alertOf(fresh, '2026-11-09T04:30:00Z'),
+      alertOf(none, '2026-09-01T00:00:00Z'),
+    ];
+    const first = await judge({ ...world, alerts }, NOW);
+    // The alerts as the first run's upload left them: each message ends with its fix.
+    const uploaded = first.judged.map((each, i) => alertOf(each.finding, alerts[i]?.created_at ?? ''));
+    const fromAlerts = await judge({ ...world, alerts: uploaded }, NOW + DAY);
+    const fromState = await judge({ ...world, state: first.kept() }, NOW + DAY);
+    expect(fromState.rows).toEqual(fromAlerts.rows);
+    expect(fromState.fixes).toEqual(fromAlerts.fixes);
+    expect(fromState.verdict).toEqual(fromAlerts.verdict);
+  });
+
+  it('first sees today a finding the state has not, and keeps that day on the day’s next run', async () => {
+    const known = npm();
+    const added = npm({ package: 'example-b', advisory: 'CVE-2099-20003' });
+    const first = await judge({ findings: [known], published, alerts: [alertOf(known, '2026-10-01T00:00:00Z')] });
+    const second = await judge({ findings: [known, added], published, state: first.kept() }, NOW + DAY);
+    expect(second.rows[1]).toMatchObject({ seen: NOW + DAY, firstSeenToday: true });
+    const third = await judge({ findings: [known, added], published, state: second.kept() }, NOW + DAY + 3_600_000);
+    expect(third.rows[1]).toMatchObject({ seen: NOW + DAY, firstSeenToday: true });
+    const fourth = await judge({ findings: [known, added], published, state: third.kept() }, NOW + 2 * DAY);
+    expect(fourth.rows[1]).toMatchObject({ seen: NOW + DAY, firstSeenToday: false });
+  });
+
+  it('starts afresh a finding that was fixed and came back: the state holds only what the last run found', async () => {
+    const finding = npm();
+    const first = await judge({ findings: [finding], published, alerts: [alertOf(finding, '2026-10-01T00:00:00Z')] });
+    const fixed = await judge({ findings: [], published, state: first.kept() }, NOW + DAY);
+    const back = await judge({ findings: [finding], published, state: fixed.kept() }, NOW + 2 * DAY);
+    expect(back.rows[0]).toMatchObject({ seen: NOW + 2 * DAY, firstSeenToday: true });
+  });
+
+  it('keeps a renamed item’s clock, on the day of the rename and every day after', async () => {
+    const old = lockfile('apps/old/pnpm-lock.yaml');
+    const moved = lockfile('apps/new/pnpm-lock.yaml');
+    const first = await judge({
+      findings: [old],
+      targets: [target('apps/old/pnpm-lock.yaml')],
+      published,
+      alerts: [alertOf(old, '2026-10-01T00:00:00Z')],
+    });
+    const renamed = { findings: [moved], targets: [target('apps/new/pnpm-lock.yaml')], published };
+    const second = await judge({ ...renamed, state: first.kept() }, NOW + DAY);
+    expect(second.rows[0]).toMatchObject({ seen: at('2026-10-01T00:00:00Z'), firstSeenToday: false });
+    const third = await judge({ ...renamed, state: second.kept() }, NOW + 2 * DAY);
+    expect(third.rows[0]).toMatchObject({ seen: at('2026-10-01T00:00:00Z'), firstSeenToday: false });
+  });
+
+  it('starts its own clock for the same package in an item that was on the list before: no rename', async () => {
+    const old = lockfile('apps/old/pnpm-lock.yaml');
+    const other = lockfile('apps/other/pnpm-lock.yaml');
+    const others = lockfile('apps/other/pnpm-lock.yaml', { package: 'example-z', advisory: 'CVE-2099-20009' });
+    const first = await judge({
+      findings: [old, others],
+      targets: [target('apps/old/pnpm-lock.yaml'), target('apps/other/pnpm-lock.yaml')],
+      published,
+      alerts: [alertOf(old, '2026-10-01T00:00:00Z'), alertOf(others, '2026-09-01T00:00:00Z')],
+    });
+    const second = await judge(
+      { findings: [other, others], targets: [target('apps/other/pnpm-lock.yaml')], published, state: first.kept() },
+      NOW + DAY,
+    );
+    expect(second.rows[0]).toMatchObject({ seen: NOW + DAY, firstSeenToday: true });
+  });
+
+  it('keeps the fix the state has when this run finds none, and never moves its day forward', async () => {
+    const finding = os();
+    const tags = { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'] };
+    const first = await judge({
+      findings: [finding],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+      tags,
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-03T00:00:00Z') },
+    });
+    expect(first.fixes[0]?.day).toBe(at('2026-11-03T00:00:00Z'));
+    // The newest has the finding again: the fix once installable stands, with its day.
+    const second = await judge(
+      {
+        findings: [finding],
+        state: first.kept(),
+        tags,
+        images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-09T00:00:00Z', [finding]) },
+      },
+      NOW + DAY,
+    );
+    expect(second.fixes[0]).toEqual(first.fixes[0]);
+    expect(second.rows[0]?.due).toBe(first.rows[0]?.due);
+  });
+
+  it('keeps each finding’s place in its move, and none for one excepted or with no fix', () => {
+    const fix = { target: { kind: 'version', versions: ['1.0.1'] } as Target, day: at('2026-11-03T00:00:00Z') };
+    const row = (finding: Finding) => ({
+      finding,
+      severity: finding.severity,
+      excepted: false,
+      seen: at('2026-10-01T00:00:00Z'),
+      firstSeenToday: false,
+      bucket: 'none' as const,
+    });
+    const findings = [
+      npm({ fix, move: { index: 2, run: '1' } }),
+      npm({ package: 'example-b', fix }),
+      npm({ package: 'example-c', fixed: undefined }),
+    ];
+    expect(stateOf(REPOSITORY, '1', findings.map(row), findings).findings).toEqual([
+      {
+        advisory: 'CVE-2099-20001',
+        package: 'example-a',
+        installed: '1.0.0',
+        file: 'pnpm-lock.yaml',
+        line: 120,
+        repository: 'pnpm-lock.yaml',
+        severity: 'HIGH',
+        fixed: '1.0.1',
+        seen: '2026-10-01T00:00:00Z',
+        fix: { target: 'version 1.0.1', day: '2026-11-03T00:00:00Z' },
+        move: 2,
+      },
+      expect.objectContaining({ package: 'example-b', fix: { target: 'version 1.0.1', day: '2026-11-03T00:00:00Z' } }),
+      expect.not.objectContaining({ fix: expect.anything() }),
+    ]);
   });
 });
 

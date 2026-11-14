@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { syftPin } from '../apps/factory/src/vulnerabilities/graph.ts';
-import { ENVIRONMENTS, KEY_BRANCH } from './github-settings.ts';
+import { ENVIRONMENTS, KEY_BRANCH, SCAN_STATE_ENVIRONMENT } from './github-settings.ts';
 
 /**
  * Every workflow, as GitHub reads it (spec 6, guardrails 1 and 2): none runs a pull request's code where a secret is,
- * none runs on a machine of its own, and only two hold a secret, each from an environment only main may use, and each
- * checking out nothing but main's own files.
+ * none runs on a machine of its own, and only two hold an App's key, each from an environment only main may use, and
+ * each checking out nothing but main's own files. A third holds the key the scan seals its state with (ADR 0021), in
+ * the one job of it no pull request reaches, from an environment only main may use, and gives it to one step.
  */
 const DIR = '.github/workflows';
 
@@ -22,6 +23,10 @@ const WITH_A_SECRET: Record<string, string[]> = {
   'drift-check.yml': ['schedule', 'workflow_dispatch'],
   'review.yml': ['workflow_run', 'workflow_call'],
 };
+
+/** The scan, whose `scan` job holds the key its state is sealed with: a pull request starts its other jobs alone. */
+const SCAN = 'vulnerabilities.yml';
+const SCAN_JOB = 'scan';
 
 /**
  * The files each of those checks out, and copilot-held-runs.yml, whose token may delete runs: the toolchain's pins and
@@ -157,23 +162,24 @@ describe('every workflow', () => {
     }
   });
 
-  it('holds a secret only in drift-check.yml and review.yml, started by nothing a pull request starts', () => {
+  it('holds a secret only in drift-check.yml and review.yml, started by nothing a pull request starts, and the scan', () => {
     const holding = workflows.filter(({ workflow }) =>
       Object.values(workflow.jobs).some((job) => {
         const { names, passed } = secretsOf(workflow, job);
         return names.length > 0 || passed;
       }),
     );
-    expect(holding.map(({ file }) => file).sort()).toEqual(Object.keys(WITH_A_SECRET).sort());
+    expect(holding.map(({ file }) => file).sort()).toEqual([...Object.keys(WITH_A_SECRET), SCAN].sort());
     for (const { file, workflow } of holding) {
-      expect(triggers(workflow).sort(), file).toEqual([...(WITH_A_SECRET[file] ?? [])].sort());
+      // The scan's own test, below, holds its key to the one job a pull request never reaches.
+      if (file !== SCAN) expect(triggers(workflow).sort(), file).toEqual([...(WITH_A_SECRET[file] ?? [])].sort());
       expect(workflow.env, file).toBeUndefined();
     }
   });
 
   it('holds each secret in a job that uses its environment, which only main may use, and only that one’s key', () => {
     const environments = ENVIRONMENTS['the-roganator/cv-software-factory'] ?? [];
-    for (const file of Object.keys(WITH_A_SECRET)) {
+    for (const file of [...Object.keys(WITH_A_SECRET), SCAN]) {
       const workflow = read(file);
       for (const [id, job] of Object.entries(workflow.jobs)) {
         const { names, passed } = secretsOf(workflow, job);
@@ -188,7 +194,42 @@ describe('every workflow', () => {
     }
   });
 
-  it('checks out nothing but main’s own files where a secret or a write to Actions is: a sparse copy at its commit', () => {
+  it('gives the scan’s key to the one job no pull request reaches, and in it to the one step that seals the state', () => {
+    const workflow = read(SCAN);
+    for (const [id, job] of Object.entries(workflow.jobs)) {
+      const holds = secretsOf(workflow, job).names.length > 0;
+      expect(holds, id).toBe(id === SCAN_JOB);
+      expect(environmentOf(job), id).toBe(id === SCAN_JOB ? SCAN_STATE_ENVIRONMENT.name : undefined);
+    }
+    const job = workflow.jobs[SCAN_JOB] as Job;
+    // A pull request's run skips the job, its first step refuses any event but the default branch's, and GitHub gives
+    // the environment's secrets to no ref but main (github-settings.ts), whatever a branch's copy of this file says.
+    expect(job.if).toBe(expression("github.event_name != 'pull_request'"));
+    expect(job.steps?.[0]?.name).toBe('Refuse a privileged context');
+    expect(job.steps?.[0]?.run).toContain('The scan runs only on a push to the default branch');
+    expect(job.env).toBeUndefined();
+    const steps = job.steps ?? [];
+    const given = steps.filter((step) => JSON.stringify(step).includes('secrets.'));
+    expect(given).toHaveLength(1);
+    expect(given[0]?.env?.[SCAN_STATE_ENVIRONMENT.key]).toBe(expression(`secrets.${SCAN_STATE_ENVIRONMENT.key}`));
+    // That step runs one script of this repository's, from the sparse copy at the workflow's commit; the scanned
+    // repository's checkout is data, and no step runs a file of it.
+    expect(given[0]?.uses).toBeUndefined();
+    expect(given[0]?.run?.trim()).toMatch(/^node factory\/apps\/factory\/src\/vulnerabilities\/deadlines\.ts /);
+    expect(given[0]?.run?.match(/\bnode\b/g)).toHaveLength(1);
+    const own = steps.find((step) => step.uses?.startsWith('actions/checkout@') && step.with?.path === 'factory');
+    expect(own?.with?.ref).toBe(expression('job.workflow_sha'));
+    expect(own?.with?.repository).toBe(expression('job.workflow_repository'));
+    expect(own?.with?.['sparse-checkout-cone-mode']).toBe(false);
+    for (const step of steps) {
+      if (step.uses?.startsWith('actions/checkout@')) expect(step.with?.['persist-credentials'], step.name).toBe(false);
+      for (const [, script] of (step.run ?? '').matchAll(/\bnode\s+(\S+)/g))
+        expect(script, step.name).toMatch(/^factory\/apps\/factory\/src\/vulnerabilities\//);
+      expect(step.run ?? '', step.name).not.toMatch(/(^|[\s;&|(])(\.\/)?scanned\/\S*(\s|$)/m);
+    }
+  });
+
+  it('checks out nothing but main’s own files where an App’s key or a write to Actions is: a sparse copy at its commit', () => {
     // Every workflow that holds a secret is here, so a new one with no list of its own fails.
     for (const file of Object.keys(WITH_A_SECRET)) expect(Object.keys(CHECKED_OUT), file).toContain(file);
     for (const file of Object.keys(CHECKED_OUT)) {
@@ -501,7 +542,13 @@ describe('vulnerabilities.yml', () => {
   it('gives no job more than it needs, and the proving run no write of any kind', () => {
     expect(workflow.permissions).toEqual({});
     expect(jobs.coverage?.permissions).toEqual({ contents: 'read' });
-    expect(jobs.scan?.permissions).toEqual({ contents: 'read', packages: 'read', 'security-events': 'write' });
+    // The scan reads the last run's state, an artifact (`actions: read`), and no job may write Actions.
+    expect(jobs.scan?.permissions).toEqual({
+      actions: 'read',
+      contents: 'read',
+      packages: 'read',
+      'security-events': 'write',
+    });
     // The proving run reads the alerts, for the deadlines' counts, and writes nothing.
     expect(jobs.prove?.permissions).toEqual({ contents: 'read', packages: 'read', 'security-events': 'read' });
     expect(jobs.scan?.if).toBe(expression("github.event_name != 'pull_request'"));
@@ -514,6 +561,12 @@ describe('vulnerabilities.yml', () => {
     const steps = jobs.scan?.steps ?? [];
     const upload = steps.findIndex((step) => step.uses?.includes('upload-sarif'));
     expect(steps[upload - 1]?.name).toMatch(/^Refuse to upload/);
+    // The state is uploaded before the results, and fails the run when there is none: no upload is without its state.
+    const state = steps.findIndex((step) => step.uses?.includes('upload-artifact') && step.with?.name === 'state');
+    expect(state).toBeGreaterThan(-1);
+    expect(state).toBeLessThan(upload);
+    expect(steps[state]?.with?.['if-no-files-found']).toBe('error');
+    expect((jobs.prove?.steps ?? []).some((step) => step.with?.name === 'state')).toBe(false);
   });
 
   it('refuses, in each job that writes, any event but a push to the default branch, the schedule or a run by hand', () => {

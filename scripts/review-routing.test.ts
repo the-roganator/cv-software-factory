@@ -231,6 +231,70 @@ describe('approval routing: the rule, the first that holds', () => {
     expect(route(elsewhere)).toMatchObject({ pass: false, rule: 'held' });
   });
 
+  describe('a Critical vulnerability’s fix, in the app’s repository', () => {
+    const title = "A Critical vulnerability's fix: protobufjs's CVE-1 gone from pnpm-lock.yaml";
+    const pin = { reason: 'pnpm-lock.yaml is not a pin file under deploy/' };
+    const fixing = (over: Partial<Facts> = {}) =>
+      facts({ tags: [tag('dependency-change', 'pnpm-lock.yaml')], pin, criticalFix: { title }, ...over });
+
+    it('passes it whatever AUTONOMY says, as low-risk: the line queues it only at Guarded or above', () => {
+      for (const autonomy of ['', 'guarded', 'lights-out', 'Lights-out'])
+        expect(route(fixing({ autonomy }))).toMatchObject({ pass: true, rule: 'critical-fix', title });
+    });
+
+    it('passes code-owned on its pins’ files alone, and holds every other tag', () => {
+      const node = [
+        tag('dependency-change', 'package.json'),
+        tag('code-owned', 'Dockerfile (/Dockerfile)', 'mise.toml (/mise.toml)', 'mise.lock (/mise.lock)'),
+      ];
+      expect(route(fixing({ tags: node }))).toMatchObject({ pass: true, rule: 'critical-fix' });
+      for (const [tags, why] of [
+        [[tag('code-owned', 'pnpm-workspace.yaml (/pnpm-workspace.yaml)')], 'it is code-owned beyond its pins'],
+        [[tag('code-owned', '.github/workflows/check.yml (/.github/)')], 'it is code-owned beyond its pins'],
+        [[tag('code-owned', 'more files than GitHub lists: the rest are unread')], 'it is code-owned beyond its pins'],
+        [[{ ...tag('code-owned', 'Dockerfile (/Dockerfile)'), more: 3 }], 'it is code-owned beyond its pins'],
+        [[tag('dependency-change'), tag('test-loosening')], 'it carries test-loosening'],
+        [[tag('dependency-change'), tag('security-headers')], 'it carries security-headers'],
+        [[tag('dependency-change'), tag('improvement')], 'it carries improvement'],
+        [[tag('release')], 'it carries release'],
+      ] as const) {
+        const said = route(fixing({ tags: [...tags] }));
+        expect(said, why).toMatchObject({ pass: false, rule: 'held' });
+        expect(said.title).toContain(`not a critical fix: ${why}`);
+      }
+    });
+
+    it('holds one it could not prove for Martin, keeping its tag and naming the first condition it failed', () => {
+      const reason =
+        'the scans show no Critical fixed: the worst it fixes is x’s CVE-2, which the gate’s scanner rates HIGH';
+      const said = route(fixing({ criticalFix: { reason } }));
+      expect(said).toMatchObject({ pass: false, rule: 'held', tags: [{ tag: 'dependency-change' }] });
+      expect(said.title).toBe(
+        `Held for its risk tags (dependency-change); not a critical fix: ${reason}: waits for Martin to approve aaaaaaa`,
+      );
+      // At Lights-out, the level passes a dependency's change as it always has.
+      expect(route(fixing({ criticalFix: { reason }, autonomy: 'lights-out' }))).toMatchObject({ rule: 'lights-out' });
+    });
+
+    it('never passes one whose base was changed, nor one that is not the App’s, nor here', () => {
+      expect(route(fixing({ retargeted: true })).title).toContain('not a critical fix: its base was changed');
+      expect(route(fixing({ pr: pr(42) }))).toMatchObject({ pass: false, rule: 'held' });
+      expect(
+        route(
+          fixing({ pr: pr(FACTORY_APP, 'someone/fork', { base: { ref: 'main', repo: { full_name: APP_REPO } } }) }),
+        ),
+      ).toMatchObject({
+        pass: false,
+      });
+      expect(route(fixing({ labelsRemoved: ['dependency-change'] }))).toMatchObject({ pass: false, rule: 'held' });
+      expect(route(fixing({ unread: 'GET /files: 502' }))).toMatchObject({ pass: false, rule: 'held' });
+      const here = fixing({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO) });
+      expect(route(here)).toMatchObject({ pass: false, rule: 'held' });
+      // Martin's say, and an exact pin, come first.
+      expect(route(fixing({ reviews: [approved()] }))).toMatchObject({ rule: 'martin-approved-head' });
+    });
+  });
+
   it('passes it at Lights-out, in the app’s repository, but never a release, an improvement or a code-owned path', () => {
     const lightsOut = (tags: Found[]) => route(facts({ autonomy: 'lights-out', tags }));
     expect(lightsOut([tag('test-loosening'), tag('dependency-change'), tag('security-headers')])).toMatchObject({

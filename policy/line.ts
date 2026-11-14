@@ -22,14 +22,14 @@ import type { Rule } from './review-verdict.ts';
 /**
  * The review gate's rules the line adds its own pull request to the merge queue by, at each autonomy level, with
  * auto-merge on (spec 4.3, deviation 2): at Supervised none, so every change waits for Martin's merge; at Guarded a
- * low-risk change, an exact pin, and a head Martin approved on GitHub; at Lights-out those, and the gate's Lights-out
- * pass of a risk-tagged change. Martin's own pull request (`martin-opened`) is his to merge, at every level. The gate
+ * low-risk change, an exact pin, a Critical vulnerability's fix the gate proved (ADR 0020), and a head Martin approved
+ * on GitHub; at Lights-out those, and the gate's Lights-out pass of a risk-tagged change. Martin's own pull request (`martin-opened`) is his to merge, at every level. The gate
  * passes by a rule only when its own reading of the diff allows it, so the stricter of the two always wins.
  */
 export const ENQUEUES: Readonly<Record<Autonomy, readonly Rule[]>> = {
   supervised: [],
-  guarded: ['low-risk', 'exact-pin', 'martin-approved-head'],
-  'lights-out': ['low-risk', 'exact-pin', 'martin-approved-head', 'lights-out'],
+  guarded: ['low-risk', 'exact-pin', 'critical-fix', 'martin-approved-head'],
+  'lights-out': ['low-risk', 'exact-pin', 'critical-fix', 'martin-approved-head', 'lights-out'],
 };
 
 /** Whether the line adds its own pull request to the merge queue by the gate's rule, at the level and switch in force. */

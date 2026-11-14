@@ -22,6 +22,8 @@ const DECIDES = [
   'scripts/review-gate.ts',
   // The review gate's pin moves, which review.yml's pin move job works out for it.
   'scripts/pin-moves.ts',
+  // And its Critical fixes, which review.yml's critical fix job works out for it in the app.
+  'scripts/critical-fixes.ts',
 ];
 
 /** What it must never reach, each with why. A path ending in `/` is everything under it. */
@@ -103,9 +105,17 @@ function walk(starts: string[]) {
   return { files, bare, dynamic };
 }
 
+/**
+ * The runner's files a Critical fix runs, the pin step's own derivation of a lockfile (ADR 0020): they call no model,
+ * and the walk still follows each of their imports, so one that came to reach a model would fail here.
+ */
+const PIN_STEP = ['apps/runner/src/pins.ts', 'apps/runner/src/git.ts', 'apps/runner/scripts/install-pnpm.ts'];
+
 const reaches = (files: Map<string, string>) =>
-  [...files.keys()].filter((file) =>
-    Object.keys(MODEL_CODE).some((path) => (path.endsWith('/') ? file.startsWith(path) : file === path)),
+  [...files.keys()].filter(
+    (file) =>
+      !PIN_STEP.includes(file) &&
+      Object.keys(MODEL_CODE).some((path) => (path.endsWith('/') ? file.startsWith(path) : file === path)),
   );
 
 /** How a file was reached, from where the walk started. */

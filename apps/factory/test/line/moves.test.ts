@@ -12,6 +12,7 @@ import type { DependencyPull } from '../../src/github/dependabot.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import { commitTitle } from '../../src/line/agents/agent.ts';
 import {
+  compareVersions,
   moveIssue,
   moveNote,
   moveSection,
@@ -210,6 +211,36 @@ describe('a move that needs no coder', () => {
     ).toThrow(/names no version of @grpc\/grpc-js/);
     // Node's and an image's are what the pin step writes.
     expect(writtenVersion({ ecosystem: 'node', name: 'node', from: '24.11.0', to: '24.11.1' }, '')).toBe('24.11.1');
+  });
+
+  it('leaves out an importer the move left as it was, shown only as context', () => {
+    const pins = [
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml',
+      '--- a/pnpm-lock.yaml',
+      '+++ b/pnpm-lock.yaml',
+      '@@ -10,9 +10,9 @@ importers:',
+      '   packages/legacy:',
+      '     dependencies:',
+      "       '@grpc/grpc-js':",
+      '         specifier: ~1.13.0',
+      '         version: 1.13.6',
+      '   .:',
+      '     dependencies:',
+      "       '@grpc/grpc-js':",
+      '-        version: 1.14.4',
+      '+        version: 1.14.7',
+      '',
+    ].join('\n');
+    expect(writtenVersion(GRPC, pins)).toBe('1.14.7');
+  });
+
+  it('orders versions as semver does, a pre-release’s numbers as numbers', () => {
+    expect(compareVersions('2.0.0-rc.10', '2.0.0-rc.9')).toBe(1);
+    expect(compareVersions('2.0.0-rc.9', '2.0.0')).toBe(-1);
+    expect(compareVersions('2.0.0-rc.1', '2.0.0-beta.2')).toBe(1);
+    expect(compareVersions('1.14.7', '1.14.5')).toBe(1);
+    expect(compareVersions('1.14.5', '1.14.5')).toBe(0);
+    expect(compareVersions('2.0.0-alpha', '2.0.0-alpha.1')).toBe(-1);
   });
 
   it('reads a package no importer names from the versions its patch adds to the lockfile’s packages', () => {
@@ -589,11 +620,30 @@ describe('what the line says of a move', () => {
         patch: "@@ -287,1 +287,1 @@\n-  '@grpc/grpc-js@1.14.4':\n+  '@grpc/grpc-js@1.14.7':",
       },
     ];
-    const move = { name: '@grpc/grpc-js', from: '1.14.4', to: '1.14.5', pins: [{ file: 'pnpm-lock.yaml', line: 290 }] };
+    const move = {
+      name: '@grpc/grpc-js',
+      ecosystem: 'npm' as const,
+      from: '1.14.4',
+      to: '1.14.5',
+      pins: [{ file: 'pnpm-lock.yaml', line: 290 }],
+    };
     expect(pinChanges(files, move, ['pnpm-lock.yaml'])).toEqual([
       { file: 'package.json', before: '"@grpc/grpc-js": "~1.14.4",', after: '"@grpc/grpc-js": "~1.14.7",' },
       { file: 'pnpm-lock.yaml', before: "'@grpc/grpc-js@1.14.4':", after: "'@grpc/grpc-js@1.14.7':" },
     ]);
+    // Node's pins are where its signal says: a coder's `engines` line in package.json is not one.
+    const engines = {
+      path: 'package.json',
+      patch: '@@ -5,1 +5,1 @@\n-    "node": ">=22"\n+    "node": ">=24"',
+    };
+    const node = {
+      name: 'node',
+      ecosystem: 'node' as const,
+      from: '24.11.0',
+      to: '24.11.1',
+      pins: [{ file: 'mise.toml', line: 2 }],
+    };
+    expect(pinChanges([engines], node, ['pnpm-lock.yaml'])).toEqual([]);
   });
 
   it('writes the spec, the pins and the gates’ counts, with no word of a model’s among the figures', () => {

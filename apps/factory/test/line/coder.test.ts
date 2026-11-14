@@ -726,3 +726,20 @@ describe('the coder', () => {
     });
   });
 });
+
+describe('the coder on a dependency’s move', () => {
+  const moving = FIXTURES.coder['dependency-move']?.input as CoderInput;
+  const move = { ecosystem: 'npm' as const, name: 'vitest', from: '5.0.5', to: '5.1.0' };
+
+  it('is told the line’s move under it, as a floor, and how to say it adds nothing', () => {
+    const prompt = coder.prompt({ ...moving, move });
+    expect(prompt).toContain('The line moved vitest (npm) from 5.0.5 to 5.1.0 or later before your step');
+    expect(prompt).toContain('write exactly {"moved": true} instead');
+  });
+
+  it('is told both again in a step the fence sent back that carries its session', () => {
+    const prompt = coder.prompt(coderInputAfterRefusal({ ...moving, move }, FENCED, 's'));
+    expect(prompt).toContain('The line moved vitest (npm) from 5.0.5 to 5.1.0 or later before your step');
+    expect(prompt).toContain('write exactly {"moved": true} instead');
+  });
+});

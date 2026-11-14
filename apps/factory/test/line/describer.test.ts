@@ -167,6 +167,10 @@ describe('the describer of a dependency’s move', () => {
         message: 'a move’s summary names pino, the package that moves, as its signal does, in its title too',
       }),
     ]);
+    // As a sentence would write it: the name in any case, so Node’s move may say “Node.js”.
+    const node = describer.schema({ ...moved, moved: 'node' });
+    const nodeSummary = { title: 'Node.js had a flaw', description: 'Node moves.', story: 'The scan saw node.' };
+    expect(node.safeParse({ ...result({}), summary: nodeSummary }).success).toBe(true);
     // Any other change's summary names nothing in particular.
     expect(describer.schema(input).safeParse({ ...result({}), title: 'fix(smoke): count it' }).success).toBe(true);
   });

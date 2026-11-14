@@ -637,6 +637,9 @@ function again(input: CoderInput): string[] {
         `Nothing of that patch was kept: the checkout is back where ${round > 1 ? 'this round' : 'you'} started. Make the ${asked.kind === 'ticket' ? 'fix' : 'change'} again, changing only files the scope allows. A test that will not fit in a test file the scope allows is one to leave out; say so in your note.`,
         ...recheck,
         ...needing,
+        // A move is written again under the checkout: a step that carries its session is reminded of it, and how to say
+        // it adds nothing; one without its session is told it all again below, as a first step is.
+        ...(resumed(input) && input.move ? [...movedLines(input), MOVED] : []),
       ]
     : declineAll
       ? ['Take what you take inside the same scope.', ...recheck]
@@ -786,7 +789,8 @@ export const coder = defineAgent<CoderInput, CoderResult>({
         if (error instanceof UnreadMove) throw new StepFailed(error.message);
         throw error;
       }
-      title = moveTitle(move.name, version);
+      // Held to the rule the coder's and the describer's are: a title that breaks it is the line's own failure.
+      title = commitTitle.parse(moveTitle(move.name, version));
       note = moveNote(move, version, pins, !context.pinned?.alone);
     } else {
       ({ title, note } = result);

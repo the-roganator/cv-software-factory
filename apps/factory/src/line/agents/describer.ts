@@ -101,7 +101,8 @@ export const describerResultFor = (title: z.ZodType<string>, moved?: string) =>
       // A move's summary names what moves, each part of it: the console shows the title and the card alone.
       if (!moved) return;
       for (const field of ['title', 'description', 'story'] as const) {
-        if (summary[field].includes(moved)) continue;
+        // As a sentence would write it: `node` in “Node.js”, an image’s name as its signal names it.
+        if (summary[field].toLowerCase().includes(moved.toLowerCase())) continue;
         const message = `a move’s summary names ${moved}, the package that moves, as its signal does, in its ${field} too`;
         ctx.addIssue({ code: 'custom', path: [field], message });
       }

@@ -97,11 +97,14 @@ export const movesAlone = (spec: PayloadOf<'spec.written'>): boolean =>
 export const targetWords = (move: Pick<PinnedMove, 'ecosystem' | 'to'>, as = (word: string) => word): string =>
   move.ecosystem === 'npm' ? `${as(move.to)} or later` : as(move.to);
 
-/** Two versions compared as semver orders them: a pre-release before its release. */
+/**
+ * Two versions compared as semver orders them: by major, minor and patch, then a pre-release before its release, and
+ * pre-releases by their dot-separated identifiers, numbers as numbers and below words (`rc.9` before `rc.10`).
+ */
 export function compareVersions(a: string, b: string): number {
   const parse = (v: string) => {
-    const [core = '', pre] = v.split('+')[0]?.split(/-(.*)/s) ?? [];
-    return { nums: core.split('.').map((n) => Number(n)), pre };
+    const [core = '', pre] = (v.split('+')[0] ?? '').split(/-(.*)/s);
+    return { nums: core.split('.').map((n) => Number.parseInt(n, 10) || 0), pre };
   };
   const [x, y] = [parse(a), parse(b)];
   for (let i = 0; i < 3; i++) {
@@ -111,7 +114,18 @@ export function compareVersions(a: string, b: string): number {
   if (x.pre === y.pre) return 0;
   if (x.pre === undefined) return 1;
   if (y.pre === undefined) return -1;
-  return x.pre < y.pre ? -1 : 1;
+  const [xs, ys] = [x.pre.split('.'), y.pre.split('.')];
+  for (let i = 0; i < Math.max(xs.length, ys.length); i++) {
+    const [p, q] = [xs[i], ys[i]];
+    if (p === undefined) return -1;
+    if (q === undefined) return 1;
+    if (p === q) continue;
+    const [pn, qn] = [/^\d+$/.test(p), /^\d+$/.test(q)];
+    if (pn && qn) return Number(p) < Number(q) ? -1 : 1;
+    if (pn !== qn) return pn ? -1 : 1;
+    return p < q ? -1 : 1;
+  }
+  return 0;
 }
 
 /** Why the line will not title a move: the pins say no version it can name, or one below the move's floor. */
@@ -147,10 +161,10 @@ export function writtenVersion(move: PinnedMove, pins: string): string {
         if (new RegExp(`^\\s+'?${named}'?:\\s*$`).test(text)) {
           for (const next of after.slice(i + 1, i + 3)) {
             const m = /^\s+version:\s*'?([^\s'(]+)/.exec(next.text);
-            if (m?.[1]) {
-              importer.push(m[1]);
-              break;
-            }
+            if (!m?.[1]) continue;
+            // An importer the move left as it was, shown as context, is not one the pin step wrote.
+            if (next.added) importer.push(m[1]);
+            break;
           }
         }
         const key = new RegExp(`^\\s+'?${named}@([^\\s'(:]+)'?(\\(.*\\))?:`).exec(text);
@@ -296,12 +310,13 @@ export const MOST_PINS = 20;
  */
 export function pinChanges(
   files: readonly { path: string; patch: string | null }[],
-  move: Pick<Move, 'name' | 'from' | 'to' | 'pins'>,
+  move: Pick<Move, 'name' | 'from' | 'to' | 'pins'> & Partial<Pick<Move, 'ecosystem'>>,
   lockfiles: readonly string[],
 ): PinChange[] {
-  // The manifests too: the pin step moves a package's range there (`pnpm update` writes it), though a signal that found
-  // the package in a lockfile pins only that.
-  const pinned = new Set([...move.pins.map((pin) => pin.file), ...lockfiles, 'package.json']);
+  // A package's manifests too: the pin step moves its range there (`pnpm update` writes it), though a signal that found
+  // the package in a lockfile pins only that. Node's and an image's pins are where the signal says.
+  const manifests = move.ecosystem === 'npm' ? ['package.json'] : [];
+  const pinned = new Set([...move.pins.map((pin) => pin.file), ...lockfiles, ...manifests]);
   // Whole words only: `ms` is not in `items` or `@ms/x`, nor 2.1.2 in 12.1.20; a version after `@`, as a lockfile
   // writes it, is.
   const words = [move.name, move.from, move.to].map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
@@ -309,7 +324,7 @@ export function pinChanges(
   const named = (line: string) => pattern.test(line);
   const out: PinChange[] = [];
   for (const file of files) {
-    const nested = [...lockfiles, 'package.json'].some((l) => file.path.endsWith(`/${l}`));
+    const nested = [...lockfiles, ...manifests].some((l) => file.path.endsWith(`/${l}`));
     if (!file.patch || !(pinned.has(file.path) || nested)) continue;
     let hunks: ReturnType<typeof parsePatch>[number]['hunks'];
     try {

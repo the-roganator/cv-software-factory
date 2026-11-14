@@ -1,5 +1,5 @@
 # The dev container: the same toolchain as a laptop, installed by mise from mise.toml and mise.lock.
-FROM mcr.microsoft.com/devcontainers/base:3.0.12-noble@sha256:ec556aed93f62aa6d13fe72c5db09da4e29a7c9b87c568dbca0ee5717466926a
+FROM mcr.microsoft.com/devcontainers/base:3.0.13-noble@sha256:48be4adec1c1ecbe030064700aef85382f5205786a8f82937fc44a7473717eae
 
 # mise from its GitHub release, at the version every workflow's mise-action pins (scripts/toolchain.test.ts holds them
 # together), for the platform being built. Each SHA-256 is copied from that release's SHASUMS256.txt once its

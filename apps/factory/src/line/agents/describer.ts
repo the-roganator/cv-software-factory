@@ -30,6 +30,8 @@
 import type { PayloadOf, Stage } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import { z } from 'zod';
+import { LOCKFILE_NAMES } from '../../github/paths.ts';
+import { moveSection, pinChanges, replacedFor } from '../moves.ts';
 import { cites } from '../review.ts';
 import {
   answerOf,
@@ -37,6 +39,7 @@ import {
   closesAnIssue,
   commitTitle,
   defineAgent,
+  type EffectsContext,
   failedAttemptLines,
   mentions,
   need,
@@ -46,6 +49,7 @@ import {
 import { contradictedList, flagLine, refersTo, side } from './coder.ts';
 import { type Asked, askedLines, askedName, askedTitle, type Signal, seen } from './evidence.ts';
 import { unrenderedFolds } from './folds.ts';
+import { isMove } from './planner.ts';
 
 export type Review = PayloadOf<'review.submitted'>;
 
@@ -150,6 +154,7 @@ function prompt(input: DescriberInput): string {
     'The gates and the reviewer have passed the change: do not run the tests, start the app, send it requests or change anything. Read what you need to explain it, and no more.',
     '',
     ...(asked.kind === 'request' ? improvementWriting(spec) : FIX_WRITING),
+    ...(asked.kind === 'ticket' && isMove(asked.ticket) ? MOVE_WRITING : []),
   ].join('\n');
 }
 
@@ -167,6 +172,12 @@ const FIX_WRITING = [
   '- `story`: one paragraph, at most 1200 characters, in the past tense: what the senses saw, what the planner’s spec asked for, how the coder wrote a failing test and then the fix, and what the gates and the reviewer said in each round.',
   '',
   'Then write the result, {"title","summary":{"title","description","story"}}, and the description as its own file: the system prompt says where each goes.',
+];
+
+/** What the describer is told of a move's description, whose figures the line writes itself. */
+const MOVE_WRITING = [
+  '',
+  'This change is a dependency’s move. The line adds a section of its own after your description: the spec, each pin before and after, and what the scan gates counted on `main` and on the change, from their own notices, and the Dependabot pull request it replaces, if there is one. So write no version, pin, digest, advisory or count of findings in the description or the summary: say what moves and why in words, and what, if anything, the coder had to change beyond the pins.',
 ];
 
 /**
@@ -213,14 +224,16 @@ export const describer = defineAgent<DescriberInput, DescriberResult>({
   },
   schema: ({ asked }) => describerResultFor(titleFor(asked)),
   prompt,
-  apply: async (described, _handback, { pullRequest: number, spec }, context) => {
+  apply: async (described, _handback, { pullRequest: number, spec, asked }, context) => {
     const pr = await context.read('pullRequest', { number });
+    // A move's description ends with the factory's own section, every figure in it the line's (`moves.ts`).
+    const move = asked.kind === 'ticket' && isMove(asked.ticket) ? await moveSectionFor(context, pr, spec) : '';
     // The description first: the pull request leaves draft with it, never with the draft's.
     await context.once('description', () =>
       context.act('updatePullRequest', {
         number,
         title: described.title,
-        body: `${described.body}\n\n${refersTo(context.issue)}`.trim(),
+        body: [described.body, move, refersTo(context.issue)].filter(Boolean).join('\n\n').trim(),
         // The section test integrity reads, after the describer's words, which keep none of their own: the merge
         // queue's run reads it here.
         contradicts: spec.contradicts ?? [],
@@ -236,3 +249,20 @@ export const describer = defineAgent<DescriberInput, DescriberResult>({
     ];
   },
 });
+
+/**
+ * The factory's section of a move's description: the spec, each pin before and after from the pull request's diff,
+ * what the scan gates counted at its head, and the Dependabot pull request it replaces.
+ */
+async function moveSectionFor(
+  context: EffectsContext,
+  pr: { head: { sha: string }; base: { ref: string } },
+  spec: PayloadOf<'spec.written'>,
+): Promise<string> {
+  const move = (await context.signals()).findLast((signal) => signal.sense === 'dependency')?.move;
+  if (!move) return '';
+  const compared = await context.read('comparison', { base: pr.base.ref, head: pr.head.sha });
+  const pins = pinChanges(compared.files, move, LOCKFILE_NAMES);
+  const counts = await context.scanCounts(pr.head.sha);
+  return moveSection(spec, pins, counts, await replacedFor(context, context.state.ticket));
+}

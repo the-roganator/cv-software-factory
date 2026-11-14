@@ -193,11 +193,24 @@ describe('validation', () => {
     const verified = {
       ...started,
       type: 'verification.finished',
-      version: 5,
+      version: 6,
       actor: 'factory',
       payload: { outcome: 'cleared', sense: 'probe', check: 'search', against: 'v0.9.3', pages: [], dryRun: false },
     };
     expect(validate(verified)).toEqual({ ok: true });
+    // A move's verification keeps the scan of the release: its commit and the counts before and after, and no sense.
+    const counts = { critical: 0, high: 1, medium: 0, low: 2, unknown: 0 };
+    const scanned = { kind: 'scan', commit: 'c'.repeat(40), before: counts, after: { ...counts, high: 0 } };
+    const { sense: _sense, ...bySense } = verified.payload;
+    expect(validate({ ...verified, payload: { ...bySense, check: 'vulnerabilities', evidence: scanned } })).toEqual({
+      ok: true,
+    });
+    // Counts alone: a signal's scan, which names packages and advisories, is not a verification's.
+    const listed = { kind: 'scan', findings: [], rest: counts };
+    expect(validate({ ...verified, payload: { ...bySense, evidence: listed } }).ok).toBe(false);
+    expect(validate({ ...verified, payload: { ...bySense, evidence: { ...scanned, commit: 'ccccccc' } } }).ok).toBe(
+      false,
+    );
     // A page names another work item the release carried only when it is not this one's own.
     const page = { page: '/about', route: '/about', screenshot: 'a'.repeat(64), changed: 0.2 };
     const withPage = (p: Record<string, unknown>) =>
@@ -1499,7 +1512,7 @@ describe('upcasting the real catalogue', () => {
       ['signal.rechecked', 2],
     ] as const) {
       const payload = { check: 'missing-header@*', evidence: http };
-      expect(upcast({ type, version: from, payload })).toMatchObject({ event: { version: from + 1, payload } });
+      expect(upcast({ type, version: from, payload })).toMatchObject({ event: { version: VERSIONS[type], payload } });
     }
   });
 
@@ -1838,7 +1851,7 @@ describe('upcasting the real catalogue', () => {
   it('reads version 1 of verification.finished as a verification that ran, by a sense it never named', () => {
     const v1 = { outcome: 'cleared', check: 'Every page', against: 'v0.9.0', pages: [] };
     const read = upcast({ type: 'verification.finished', version: 1, payload: v1 });
-    expect(read).toMatchObject({ event: { version: 5, payload: { ...v1, dryRun: false } } });
+    expect(read).toMatchObject({ event: { version: 6, payload: { ...v1, dryRun: false } } });
     expect(read.ok && validate(asNew(read.event))).toEqual({ ok: true });
   });
 

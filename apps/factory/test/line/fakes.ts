@@ -8,8 +8,10 @@ import type { Found, Rule } from '../../../../policy/review-verdict.ts';
 import type { Handback } from '../../../runner/src/step.ts';
 import type { Contradicted } from '../../src/gates/contradicts.ts';
 import { described } from '../../src/github/actions.ts';
+import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { DeployBuild, DeployProposal } from '../../src/github/deploys.ts';
 import type { Annotation, CheckRun, Comparison, PullRequestState } from '../../src/github/reads.ts';
+import type { Moves } from '../../src/github/scanning.ts';
 import type {
   ActingFor,
   ActionArgs,
@@ -160,6 +162,10 @@ export class FakeGitHub implements GitHubPort {
    */
   gate: { rule: Rule; tags?: Found[]; refusal?: unknown; pending?: string; completedAt?: string } | 'pending' | 'none' =
     { rule: 'low-risk' };
+  /** The app's open Dependabot pull requests, as the worker reads them from their branches and changed lines. */
+  dependencyPulls: DependencyPull[] = [];
+  /** The scan's moves, as the worker reads the last finished run on main; none answers as a worker with no key would. */
+  moves: Moves | undefined;
   /** Whether each pull request conflicts with main, as GitHub says. */
   conflicts: boolean | null = false;
   /** The pull requests in the merge queue, and the last taken out of it, with why. */
@@ -404,6 +410,11 @@ export class FakeGitHub implements GitHubPort {
         const pr = [...this.pulls.values()].find((p) => p.head.ref === args.branch && p.state === 'open');
         return answer(pr ? structuredClone(pr) : null);
       }
+      case 'dependencyPulls':
+        return answer(structuredClone(this.dependencyPulls));
+      case 'moves':
+        if (!this.moves) throw new Error('The worker has no App key, so it cannot read the scan’s moves');
+        return answer(structuredClone(this.moves));
     }
     throw new Error(`No fake read ${read}`);
   }

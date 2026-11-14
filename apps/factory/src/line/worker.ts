@@ -211,6 +211,7 @@ import {
   zeroCounts,
 } from './metrics.ts';
 import { stepCalls, workItemSpend } from './model-calls.ts';
+import { type GateCounts, moveIssue } from './moves.ts';
 import { type Own, pagesFor } from './pictures.ts';
 import { type Pending, Queue, type QueueItem, type Takes, takesOf } from './queue.ts';
 import { type Carried, carried, Releases, type ReleaseWatchOptions } from './release.ts';
@@ -1298,6 +1299,12 @@ export class Line {
     let found: Look;
     try {
       found = await look(first, target, {
+        scans: {
+          moves: (repo) => this.#o.github.read('moves', repo, {}),
+          // Whether main's later commit has the release's: GitHub's comparison of the two.
+          carries: async (repo, base, head) =>
+            ['ahead', 'identical'].includes((await this.#o.github.read('commits', repo, { base, head })).status),
+        },
         ...this.#o.verify,
         now,
         dryRun: this.#o.dryRun,
@@ -1356,7 +1363,11 @@ export class Line {
       case 'finished': {
         const { pages, artifacts } = await shown(true);
         const v = { ...found.verification, pages };
-        const said = v.dryRun ? 'by the dry run’s word' : `by the ${v.sense ?? 'sense'}`;
+        const said = v.dryRun
+          ? 'by the dry run’s word'
+          : v.evidence?.kind === 'scan'
+            ? 'by the scan of the release'
+            : `by the ${v.sense ?? 'sense'}`;
         await this.#append(workItem, [
           {
             type: 'verification.finished',
@@ -1401,6 +1412,7 @@ export class Line {
   async #latestPromotion(from?: string): Promise<Promotion | undefined> {
     const [latest] = await this.#o.sql<(Omit<Promotion, 'at'> & { at: Date })[]>`
       select payload->>'version' as version, payload->>'release' as release, payload->>'previous' as previous,
+             payload->>'commit' as commit,
              (payload->>'watched')::boolean is not false as watched, ts as at, seq from events
       where type = 'release.promoted' and (payload->>'dryRun')::boolean is not true
         ${from === undefined ? this.#o.sql`` : this.#o.sql`and seq >= ${from}`}
@@ -1420,11 +1432,18 @@ export class Line {
           where type = 'canary.stepped' and payload->>'release' = ${release}
           order by seq desc limit 1`
       : [];
+    // The image the release runs, as its start recorded it: what a move's scan must have read.
+    const [started] = await this.#o.sql<{ digest: string | null; commit: string | null }[]>`
+      select payload->'image'->>'digest' as digest, payload->>'commit' as commit from events
+      where type = 'release.started' and payload->>'release' = ${release}
+      order by seq desc limit 1`;
     return {
       against,
       dryRun: false,
       version: promotion.version,
       at: promotion.at,
+      ...(started?.digest ? { digest: started.digest } : {}),
+      ...(started?.commit || promotion.commit ? { commit: (started?.commit ?? promotion.commit) as string } : {}),
       ...(watched ? { analysis: { release, against: promotion.previous, measures: step?.measures ?? [] } } : {}),
     };
   }
@@ -1482,7 +1501,9 @@ export class Line {
       case 'finished': {
         const { outcome, evidence } = found.verification;
         if (outcome === 'cleared' || outcome === 'persists') {
-          return this.#rechecked(workItem, { ...base, ...looked, outcome, ...(evidence ? { evidence } : {}) });
+          // A look again keeps a sense's evidence; the scan's counts are a verification's alone.
+          const kept = evidence && evidence.kind !== 'scan' ? { evidence } : {};
+          return this.#rechecked(workItem, { ...base, ...looked, outcome, ...kept });
         }
         return;
       }
@@ -1696,41 +1717,54 @@ export class Line {
     }
   }
 
-  /** The move a dependency's work item names, as it was opened, for the pin step: none for any other work item. */
+  /**
+   * The move a dependency's work item names, for the pin step: its newest target, from the last signal triage joined
+   * to it (a target that changed since the work item opened joins as a later signal), or as it was opened when no
+   * signal names one. None for any other work item.
+   */
   async #moveOf(workItem: string): Promise<Step['move']> {
-    const [row] = await this.#o.sql<
-      { dependency: { name: string; ecosystem: Ecosystem; from: string; to: string } | null }[]
-    >`
-      select payload->'dependency' as dependency
-      from events where work_item = ${workItem} and type = 'work-item.opened' order by seq limit 1`;
-    const dependency = row?.dependency;
-    return dependency
-      ? { ecosystem: dependency.ecosystem, name: dependency.name, from: dependency.from, to: dependency.to }
-      : undefined;
+    type Named = { name: string; ecosystem: Ecosystem; from: string; to: string };
+    const [row] = await this.#o.sql<{ moved: Named | null; dependency: Named | null }[]>`
+      select (select payload->'move' from events
+               where work_item = ${workItem} and type = 'signal.received' and payload ? 'move'
+               order by seq desc limit 1) as moved,
+             (select payload->'dependency' from events
+               where work_item = ${workItem} and type = 'work-item.opened' order by seq limit 1) as dependency`;
+    if (!row?.dependency) return undefined;
+    const { ecosystem, name, from, to } = row.moved ?? row.dependency;
+    return { ecosystem, name, from, to };
   }
 
   /** The ticket's first signal: its sense, check, route and evidence, never a report's words. */
   async #firstSignal(workItem: string): Promise<FirstSignal | undefined> {
-    const [row] = await this.#o.sql<
-      {
-        sense: SignalSource;
-        check: string;
-        route: string | null;
-        symptom: SymptomClass | null;
-        evidence: Evidence[] | null;
-      }[]
-    >`
+    type Row = {
+      sense: SignalSource;
+      check: string;
+      route: string | null;
+      symptom: SymptomClass | null;
+      evidence: Evidence[] | null;
+      move: { repository: string; name: string } | null;
+    };
+    const read = (newest: boolean) => this.#o.sql<Row[]>`
       select payload->>'sense' as sense, payload->>'check' as check, payload->>'route' as route,
-             payload->>'symptom' as symptom, payload->'evidence' as evidence
-      from events where work_item = ${workItem} and type = 'signal.received' order by seq limit 1`;
+             payload->>'symptom' as symptom, payload->'evidence' as evidence, payload->'move' as move
+      from events where work_item = ${workItem} and type = 'signal.received'
+        ${newest ? this.#o.sql`and payload->>'sense' = 'dependency'` : this.#o.sql``}
+      order by seq ${newest ? this.#o.sql`desc` : this.#o.sql``} limit 1`;
+    let [row] = await read(false);
+    // A dependency's is verified by the move's newest signal: triage joins a changed target or changed findings as a
+    // later signal, and the pin step moved to that one. Only the dependency sense's: another sense's, joined to the
+    // same ticket, names no move.
+    if (row?.sense === 'dependency') [row] = await read(true);
     return (
       row && {
         sense: row.sense,
         check: row.check,
-        // A dependency's names a move, on no page: Verify holds its ticket for Martin before any route is read.
+        // A dependency's names a move, on no page: Verify reads the scan of the release, not a route.
         route: row.route ?? '*',
         ...(row.symptom ? { symptom: row.symptom } : {}),
         evidence: row.evidence ?? [],
+        ...(row.move ? { move: { repository: row.move.repository, name: row.move.name } } : {}),
       }
     );
   }
@@ -1982,9 +2016,10 @@ export class Line {
       base,
       session: item.session,
       failure: item.failure,
-      ticket: () => this.#publicTicket(workItem, state),
+      ticket: () => this.#toldTicket(workItem, state),
       request: () => this.#publicRequest(workItem),
       signals: () => this.#signals(workItem),
+      scanCounts: (commit) => this.#scanCounts(workItem, commit),
       flagsTaken: () => flagsTaken(this.#o.sql, workItem),
       read: (read, args) => this.#o.github.read(read, this.#o.repo, args),
     };
@@ -2021,9 +2056,19 @@ export class Line {
     };
   }
 
-  /** Opens the ticket's issue in the app's repository, from the ticket's public view. */
+  /**
+   * Opens the ticket's issue in the app's repository, from the ticket's public view; a move's from the ticket's own
+   * payload and its newest signal's scan (`moveIssue`), since the issue is where its package and advisories first
+   * become public.
+   */
   async #openIssue(workItem: string, state: WorkItemState): Promise<number> {
     const ticket = await this.#publicTicket(workItem, state);
+    const own = state.ticket;
+    if (own && 'ecosystem' in own.fingerprint) {
+      const signal = (await this.#signals(workItem)).findLast((each) => each.sense === 'dependency');
+      const issue = moveIssue(workItem, own, ticket, signal);
+      return this.#o.github.act('openIssue', this.#o.repo, issue, { workItem });
+    }
     const where =
       'class' in ticket.fingerprint
         ? `\`${ticket.fingerprint.class}\` on \`${ticket.fingerprint.route}\``
@@ -2288,6 +2333,20 @@ export class Line {
   }
 
   /**
+   * The ticket as an agent is told it: its public view, severity rated as there, but for a move's, whose title and
+   * fingerprint come from its own payload, since the public view may withhold the package until the issue names it,
+   * which it has by the time any agent runs. Both are fixed fields (the move's name and ecosystem), never an advisory's
+   * words.
+   */
+  async #toldTicket(workItem: string, state: WorkItemState): Promise<PayloadOf<'ticket.opened'>> {
+    const ticket = await this.#publicTicket(workItem, state);
+    const own = state.ticket;
+    return own && 'ecosystem' in own.fingerprint
+      ? { ...ticket, title: own.title, fingerprint: own.fingerprint }
+      : ticket;
+  }
+
+  /**
    * The ticket as its public view has it: what anyone may read, and so what may reach GitHub or an agent. Its severity
    * is the worst of its opening's and every rating's since (`ticket.rated`, public whole).
    */
@@ -2319,14 +2378,35 @@ export class Line {
     return row;
   }
 
-  /** What each sense saw, from their public views. A visitor's report is left out whole, not only its text. */
+  /**
+   * What each sense saw, from their public views. A visitor's report is left out whole, not only its text. A
+   * dependency's signal is told from its payload, which names the package and the advisories its public view may
+   * withhold: by the time an agent runs, the work item's issue has named them (`#openIssue`), and every word of it is
+   * a fixed field the schema bounds, never an advisory's text. Of a dependency's signals only the newest is told: triage
+   * joins a changed target or changed findings as a later signal, and the move is to that one (`#moveOf`).
+   */
   async #signals(workItem: string): Promise<Signal[]> {
-    const rows = await this.#o.sql<{ public: { payload: PayloadOf<'signal.received'> } }[]>`
-      select public from events where work_item = ${workItem} and type = 'signal.received' order by seq`;
-    return rows
-      .map((row) => row.public.payload)
+    const rows = await this.#o.sql<
+      { payload: PayloadOf<'signal.received'>; public: { payload: PayloadOf<'signal.received'> } }[]
+    >`
+      select payload, public from events where work_item = ${workItem} and type = 'signal.received' order by seq`;
+    const told = rows
+      .map((row) => (row.payload.sense === 'dependency' ? row.payload : row.public.payload))
       .filter((payload) => payload.sense !== 'report' && !payload.report)
       .map(({ report: _report, ...signal }) => signal);
+    const newest = told.findLast((signal) => signal.sense === 'dependency');
+    return newest ? told.filter((signal) => signal.sense !== 'dependency' || signal === newest) : told;
+  }
+
+  /** What the scan gates counted on a commit, as `gate.finished` recorded it: the last record of each check. */
+  async #scanCounts(workItem: string, commit: string): Promise<GateCounts[]> {
+    const rows = await this.#o.sql<{ check: string; findings: GateCounts['findings'] }[]>`
+      select distinct on (payload->>'check') payload->>'check' as check, payload->'findings' as findings
+      from events
+      where work_item = ${workItem} and type = 'gate.finished' and payload->>'commit' = ${commit}
+        and payload ? 'findings'
+      order by payload->>'check', seq desc`;
+    return rows.map(({ check, findings }) => ({ check, findings }));
   }
 
   /**
@@ -2617,6 +2697,8 @@ const untaken = (workItem: string): QueueItem => ({
 interface Promotion {
   release: string;
   version: string;
+  /** The app's commit the release runs, as its promotion names it: none before release.promoted version 2. */
+  commit?: string | null | undefined;
   previous: string;
   watched: boolean;
   at: Date;

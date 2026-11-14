@@ -178,11 +178,13 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 4 adds the other work item whose own page a page is; a version 3 verification never said.
   // Version 5 lets an HTTP exchange name what its check found wanting, as version 5 of a signal does; a version 4
   // verification's evidence named nothing.
+  // Version 6 adds the scan of the released commit, a dependency move's evidence; no version 5 verification was one's.
   'verification.finished': {
     1: (payload) => ({ ...payload, dryRun: false }),
     2: (payload) => payload,
     3: (payload) => payload,
     4: (payload) => payload,
+    5: (payload) => payload,
   },
   // Version 2 adds the planner's findings to the kinds of work item; a version 1 work item reads as it was.
   // Version 3 adds Node to a dependency's ecosystems, and lets its versions be as long as an image's tag with its

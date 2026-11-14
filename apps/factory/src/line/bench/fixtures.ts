@@ -360,6 +360,99 @@ const PRICE_SIGNALS: Signal[] = [
   },
 ];
 
+/** The app's repository, as a move names it. */
+const APP_REPOSITORY = 'the-roganator/cv-worlds-worst-website';
+
+/** A routine update of vitest, as the coder's `dependency-move` moves it: triage's ticket for it. */
+const VITEST_TICKET: PayloadOf<'ticket.opened'> = {
+  title: 'Move vitest, in npm',
+  category: 'dependency',
+  severity: 'cosmetic',
+  fingerprint: { name: 'vitest', ecosystem: 'npm' },
+  traces: [],
+};
+
+/** The dependency sense's signal for the routine update, version 6: the move and its pins at the app's main. */
+const VITEST_SIGNALS: Signal[] = [
+  {
+    sense: 'dependency',
+    check: 'dependency updates',
+    version: APP_VERSION,
+    symptom: 'outdated-dependency',
+    move: {
+      repository: APP_REPOSITORY,
+      name: 'vitest',
+      ecosystem: 'npm',
+      from: '5.0.5',
+      to: '5.1.0',
+      pins: [
+        { file: 'package.json', line: 36 },
+        { file: 'pnpm-lock.yaml', line: 215 },
+        { file: 'pnpm-lock.yaml', line: 1191 },
+        { file: 'pnpm-lock.yaml', line: 2056 },
+      ],
+    },
+  },
+];
+
+/** A vulnerable move, as triage opens a High finding's ticket: the package's name and ecosystem, never an advisory. */
+const PINO_TICKET: PayloadOf<'ticket.opened'> = {
+  title: 'Move pino, in npm',
+  category: 'security',
+  severity: 'broken',
+  fingerprint: { name: 'pino', ecosystem: 'npm' },
+  traces: [],
+};
+
+/**
+ * The dependency sense's signal for it: the move of pino within its range, and the scan's findings, two with a fix
+ * and one the move leaves. The advisories are invented: no real one is named.
+ */
+const PINO_SIGNALS: Signal[] = [
+  {
+    sense: 'dependency',
+    check: 'vulnerabilities',
+    version: APP_VERSION,
+    symptom: 'vulnerable-dependency',
+    move: {
+      repository: APP_REPOSITORY,
+      name: 'pino',
+      ecosystem: 'npm',
+      from: '10.4.0',
+      to: '10.4.1',
+      pins: [
+        { file: 'package.json', line: 29 },
+        { file: 'pnpm-lock.yaml', line: 199 },
+        { file: 'pnpm-lock.yaml', line: 1059 },
+        { file: 'pnpm-lock.yaml', line: 1912 },
+      ],
+    },
+    evidence: [
+      {
+        kind: 'scan',
+        findings: [
+          {
+            advisory: 'GHSA-9x2c-q4m7-r8vw',
+            package: 'pino',
+            severity: { scanner: 'high', publisher: 'high' },
+            fixed: '10.4.1',
+            deadline: '2026-11-20T06:00:00Z',
+          },
+          {
+            advisory: 'GHSA-3f6h-w2kp-x9jd',
+            package: 'pino',
+            severity: { scanner: 'medium' },
+            fixed: '10.4.1',
+            deadline: '2026-12-13T06:00:00Z',
+          },
+          { advisory: 'GHSA-7m4v-c8rt-h2qe', package: 'pino', severity: { scanner: 'low' } },
+        ],
+        rest: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+      },
+    ],
+  },
+];
+
 /** The shop sends neither a Content-Security-Policy nor an X-Frame-Options, and no test asks for either. */
 const HEADERS_SEED = `diff --git a/src/headers.ts b/src/headers.ts
 --- a/src/headers.ts
@@ -1323,6 +1416,30 @@ diff --git a/test/pages-about.test.ts b/test/pages-about.test.ts
 
 export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
   planner: {
+    'dependency-move': {
+      about:
+        'a routine update of vitest, 5.0.5 to 5.1.0, from its version 6 signal: the spec asks that every gate passes, quoting the move, and leaves the pins to the pin step',
+      commit: APP_MAIN,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: VITEST_TICKET },
+        signals: VITEST_SIGNALS,
+        protectedPaths: APP_PROTECTED,
+        answers: [],
+      },
+    },
+    'dependency-fix': {
+      about:
+        'a vulnerable move of pino, 10.4.0 to 10.4.1, with the scan’s findings: the spec asks that the scans no longer show them and every gate passes, each quoting the signal’s lines',
+      commit: APP_MAIN,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PINO_TICKET },
+        signals: PINO_SIGNALS,
+        protectedPaths: APP_PROTECTED,
+        answers: [],
+      },
+    },
     'wrong-price': {
       about: 'a clear defect, seeded: prices lose their second digit of pence (£35.0)',
       commit: APP_MAIN,
@@ -1588,15 +1705,9 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         workItem: FIXTURE_WORK_ITEM,
         asked: {
           kind: 'ticket',
-          ticket: {
-            title: 'Move vitest, in npm',
-            category: 'dependency',
-            severity: 'cosmetic',
-            fingerprint: { name: 'vitest', ecosystem: 'npm' },
-            traces: [],
-          },
+          ticket: VITEST_TICKET,
         },
-        signals: [],
+        signals: VITEST_SIGNALS,
         round: 1,
         protectedPaths: APP_PROTECTED,
         spec: {

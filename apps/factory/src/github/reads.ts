@@ -14,13 +14,14 @@
  * GHCR: the commits between two commits, and whether one is an ancestor of the other; the commit an image was built
  * from, and whether its pipeline signed it; and the open deploy pull request, as the deploy watch last saw it.
  *
- * For patching, the factory learns of vulnerabilities only through the worker: the scan's moves, from its artifact and
- * its alerts, checked one against the other (`scanning.ts`), and the open Dependabot pull requests, each with the pin
- * its branch names (`dependabot.ts`).
+ * For patching, the factory learns of vulnerabilities only through the worker: the scan's moves, from its `moves`
+ * artifact and the state it kept, checked one against the other (`scanning.ts`), and the open Dependabot pull
+ * requests, each with the pin its branch names (`dependabot.ts`).
  *
- * Every read is a conditional request (an artifact, which never changes, is downloaded once), so asking again about something that has not changed costs nothing against
- * the rate limit, and every answer is read through a Zod schema. Reading is harmless, so a dry run reads as a live
- * worker does; and a worker with no key reads the public repositories as anyone may.
+ * Every read is a conditional request (an artifact, which never changes, is downloaded once), so asking again about
+ * something that has not changed costs nothing against the rate limit, and every answer is read through a Zod schema.
+ * Reading is harmless, so a dry run reads as a live worker does; and a worker with no key reads the public repositories
+ * as anyone may.
  */
 import { z } from 'zod';
 import { ACTIONS_APP, scanOfCheck } from '../gates/counts.ts';
@@ -45,7 +46,7 @@ import {
 import { CODEOWNERS_PATHS, protectedFrom } from './paths.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import type { Registry } from './registry.ts';
-import { defaultBranch, type Moves, ScanReads } from './scanning.ts';
+import { defaultBranch, type Moves, ScanReads, type StateKeys } from './scanning.ts';
 import { pipeline, type Signatures, UnsignedError } from './signatures.ts';
 
 export interface PullRequestState {
@@ -183,7 +184,7 @@ export interface Reads {
   mergeability(repo: string, number: number): Promise<Mergeability>;
   /**
    * The scan's moves: the last finished run of `vulnerabilities.yml` on the default branch, its `moves.json`, and each
-   * move's findings from the open alerts, checked against it. Fails, returning nothing, when the two disagree.
+   * move's findings from the state that run kept, checked against it. Fails, returning nothing, when the two disagree.
    */
   moves(repo: string): Promise<Moves>;
   /** The open pull requests Dependabot made, each with the pin and version its branch names. */
@@ -377,13 +378,17 @@ export class LiveReads implements Reads {
 
   /**
    * Without `sources`, as in a test of the line's other reads, the release reads fail. Without `recorder`, a verdict
-   * that holds a pull request is read without its refusal.
+   * that holds a pull request is read without its refusal. Without `stateKeys`, the scan's moves cannot be read.
    */
-  constructor(github: GitHub, sources?: ReleaseSources, { recorder }: { recorder?: RefusalRecorder } = {}) {
+  constructor(
+    github: GitHub,
+    sources?: ReleaseSources,
+    { recorder, stateKeys }: { recorder?: RefusalRecorder; stateKeys?: StateKeys } = {},
+  ) {
     this.#github = github;
     this.#sources = sources;
     this.#recorder = recorder;
-    this.#scan = new ScanReads(github);
+    this.#scan = new ScanReads(github, stateKeys ? { keys: stateKeys } : {});
   }
 
   async moves(repo: string): Promise<Moves> {

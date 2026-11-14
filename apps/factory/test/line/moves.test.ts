@@ -916,7 +916,7 @@ describe('a move’s ticket as triage now rates and reopens it', () => {
       updatedAt: '2026-11-10T06:20:00Z',
       url: `https://github.com/${REPO}/actions/runs/42000000001`,
     };
-    const read = { repository: REPO, run, ...joined(REPO, run, fixture('moves.json'), fixture('alerts.json')) };
+    const read = { repository: REPO, run, ...joined(REPO, run, fixture('moves.json'), fixture('state.json')) };
     const scans = { moves: async () => read, carries: async () => false };
     const workItem = await moveTicket(signal('2.0.1'));
     await released(workItem);

@@ -682,7 +682,6 @@ describe("the sense's sends to triage", () => {
     },
     findings: [
       {
-        alert: 7,
         advisory: 'CVE-2026-1001',
         severity: 'HIGH',
         package: 'left-pad',

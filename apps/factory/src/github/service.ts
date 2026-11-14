@@ -11,7 +11,7 @@ import { type Actions, contentsReader, DryRunActions, LiveActions, queueCandidat
 import { createAttackServer } from './attacks.ts';
 import { WatchedHeads } from './branches.ts';
 import { GitHub } from './client.ts';
-import { type GitHubConfig, REPOSITORIES } from './config.ts';
+import { type GitHubConfig, REPOSITORIES, stateKeyName } from './config.ts';
 import { deployQueueWatch, pinHeadsOf, pinQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
@@ -58,7 +58,16 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   const actions: Actions = config.dryRun && dryRun ? dryRun : new LiveActions(github, { guard });
   // What each deploy watch proposes, which the line reads to say what a deploy carries.
   const proposals = new DeployProposals();
-  const liveReads = new LiveReads(github, { registry, signatures, proposals }, { recorder });
+  const without = config.repositories.filter((repo) => !config.stateKeys.has(repo));
+  if (without.length)
+    log.warn(
+      `No ${without.map(stateKeyName).join(' or ')}: the scan's moves in ${without.join(' and ')} cannot be read (make scan-state-key).`,
+    );
+  const liveReads = new LiveReads(
+    github,
+    { registry, signatures, proposals },
+    { recorder, stateKeys: (repo) => config.stateKeys.get(repo) },
+  );
   const dryRunReads = dryRun ? new DryRunReads(dryRun, liveReads, config.dryRunTimes) : undefined;
   const poller = new Poller({ intervalMs: config.pollMs, log });
 

@@ -82,7 +82,7 @@ const run = (id: number) => ({
   url: `https://github.com/the-roganator/cv-software-factory/actions/runs/${id}`,
 });
 
-/** The factory's day: an image move, and a lockfile's move whose package the alerts give. */
+/** The factory's day: an image move, and a lockfile's move whose package the scan's state gives. */
 export function factoryMoves(scanned: ScannedImage[] = FACTORY_SCANNED): Moves {
   return {
     repository: FACTORY,

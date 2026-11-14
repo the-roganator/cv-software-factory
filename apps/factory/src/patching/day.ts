@@ -1,11 +1,12 @@
 /**
  * The day, as `patching.read` holds it: a pure function of what the GitHub worker read for each repository (its moves,
- * checked against its alerts, and its open Dependabot pull requests) and of the rows the cluster's comparison made.
+ * checked against its scan's state, and its open Dependabot pull requests) and of the rows the cluster's comparison
+ * made.
  *
  * A move keeps what `moves.json` says of it. A lockfile's move, which the artifact names by its file alone, carries its
- * package apart (`package`), from its alerts, for the public view to leave out until a pull request moving it is open.
- * A move whose pin an open Dependabot pull request moves names it (`pullRequest`), matched by the dependency its branch
- * names and the directory of one of the move's pins.
+ * package apart (`package`), from the scan's state, for the public view to leave out until a pull request moving it is
+ * open. A move whose pin an open Dependabot pull request moves names it (`pullRequest`), matched by the dependency its
+ * branch names and the directory of one of the move's pins.
  *
  * Why a scan failed is what its own totals count: one past its deadline, one due within a day, a new High or Critical
  * with a fix; and `other` when none does, or it wrote no totals at all. The scan's log is the reason's own words; the
@@ -71,7 +72,7 @@ function pullFor(move: ReadMove, pulls: DependencyPull[]): DayMove['pullRequest'
   const { ecosystems, directories } = ecosystemOf(move);
   const action = ecosystems.includes('github-actions');
   // Each side read the same way: a package by its name, an Action by its owner and repository, an image by its path.
-  // A lockfile's move with no package from its alerts names none, so it matches nothing.
+  // A lockfile's move with no package from the scan's state names none, so it matches nothing.
   const key = (name: string) => (move.lockfile ? name : action ? actionPath(name) : imagePath(name));
   if (move.lockfile && !move.withheld) return undefined;
   const name = key(move.withheld?.package ?? move.name);

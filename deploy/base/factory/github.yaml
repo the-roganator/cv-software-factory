@@ -87,6 +87,21 @@ spec:
                   name: refusal-signing-key
                   key: private-key
                   optional: true
+            # The key each repository's scan seals its state with (ADR 0021), which `make scan-state-key` makes: the
+            # worker opens the state for what moves.json withholds. Optional: without one it cannot read that
+            # repository's moves, and says so.
+            - name: SCAN_STATE_KEY_CV_SOFTWARE_FACTORY
+              valueFrom:
+                secretKeyRef:
+                  name: scan-state-key
+                  key: cv-software-factory
+                  optional: true
+            - name: SCAN_STATE_KEY_CV_WORLDS_WORST_WEBSITE
+              valueFrom:
+                secretKeyRef:
+                  name: scan-state-key
+                  key: cv-worlds-worst-website
+                  optional: true
             # true for the unattended passes: each action goes to the artifact store, and nothing to GitHub.
             - name: GITHUB_DRY_RUN
               value: "false"

@@ -66,6 +66,14 @@ Never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs
 
 The GitHub worker signs each refusal it answers (its guard's, and GitHub's 403s) so the line can record it: `make refusal-key` (and so `make up`) makes its Ed25519 key once, through stdin, the Secret `refusal-signing-key` in `factory`, which only the worker reads, and its public half, the ConfigMap `refusal-key`, which the line reads, and the console, to check each relayed refusal Guardrails shows. On the host, `REFUSAL_SIGNING_KEY` and `REFUSAL_PUBLIC_KEY` take them as PEM; without them the worker answers unsigned and the line records none.
 
+Its read of the scan's moves opens the state each repository's scan keeps ([the state](COMPONENTS/SECURITY-SCANNING.md#the-state)) with that repository's key, which `make scan-state-key` makes once, as the Secret `scan-state-key` in `factory`. On the host each is a setting named for its repository, `SCAN_STATE_KEY_CV_SOFTWARE_FACTORY` and `SCAN_STATE_KEY_CV_WORLDS_WORST_WEBSITE`, the key as the Secret holds it, 32 bytes in base64:
+
+```sh
+SCAN_STATE_KEY_CV_WORLDS_WORST_WEBSITE="$(kubectl --context k3d-software-factory -n factory get secret scan-state-key -o 'jsonpath={.data.cv-worlds-worst-website}' | base64 -d)"
+```
+
+Without one the worker starts, says which repository's moves it cannot read, and fails that read naming `make scan-state-key`; one that is set and is not a key stops it starting.
+
 ## The red-team harness
 
 The red-team harness (`factory red-team`) makes each of spec 5.3's attacks Martin launches ([its page](COMPONENTS/RED-TEAM-HARNESS.md)). It connects as its own role, `factory_redteam` (`make up` makes `postgres-redteam`), and acts only on an `attack.launched` of Martin's. It makes the egress and image attacks' pods in `red-team`, a namespace of their own, so it needs the Kubernetes API (`kubectl proxy`, as the line's `soak-check` uses it); attack 1 posts a report through the app's front door (`APP_URL`, `INGRESS_URL`); attacks 2 and 3 ask the GitHub worker's attack door (`GITHUB_ATTACK_URL`, the worker's `ATTACK_PORT`). Scale the cluster's copy to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/red-team --replicas=0`), and back to one after, so two do not take the same launch:

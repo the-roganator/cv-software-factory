@@ -396,7 +396,7 @@ describe('the pin watch’s issues', () => {
     const scanned = repo.main;
     await harness(repo, () => day(scanned, factoryMoves())).pass();
     expect(repo.issues.map((i) => i.title).sort()).toEqual([
-      'Move a package in pnpm-lock.yaml (code scanning alert #5120) to the version its alerts name',
+      'Move a package in pnpm-lock.yaml (3f9a1c0b7e2d) to the version its alerts name',
       'Move example-cd to chart example-cd 10.15.0',
       'Move example/old-line off a line no longer built',
     ]);
@@ -500,7 +500,7 @@ describe('the pin watch, as review found it', () => {
     await harness(repo, () => day(scanned, [{ ...lockfile, lane: 'approval', major: true }])).pass();
     expect(appPulls(repo)).toEqual([]);
     expect(repo.issues.map((i) => i.title)).toEqual([
-      'Move a package in pnpm-lock.yaml (code scanning alert #5120) to the version its alerts name',
+      'Move a package in pnpm-lock.yaml (3f9a1c0b7e2d) to the version its alerts name',
     ]);
   });
 

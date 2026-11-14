@@ -22,6 +22,7 @@ import {
   whatClearedOnLook,
 } from '../../src/line/verify.ts';
 import type { MovesFile } from '../../src/vulnerabilities/moves.ts';
+import type { State } from '../../src/vulnerabilities/state.ts';
 import { FakeProbes } from './fakes.ts';
 
 const VERSION = 'b'.repeat(40);
@@ -678,21 +679,20 @@ describe('Verify by the scan', () => {
     updatedAt: '2026-11-10T06:20:00Z',
     url: 'https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/42000000001',
   };
-  type Alerts = Parameters<typeof joined>[3];
 
   /** The recorded read, or, with `fixedLockfile`, the same day once the lockfile's move has merged: its move gone. */
   function recorded(fixedLockfile = false): Moves {
     const file = fixture<MovesFile>('moves.json');
-    const alerts = fixture<Alerts>('alerts.json');
-    if (!fixedLockfile) return { repository: REPO, run, ...joined(REPO, run, file, alerts) };
+    const state = fixture<State>('state.json');
+    if (!fixedLockfile) return { repository: REPO, run, ...joined(REPO, run, file, state) };
     const kept = file.moves.filter((move) => !move.lockfile);
     const day = {
       ...file,
       moves: kept,
       totals: { ...file.totals, fixed: 2, moves: 1, lanes: { ...file.totals.lanes, line: 1 } },
     };
-    const open = alerts.filter((alert) => !alert.rule?.id?.startsWith('GHSA-'));
-    return { repository: REPO, run, ...joined(REPO, run, day, open) };
+    const open = state.findings.filter((finding) => !finding.advisory.startsWith('GHSA-'));
+    return { repository: REPO, run, ...joined(REPO, run, day, { ...state, findings: open }) };
   }
 
   const scans = (moves: Moves, carried = false) => ({

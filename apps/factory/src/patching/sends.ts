@@ -12,10 +12,10 @@
  * (`moveSays`). A new run of the scan is a new send, which counts on the ticket, or joins it when its target or findings
  * changed.
  *
- * A lockfile's move is sent by its package, which the read takes from the alerts (`withheld`), in the `npm` ecosystem,
- * and only it: the public views withhold the name of an `npm` move. An image's move is `docker`, and Node's own binary
- * `node`. An advisory's text never reaches a signal: only the fixed fields the alerts' grammar reads, each checked
- * against the signal's own shape, and a finding that does not fit is counted with the rest, never sent.
+ * A lockfile's move is sent by its package, which the read takes from the scan's state (`withheld`), in the `npm`
+ * ecosystem, and only it: the public views withhold the name of an `npm` move. An image's move is `docker`, and Node's
+ * own binary `node`. An advisory's text never reaches a signal: only the fixed fields the scan's state holds, each
+ * checked against the signal's own shape, and a finding that does not fit is counted with the rest, never sent.
  */
 import type { InboxSignal } from '@software-factory/events';
 import { validateSignal } from '@software-factory/events/schemas';
@@ -72,8 +72,8 @@ function targetWord(target: Target | undefined): string | undefined {
 function moveOf(repository: string, read: ReadMove): Move | string {
   if (read.lockfile) {
     const withheld = read.withheld;
-    if (!withheld) return 'a lockfile’s move whose alerts name no package';
-    // The alerts give the package's target in the scan's grammar (`version 1.0.1`).
+    if (!withheld) return 'a lockfile’s move whose package the scan’s state does not give';
+    // The state gives the package's target in the scan's grammar (`version 1.0.1`).
     const to = targetWord(readTarget(withheld.to));
     if (!to || !withheld.from) return 'a lockfile’s move with no version to move from or to';
     return { repository, name: withheld.package, ecosystem: 'npm', from: withheld.from, to, pins: withheld.pins };
@@ -102,7 +102,7 @@ function scanOf(
   let unfixed = 0;
   const sorted = reads
     .flatMap((read) => read.findings)
-    .sort((a, b) => ORDER.indexOf(RATING[a.severity]) - ORDER.indexOf(RATING[b.severity]) || a.alert - b.alert);
+    .sort((a, b) => ORDER.indexOf(RATING[a.severity]) - ORDER.indexOf(RATING[b.severity]));
   for (const finding of sorted) {
     let made = findingOf(finding);
     if (made.fixed && !fits(made)) {

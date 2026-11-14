@@ -1,6 +1,6 @@
 /**
  * What the dependency sense sends triage: one signal for each of the app's moves in the lane `line` with a target,
- * under an id that makes the same send the same, and only the fixed fields of what the alerts say.
+ * under an id that makes the same send the same, and only the fixed fields of what the scan's state says.
  */
 import { validateSignal } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
@@ -10,14 +10,13 @@ import { APP, appMoves, digest } from './fixtures.ts';
 
 const zero = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
 
-/** A finding its alert gives: the move's target (`fix`), and the advisory's own fixed versions, null for none. */
+/** A finding the scan's state gives: the move's target (`fix`), and the advisory's own fixed versions, null for none. */
 const found = (
   n: number,
   severity: MoveFinding['severity'],
   fix = 'version 1.2.4',
   fixed: string | null = '1.2.4',
 ): MoveFinding => ({
-  alert: n,
   advisory: `CVE-2026-${1000 + n}`,
   severity,
   package: 'left-pad',
@@ -156,7 +155,7 @@ describe("the sense's sends", () => {
     expect(validateSignal(sends[0]?.signal)).toEqual({ ok: true });
   });
 
-  it('gives a finding’s fixed versions each once, lowest first, however its alert ordered them', () => {
+  it('gives a finding’s fixed versions each once, lowest first, however the scan ordered them', () => {
     const AT = '2026-11-11T04:59:00Z';
     const one = sendsOf(read([{ ...image, findings: [found(3, 'HIGH', image.to, '3.10.0, 3.9.1, 3.9.1')] }]), AT);
     const two = sendsOf(read([{ ...image, findings: [found(3, 'HIGH', image.to, '3.9.1, 3.10.0')] }]), AT);

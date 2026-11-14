@@ -304,7 +304,7 @@ type Alerts = z.infer<typeof ALERTS>;
 
 /**
  * What an alert leaves once its page is read: only an alert of the scan's own with a fix in a move, with what its
- * finding holds, or one whose message does not parse, by its number alone, for `joined` to fail on in its turn.
+ * finding holds, or one whose message does not parse, by its number alone, for `joinedPaged` to fail on in its turn.
  */
 type Folded =
   | { alert: number; parsed: false }
@@ -327,11 +327,12 @@ function fold(paged: Paged, alerts: Alerts, runId: number) {
   for (const alert of alerts) {
     if (!ours(alert)) continue;
     const text = alert.most_recent_instance?.message?.text ?? '';
-    // Only a later run than the artifact's can be a read to try again; any other fails the read in `joined`.
-    const tag = readMove(text);
-    if (tag && BigInt(tag.run) > BigInt(runId)) paged.later.add(tag.run);
     const advisory = alert.rule?.id ?? '';
     const message = readMessage(text, advisory);
+    // Only a later run than the artifact's can be a read to try again; any other fails the read in `joinedPaged`. The
+    // tag is the message's own when it parses; a copy is kept, never a slice that would keep the message alive.
+    const tag = message ? message.move : readMove(text);
+    if (tag && BigInt(tag.run) > BigInt(runId)) paged.later.add(structuredClone(tag.run));
     if (!advisory || !message) {
       paged.folded.push({ alert: alert.number, parsed: false });
       continue;
@@ -339,7 +340,7 @@ function fold(paged: Paged, alerts: Alerts, runId: number) {
     if (!message.fix) continue;
     const move = message.move;
     // A result with a fix and no move is excepted (moves.ts leaves those out), its alert open until the run's next step
-    // dismisses it: it is in no move. One the artifact counts and lacks fails the counts in `joined`.
+    // dismisses it: it is in no move. One the artifact counts and lacks fails the counts in `joinedPaged`.
     if (!move) continue;
     paged.folded.push({
       alert: alert.number,
@@ -553,7 +554,7 @@ export class ScanReads {
    * A run uploads its artifact and then its results, and is still going while code scanning processes them and the
    * alerts are held to the policy: alerts that name a run still going, or a later run that finished while this read
    * paged through the alerts, are a read to try again, not a disagreement. Any other run than the artifact's fails the
-   * read in `joined`.
+   * read in `joinedPaged`.
    */
   async #settled(repo: string, later: Set<string>) {
     // The tags are the alerts' words, so at most one later run is asked about: two are a disagreement.

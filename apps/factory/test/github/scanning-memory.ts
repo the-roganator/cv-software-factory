@@ -85,7 +85,11 @@ const routes: Route[] = [
   {
     method: 'GET',
     path: /\/code-scanning\/alerts\?state=open/,
-    answer: ({ path }) => ({ body: page(Number(new URL(path, 'https://x').searchParams.get('page'))) }),
+    // Each with its ETag, as GitHub sends it, so a read that kept pages for a conditional request would keep them.
+    answer: ({ path }) => {
+      const n = Number(new URL(path, 'https://x').searchParams.get('page'));
+      return { body: page(n), headers: { etag: `"page-${n}"` } };
+    },
   },
 ];
 

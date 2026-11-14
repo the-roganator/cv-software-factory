@@ -187,7 +187,8 @@ describe('the scan’s moves', () => {
   it('answer the recorded day byte for byte as the door sends it, read whole or served again', async () => {
     const reads = new LiveReads(client(routes()).github);
     const whole = JSON.stringify({ result: await reads.moves(REPO) });
-    await expect(whole).toMatchFileSnapshot('fixtures/scanning/answer.txt');
+    // The file ends with a newline the answer has not.
+    await expect(`${whole}\n`).toMatchFileSnapshot('fixtures/scanning/answer.txt');
     expect(JSON.stringify({ result: await reads.moves(REPO) })).toBe(whole);
   });
 

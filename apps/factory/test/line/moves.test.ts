@@ -132,6 +132,46 @@ describe('a move’s newest target', () => {
   });
 });
 
+describe('a move’s newest signal, whatever else its ticket has collected', () => {
+  it('is the dependency sense’s at Verify, never a later probe’s on the same ticket', async () => {
+    const commit = 'f'.repeat(40);
+    const probe: PayloadOf<'signal.received'> = { sense: 'probe', check: 'search', route: '/search', version: commit };
+    const workItem = await moveTicket(signal('2.0.1'), probe);
+    await events.append([event(workItem, 'pull-request.merged', { number: 30, commit, by: 'martin' }, 'martin')]);
+    await database.owner`insert into line (work_item, stage, issue) values (${workItem}, 'release', 29)`;
+    const promoted = { release: 'f00dfeed01', version: commit, previous: 'e'.repeat(40), commit, watched: true };
+    await events.append([
+      event(
+        workItem,
+        'release.started',
+        {
+          ...promoted,
+          dryRun: false,
+          steps: null,
+          image: { digest: `sha256:${'2'.repeat(64)}`, signed: true, admitted: true },
+        },
+        'rollouts',
+      ),
+      event(workItem, 'release.promoted', { ...promoted, dryRun: false }, 'rollouts'),
+    ]);
+    const asked: string[] = [];
+    const scans = {
+      async moves(repo: string): Promise<never> {
+        asked.push(repo);
+        throw new Error('the test reads no further than the ask');
+      },
+      async carries() {
+        return false;
+      },
+    };
+    const { pass } = line(undefined, events, { verify: { scans } });
+    await pass();
+    await pass();
+    // Verify asked the scan for the move's repository: the probe's signal, joined later, did not replace the move.
+    expect(asked).toContain(REPO);
+  });
+});
+
 describe('a move’s issue and prompts, while its public views withhold the package and the advisory', () => {
   it('names both in the issue and in the planner’s lines, from the ticket’s own payload and the signal’s scan', async () => {
     const workItem = await moveTicket(signal('2.0.1'));

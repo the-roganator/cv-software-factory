@@ -1745,10 +1745,12 @@ export class Line {
       select payload->>'sense' as sense, payload->>'check' as check, payload->>'route' as route,
              payload->>'symptom' as symptom, payload->'evidence' as evidence, payload->'move' as move
       from events where work_item = ${workItem} and type = 'signal.received'
+        ${newest ? this.#o.sql`and payload->>'sense' = 'dependency'` : this.#o.sql``}
       order by seq ${newest ? this.#o.sql`desc` : this.#o.sql``} limit 1`;
     let [row] = await read(false);
     // A dependency's is verified by the move's newest signal: triage joins a changed target or changed findings as a
-    // later signal, and the pin step moved to that one.
+    // later signal, and the pin step moved to that one. Only the dependency sense's: another sense's, joined to the
+    // same ticket, names no move.
     if (row?.sense === 'dependency') [row] = await read(true);
     return (
       row && {

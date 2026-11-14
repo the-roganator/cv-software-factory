@@ -34,7 +34,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
   ts: '2026-10-06T05:12:00.000Z',
   work_item: null,
   type: 'patching.read',
-  version: 1,
+  version: 2,
   actor: 'factory',
   summary: 'The day’s moves: 9 in the factory, 2 in the app; 1 unscanned image running',
   payload: {
@@ -54,6 +54,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
           dueWithinDay: 6,
           newHighWithFix: 6,
           newHighWithoutFix: 35,
+          open: counts(12, 1388, 11021, 4087),
         },
         scanned: 52,
         moves: [
@@ -204,6 +205,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
           dueWithinDay: 0,
           newHighWithFix: 0,
           newHighWithoutFix: 0,
+          open: counts(0, 4, 120, 91),
         },
         scanned: 6,
         moves: [

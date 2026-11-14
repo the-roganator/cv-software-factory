@@ -84,7 +84,7 @@ export const VERSIONS = {
   // Martin's request for an improvement, in his own words (the admin service), with the work item it opens
   'improvement.requested': 1,
   // The day's moves for both repositories, and what the cluster runs that the scan's list does not say (the dependency sense)
-  'patching.read': 1,
+  'patching.read': 2,
 } as const;
 
 export type EventType = keyof typeof VERSIONS;

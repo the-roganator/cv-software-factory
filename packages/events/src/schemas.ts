@@ -588,7 +588,8 @@ const patchingRepository = z.strictObject({
   /**
    * The scan's own totals, as `moves.json` gives them, never worked out here: results with a fix and not excepted, the
    * moves and the moves in each lane; and the findings nobody can act on by a move, and those that fail the scan: with
-   * no fix, excepted, past their deadline, due within a day, and new today at High or Critical, with a fix and without.
+   * no fix, excepted, past their deadline, due within a day, and new today at High or Critical, with a fix and without;
+   * and every open finding (not excepted) by severity, fix or none, which a scan made before it counted them lacks.
    */
   totals: z
     .strictObject({
@@ -603,6 +604,7 @@ const patchingRepository = z.strictObject({
       dueWithinDay: count,
       newHighWithFix: count,
       newHighWithoutFix: count,
+      open: scanCounts.optional(),
     })
     .nullable(),
   /** How many images the scan read, which the cluster's are compared with. */

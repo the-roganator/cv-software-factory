@@ -484,6 +484,20 @@ describe('the scan’s moves', () => {
     await fails({ moves: more }, /not the shape this worker reads \(totals\)/);
   });
 
+  it('pass on every open finding by severity when the scan counted it, and on a file a scan wrote before it did', async () => {
+    expect((await read()).file?.totals).not.toHaveProperty('open');
+    const open = { CRITICAL: 1, HIGH: 0, MEDIUM: 0, LOW: 1, UNKNOWN: 0 };
+    const counted = fixture('moves.json');
+    counted.totals.open = open;
+    expect((await read({ moves: counted })).file?.totals.open).toEqual(open);
+    const { UNKNOWN: _, ...short } = open;
+    for (const bad of [short, { ...open, NONE: 1 }, { ...open, HIGH: -1 }, { ...open, LOW: 1.5 }, 3]) {
+      const wrong = fixture('moves.json');
+      wrong.totals.open = bad;
+      await fails({ moves: wrong }, /not the shape this worker reads \(totals/);
+    }
+  });
+
   it('refuse a moves.json of a version or shape it does not know', async () => {
     await fails({ moves: { ...fixture('moves.json'), version: 2 } }, /not the shape this worker reads \(version\)/);
     await fails({ moves: { ...fixture('moves.json'), extra: true } }, /not the shape/);

@@ -29,7 +29,8 @@
         "overdue": 0,
         "dueWithinDay": 9,
         "newHighWithFix": 3,
-        "newHighWithoutFix": 118
+        "newHighWithoutFix": 118,
+        "open": { "critical": 2, "high": 1363, "medium": 5623, "low": 2727, "unknown": 0 }
       },
       "scanned": 52,
       "moves": [

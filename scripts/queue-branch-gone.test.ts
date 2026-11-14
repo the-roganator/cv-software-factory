@@ -47,10 +47,24 @@ function remote(history = 1) {
   git('init', '-q', '--bare', bare);
   git('init', '-q', 'work');
   const work = (...args: string[]) => git('-C', 'work', ...args);
-  for (let i = 0; i < history; i++) work('commit', '-q', '--allow-empty', '-m', `main ${i}`);
-  const main = work('rev-parse', 'HEAD');
-  work('commit', '-q', '--allow-empty', '-m', 'the entry');
-  const sha = work('rev-parse', 'HEAD');
+  const TIP = 'refs/heads/history';
+  let made = false;
+  /** Adds an empty commit for each message, in one git process however many, and returns the last. */
+  const commit = (...messages: string[]) => {
+    const stream = messages.flatMap((message, i) => [
+      `commit ${TIP}`,
+      `committer t <t@example.com> ${Math.floor(Date.now() / 1000)} +0000`,
+      `data ${Buffer.byteLength(message)}`,
+      message,
+      ...(i === 0 && made ? [`from ${TIP}^0`] : []),
+      '',
+    ]);
+    execFileSync('git', ['-C', 'work', 'fast-import', '--quiet'], { cwd: dir, input: stream.join('\n') });
+    made = true;
+    return work('rev-parse', TIP);
+  };
+  const main = commit(...Array.from({ length: history }, (_, i) => `main ${i}`));
+  const sha = commit('the entry');
   work('push', '-q', bare, `${main}:refs/heads/main`, `${sha}:${QUEUE}`);
   const ref = (...args: string[]) => git('-C', bare, 'update-ref', ...args);
   return {
@@ -66,8 +80,8 @@ function remote(history = 1) {
     },
     /** Main moves on past it, as when the entries behind it merge with it. */
     pastIt: (commits = 1) => {
-      for (let i = 0; i < commits; i++) work('commit', '-q', '--allow-empty', '-m', `after it ${i}`);
-      work('push', '-q', bare, `${work('rev-parse', 'HEAD')}:refs/heads/main`);
+      const tip = commit(...Array.from({ length: commits }, (_, i) => `after it ${i}`));
+      work('push', '-q', bare, `${tip}:refs/heads/main`);
     },
   };
 }

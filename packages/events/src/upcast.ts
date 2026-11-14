@@ -178,11 +178,13 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 4 adds the other work item whose own page a page is; a version 3 verification never said.
   // Version 5 lets an HTTP exchange name what its check found wanting, as version 5 of a signal does; a version 4
   // verification's evidence named nothing.
+  // Version 6 adds the scan of the released commit, a dependency move's evidence; no version 5 verification was one's.
   'verification.finished': {
     1: (payload) => ({ ...payload, dryRun: false }),
     2: (payload) => payload,
     3: (payload) => payload,
     4: (payload) => payload,
+    5: (payload) => payload,
   },
   // Version 2 adds the planner's findings to the kinds of work item; a version 1 work item reads as it was.
   // Version 3 adds Node to a dependency's ecosystems, and lets its versions be as long as an image's tag with its
@@ -210,7 +212,13 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   },
   // Version 2 lets the canary reopen a ticket as any sense may; a version 1 reopening reads as it was.
   // Version 3 adds the line's reopening of a ticket a dry run verified; a version 2 reopening was a sense's.
-  'work-item.reopened': { 1: (payload) => payload, 2: (payload) => ({ ...payload, dryRun: false }) },
+  // Version 4 lets the dependency sense reopen a move's ticket, naming its move in place of a route; a version 3
+  // reopening named a route, and reads as it was.
+  'work-item.reopened': {
+    1: (payload) => payload,
+    2: (payload) => ({ ...payload, dryRun: false }),
+    3: (payload) => payload,
+  },
   // Version 2 adds where each criterion comes from. A version 1 spec never said, so its criteria read without it.
   // Version 3 adds the words each criterion quotes from there; a version 2 spec quoted none.
   // Version 4 adds an improvement's title, pages and each criterion's side of its flag; a version 3 spec named none, and
@@ -267,6 +275,9 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
         ? { ...payload, pages: payload.pages.map((page: Record<string, unknown>) => ({ ...page, scheme: 'light' })) }
         : payload,
   },
+  // Version 2 adds each repository's open findings by severity to its totals, which a scan made before it counted them
+  // never wrote: a version 1 day reads as it was, with none.
+  'patching.read': { 1: (payload) => payload },
 };
 
 export const CATALOGUE: Catalogue = { versions: VERSIONS, upcasters: UPCASTERS };

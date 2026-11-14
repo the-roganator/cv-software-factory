@@ -588,7 +588,8 @@ const patchingRepository = z.strictObject({
   /**
    * The scan's own totals, as `moves.json` gives them, never worked out here: results with a fix and not excepted, the
    * moves and the moves in each lane; and the findings nobody can act on by a move, and those that fail the scan: with
-   * no fix, excepted, past their deadline, due within a day, and new today at High or Critical, with a fix and without.
+   * no fix, excepted, past their deadline, due within a day, and new today at High or Critical, with a fix and without;
+   * and every open finding (not excepted) by severity, fix or none, which a scan made before it counted them lacks.
    */
   totals: z
     .strictObject({
@@ -603,6 +604,7 @@ const patchingRepository = z.strictObject({
       dueWithinDay: count,
       newHighWithFix: count,
       newHighWithoutFix: count,
+      open: scanCounts.optional(),
     })
     .nullable(),
   /** How many images the scan read, which the cluster's are compared with. */
@@ -704,6 +706,18 @@ function routeOrMove(found: z.infer<typeof signal>, context: z.core.$RefinementC
   }
 }
 
+/**
+ * What a verification keeps: any sense's evidence, or, for a dependency's move, the app's scan of the released commit:
+ * the commit it scanned, and the move's findings by severity before (the signal's: those it listed and the rest it
+ * counted) and after (every finding that scan still has open on the move's pins). Counts alone, never a package or an
+ * advisory, so its public form is the event's. verification.finished version 6 adds it; no verification before was a
+ * scan's.
+ */
+export const verifiedEvidence = z.discriminatedUnion('kind', [
+  ...evidence.options,
+  z.strictObject({ kind: z.literal('scan'), commit, before: severities, after: severities }),
+]);
+
 /** The payload of each event type, at its current version. */
 export const PAYLOADS = {
   'work-item.opened': z.strictObject({
@@ -757,24 +771,34 @@ export const PAYLOADS = {
   /**
    * A ticket closed as verified came back: a sense's signal on the same fingerprint, so the same defect, regressed.
    * The ticket and its work item open again, and the work goes back to Plan for a fresh pass. What came back is the
-   * signal's: the sense, its check, the route and the version it was seen on. The signal's own event follows, with its
-   * evidence.
+   * signal's: the sense, its check, where it was seen and the version it was seen on. A route's sense names its route;
+   * the dependency sense names its move's name and ecosystem in its place, the ticket's fingerprint, with no version
+   * or advisory. The signal's own event follows, with its evidence.
    *
    * Or, with `dryRun`, the line running live reopened a ticket a dry run verified, whose fix never shipped: nothing came
-   * back, as the defect never left. Then it names the ticket's first signal, whatever its source, and the version the
-   * dry run's fix would have replaced.
+   * back, as the defect never left. Then it names the ticket's first signal, whatever its source (its move, for a
+   * move's ticket), and the version the dry run's fix would have replaced. A version 3 reopening always named a route.
    */
   'work-item.reopened': z
     .strictObject({
-      sense: z.enum(V.ROUTE_SOURCES),
+      sense: z.enum(V.SIGNAL_SOURCES),
       check: text(80),
-      route: routeOrEvery,
+      route: routeOrEvery.optional(),
+      move: z.strictObject({ name: dependencyName, ecosystem: z.enum(V.ECOSYSTEMS) }).optional(),
       version: appVersion,
       reason: text(200),
       dryRun: z.boolean(),
     })
     .refine((r) => r.dryRun || (r.sense !== 'report' && r.sense !== 'planner'), {
       message: 'only a sense’s signal reopens a ticket, unless the reopening undoes a dry run’s verification',
+      path: ['sense'],
+    })
+    .refine((r) => (r.route === undefined) !== (r.move === undefined), {
+      message: 'a reopening names a route or a move, and not both',
+      path: ['move'],
+    })
+    .refine((r) => (r.sense === 'dependency') === (r.move !== undefined), {
+      message: 'the dependency sense, and only it, reopens on a move',
       path: ['sense'],
     }),
 
@@ -919,6 +943,17 @@ export const PAYLOADS = {
           : t.category !== 'dependency',
       { message: 'a move’s ticket is security or dependency, and only a move’s is dependency', path: ['category'] },
     ),
+  /**
+   * A ticket's severity raised, by triage, on the ticket's work item: a move's worst finding with a fix is worse than
+   * it was. Never lowered: `was` is the severity it had, from its opening or its last rating, and `severity` is worse.
+   * Every reader of a ticket's severity takes the worst of its opening and its ratings (`ticketSeverity`).
+   */
+  'ticket.rated': z
+    .strictObject({ severity: z.enum(V.SEVERITIES), was: z.enum(V.SEVERITIES) })
+    .refine((r) => V.SEVERITIES.indexOf(r.severity) > V.SEVERITIES.indexOf(r.was), {
+      message: 'a rating raises a ticket’s severity, never lowers it',
+      path: ['severity'],
+    }),
 
   /**
    * The planner's spec. An improvement's names its title, which replaces the one made from Martin's words, the flag its
@@ -1429,7 +1464,7 @@ export const PAYLOADS = {
     version: appVersion.optional(),
     /** The version it was compared with: the one before the fix. */
     against: appVersion,
-    evidence: evidence.optional(),
+    evidence: verifiedEvidence.optional(),
     /** The pages compared, if any were: a sense that does not look at pages compares none. */
     pages: z
       .array(

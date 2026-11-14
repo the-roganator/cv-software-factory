@@ -14,11 +14,12 @@
  *   work item, or its `ticket.opened` when that is sooner (a ticket Martin approved has no signal until one joins it,
  *   maybe after its close), to its verified close; the median of those, in milliseconds. The signal's time is
  *   triage's, when it made the event: a sense saw it moments before.
- * - **false positives:** tickets that found no entry. They are never published as they change, which would say of
+ * - **false positives:** tickets that found no entry. A dependency's ticket, a move's, counts for nothing, found or false
+ *   positive (`counts`). They are never published as they change, which would say of
  *   each new ticket whether it was real; `factory scoreboard --print` prints them for the results.
  */
 import type { PayloadOf } from '@software-factory/events';
-import { type KeyEntry, matches, SCOREBOARD } from '../../../../policy/scoreboard.ts';
+import { counts, type Fingerprint, type KeyEntry, matches, SCOREBOARD } from '../../../../policy/scoreboard.ts';
 
 /** The events the figures read, in the store's order: on a work item, each with what the figures need of it. */
 export type ScoreEvent = { ts: string; work_item: string } & (
@@ -98,9 +99,9 @@ export interface Figures {
   falsePositives: number;
 }
 
-/** Whether a ticket finds an entry, by the policy's rule. A dependency's fingerprint, a move's, is no entry's shape. */
+/** Whether a ticket finds an entry, by the policy's rule: only a ticket that counts (`counts`) finds one. */
 const finds = (ticket: Ticket, entry: KeyEntry) =>
-  !('ecosystem' in ticket.fingerprint) && matches(ticket.fingerprint, entry.fingerprint);
+  counts(ticket.fingerprint) && matches(ticket.fingerprint as Fingerprint, entry.fingerprint);
 
 /**
  * The figures for the key, counting as found only what tickets opened before `foundBefore` found (and every entry
@@ -115,7 +116,8 @@ export function figures(all: readonly Ticket[], key: readonly KeyEntry[], foundB
     if (times.length) fixes.push(Math.min(...times));
     if (times.length || finders.some((t) => t.everVerified || t.openedAt < foundBefore)) found++;
   }
-  const falsePositives = all.filter((t) => !key.some((entry) => finds(t, entry))).length;
+  // A dependency's ticket is neither found nor a false positive: it does not count (`counts`).
+  const falsePositives = all.filter((t) => counts(t.fingerprint) && !key.some((entry) => finds(t, entry))).length;
   return { entries: key.length, found, verified: fixes.length, medianMs: median(fixes), falsePositives };
 }
 

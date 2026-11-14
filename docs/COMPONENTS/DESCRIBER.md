@@ -36,6 +36,8 @@ A refused result runs the step again, told why.
 
 A description names among its risks each test the spec contradicts, with what the change did to it and which criterion asked for that. It writes no section for them: the line adds the one [test integrity](TEST-INTEGRITY.md#tests-the-spec-contradicts) reads.
 
+A dependency's move's description is the factory's: after the describer's words, which name no version, pin, digest, advisory or count, the line adds a section of its own (`moveSection` in `line/moves.ts`): the spec, each pin before and after from the pull request's diff (in the move's files and the lockfiles, the lines that name the move or its versions), what each scan gate counted on `main` and on the change, by severity, as `gate.finished` recorded it from the gate's own notice, the Dependabot pull request it replaces, and that the app names no runtime-critical package, so no proof of one ran. No model retypes a figure.
+
 An improvement's description says what Martin asked for, what the change adds behind which flag and on which pages, which test shows each criterion and on which side of the flag, and that it ships off: nobody sees it until Martin turns the flag on. Its pull request waits for his merge in every autonomy mode.
 
 ## What the line does with it

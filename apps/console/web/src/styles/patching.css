@@ -1,12 +1,14 @@
 /*
- * Patching: full width above Guardrails, for everyone. One row for each move, what waits on Martin first, then by
- * deadline. A row is Guardrails' row with more columns: state, what and its pin, from and to, what it clears, due, who
- * moves it. Severity has no colour: `attn` marks only two things, each on its own: a row that waits on Martin (its left
- * rule, whatever its deadline) and a deadline within a day or past (its due). It arrives with the panel's chunk, so the
- * first view's stylesheet carries none of it.
+ * Patching's sheet, for everyone. One row for each move, what waits on Martin first, then by deadline. A row is
+ * Guardrails' row with more columns: state, what and its pin, from and to, what it clears, due, who moves it; All open
+ * under the rows, in the Clears column, as its total. Critical is the one severity with a colour: a Critical count
+ * above zero is in `attn`. Otherwise `attn` marks a row that waits on Martin (its left rule, whatever its deadline) and
+ * a deadline within a day or past (its due). It arrives with the sheet's chunk, so neither the first view's stylesheet
+ * nor the summary's carries it.
  */
 .patching {
-  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
 .patching .tone-attn {
@@ -78,6 +80,37 @@
   border-bottom: 1px solid var(--line);
 }
 
+/* A row's columns: state, what, from and to, Clears, due, who, the chevron. The headers and All open keep to them. */
+.patching {
+  --pm-columns: 150px minmax(0, 1fr) 190px 216px 104px 172px 16px;
+}
+.pm-head,
+.pm-total {
+  display: grid;
+  grid-template-columns: var(--pm-columns);
+  gap: 12px;
+  align-items: baseline;
+}
+.pm-head {
+  margin-bottom: -8px;
+}
+.pm-head .clr-head,
+.pm-total .clr {
+  grid-column: 4;
+}
+.pm-total {
+  margin: -4px 0 0;
+}
+.pm-total .label {
+  grid-column: 3;
+  justify-self: end;
+}
+.patching .clr-head span {
+  font: 500 10px / 1.2 var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  text-align: right;
+}
 .pm-list {
   display: flex;
   flex-direction: column;
@@ -88,7 +121,7 @@
 }
 .pm > button {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) 190px 152px 104px 172px 16px;
+  grid-template-columns: var(--pm-columns);
   gap: 12px;
   align-items: baseline;
   width: 100%;
@@ -134,7 +167,7 @@
   display: contents;
 }
 .pm .ft,
-.pm .clr {
+.patching .clr {
   font: 12px / 1.4 var(--font-mono);
   font-variant-numeric: tabular-nums;
   color: var(--text-2);
@@ -145,18 +178,23 @@
 .pm .ft .to {
   color: var(--text);
 }
-.pm .clr {
+.patching .clr {
   display: grid;
-  grid-template-columns: 3ch 5ch 5ch 5ch;
+  grid-template-columns: repeat(4, 7ch);
   gap: 4px;
 }
-.pm .clr span {
+.patching .clr span {
   text-align: right;
   white-space: nowrap;
 }
-.pm .clr i {
+/* Under the headers, a count carries no letter; narrower, where they go, each follows its own. */
+.patching .clr i {
+  display: none;
   font-style: normal;
   color: var(--text-muted);
+}
+.patching .clr .crit {
+  color: var(--attn);
 }
 .pm .clr.none {
   display: block;
@@ -252,9 +290,23 @@
     content: "· ";
     color: var(--text-muted);
   }
-  .pm .clr {
+  .patching .clr {
     display: inline-flex;
-    gap: 5px;
+    gap: 1.2ch;
+  }
+  .patching .clr i {
+    display: inline;
+    margin-right: 0.4ch;
+  }
+  .pm-head {
+    display: none;
+  }
+  /* All open's counts under the rows' own, after their letters. */
+  .pm-total {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding-left: 162px;
   }
 }
 
@@ -282,8 +334,11 @@
     grid-row: 3;
   }
   .pm .ft,
-  .pm .clr {
+  .patching .clr {
     font-size: 11px;
+  }
+  .pm-total {
+    padding-left: 0;
   }
   .pm .more {
     padding-left: 0;

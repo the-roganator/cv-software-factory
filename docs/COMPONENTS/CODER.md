@@ -25,6 +25,8 @@ For an improvement, Martin's words in place of the ticket, and the spec with its
 - **Each criterion's test with the flag as its side says,** stubbing the request's `flag` as the app's own tests do (`flag: async () => false`, or true for the flag named).
 - **Never the flag context, `src/flags/`,** and nothing kept on a visitor's device.
 
+On a dependency's move it is told the move's ticket and newest signal from their payloads, as the planner is, and starts from the pin step's commit: the move is written, and the line refuses a patch of its that changes a lockfile. When the criteria need nothing more, it hands back a title and a note for the move with no change of its own. The draft it opens names the Dependabot pull request the move replaces ([build, gates and review](ORCHESTRATOR.md#build-gates-and-review)).
+
 It writes the test first, and leaves alone what else it notices. Before it hands back, it runs what the app's CI requires of a change, lint and formatting, the type check and the tests, by the commands the app's `make check` runs, since the runner has no `make`, and leaves out the manifests, which it has no renderer for, saying in its note what it left out. It puts right only what its change caused, and a file the formatter refuses by the formatter alone, so a lint fix does not widen the patch. A change the gates would refuse for its formatting or a type error does not cost a round. A later round that resumes its session and changes something is reminded to run them again.
 
 ## Its result

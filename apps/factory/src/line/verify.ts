@@ -19,6 +19,9 @@
  * - The canary: the release that carries the fix, or a later one that carries it too, was promoted with the measure
  *   that failed passing at its last step. A promoted release passed every step, so this clears at once, saying so; a
  *   release found live, which no analysis judged, holds for Martin.
+ * - A dependency's move: the app's scan of the released commit, which read the image it runs, shows none of the
+ *   findings the move's newest signal listed with a fix, and the canary's journeys passed at the release's last step
+ *   (`byScan`). A finding still open and it persists.
  * - A visitor's report, or the planner's finding, alone: no sense can look again. The work item holds for Martin.
  *
  * A look that cannot tell yet (too soon after the promotion, too little traffic, a check that could not finish, a
@@ -34,7 +37,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import type { Evidence, PayloadOf, RouteSense, SignalSource, SymptomClass } from '@software-factory/events';
 import { COLOR_SCHEMES, clearedOnWords, cutAt, ROUTE_SENSES, sameVersion } from '@software-factory/events';
-import { artifactRef, evidence as evidenceSchema } from '@software-factory/events/schemas';
+import { artifactRef, verifiedEvidence } from '@software-factory/events/schemas';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
 import { z } from 'zod';
 import { objectives as OBJECTIVES, type Objectives } from '../../../../policy/objectives.ts';
@@ -43,6 +46,7 @@ import { quoted, requests, type Scope, templatePattern } from '../alerts/queries
 import type { Loki } from '../clients/loki.ts';
 import type { Prometheus } from '../clients/prometheus.ts';
 import type { Tempo } from '../clients/tempo.ts';
+import type { Moves } from '../github/scanning.ts';
 import { measureOfCheck } from '../intake/alerts.ts';
 import {
   AGREEMENT_CHECK,
@@ -78,6 +82,8 @@ export interface FirstSignal {
   /** The class of defect the sense named, if it named one. */
   symptom?: SymptomClass;
   evidence: Evidence[];
+  /** A dependency's move, as its newest signal names it, with that signal's evidence above. */
+  move?: { repository: string; name: string };
 }
 
 /** The release to verify: the version the stable Service runs, which carries the fix, and when it was promoted. */
@@ -87,6 +93,10 @@ export interface Target {
   /** The version before the fix, which the release replaced. */
   against: string;
   dryRun: boolean;
+  /** The image the release runs, by digest, as its start recorded it: none for a dry run's. */
+  digest?: string;
+  /** The app's commit the release runs, as its start or promotion recorded it, where `version` is a tag. */
+  commit?: string;
   /**
    * The canary's analysis of that release: the version it was compared with, and each measure at its last step. None
    * for a release the line found live, or a dry run's, which no analysis judged.
@@ -122,6 +132,15 @@ export interface VerifyClients {
   loki?: Loki | null;
   /** Without it, an agreement check is judged on the metrics and the log alone, as the watcher does without traces. */
   tempo?: Pick<Tempo, 'requestsByRoute'> | null;
+  /** The scan's moves, through the GitHub worker (`github/scanning.ts`): a dependency's move is verified by them. */
+  scans?: ScansPort | null;
+}
+
+/** The scan's moves of a repository, as the GitHub worker reads them: the last finished run on its default branch. */
+export interface ScansPort {
+  moves(repo: string): Promise<Moves>;
+  /** Whether `head`, a later commit of the repository's main, has `base` in its history. */
+  carries(repo: string, base: string, head: string): Promise<boolean>;
 }
 
 export interface LookOptions extends VerifyClients {
@@ -150,7 +169,7 @@ const BY_SOURCE: Record<SignalSource, ByOne> = {
       : byPattern(signal, target, c),
   canary: byAnalysis,
   report: async () => ({ kind: 'hold', reason: NO_SENSE.report }),
-  dependency: async () => ({ kind: 'hold', reason: NO_SENSE.dependency }),
+  dependency: byScan,
   planner: async () => ({ kind: 'hold', reason: NO_SENSE.planner }),
 };
 
@@ -159,7 +178,6 @@ const NO_SENSE = {
     'Only a visitor’s report saw this defect, and no sense can look at it again: Martin judges whether the fix cleared it',
   planner:
     'Only the planner noticed this defect, and no sense can look at it again: Martin judges whether the fix cleared it',
-  dependency: 'Verify does not read the scan yet: Martin judges whether the move cleared what it fixes',
 };
 
 /** Looks once at the target by the sense that saw the defect. */
@@ -194,10 +212,15 @@ const senseOf = (signal: FirstSignal | undefined): RouteSense | undefined =>
   ROUTE_SENSES.find((sense) => sense === signal?.sense);
 
 /** A verification of the target, by the signal's sense. */
-function finished(signal: FirstSignal, target: Target, outcome: 'cleared' | 'persists', evidence?: Evidence): Look {
+function finished(
+  signal: FirstSignal,
+  target: Target,
+  outcome: 'cleared' | 'persists',
+  evidence?: Evidence | Verified,
+): Look {
   const sense = senseOf(signal);
-  // A verification keeps the evidence any check gives, which a scan's is not.
-  const parsed = evidence && evidenceSchema.safeParse(evidence);
+  // A verification keeps the evidence any check gives, or the scan of the release, never a signal's scan.
+  const parsed = evidence && verifiedEvidence.safeParse(evidence);
   const kept = parsed?.success ? parsed.data : undefined;
   return {
     kind: 'finished',
@@ -212,6 +235,99 @@ function finished(signal: FirstSignal, target: Target, outcome: 'cleared' | 'per
       dryRun: false,
     },
   };
+}
+
+/** What a verification keeps of the scan of the release. */
+type Verified = Extract<NonNullable<PayloadOf<'verification.finished'>['evidence']>, { kind: 'scan' }>;
+type ScanCounts = Verified['before'];
+type SignalScan = Extract<Evidence, { kind: 'scan' }>;
+
+const noCounts = (): Required<ScanCounts> => ({ critical: 0, high: 0, medium: 0, low: 0, unknown: 0 });
+
+/** The move's findings as its signal counted them: each it listed, by the scanner's rating, and the rest it counted. */
+function countedBefore(scan: SignalScan): Required<ScanCounts> {
+  const counts = noCounts();
+  for (const finding of scan.findings) counts[finding.severity.scanner] += 1;
+  for (const rating of Object.keys(counts) as (keyof ScanCounts)[]) counts[rating] += scan.rest[rating] ?? 0;
+  return counts;
+}
+
+/**
+ * A dependency's move, by the app's scan of the released commit (the GitHub worker's `moves`: the last finished run of
+ * the scan on the app's `main`). It waits for a run of the commit the stable Service runs that read the image it runs,
+ * by digest; the line holds the work item for Martin once the policy's wait has passed without one (`waitHours`). Then
+ * each finding the move's newest signal listed with a fix is looked for among the scan's open findings, by its advisory
+ * and its package: one still open and the move persists, which sends it back to Plan as any sense's does. None, and the
+ * canary's journeys passed at the release's last step, and it has cleared. Verify reads the scan's findings, never a
+ * version's name, and never an advisory's words: the read gives its id alone. It keeps the counts before and after.
+ */
+async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<Look> {
+  const scan = signal.evidence.find((e): e is SignalScan => e.kind === 'scan');
+  const { move } = signal;
+  if (!move) return { kind: 'hold', reason: 'The ticket’s signal names no move for the scan to look for' };
+  // The findings the move fixes, by advisory and package: with none, the scan has nothing to show closed.
+  const fixed = (scan?.findings ?? []).filter((finding) => finding.fixed !== undefined);
+  if (!fixed.length) {
+    return {
+      kind: 'hold',
+      reason: 'The move’s signal lists no finding with a fix for the scan to look for: Martin judges it',
+    };
+  }
+  if (!c.scans) return { kind: 'wait', why: 'the line has no way to the scan’s moves (the GitHub worker)' };
+  // A release names its version by tag; the commit it runs is what a scan's run is of.
+  const released = target.commit ?? target.version;
+  const read = await c.scans.moves(move.repository);
+  const of = short(read.run.headSha);
+  if (!sameVersion(read.run.headSha, released)) {
+    // A run of a later commit of main counts, as long as it has the release's and read the image running (below).
+    const later =
+      /^[0-9a-f]{40}$/.test(released) && (await c.scans.carries(move.repository, released, read.run.headSha));
+    if (!later) {
+      return {
+        kind: 'wait',
+        why: `the scan’s last run on main is of ${of}, which does not carry the release, ${short(released)}`,
+      };
+    }
+  }
+  if (!read.file) return { kind: 'wait', why: `the scan of ${of} wrote no moves (${read.run.url})` };
+  const { digest } = target;
+  if (!digest) return { kind: 'hold', reason: `No image is recorded for ${short(target.version)}: Martin judges it` };
+  if (!read.file.scanned.some((image) => image.digests.includes(digest))) {
+    return { kind: 'wait', why: `the image running, ${digest.slice(0, 19)}, is not one the scan of ${of} read` };
+  }
+  const isFixed = (each: { advisory: string; package: string }) =>
+    fixed.some((finding) => finding.advisory === each.advisory && finding.package === each.package);
+  // What the scan still has open of the move: every finding on its pins (its moves of the same name, a lockfile's by
+  // its package), and any finding the signal listed wherever the scan now groups it, each once.
+  const open = read.moves.flatMap((each) =>
+    each.findings.filter((finding) => (each.withheld?.package ?? each.name) === move.name || isFixed(finding)),
+  );
+  const after = noCounts();
+  for (const finding of open) {
+    const rating = finding.severity.toLowerCase() as keyof ScanCounts;
+    after[rating in after ? rating : 'unknown'] += 1;
+  }
+  const evidence: Verified = {
+    kind: 'scan',
+    commit: read.run.headSha,
+    before: scan ? countedBefore(scan) : noCounts(),
+    after,
+  };
+  if (open.some(isFixed)) return finished(signal, target, 'persists', evidence);
+  const journeys = target.analysis?.measures.find((m) => m.name === 'journeys');
+  if (!target.analysis) {
+    return {
+      kind: 'hold',
+      reason: `The scan of ${of} shows the move’s findings closed, but no analysis ran its journeys: Martin judges it`,
+    };
+  }
+  if (journeys?.phase !== 'successful') {
+    return {
+      kind: 'hold',
+      reason: `The scan of ${of} shows the move’s findings closed, but its journeys did not pass at the last step: Martin judges it`,
+    };
+  }
+  return finished(signal, target, 'cleared', evidence);
 }
 
 /** A probe's check, or the crawler's, run again against the stable Service by the probes worker. */
@@ -535,8 +651,19 @@ export function whatCleared(
 ): string {
   if (!verification) return `Martin judged it cleared${answer ? `, saying: ${answer}` : ''}`;
   if (verification.dryRun) return 'The dry run’s word: its release never shipped, so no sense looked';
-  return clearedBy(verification, undefined, policy);
+  const { evidence } = verification;
+  if (evidence?.kind === 'scan') {
+    const was = countWords(evidence.before);
+    return `The app’s scan of ${short(evidence.commit)}, which carries the release, shows none of the move’s findings that had a fix, of ${was || 'none'} before, and the journeys passed`;
+  }
+  return clearedBy({ ...verification, evidence }, undefined, policy);
 }
+
+/** Counts by severity, in words: `1 critical, 2 high`, the ones with none left out. */
+const countWords = (counts: ScanCounts) =>
+  (['critical', 'high', 'medium', 'low', 'unknown'] as const)
+    .flatMap((rating) => (counts[rating] ? [`${counts[rating]} ${rating}`] : []))
+    .join(', ');
 
 /**
  * What a look again found cleared, in a sentence for the work item's issue, its pull request and its closing: as
@@ -623,8 +750,14 @@ export function reopeningComment(reopened: PayloadOf<'work-item.reopened'>, work
       `The factory’s work item #${workItem} is open again, and goes back to Plan for a fix that ships.`,
     ].join('\n');
   }
-  const where =
-    reopened.route !== '*' ? `\`${reopened.route}\`` : reopened.sense === 'canary' ? CANARY_ANY_ROUTE : 'every page';
+  // A move's reopening names its move in place of a route.
+  const where = reopened.move
+    ? `the move of \`${reopened.move.name}\`, in ${reopened.move.ecosystem}`
+    : reopened.route !== '*'
+      ? `\`${reopened.route}\``
+      : reopened.sense === 'canary'
+        ? CANARY_ANY_ROUTE
+        : 'every page';
   return [
     `It came back after its fix was verified: the ${reopened.sense} saw “${reopened.check}” again on ${where}, in version ${short(reopened.version)}.`,
     '',

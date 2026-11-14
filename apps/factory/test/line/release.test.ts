@@ -1674,6 +1674,87 @@ describe('Verify on the line', () => {
       expect(await payloads(workItem, 'work-item.reopened')).toHaveLength(1);
     });
 
+    it('reopens a move’s ticket the dry run verified on its move, never a route', async () => {
+      const workItem = await nextWorkItem(database.as.triage);
+      const move = {
+        repository: 'the-roganator/cv-worlds-worst-website',
+        name: 'node',
+        ecosystem: 'docker' as const,
+        from: '24.11.0-alpine',
+        to: '24.11.1-alpine',
+        pins: [{ file: 'Dockerfile', line: 1 }],
+      };
+      const scan = {
+        kind: 'scan' as const,
+        findings: [
+          { advisory: 'CVE-2026-1001', package: 'openssl', severity: { scanner: 'high' as const }, fixed: '3.5.1' },
+        ],
+        rest: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+      };
+      await events.append([
+        event(
+          workItem,
+          'work-item.opened',
+          { kind: 'dependency-update', title: 'Move node, in docker', sample: false },
+          'triage',
+        ),
+        event(
+          workItem,
+          'ticket.opened',
+          {
+            title: 'Move node, in docker',
+            category: 'security',
+            severity: 'broken',
+            fingerprint: { name: 'node', ecosystem: 'docker' },
+            traces: [],
+          },
+          'triage',
+        ),
+        event(
+          workItem,
+          'signal.received',
+          {
+            sense: 'dependency',
+            check: 'the vulnerability scan',
+            move,
+            version: commitOf(STABLE),
+            symptom: 'vulnerable-dependency',
+            evidence: [scan],
+          },
+          'dependency',
+        ),
+        pushed(workItem, 1_000_000_001),
+        event(
+          workItem,
+          'pull-request.merged',
+          { number: 1_000_000_001, commit: 'd'.repeat(40), by: 'martin' },
+          'martin',
+        ),
+      ]);
+      await database.owner`insert into line (work_item, stage, issue) values (${workItem}, 'release', 1000000000)`;
+      await promote(workItem, 'dry-run-dddddddddddd', 'd'.repeat(40), true);
+      const dry = line({ release: null, dryRun: true });
+      await pass(dry.line);
+      await pass(dry.line);
+      expect(await stage(workItem)).toBe('ended');
+      await database.as.line`update line set moved_at = moved_at - interval '2 minutes' where work_item = ${workItem}`;
+      const { line: it } = line({
+        release: null,
+        steps: new FakeSteps(database.as.gateway, { planner: () => 'fails' }),
+      });
+      await pass(it);
+      expect(await payloads(workItem, 'work-item.reopened')).toEqual([
+        {
+          sense: 'dependency',
+          check: 'the vulnerability scan',
+          move: { name: 'node', ecosystem: 'docker' },
+          version: commitOf(STABLE),
+          reason: 'A dry run verified it, and its fix never shipped: the line, running live, takes it again',
+          dryRun: true,
+        },
+      ]);
+    });
+
     it('ends nothing for a line that is still in a dry run', async () => {
       const workItem = await merged(1_000_000_001, 'd'.repeat(40));
       const { line: it } = line({ release: null, dryRun: true });

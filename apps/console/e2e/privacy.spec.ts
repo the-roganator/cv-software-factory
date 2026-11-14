@@ -83,7 +83,8 @@ test.describe('the guard', () => {
     await other.close();
   });
 
-  // Each of these keeps something where the default page cannot see it, so its guard must fail it.
+  // Each of these keeps something where the default page cannot see it, or throws what nothing catches, so its guard
+  // must fail it.
   test('fails a test that leaves something in a context of its own', async ({ browser, baseURL }) => {
     test.fail();
     const other = await browser.newPage({ baseURL: baseURL ?? '' });
@@ -97,5 +98,18 @@ test.describe('the guard', () => {
     const [popup] = await Promise.all([page.waitForEvent('popup'), page.evaluate(() => window.open('/?view=privacy'))]);
     await popup.waitForLoadState();
     await popup.evaluate(() => sessionStorage.setItem('left', 'by a popup'));
+  });
+
+  test('fails a test whose page throws something nothing catches', async ({ page }) => {
+    test.fail();
+    await page.goto('/?view=privacy');
+    await Promise.all([
+      page.waitForEvent('pageerror'),
+      page.evaluate(() => {
+        setTimeout(() => {
+          throw Promise.resolve();
+        }, 0);
+      }),
+    ]);
   });
 });

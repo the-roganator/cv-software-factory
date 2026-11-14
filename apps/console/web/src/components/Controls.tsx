@@ -708,10 +708,12 @@ interface ControlsProps {
   profile: Profile;
   controls: ControlsView;
   admin: Admin;
+  /** Opens Guardrails' sheet, which its line on the guardrails names. */
+  onGuardrails: () => void;
 }
 
 /** The Controls panel, the first of the bottom row's right column: the line's controls and Alerts, nothing else. */
-export function Controls({ profile, controls, admin }: ControlsProps) {
+export function Controls({ profile, controls, admin, onGuardrails }: ControlsProps) {
   const martin = admin.kind === 'martin';
   const changer = useChange(admin);
   return (
@@ -727,7 +729,11 @@ export function Controls({ profile, controls, admin }: ControlsProps) {
         changer={changer}
       />
       <p className="help">
-        Gates, image signing and the egress fence are always on: they have no switch.
+        Gates, image signing and the egress fence are always on: they have no switch, and{' '}
+        <button type="button" className="linkish" onClick={onGuardrails}>
+          Guardrails
+        </button>{' '}
+        shows each one’s last proof.
         {martin && (
           <>
             {' '}

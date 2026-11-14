@@ -1,8 +1,9 @@
 /**
  * `factory patching`: the dependency sense (apps/factory/src/patching). As it starts, and each day after the scan, it
  * asks the GitHub worker for both repositories' moves and open Dependabot pull requests, compares the images the
- * cluster's pods run with the scan's list, and appends the day as `patching.read` when it differs from the last. It
- * connects to the store as its own role, `factory_patching`, which alone may append that event.
+ * cluster's pods run with the scan's list, and appends the day as `patching.read` when it differs from the last; and it
+ * sends each of the app's moves for the line to triage's inbox (`patching/sends.ts`). It connects to the store as its
+ * own role, `factory_patching`, which alone may append that event, and may send only its own signals.
  *
  *     factory patching          the sense, until stopped
  *     factory patching --once   one pass, then out: what it appended, or why not; it exits 0 for a day read, 1 for
@@ -51,6 +52,7 @@ export async function run(args: string[]): Promise<number> {
   const { kubeFrom } = await import('../runners/kube.ts');
   const { GitHubWorker } = await import('../github/worker-client.ts');
   const { exitCode, nextAfter, PatchingSense } = await import('../patching/sense.ts');
+  const { inbox } = await import('../outbox.ts');
 
   const sql = connect(process.env.DATABASE_URL);
   // The day carries no artifacts, so the writer never looks in the artifact store.
@@ -60,6 +62,8 @@ export async function run(args: string[]): Promise<number> {
   const sense = new PatchingSense({
     sql,
     events,
+    // The app's moves for the line, to triage (`patching/sends.ts`), as the sense's role.
+    outbox: inbox(sql, 'dependency'),
     repositories,
     log,
     senses: {

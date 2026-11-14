@@ -298,7 +298,7 @@ describe('triage', () => {
       ts: at,
       work_item: item,
       type: 'verification.finished',
-      version: 5,
+      version: VERSIONS['verification.finished'],
       actor: 'factory',
       summary: 'Cleared',
       payload: { outcome: 'cleared', check: 'links lead somewhere', against: 'c0ffee1', pages: [], dryRun },
@@ -359,7 +359,7 @@ describe('triage', () => {
           ts: at,
           work_item: item,
           type: 'work-item.reopened',
-          version: 3,
+          version: VERSIONS['work-item.reopened'],
           actor: 'factory',
           summary: 'Reopened: the dry run’s fix never shipped',
           payload: {

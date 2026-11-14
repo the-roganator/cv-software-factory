@@ -138,8 +138,8 @@ export function failures(conclusion: string | null, totals: ScanTotals | null): 
 /** The scan's totals, as `moves.json` gives them (moves.ts's `MovesFile`). */
 type ScanTotals = MovesFile['totals'];
 
-/** The scan's totals, copied: the sense computes none of them. */
-const totalsOf = (t: ScanTotals): ScanTotals => ({
+/** The scan's totals, copied: the sense computes none of them, and has no open count by severity for a scan without. */
+const totalsOf = (t: ScanTotals): NonNullable<Day['repositories'][number]['totals']> => ({
   fixed: t.fixed,
   moves: t.moves,
   lanes: t.lanes,
@@ -149,6 +149,7 @@ const totalsOf = (t: ScanTotals): ScanTotals => ({
   dueWithinDay: t.dueWithinDay,
   newHighWithFix: t.newHighWithFix,
   newHighWithoutFix: t.newHighWithoutFix,
+  ...(t.open ? { open: counts(t.open) } : {}),
 });
 
 /** One repository's day. */

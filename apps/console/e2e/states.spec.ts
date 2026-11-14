@@ -3,7 +3,7 @@
  * standing in for the server's answer.
  */
 import { AxeBuilder } from '@axe-core/playwright';
-import type { Page } from '@playwright/test';
+import type { Page, Route } from '@playwright/test';
 import { consoleUrl, emptyStore, expect, test } from './support.ts';
 
 const noFindings = async (page: Page) =>
@@ -101,6 +101,20 @@ test('a dropped connection keeps the page, and says when it dropped', async ({ p
   await expect(page.locator('.card[data-place="centre"]')).toBeVisible();
 });
 
+test('an empty store whose connection drops draws no bottom row, as before it answered', async ({ page }) => {
+  await page.route('**/api/events?after=0', (route) => route.fulfill({ json: [] }));
+  const held: Route[] = [];
+  await page.route('**/api/events/stream*', (route) => {
+    held.push(route);
+  });
+  await page.goto(consoleUrl());
+  // The store answered, empty: the bottom row draws once its chunks are in.
+  await expect(page.locator('section.bottom')).toBeVisible();
+  for (const route of held.splice(0)) await route.fulfill({ status: 503, body: '' });
+  await expect(page.locator('header .status')).toHaveText('Reconnecting');
+  await expect(page.locator('section.bottom')).toHaveCount(0);
+});
+
 test('events from a newer factory are left out, with a note', async ({ page, request }) => {
   const events = (await (await request.get('/api/events')).json()) as { seq: number }[];
   const last = events.at(-1) ?? { seq: 0 };
@@ -166,13 +180,13 @@ test('a panel’s chunk that never arrives leaves the page as it is, with a noti
   // As a page older than the console's last deploy would ask for a chunk no longer served.
   await page.route('**/assets/NeedsYou-*.js', (route) => route.fulfill({ status: 404 }));
   await page.goto(consoleUrl());
-  await expect(page.getByText('Needs you, Controls, Flags and Spend couldn’t be shown.')).toContainText(
-    'Reloading the page may bring them back.',
-  );
-  // The first view is whole, and nothing under the bottom row draws in its place.
+  await expect(
+    page.getByText('Needs you, Controls, Flags, Patching, Guardrails and Spend couldn’t be shown.'),
+  ).toContainText('Reloading the page may bring them back.');
+  // The first view is whole, and nothing of the bottom row draws in its place.
   await expect(page.locator('sf-station')).toHaveCount(8);
   await expect(page.locator('section.canary')).toBeVisible();
-  await expect(page.locator('#guardrails')).toHaveCount(0);
+  await expect(page.locator('#guardrails-summary')).toHaveCount(0);
   const notice = await new AxeBuilder({ page })
     .include('main .notice')
     .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
@@ -180,10 +194,47 @@ test('a panel’s chunk that never arrives leaves the page as it is, with a noti
   expect(notice.violations).toEqual([]);
 });
 
-test('the bottom row draws when the panels under it can’t, and says what is missing', async ({ page }) => {
-  await page.route('**/assets/Guardrails-*.js', (route) => route.fulfill({ status: 404 }));
+test('the bottom row draws when the summaries can’t, and says what is missing in their place', async ({ page }) => {
+  await page.route('**/assets/Summaries-*.js', (route) => route.fulfill({ status: 404 }));
   await page.goto(consoleUrl());
-  await expect(page.getByText('Patching and Guardrails couldn’t be shown.')).toBeVisible();
-  await expect(page.locator('section.bottom')).toBeVisible();
-  await expect(page.locator('#guardrails')).toHaveCount(0);
+  const notice = page.locator('.bottom-side .notice');
+  await expect(notice).toHaveText(
+    'Not loadedPatching and Guardrails couldn’t be shown. Reloading the page may bring them back.',
+  );
+  // In their place, between Flags and Spend, and the rest of the row is whole.
+  await expect(page.locator('.bottom-side > *')).toHaveCount(4);
+  await expect(page.locator('.bottom-side > :nth-child(3)')).toHaveClass(/notice/);
+  await expect(page.locator('article.needs')).toBeVisible();
+  await expect(page.locator('#guardrails-summary')).toHaveCount(0);
+});
+
+test('a panel’s sheet whose chunk never arrives says so over the page, and opening it again asks again', async ({
+  page,
+}) => {
+  // Patching's sheet's code fails to come, as on a poor connection, until the notice has said so (the page asks for it
+  // twice each time: a preload, then the import); then it is answered.
+  let failing = true;
+  let answered = 0;
+  await page.route('**/assets/Patching-*.js', (route) => {
+    if (failing) return route.fulfill({ status: 404 });
+    answered++;
+    return route.continue();
+  });
+  await page.goto(consoleUrl());
+  const open = page.locator('#patching-summary').getByRole('button', { name: /^All \d+ moves$/ });
+  await open.click();
+  const notice = page.locator('.notice.over');
+  await expect(notice).toContainText(
+    'Patching’s sheet couldn’t be shown. Close this and open it again to try again, or reload the page.',
+  );
+  await expect(notice).toBeInViewport();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await notice.getByRole('button', { name: 'Close' }).click();
+  await expect(notice).toHaveCount(0);
+  failing = false;
+  // Opened again, it asks again, and opens.
+  await open.click();
+  await expect(page.getByRole('dialog', { name: 'Patching' })).toBeVisible();
+  expect(answered).toBeGreaterThan(0);
+  await expect(notice).toHaveCount(0);
 });

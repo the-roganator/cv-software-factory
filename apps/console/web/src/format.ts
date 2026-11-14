@@ -141,6 +141,22 @@ const whole = new Intl.NumberFormat('en-GB');
 /** 1,500: a count, grouped in thousands. */
 export const count = (n: number) => whole.format(n);
 
+const oneDecimal = (n: number) => n.toFixed(1).replace(/\.0$/, '');
+
+/**
+ * A count as it is read at a glance, never wider than four characters: up to 999 as it is, then 1.4K (one decimal, a
+ * `.0` dropped) to 9.9K, 11K to 999K, 1.2M to 9.9M and 11M on. Each is rounded to the nearest, and a count that rounds
+ * up to the next unit is written in it (9,960 is 10K, 999,600 is 1M). The exact count goes beside it, as its title and
+ * in words.
+ */
+export function glance(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 9950) return `${oneDecimal(n / 1000)}K`;
+  if (n < 999_500) return `${Math.round(n / 1000)}K`;
+  if (n < 9_950_000) return `${oneDecimal(n / 1_000_000)}M`;
+  return `${Math.round(n / 1_000_000)}M`;
+}
+
 const significant = new Intl.NumberFormat('en-GB', { maximumSignificantDigits: 3 });
 
 /** 642, 0.015, 1,500: a measurement, to three significant figures. */

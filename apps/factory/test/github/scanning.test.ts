@@ -182,6 +182,23 @@ describe('the scan’s moves', () => {
     expect(JSON.stringify(moves)).not.toMatch(/invented advisory|nothing here names/);
   });
 
+  it('keep each finding’s advisory’s own fixed versions, never the move’s target in their place', async () => {
+    // The image moves to 1.2.1; its package's advisory is fixed in 3.0.2. A finding with no fix yet of its own, which
+    // a newer image clears, has none.
+    const pages = [withText(102, (was) => was.replace('fixed in 3.0.3.', 'no fix yet.'))];
+    const [image, lockfile] = (await read({ pages })).moves;
+    expect(image?.findings.map((f) => [f.advisory, f.fixed, f.fix])).toEqual([
+      ['CVE-2099-0001', '3.0.2', `image 1.2.1@sha256:${'1'.repeat(64)}`],
+      ['CVE-2099-0002', undefined, `image 1.2.1@sha256:${'1'.repeat(64)}`],
+    ]);
+    expect(image?.findings[1]).not.toHaveProperty('fixed');
+    // An npm package's are its target's.
+    expect(lockfile?.findings.map((f) => [f.advisory, f.fixed, f.fix])).toEqual([
+      ['GHSA-0000-0000-0001', '2.0.1', 'version 2.0.1'],
+      ['GHSA-0000-0000-0002', '2.0.3', 'version 2.0.3'],
+    ]);
+  });
+
   it('download the artifact without the App’s token, and once', async () => {
     const sent: Sent[] = [];
     const reads = new LiveReads(client(routes(), sent).github);
@@ -465,6 +482,20 @@ describe('the scan’s moves', () => {
     const more = fixture('moves.json');
     more.totals.dueWithinWeek = 3;
     await fails({ moves: more }, /not the shape this worker reads \(totals\)/);
+  });
+
+  it('pass on every open finding by severity when the scan counted it, and on a file a scan wrote before it did', async () => {
+    expect((await read()).file?.totals).not.toHaveProperty('open');
+    const open = { CRITICAL: 1, HIGH: 0, MEDIUM: 0, LOW: 1, UNKNOWN: 0 };
+    const counted = fixture('moves.json');
+    counted.totals.open = open;
+    expect((await read({ moves: counted })).file?.totals.open).toEqual(open);
+    const { UNKNOWN: _, ...short } = open;
+    for (const bad of [short, { ...open, NONE: 1 }, { ...open, HIGH: -1 }, { ...open, LOW: 1.5 }, 3]) {
+      const wrong = fixture('moves.json');
+      wrong.totals.open = bad;
+      await fails({ moves: wrong }, /not the shape this worker reads \(totals/);
+    }
   });
 
   it('refuse a moves.json of a version or shape it does not know', async () => {

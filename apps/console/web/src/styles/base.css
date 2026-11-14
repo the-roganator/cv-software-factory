@@ -452,6 +452,20 @@ header.top .wrap {
 .notice .label {
   flex: none;
 }
+/* A sheet that couldn't be shown says so over the page, where it would have risen, with Close. */
+.notice.over {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 42;
+  margin: 0 auto;
+  background: var(--bg);
+  box-shadow: var(--shadow-popover);
+}
+.notice.over .linkish {
+  margin-left: auto;
+}
 /* Dashed, in capitals: what is shown is not the factory's own work. */
 .pill-sample {
   padding: 2px 8px;

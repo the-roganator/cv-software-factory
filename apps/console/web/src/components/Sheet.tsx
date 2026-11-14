@@ -1,6 +1,6 @@
 /**
- * The sheet: one work item in full, raised from the bottom of the screen over most of it. It holds focus while it
- * is open and gives it back when it closes; previous and next step between work items, and the reel follows.
+ * The sheet: one work item in full, in the sheet's frame (`SheetFrame.tsx`), raised from the bottom of the screen over
+ * most of it; previous and next step between work items, and the reel follows.
  *
  * What waits on Martin for the work item heads it, as Needs you's cards, and an improvement's flag has its slider:
  * Martin answers and moves the flag here as there, and a visitor reads both, read-only.
@@ -10,7 +10,7 @@
  */
 
 import { MODEL_AGENTS, type Sense } from '@software-factory/events';
-import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { STAGE_NAME } from '../../../../../docs/design/system/station.ts';
 import type { Admin } from '../admin.ts';
 import {
@@ -54,6 +54,7 @@ import { CATEGORY_NAME, Glyph } from './Glyph.tsx';
 import { LogoMark, ToolMark, type ToolName } from './Logos.tsx';
 import { WaitsOnMartin } from './NeedsYou.tsx';
 import { keyed, OpensShots, Picture, Shot, useMeasured } from './Pictures.tsx';
+import { SheetFrame } from './SheetFrame.tsx';
 import { ShippedSection } from './Shipped.tsx';
 import '../styles/sheet.css';
 
@@ -174,6 +175,8 @@ interface SheetProps {
   motion: boolean;
   onStep: (to: number) => void;
   onClose: () => void;
+  /** Whether it rises as it opens: not when it takes the place of a sheet already open. */
+  rise: boolean;
   /** The app's origin, which a flag's preview opens. */
   app?: string | undefined;
   /** Who is reading: Martin answers and moves the flag here, a visitor reads. */
@@ -197,26 +200,10 @@ export function Sheet({ view, item, ...props }: SheetProps) {
 
 type RaisedProps = Omit<SheetProps, 'view' | 'item'> & { sheet: SheetData; index: number; count: number };
 
-function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMoved }: RaisedProps) {
-  const dialog = useRef<HTMLElement>(null);
+function Raised({ sheet, index, count, motion, rise, onStep, onClose, app, admin, onMoved }: RaisedProps) {
   const title = useRef<HTMLHeadingElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  const opener = useRef<Element | null>(null);
-  const [risen, setRisen] = useState(false);
   const { card } = sheet;
-
-  // Rise on the next frame, so the move from below is drawn; give focus back on the way out.
-  useLayoutEffect(() => {
-    opener.current = document.activeElement;
-    document.body.classList.add('locked');
-    const frame = requestAnimationFrame(() => setRisen(true));
-    return () => {
-      cancelAnimationFrame(frame);
-      document.body.classList.remove('locked');
-      const back = opener.current;
-      if (back instanceof HTMLElement && document.contains(back)) back.focus({ preventScroll: true });
-    };
-  }, []);
 
   // A new work item starts at the top, with its title focused.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs for each work item the sheet shows
@@ -231,34 +218,6 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
   useEffect(() => {
     if (document.activeElement === document.body) title.current?.focus({ preventScroll: true });
   }, [sheet.needs.hold?.hold, sheet.needs.canary?.release.id, sheet.needs.flag?.flag, sheet.needs.flag?.stage.stage]);
-
-  const close = () => {
-    if (!motion) return onClose();
-    setRisen(false);
-    setTimeout(onClose, 420);
-  };
-
-  // Escape closes; Tab stays inside while the sheet is open.
-  const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    // A dialog opened from the sheet (an answer's, a flag's) keeps its own keys: Escape closes it, not the sheet.
-    if (event.target instanceof Element && event.target.closest('dialog')) return;
-    if (event.key === 'Escape') {
-      event.stopPropagation();
-      close();
-    }
-    if (event.key !== 'Tab' || !dialog.current) return;
-    const focusable = [
-      ...dialog.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], [tabindex="0"]'),
-    ];
-    const [first, last] = [focusable[0], focusable.at(-1)];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last?.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first?.focus();
-    }
-  };
 
   const ongoing = ONGOING.has(card.outcome);
   const released = Boolean(card.versions.to || card.versions.from);
@@ -276,398 +235,388 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
   const evidence = sheet.evidence;
 
   return (
-    <>
-      <div className={`scrim ${risen ? 'open' : ''}`} onClick={close} aria-hidden="true" />
-      <section
-        ref={dialog}
-        className={`sheet ${risen ? 'open' : ''}`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="sheet-title"
-        onKeyDown={onKeyDown}
-      >
-        <div className="grab" aria-hidden="true" />
-        <div className="wrap sheet-wrap">
-          <header className="sheet-head">
-            <div className="sheet-title">
-              <div className="kicker">
-                <span className="cat">
-                  <Glyph name={card.category} />
-                  {CATEGORY_NAME[card.category]}
-                </span>
-                <span className="kind">{kindName(card)}</span>
-                {card.reopened && <span className="pill pill-sample again">Reopened</span>}
-                <OutcomeWord outcome={card.outcome} />
-                {card.sample && <span className="pill pill-sample">Sample</span>}
+    <SheetFrame
+      kicker={
+        <>
+          <span className="cat">
+            <Glyph name={card.category} />
+            {CATEGORY_NAME[card.category]}
+          </span>
+          <span className="kind">{kindName(card)}</span>
+          {card.reopened && <span className="pill pill-sample again">Reopened</span>}
+          <OutcomeWord outcome={card.outcome} />
+          {card.sample && <span className="pill pill-sample">Sample</span>}
+        </>
+      }
+      title={card.title}
+      nav={
+        <>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Previous work item"
+            disabled={index === 0}
+            onClick={() => onStep(index - 1)}
+          >
+            <Glyph name="left" />
+          </button>
+          <span className="count">#{card.number}</span>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Next work item"
+            disabled={index >= count - 1}
+            onClick={() => onStep(index + 1)}
+          >
+            <Glyph name="right" />
+          </button>
+        </>
+      }
+      motion={motion}
+      rise={rise}
+      onClose={onClose}
+      titleRef={title}
+      scrollerRef={scroller}
+    >
+      <div className="wrap sheet-body">
+        <div className="sheet-main">
+          <WaitsOnMartin
+            hold={sheet.needs.hold}
+            canary={sheet.needs.canary}
+            flag={sheet.needs.flag}
+            row={sheet.flag?.row}
+            admin={admin}
+            app={app}
+            onMoved={onMoved}
+          />
+          <div>
+            <p className="lead">
+              {sheet.story}
+              {sheet.closing && ` ${sheet.closing}`}
+            </p>
+            {sheet.storyBy === 'describer' && (
+              <p className="source byline">
+                The describer, from the ticket, the spec, the final diff and the review
+                {sheet.closing && '; the last sentence is the console’s, from what happened since'}. The pull request’s
+                own description is on GitHub.
+              </p>
+            )}
+          </div>
+          {card.sample && (
+            <p className="notice sample-note">
+              <span className="label">Sample</span>
+              Written by hand to show what the console will show. Nothing here happened; the screenshots are of the real
+              app, with this sample’s change made in a copy that went nowhere.
+            </p>
+          )}
+          {sheet.report && <Report report={sheet.report} />}
+          {sheet.request && <Request request={sheet.request} />}
+          <Section
+            title="How it went"
+            help="Step through the stages. The console shows only what had happened by then: replay and the live view are the same code."
+          >
+            <Replay chapters={sheet.chapters} motion={motion} key={card.number} />
+          </Section>
+          {bySense && (
+            <Section
+              title="Evidence"
+              help="Captured when it happened, because the sources expire. One block for each sense, the first time it saw the problem."
+            >
+              <div className="captures by-sense">
+                {sheet.senseEvidence.map((block) => (
+                  <figure key={block.sense}>
+                    <Picture picture={block.picture} interactive={false} />
+                    <figcaption>
+                      <span>
+                        {SENSE[block.sense].name}
+                        {CAPTURED[block.sense][0]}
+                        {KIND_OF[block.picture.type] ? ` · ${KIND_OF[block.picture.type]}` : ''}
+                      </span>
+                      <span className="mono">{clock(block.at)}</span>
+                    </figcaption>
+                  </figure>
+                ))}
               </div>
-              <h2 id="sheet-title" tabIndex={-1} ref={title}>
-                {card.title}
-              </h2>
-            </div>
-            <div className="sheet-nav">
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Previous work item"
-                disabled={index === 0}
-                onClick={() => onStep(index - 1)}
-              >
-                <Glyph name="left" />
-              </button>
-              <span className="count">#{card.number}</span>
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Next work item"
-                disabled={index >= count - 1}
-                onClick={() => onStep(index + 1)}
-              >
-                <Glyph name="right" />
-              </button>
-              <button type="button" className="icon-btn close" aria-label="Close" onClick={close}>
-                <Glyph name="cross" />
-              </button>
-            </div>
-          </header>
-        </div>
-        <div className="sheet-scroll" ref={scroller}>
-          <div className="wrap sheet-body">
-            <div className="sheet-main">
-              <WaitsOnMartin
-                hold={sheet.needs.hold}
-                canary={sheet.needs.canary}
-                flag={sheet.needs.flag}
-                row={sheet.flag?.row}
-                admin={admin}
-                app={app}
-                onMoved={onMoved}
-              />
-              <div>
-                <p className="lead">
-                  {sheet.story}
-                  {sheet.closing && ` ${sheet.closing}`}
-                </p>
-                {sheet.storyBy === 'describer' && (
-                  <p className="source byline">
-                    The describer, from the ticket, the spec, the final diff and the review
-                    {sheet.closing && '; the last sentence is the console’s, from what happened since'}. The pull
-                    request’s own description is on GitHub.
-                  </p>
-                )}
+              <Source tools={sheet.senseEvidence.flatMap((block) => CAPTURED[block.sense][2] ?? [])}>
+                Each sense’s own capture: {listed(sheet.senseEvidence.map((block) => CAPTURED[block.sense][1]))}.
+              </Source>
+            </Section>
+          )}
+          {!bySense && evidence.type !== 'spec' && evidence.type !== 'none' && (
+            <Section title="Evidence" help="Captured when it happened, because the sources expire.">
+              <div className="evidence-big">
+                <Picture picture={evidence} interactive />
               </div>
-              {card.sample && (
-                <p className="notice sample-note">
-                  <span className="label">Sample</span>
-                  Written by hand to show what the console will show. Nothing here happened; the screenshots are of the
-                  real app, with this sample’s change made in a copy that went nowhere.
-                </p>
+              {evidence.type === 'refusal' ? (
+                <Source tools={evidence.admission ? ['kyverno', 'sigstore'] : []}>{refusalSource(evidence)}</Source>
+              ) : (
+                <Source tools={TOOLS[evidence.type]}>{SOURCE[evidence.type]}</Source>
               )}
-              {sheet.report && <Report report={sheet.report} />}
-              {sheet.request && <Request request={sheet.request} />}
-              <Section
-                title="How it went"
-                help="Step through the stages. The console shows only what had happened by then: replay and the live view are the same code."
-              >
-                <Replay chapters={sheet.chapters} motion={motion} key={card.number} />
+              {sheet.captures.length > 1 && (
+                <div className="captures">
+                  {sheet.captures.map((capture) => (
+                    <figure key={`${capture.shot.hash}-${capture.shot.route}-${capture.at}`}>
+                      <div className="vis">
+                        <Shot shot={capture.shot} numbered={evidence.type === 'pages'} />
+                      </div>
+                      <figcaption>
+                        {/* Every page's screenshot is named by its page; the others by when in the story. */}
+                        <span>{evidence.type === 'pages' ? capture.shot.route : SIDE_NAME[capture.side]}</span>
+                        <span className="mono">{sinceStart(capture.at - card.startedAt)}</span>
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
+              )}
+            </Section>
+          )}
+          {sheet.flag ? (
+            <FlagSection flag={sheet.flag} app={app} admin={admin} onMoved={onMoved} />
+          ) : (
+            <ShippedSection sheet={sheet} />
+          )}
+          {sheet.spec ? (
+            <SpecSection sheet={sheet} />
+          ) : (
+            sheet.files && (
+              <Section title="The change" help="What the pull request touched.">
+                <div className="files">
+                  {keyed(sheet.files, (file) => file.path).map(({ key, value: file }) => (
+                    <div key={key}>
+                      <span>{file.path}</span>
+                      <span className="plus">+{file.added}</span>
+                      <span className="minus">−{file.removed}</span>
+                    </div>
+                  ))}
+                </div>
               </Section>
-              {bySense && (
-                <Section
-                  title="Evidence"
-                  help="Captured when it happened, because the sources expire. One block for each sense, the first time it saw the problem."
-                >
-                  <div className="captures by-sense">
-                    {sheet.senseEvidence.map((block) => (
-                      <figure key={block.sense}>
-                        <Picture picture={block.picture} interactive={false} />
-                        <figcaption>
-                          <span>
-                            {SENSE[block.sense].name}
-                            {CAPTURED[block.sense][0]}
-                            {KIND_OF[block.picture.type] ? ` · ${KIND_OF[block.picture.type]}` : ''}
-                          </span>
-                          <span className="mono">{clock(block.at)}</span>
-                        </figcaption>
-                      </figure>
-                    ))}
-                  </div>
-                  <Source tools={sheet.senseEvidence.flatMap((block) => CAPTURED[block.sense][2] ?? [])}>
-                    Each sense’s own capture: {listed(sheet.senseEvidence.map((block) => CAPTURED[block.sense][1]))}.
-                  </Source>
-                </Section>
-              )}
-              {!bySense && evidence.type !== 'spec' && evidence.type !== 'none' && (
-                <Section title="Evidence" help="Captured when it happened, because the sources expire.">
-                  <div className="evidence-big">
-                    <Picture picture={evidence} interactive />
-                  </div>
-                  {evidence.type === 'refusal' ? (
-                    <Source tools={evidence.admission ? ['kyverno', 'sigstore'] : []}>{refusalSource(evidence)}</Source>
-                  ) : (
-                    <Source tools={TOOLS[evidence.type]}>{SOURCE[evidence.type]}</Source>
-                  )}
-                  {sheet.captures.length > 1 && (
-                    <div className="captures">
-                      {sheet.captures.map((capture) => (
-                        <figure key={`${capture.shot.hash}-${capture.shot.route}-${capture.at}`}>
-                          <div className="vis">
-                            <Shot shot={capture.shot} numbered={evidence.type === 'pages'} />
-                          </div>
-                          <figcaption>
-                            {/* Every page's screenshot is named by its page; the others by when in the story. */}
-                            <span>{evidence.type === 'pages' ? capture.shot.route : SIDE_NAME[capture.side]}</span>
-                            <span className="mono">{sinceStart(capture.at - card.startedAt)}</span>
-                          </figcaption>
-                        </figure>
-                      ))}
-                    </div>
-                  )}
-                </Section>
-              )}
-              {sheet.flag ? (
-                <FlagSection flag={sheet.flag} app={app} admin={admin} onMoved={onMoved} />
-              ) : (
-                <ShippedSection sheet={sheet} />
-              )}
-              {sheet.spec ? (
-                <SpecSection sheet={sheet} />
-              ) : (
-                sheet.files && (
-                  <Section title="The change" help="What the pull request touched.">
-                    <div className="files">
-                      {keyed(sheet.files, (file) => file.path).map(({ key, value: file }) => (
-                        <div key={key}>
-                          <span>{file.path}</span>
-                          <span className="plus">+{file.added}</span>
-                          <span className="minus">−{file.removed}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </Section>
-                )
-              )}
-              {sheet.rounds.length > 0 && (
-                <Section
-                  title="Rounds"
-                  help={`Each attempt the coder pushed, what the gates and the reviewer made of it, and why it went back. ${capital(inWords(sheet.facts.reviews?.of ?? 2, 'review'))} at most in a pass: after the last, anything still blocking waits for Martin.`}
-                >
-                  <Rounds rounds={sheet.rounds} now={sheet.roundsNow} after={sheet.after} />
-                </Section>
-              )}
-              {sheet.review.length > 0 && (
-                <Section
-                  title="Review"
-                  help="The reviewer reads the diff against the rules at the base commit, so a pull request cannot loosen the rules it is judged by. Its review is a signal, never a gate."
-                >
-                  <ReviewThread reviews={sheet.review} start={card.startedAt} open={card.picture.type === 'blocking'} />
-                  <Source>
-                    {card.pullRequest ? `The review the App posted on PR #${card.pullRequest}, kept in the event.` : ''}{' '}
-                    Each rule as the app’s docs/REVIEWERS.md words it.
-                  </Source>
-                </Section>
-              )}
-            </div>
-            <aside className="sheet-side">
-              <dl className="facts-dl raised">
-                <Fact name="Work item">#{card.number}</Fact>
-                {sheet.facts.ticket && (
+            )
+          )}
+          {sheet.rounds.length > 0 && (
+            <Section
+              title="Rounds"
+              help={`Each attempt the coder pushed, what the gates and the reviewer made of it, and why it went back. ${capital(inWords(sheet.facts.reviews?.of ?? 2, 'review'))} at most in a pass: after the last, anything still blocking waits for Martin.`}
+            >
+              <Rounds rounds={sheet.rounds} now={sheet.roundsNow} after={sheet.after} />
+            </Section>
+          )}
+          {sheet.review.length > 0 && (
+            <Section
+              title="Review"
+              help="The reviewer reads the diff against the rules at the base commit, so a pull request cannot loosen the rules it is judged by. Its review is a signal, never a gate."
+            >
+              <ReviewThread reviews={sheet.review} start={card.startedAt} open={card.picture.type === 'blocking'} />
+              <Source>
+                {card.pullRequest ? `The review the App posted on PR #${card.pullRequest}, kept in the event.` : ''}{' '}
+                Each rule as the app’s docs/REVIEWERS.md words it.
+              </Source>
+            </Section>
+          )}
+        </div>
+        <aside className="sheet-side">
+          <dl className="facts-dl raised">
+            <Fact name="Work item">#{card.number}</Fact>
+            {sheet.facts.ticket && (
+              <>
+                <Fact name="Ticket">
+                  {sheet.facts.ticket.category} · {sheet.facts.ticket.severity}
+                </Fact>
+                <Fact name="Fingerprint">{sheet.facts.ticket.fingerprint}</Fact>
+                {sheet.facts.ticket.reported && <Fact name="Reported">{sheet.facts.ticket.reported}</Fact>}
+              </>
+            )}
+            {!sheet.seenBy && (
+              <Fact name={card.kind === 'red-team' ? 'Launched by' : 'Found by'}>{sheet.facts.foundBy}</Fact>
+            )}
+            {sheet.facts.flag && <Fact name="Flag">{sheet.facts.flag}</Fact>}
+            {!released && card.reopened ? (
+              <Fact name="Version">back on {shortVersion(card.reopened.version)}</Fact>
+            ) : !released && card.seenOn ? (
+              <Fact name="Seen on">
+                <Version version={card.seenOn} sample={card.sample} />
+              </Fact>
+            ) : (
+              <Fact name="Version">{versions}</Fact>
+            )}
+            {card.reopened && (
+              <Fact name="Reopened">
+                {shortWhen(card.reopened.at)} · {card.reopened.sense}, {card.reopened.check} on{' '}
+                {card.reopened.move
+                  ? `its move, ${card.reopened.move.name}`
+                  : card.reopened.route === '*'
+                    ? 'every page'
+                    : card.reopened.route}{' '}
+                from {shortVersion(card.reopened.version)}
+              </Fact>
+            )}
+            {card.pullRequest && (
+              <Fact name="Pull request">
+                {/* A sample's pull request never existed, so it links nowhere, and has no mark: GitHub holds none. */}
+                {card.sample ? (
+                  `#${card.pullRequest}`
+                ) : (
                   <>
-                    <Fact name="Ticket">
-                      {sheet.facts.ticket.category} · {sheet.facts.ticket.severity}
-                    </Fact>
-                    <Fact name="Fingerprint">{sheet.facts.ticket.fingerprint}</Fact>
-                    {sheet.facts.ticket.reported && <Fact name="Reported">{sheet.facts.ticket.reported}</Fact>}
+                    <ToolMark name="github" />{' '}
+                    <a href={`${APP_REPO}/pull/${card.pullRequest}`}>#{card.pullRequest} on GitHub</a>
                   </>
                 )}
-                {!sheet.seenBy && (
-                  <Fact name={card.kind === 'red-team' ? 'Launched by' : 'Found by'}>{sheet.facts.foundBy}</Fact>
-                )}
-                {sheet.facts.flag && <Fact name="Flag">{sheet.facts.flag}</Fact>}
-                {!released && card.reopened ? (
-                  <Fact name="Version">back on {shortVersion(card.reopened.version)}</Fact>
-                ) : !released && card.seenOn ? (
-                  <Fact name="Seen on">
-                    <Version version={card.seenOn} sample={card.sample} />
-                  </Fact>
+              </Fact>
+            )}
+            {sheet.deploy?.deploy && sheet.deploy.deploy.state !== 'unsigned' && (
+              <Fact name="Deploy">
+                {/* As the pull request's: a sample's deploy pull request never existed either. */}
+                {card.sample ? (
+                  `#${sheet.deploy.deploy.pullRequest}`
                 ) : (
-                  <Fact name="Version">{versions}</Fact>
-                )}
-                {card.reopened && (
-                  <Fact name="Reopened">
-                    {shortWhen(card.reopened.at)} · {card.reopened.sense}, {card.reopened.check} on{' '}
-                    {card.reopened.route === '*' ? 'every page' : card.reopened.route} from{' '}
-                    {shortVersion(card.reopened.version)}
-                  </Fact>
-                )}
-                {card.pullRequest && (
-                  <Fact name="Pull request">
-                    {/* A sample's pull request never existed, so it links nowhere, and has no mark: GitHub holds none. */}
-                    {card.sample ? (
-                      `#${card.pullRequest}`
-                    ) : (
-                      <>
-                        <ToolMark name="github" />{' '}
-                        <a href={`${APP_REPO}/pull/${card.pullRequest}`}>#{card.pullRequest} on GitHub</a>
-                      </>
-                    )}
-                  </Fact>
-                )}
-                {sheet.deploy?.deploy && sheet.deploy.deploy.state !== 'unsigned' && (
-                  <Fact name="Deploy">
-                    {/* As the pull request's: a sample's deploy pull request never existed either. */}
-                    {card.sample ? (
-                      `#${sheet.deploy.deploy.pullRequest}`
-                    ) : (
-                      <>
-                        <ToolMark name="github" />{' '}
-                        <a href={`${APP_REPO}/pull/${sheet.deploy.deploy.pullRequest}`}>
-                          #{sheet.deploy.deploy.pullRequest} on GitHub
-                        </a>
-                      </>
-                    )}{' '}
-                    · {deployWords(sheet.deploy.deploy).fact}
-                  </Fact>
-                )}
-                {sheet.deploy?.deploy?.state === 'unsigned' && (
-                  <Fact name="Build">
-                    {/* The build's job, where Martin runs it again: a sample's never ran, so it links nowhere. */}
-                    {sheet.deploy.deploy.job && !card.sample ? (
-                      <>
-                        <ToolMark name="github" /> {sheet.deploy.deploy.commit.slice(0, 7)} ·{' '}
-                        <a href={jobUrl(sheet.deploy.deploy.job)}>{sheet.deploy.deploy.job.name} on GitHub</a>
-                      </>
-                    ) : (
-                      sheet.deploy.deploy.commit.slice(0, 7)
-                    )}{' '}
-                    · {deployWords(sheet.deploy.deploy).fact}
-                  </Fact>
-                )}
-                {sheet.facts.reviews && (
-                  <Fact name="Reviews">
-                    {sheet.facts.reviews.done} of {sheet.facts.reviews.of}
-                    {sheet.facts.reviews.pass !== undefined && ` · pass ${sheet.facts.reviews.pass}`}
-                  </Fact>
-                )}
-                <Fact name="Started">{when(card.startedAt)}</Fact>
-                <Fact name={ongoing ? 'So far' : 'Start to finish'}>{duration(card.durationMs)}</Fact>
-                <Fact name="Model spend">{card.calls ? spendWords(card) : 'none'}</Fact>
-                <Fact name="Code written by humans">{plural(sheet.facts.humanLines, 'line')}</Fact>
-              </dl>
-              {sheet.seenBy && <SeenBy rows={sheet.seenBy} />}
-              <div className="side-card raised">
-                <h3>Agents and models</h3>
-                {sheet.agents.length ? (
-                  <table className="models">
-                    <thead className="label small">
-                      <tr>
-                        <th>Agent and model</th>
-                        <th className="num">Calls</th>
-                        <th className="num">Tokens</th>
-                        <th className="num">Cost</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sheet.agents.map((a) => (
-                        <tr key={`${a.agent}/${a.model}`}>
-                          <td>
-                            <div className="who">
-                              {/* Where a local model ran is what matters, not whose model it is: a laptop, no logo. */}
-                              {a.provider === 'local' ? (
-                                <Glyph name="local" className="glyph logo" />
-                              ) : (
-                                <LogoMark name={a.provider === 'typesafe' ? 'jev' : 'anthropic'} />
-                              )}
-                              <span>
-                                {AGENT_NAME[a.agent] ?? a.agent}
-                                <small>{modelName(a)}</small>
-                                {a.details.map((line) => (
-                                  <small key={line} className="mono">
-                                    {line}
-                                  </small>
-                                ))}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="num">{a.calls}</td>
-                          <td className="num">
-                            {a.tokensIn ? (
-                              <>
-                                {tokens(a.tokensIn)} in<small>{tokens(a.tokensOut)} out</small>
-                              </>
-                            ) : (
-                              '—'
-                            )}
-                          </td>
-                          <td className={`num ${a.provider === 'local' ? 'free' : ''}`}>
-                            {a.provider === 'local' ? '$0' : money(a.cost)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <td>{card.local ? 'Total · all local' : `Total${ongoing ? ' so far' : ''}`}</td>
-                        <td className="num">{sheet.agents.reduce((sum, a) => sum + a.calls, 0)}</td>
-                        <td />
-                        <td className="num">{card.local ? '$0' : money(total)}</td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                  <>
+                    <ToolMark name="github" />{' '}
+                    <a href={`${APP_REPO}/pull/${sheet.deploy.deploy.pullRequest}`}>
+                      #{sheet.deploy.deploy.pullRequest} on GitHub
+                    </a>
+                  </>
+                )}{' '}
+                · {deployWords(sheet.deploy.deploy).fact}
+              </Fact>
+            )}
+            {sheet.deploy?.deploy?.state === 'unsigned' && (
+              <Fact name="Build">
+                {/* The build's job, where Martin runs it again: a sample's never ran, so it links nowhere. */}
+                {sheet.deploy.deploy.job && !card.sample ? (
+                  <>
+                    <ToolMark name="github" /> {sheet.deploy.deploy.commit.slice(0, 7)} ·{' '}
+                    <a href={jobUrl(sheet.deploy.deploy.job)}>{sheet.deploy.deploy.job.name} on GitHub</a>
+                  </>
                 ) : (
-                  <p className="help">
-                    <b>No model was called.</b> {sheet.noModel}
-                  </p>
-                )}
-                {sheet.agents.some((a) => (MODEL_AGENTS as readonly string[]).includes(a.agent)) && (
-                  <p className="help tooled ran">
-                    <ToolMark name="kubernetes" />
-                    <span>
-                      Each step of the line’s agents ran in a Kubernetes pod of its own in the <code>runners</code>{' '}
-                      namespace, able to reach the gateway and the line, and nothing else.
-                    </span>
-                  </p>
-                )}
-                <Source>
-                  The gateway’s log of every call. On the replay site the same calls come from cassettes.
-                  {sheet.agents.some((a) => a.provider === 'local') &&
-                    ' Local calls are counted and capped like any other, and priced at nothing.'}
-                </Source>
-              </div>
-              <div className="side-card raised">
-                <h3>
-                  Gates
-                  {sheet.gatesAttempt && <span className="attempt"> · attempt {sheet.gatesAttempt}</span>}
-                </h3>
-                {sheet.gates.length ? (
-                  <div className="gates">
-                    {sheet.gates.map((g) => (
+                  sheet.deploy.deploy.commit.slice(0, 7)
+                )}{' '}
+                · {deployWords(sheet.deploy.deploy).fact}
+              </Fact>
+            )}
+            {sheet.facts.reviews && (
+              <Fact name="Reviews">
+                {sheet.facts.reviews.done} of {sheet.facts.reviews.of}
+                {sheet.facts.reviews.pass !== undefined && ` · pass ${sheet.facts.reviews.pass}`}
+              </Fact>
+            )}
+            <Fact name="Started">{when(card.startedAt)}</Fact>
+            <Fact name={ongoing ? 'So far' : 'Start to finish'}>{duration(card.durationMs)}</Fact>
+            <Fact name="Model spend">{card.calls ? spendWords(card) : 'none'}</Fact>
+            <Fact name="Code written by humans">{plural(sheet.facts.humanLines, 'line')}</Fact>
+          </dl>
+          {sheet.seenBy && <SeenBy rows={sheet.seenBy} />}
+          <div className="side-card raised">
+            <h3>Agents and models</h3>
+            {sheet.agents.length ? (
+              <table className="models">
+                <thead className="label small">
+                  <tr>
+                    <th>Agent and model</th>
+                    <th className="num">Calls</th>
+                    <th className="num">Tokens</th>
+                    <th className="num">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sheet.agents.map((a) => (
+                    <tr key={`${a.agent}/${a.model}`}>
+                      <td>
+                        <div className="who">
+                          {/* Where a local model ran is what matters, not whose model it is: a laptop, no logo. */}
+                          {a.provider === 'local' ? (
+                            <Glyph name="local" className="glyph logo" />
+                          ) : (
+                            <LogoMark name={a.provider === 'typesafe' ? 'jev' : 'anthropic'} />
+                          )}
+                          <span>
+                            {AGENT_NAME[a.agent] ?? a.agent}
+                            <small>{modelName(a)}</small>
+                            {a.details.map((line) => (
+                              <small key={line} className="mono">
+                                {line}
+                              </small>
+                            ))}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="num">{a.calls}</td>
+                      <td className="num">
+                        {a.tokensIn ? (
+                          <>
+                            {tokens(a.tokensIn)} in<small>{tokens(a.tokensOut)} out</small>
+                          </>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className={`num ${a.provider === 'local' ? 'free' : ''}`}>
+                        {a.provider === 'local' ? '$0' : money(a.cost)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td>{card.local ? 'Total · all local' : `Total${ongoing ? ' so far' : ''}`}</td>
+                    <td className="num">{sheet.agents.reduce((sum, a) => sum + a.calls, 0)}</td>
+                    <td />
+                    <td className="num">{card.local ? '$0' : money(total)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            ) : (
+              <p className="help">
+                <b>No model was called.</b> {sheet.noModel}
+              </p>
+            )}
+            {sheet.agents.some((a) => (MODEL_AGENTS as readonly string[]).includes(a.agent)) && (
+              <p className="help tooled ran">
+                <ToolMark name="kubernetes" />
+                <span>
+                  Each step of the line’s agents ran in a Kubernetes pod of its own in the <code>runners</code>{' '}
+                  namespace, able to reach the gateway and the line, and nothing else.
+                </span>
+              </p>
+            )}
+            <Source>
+              The gateway’s log of every call. On the replay site the same calls come from cassettes.
+              {sheet.agents.some((a) => a.provider === 'local') &&
+                ' Local calls are counted and capped like any other, and priced at nothing.'}
+            </Source>
+          </div>
+          <div className="side-card raised">
+            <h3>
+              Gates
+              {sheet.gatesAttempt && <span className="attempt"> · attempt {sheet.gatesAttempt}</span>}
+            </h3>
+            {sheet.gates.length ? (
+              <div className="gates">
+                {sheet.gates.map((g) => (
+                  <Gate key={g.check} gate={g} />
+                ))}
+                {sheet.signals.length > 0 && (
+                  <>
+                    <span className="label sub">Signals, not required</span>
+                    {sheet.signals.map((g) => (
                       <Gate key={g.check} gate={g} />
                     ))}
-                    {sheet.signals.length > 0 && (
-                      <>
-                        <span className="label sub">Signals, not required</span>
-                        {sheet.signals.map((g) => (
-                          <Gate key={g.check} gate={g} />
-                        ))}
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <p className="help">{noGates(sheet, ongoing)}</p>
-                )}
-                {sheet.earlier.map((line) => (
-                  <p key={line} className="help gates-note">
-                    {line}
-                  </p>
-                ))}
-                {card.outcome === 'rolled-back' && (
-                  <p className="help gates-note">Every gate passed. The canary caught what tests could not.</p>
+                  </>
                 )}
               </div>
-            </aside>
+            ) : (
+              <p className="help">{noGates(sheet, ongoing)}</p>
+            )}
+            {sheet.earlier.map((line) => (
+              <p key={line} className="help gates-note">
+                {line}
+              </p>
+            ))}
+            {card.outcome === 'rolled-back' && (
+              <p className="help gates-note">Every gate passed. The canary caught what tests could not.</p>
+            )}
           </div>
-        </div>
-      </section>
-    </>
+        </aside>
+      </div>
+    </SheetFrame>
   );
 }
 

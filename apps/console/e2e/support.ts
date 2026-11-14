@@ -1,7 +1,8 @@
 /**
  * What every browser test shares: the widths and themes it runs at, the samples' last moment to pin the time to,
  * the milestone 4 test data's server and moments, and a guard that fails a test on any content security policy
- * violation, any request to another origin, and anything left on the device but Martin's session cookie.
+ * violation, any request to another origin, any error nothing on the page caught, and anything left on the device but
+ * Martin's session cookie.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -189,8 +190,8 @@ export async function scored(page: Page): Promise<void> {
 
 export async function ready(page: Page): Promise<void> {
   await page.locator('.card[data-place="centre"]').waitFor();
-  // The panels under the reel arrive in chunks of their own after the first view, Guardrails last.
-  await page.locator('#guardrails').waitFor();
+  // The bottom row arrives in chunks of their own after the first view, and draws once the last is in.
+  await page.locator('#guardrails-summary').waitFor();
   await page.evaluate(() => document.fonts.ready);
 }
 
@@ -339,6 +340,8 @@ export async function keptOnDevice(page: Page): Promise<string[]> {
 interface Guard {
   violations: string[];
   foreign: string[];
+  /** Errors nothing on the page caught, a thrown value or a rejection, as the browser reports them. */
+  uncaught: string[];
   /** Origins a test serves itself, by route, so no request to one leaves the machine: the replay site's stand-in. */
   served: string[];
 }
@@ -357,14 +360,15 @@ export async function keptInEvery(contexts: Iterable<BrowserContext>): Promise<s
 }
 
 /**
- * Every test fails on a policy violation, a request to another origin, or anything left on the device but Martin's
- * session cookie, whatever else it checks: in every context and page it opens, its own and popups alike, not only the
- * default page. A context the test closed keeps nothing, so only those still open are read.
+ * Every test fails on a policy violation, a request to another origin, an error nothing on the page caught, or anything
+ * left on the device but Martin's session cookie, whatever else it checks: in every context and page it opens, its own
+ * and popups alike, not only the default page. A context the test closed keeps nothing, so only those still open are
+ * read.
  */
 export const test = base.extend<{ guard: Guard }>({
   guard: [
     async ({ page, browser, baseURL }, use) => {
-      const guard: Guard = { violations: [], foreign: [], served: [] };
+      const guard: Guard = { violations: [], foreign: [], uncaught: [], served: [] };
       const origins = [new URL(baseURL ?? '').origin, FIXTURE_ORIGIN, ATTACKS_ORIGIN];
       const open = new Set<BrowserContext>();
       const watchPage = (watched: Page) => {
@@ -373,6 +377,7 @@ export const test = base.extend<{ guard: Guard }>({
             guard.violations.push(message.text());
           }
         });
+        watched.on('pageerror', (error) => guard.uncaught.push(`${watched.url()}: ${error.stack ?? error.message}`));
         watched.on('request', (request) => {
           const url = new URL(request.url());
           if (!['data:', 'blob:'].includes(url.protocol) && ![...origins, ...guard.served].includes(url.origin))
@@ -401,6 +406,7 @@ export const test = base.extend<{ guard: Guard }>({
       }
       expect(guard.violations, 'content security policy violations').toEqual([]);
       expect(guard.foreign, 'requests to another origin').toEqual([]);
+      expect(guard.uncaught, 'errors nothing on the page caught').toEqual([]);
       expect(
         (await keptInEvery(open)).filter((thing) => thing !== SESSION_COOKIE),
         'kept on the device',

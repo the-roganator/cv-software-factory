@@ -52,6 +52,7 @@ import { dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts'
 import {
   APP,
   type Context,
+  type Counts,
   type DayCounts,
   dependabotDirectories,
   directPackages,
@@ -1034,7 +1035,9 @@ const BUCKETS: [Bucket, string][] = [
 /** The run's verdict, in counts alone: what fails it, and whether it passes; with the moves, which hold each reason. */
 export function verdict(all: Row[], prove = false, moves: Move[] = []) {
   const open = all.filter((row) => !row.excepted);
-  const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, open.filter((row) => row.severity === s).length]));
+  const bySeverity = Object.fromEntries(
+    SEVERITIES.map((s) => [s, open.filter((row) => row.severity === s).length]),
+  ) as Counts;
   const byBucket = Object.fromEntries(
     BUCKETS.map(([b]) => [b, open.filter((row) => row.bucket === b).length]),
   ) as Record<Bucket, number>;
@@ -1615,7 +1618,7 @@ export async function main(args: string[]): Promise<number> {
     return 1;
   }
   const { lines, bySeverity, byBucket, passes, counts } = verdict(judged.rows, prove, list);
-  const file = movesFile(list, context, run, scanned, counts);
+  const file = movesFile(list, context, run, scanned, counts, bySeverity);
   const tags = new Map<string, MoveTag>();
   if (run)
     for (const [index, move] of list.entries())

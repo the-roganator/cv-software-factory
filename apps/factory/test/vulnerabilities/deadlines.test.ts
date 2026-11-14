@@ -816,7 +816,7 @@ describe('the clock, from the state the last scan kept', () => {
     expect(next.lines).toContain('Each day read from the state run 1 kept: 1 findings.');
   });
 
-  it('reads the alerts when there is no state, and says why: no day is lost with it', async () => {
+  it('reads the alerts when there is no state, and says why: the finding keeps its day', async () => {
     const finding = npm();
     const { sources } = sourcesOf({
       findings: [finding],

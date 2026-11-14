@@ -119,7 +119,9 @@ describe('a state’s shape', () => {
 });
 
 describe('the last state kept', () => {
-  const RUNS = `/repos/${REPOSITORY}/actions/workflows/vulnerabilities.yml/runs?branch=main&exclude_pull_requests=true&per_page=20&page=1`;
+  const runsOf = (event: string) =>
+    `/repos/${REPOSITORY}/actions/workflows/vulnerabilities.yml/runs?branch=main&event=${event}&per_page=20`;
+  const EVENTS = ['schedule', 'push', 'workflow_dispatch'];
   const run = (id: number, over: Record<string, unknown> = {}) => ({
     id,
     event: 'schedule',
@@ -135,7 +137,9 @@ describe('the last state kept', () => {
     const api: StateApi = {
       async json(path) {
         asked.push(path);
-        if (path === RUNS) return { workflow_runs: runs };
+        // GitHub answers each event's runs alone: a pull request's are in none of the three asked for.
+        const event = EVENTS.find((each) => path === runsOf(each));
+        if (event) return { workflow_runs: (runs as { event?: string }[]).filter((run) => run.event === event) };
         const id = Number(/\/actions\/runs\/(\d+)\/artifacts\?name=state&per_page=10$/.exec(path)?.[1]);
         if (id) return { artifacts: artifacts[id] ?? [] };
         throw new Error(`GET ${path}: 404`);
@@ -157,7 +161,7 @@ describe('the last state kept', () => {
     const kept = await latest(api, REPOSITORY, 'main', '50');
     expect(kept?.run).toBe('30');
     expect(asked).toEqual([
-      RUNS,
+      ...EVENTS.map(runsOf),
       `/repos/${REPOSITORY}/actions/runs/30/artifacts?name=state&per_page=10`,
       `/repos/${REPOSITORY}/actions/artifacts/7/zip`,
     ]);

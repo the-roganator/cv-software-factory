@@ -2386,3 +2386,33 @@ describe('an improvement Martin asked for', () => {
     expect(dryRunLeft(handed, 1_000_000_011)).toEqual({ end: 'close', why: 'merge' });
   });
 });
+
+describe('a move reopened', () => {
+  it('is folded as a reopening, with its move and no route', () => {
+    const reopened: LineEvent = {
+      type: 'work-item.reopened',
+      payload: {
+        sense: 'dependency' as const,
+        check: 'the vulnerability scan',
+        move: { name: 'node', ecosystem: 'docker' as const },
+        version: 'c'.repeat(40),
+        reason: 'The day’s scan found the move again',
+        dryRun: false,
+      },
+    };
+    const state = fold([ticket, reopened]);
+    expect(state.reopened).toHaveLength(1);
+    expect(state.reopened[0]).toMatchObject({ move: { name: 'node' } });
+    expect(state.reopened[0]).not.toHaveProperty('route');
+  });
+});
+
+describe("a ticket's severity, raised", () => {
+  it('reads as the worst of its opening and its ratings, and a rating never lowers it', () => {
+    const degraded: LineEvent = { ...ticket, payload: { ...ticket.payload, severity: 'degraded' } } as LineEvent;
+    const rated: LineEvent = { type: 'ticket.rated', payload: { severity: 'broken', was: 'degraded' } };
+    expect(fold([degraded, rated]).ticket?.severity).toBe('broken');
+    const lower: LineEvent = { type: 'ticket.rated', payload: { severity: 'degraded', was: 'cosmetic' } };
+    expect(fold([degraded, rated, lower]).ticket?.severity).toBe('broken');
+  });
+});

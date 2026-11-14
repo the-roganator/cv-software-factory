@@ -130,6 +130,17 @@ const reopenedSince = (sql: Sql) =>
  */
 const closedAtTake = (sql: Sql | TransactionSql) => sql`(l.stage = 'ended' and l.steps = 0 and l.issue is null)`;
 
+/**
+ * A ticket's severity as a rank, 3 for `broken` down to 1, from its opening (`t`) and every rating since: the worst of
+ * them (`ticketSeverity`), since a rating only ever raises it.
+ */
+const severityRank = (sql: Sql | TransactionSql, t: string) => sql`(
+  select max(case s when 'broken' then 3 when 'degraded' then 2 else 1 end)
+  from (select ${sql(`${t}.payload`)}->>'severity' as s
+        union all
+        select r.payload->>'severity' from events r
+        where r.work_item = ${sql(`${t}.work_item`)} and r.type = 'ticket.rated') severities)`;
+
 /** A row (`l`) under nobody's lease. */
 const unheld = (sql: Sql) => sql`(l.held_until is null or l.held_until < clock_timestamp())`;
 
@@ -214,7 +225,7 @@ export class Queue {
           and ${lastEnd(tx, 't.work_item')} is distinct from 'work-item.closed'
           and not exists (select 1 from line l where l.work_item = t.work_item)
         order by case t.type when 'ticket.opened' then 0 else 1 end,
-                 case t.payload->>'severity' when 'broken' then 3 when 'degraded' then 2 else 1 end desc, t.seq
+                 ${severityRank(tx, 't')} desc, t.seq
         limit 1
         returning work_item`;
       return taken?.work_item;

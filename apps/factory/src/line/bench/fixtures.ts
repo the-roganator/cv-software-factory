@@ -2314,6 +2314,7 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         spec: PINO_SPEC,
         pullRequest: 105,
         title: 'fix(deps): move pino to 10.4.1',
+        moved: 'pino',
         reviews: [
           {
             pullRequest: 105,

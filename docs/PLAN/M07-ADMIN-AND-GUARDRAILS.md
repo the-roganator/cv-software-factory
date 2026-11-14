@@ -21,17 +21,17 @@ Each part starts when the one before has met its criteria and its pull requests 
 
 ## How each part is built
 
-The part's session orchestrates with the `/implement` skill (`.claude/skills/implement`): it writes a brief for each task from this file, and a sub-agent takes each to a pull request, one at a time, its report checked before it is believed. On top of what the skill does:
+A session takes each task from this file to a pull request with Martin, one at a time, and does the work itself. As it goes:
 
-- **`/security-review` on every Part A pull request,** and on any in B or C that touches sign-in, the admin service, a credential, a fence or the approval routing. Each brief says so.
-- **The orchestrator does what a worker skips:**
+- **`/security-review` on every Part A pull request,** and on any in B or C that touches sign-in, the admin service, a credential, a fence or the approval routing.
+- **What one pull request cannot carry is the session's too:**
   - a `deploy/` change that waits for an image (a new Deployment, a migration, a new setting), opened once Martin has merged the change that builds the image and the App's deploy pull request that pins it. Only the App's deploy watch opens a pin's pull request (ADR 0005);
   - a proof on the local cluster, run with the `try-the-line` skill on Claude, time-boxed and within the spend caps;
   - a drill.
 
-  Each is in the run's summary until it is done.
+  Each is on Martin's list until it is done.
 - **Console designs come first.** Each new view is drawn in the mockup and the design system's README, and agreed with him before it is built. Snapshots are updated in the pinned image.
-- **Work in the app's repository** (Part B's OpenFeature and flagd) goes through `/implement` too, each work item's key beginning `app-`.
+- **Work in the app's repository** (Part B's OpenFeature and flagd) is done the same way, in a worktree of the app's repository.
 
 ## Decisions
 
@@ -502,7 +502,7 @@ Three pull requests, a stack: the rules, the phone's switch, and the admin servi
 
 Part D starts when Part C is done. Tasks 28 to 30 make the scan, its gates and its deadlines; tasks 31 to 37 act on what it finds.
 
-Each task is a few pull requests in order, each demonstrable. Those in the app's repository go through `/implement` with keys beginning `app-`, and nothing they write there, in code, commits, pull requests or replies, mentions or hints at seeded defects: they describe the scan, and nothing it might find. Every pull request that changes a workflow, the scan's scripts, the exceptions, the routing check or the GitHub worker has `/security-review` as well as `/code-review`. A required check is added to `scripts/github-settings.ts` in the pull request that brings the job, or after the app's pull request that first calls it; Martin applies the settings once it merges.
+Each task is a few pull requests in order, each demonstrable. Nothing those in the app's repository write there, in code, commits, pull requests or replies, mentions or hints at seeded defects: they describe the scan, and nothing it might find. Every pull request that changes a workflow, the scan's scripts, the exceptions, the routing check or the GitHub worker has `/security-review` as well as `/code-review`. A required check is added to `scripts/github-settings.ts` in the pull request that brings the job, or after the app's pull request that first calls it; Martin applies the settings once it merges.
 
 ### 0. Settled before the start
 
@@ -652,7 +652,7 @@ The App already opens this repository's deploy pins, the gate already passes an 
 - **A pin written twice is made one pin** (here; proof: the workflow's run on the branch): Syft's version is in `deploy/images/syft/Dockerfile` and again in `build.yml`, where the App may not write and Dependabot does not look, so every bump fails until someone moves the second by hand. `build.yml` reads the version from the Dockerfile at its own commit, a test refuses a second literal version, and a bump of that one file is then the whole change. Any other pin the list finds written twice gets the same before the watch moves it.
 - **The pin watch** (here; proof: a live try on the branch's `github` image, dry run first, then the first real pull request): `apps/factory/src/github/pins.ts`, beside the deploy watch. Each day, for each move of this repository with a target in the `worker`, `approval` or `cluster` lane, it commits to `factory/pin/<move>` (signed by GitHub, as the deploy watch's commits are) and opens one pull request, labelled `pin`. Its guard lets it replace the version or digest at each pin's file and line and nothing else, and refuses `.github/`, `policy/`, a lockfile and mise's files. The description is the factory's own: each pin before and after, what the move clears in counts, its deadline, and, when it will wait for Martin, why and what to do. A target that moves on moves the branch; a move that is gone closes its pull request with a sentence. Its tests, against the fake GitHub: one pull request for each move and never two; a moved target; a move gone; each refusal of its guard, recorded as the worker's others are; and each case of Dependabot's below.
   - **It does not fight Dependabot.** A pin Dependabot reads is Dependabot's while its move has no High or Critical on a deadline. When it has one, the watch opens its own pull request unless Dependabot's is open at the same target or a newer one; it never pushes to Dependabot's branch and never closes its pull request, which Dependabot closes itself once `main` has moved. Routine updates of pins nothing reads (the charts, ZAP, k3s) stay Martin's, by hand.
-  - **What it cannot write.** A move in the `issue` lane, and a line no longer built, opens an issue here, one for each move, updated rather than opened again, that `/implement` can take as it stands: the pins, the target, the counts and the deadline. mise's pins need `mise lock`, and the toolchain moves only when someone upgrades it; the App writes no lockfile and no workflow.
+  - **What it cannot write.** A move in the `issue` lane, and a line no longer built, opens an issue here, one for each move, updated rather than opened again, that a session can take as it stands: the pins, the target, the counts and the deadline. mise's pins need `mise lock`, and the toolchain moves only when someone upgrades it; the App writes no lockfile and no workflow.
 - **The worker queues what the gate passes** (here; proof: the live try's pull request, merged by the queue): `deploy-queue.ts` also adds a `pin` pull request to the merge queue, on the same terms as a deploy pin's, when the review App's verdict at its head is `pin-move`. A pull request the gate holds is Martin's: his approval of its head passes it, and he adds it. ADR 0017 and `AGENTS.md`'s merge rule say so.
 
 Exceptions stay one finding each. A finding with no fix fails nothing, and one with a fix is chased by its move, so an entry for a whole item would only hide what the moves already handle. Shrinking what is pinned (a slimmer base image) is a move like any other. Should a move held for Martin ever leave many fixable findings past their deadline, an exception by move is designed then.

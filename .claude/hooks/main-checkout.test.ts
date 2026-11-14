@@ -72,6 +72,20 @@ const TABLE: [string, string, boolean][] = [
   ['git -c core.editor=true commit -m x', 'main', true],
   ['git --no-pager checkout x', 'main', true],
   ['git stash list', 'main', true],
+  // An option's value may be quoted anywhere in it, be a command's output, or sit on the line after a backslash.
+  ['git -c user.name="A B" -c user.email=a@b commit -m x', 'main', true],
+  ["git -c user.name='A B' commit -m x", 'main', true],
+  ['git -C {wt} add . && git -c user.name="A B" commit -m x', 'main', true],
+  ['git -c user.name="A B" -C {main} commit -m x', 'wt', true],
+  ['git -C $(git rev-parse --show-toplevel) checkout main', 'main', true],
+  ['git -C $(git rev-parse --git-common-dir)/.. pull --ff-only', 'wt', true],
+  ['git \\\n  commit -m x', 'main', true],
+  ['git -C {main} \\\n  checkout main', 'wt', true],
+  ['git --exec-path /x checkout x', 'main', true],
+  ['git --attr-source HEAD checkout x', 'main', true],
+  ...['checkout 12', 'rebase', 'add feat/x', 'sync', 'top', 'merge 3 --squash'].map(
+    (sub): [string, string, boolean] => [`gh stack ${sub}`, 'main', true],
+  ),
   ["cat > scratch/notes.md <<'EOF'\nthen run git commit -m x\nEOF", 'main', true],
   ['git pull --ff-only origin some-feature', 'main', true],
   ['git pull --rebase', 'main', true],
@@ -99,6 +113,8 @@ const TABLE: [string, string, boolean][] = [
   ['git worktree remove scratch/worktrees/k && rm -rf scratch/old', 'main', false],
   ["cat > scratch/notes.md <<'EOF'\ngit says there is nothing to add; the merge of main is next\nEOF", 'main', false],
   ['gh run list --branch merge-queue & wait', 'main', false],
+  ['gh stack view', 'main', false],
+  ['gh stack link 12 13', 'main', false],
   // From the main checkout, moved to a worktree or another repository by a literal path.
   ['cd {wt} && git commit -m "x"', 'main', false],
   ['cd scratch/worktrees/k && git add . && git commit -m x', 'main', false],
@@ -121,6 +137,8 @@ const TABLE: [string, string, boolean][] = [
   ['(WT={wt}); git -C "$WT" reset --hard', 'main', true],
   ['WT=scratch/worktrees/k; git -C $WT reset --hard', 'main', true],
   ['WT={wt}; git -C $WTX reset --hard', 'main', true],
+  ['WT={wt}; WT+=/../../..; git -C $WT reset --hard', 'main', true],
+  ['WT={wt}; printf -v WT %s {main}; git -C $WT reset --hard', 'main', true],
   // … and refused when it cannot be sure.
   ['cd gone; git add . && git commit -m x', 'main', true],
   ['cd {wt}; git commit -m x', 'main', true],

@@ -6,7 +6,8 @@
 //   1. Where the command starts (the call's cwd): the main checkout (git's directory is the common one, and it is the
 //      project's repository), a worktree, another repository, or no repository.
 //   2. Whether the text holds a refused command: `git`, its options, then a refused subcommand (REFUSED) as the next
-//      word; or `gh pr checkout`, `gh pr merge` or `gh repo sync`. Code and quoted text alike. If not, the command
+//      word; or `gh pr checkout`, `gh pr merge`, `gh repo sync` or a `gh stack` command that moves HEAD. Code and
+//      quoted text alike. If not, the command
 //      passes: reading is never refused, nor is a word like "commit" or "add" anywhere else in the text.
 //   3. Whether the text moves where commands act: cd, pushd, popd, -C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE,
 //      as whole words. A variable in a target is followed only when the command begins by setting it to a literal
@@ -32,11 +33,19 @@ import { isAbsolute, resolve } from 'node:path';
 
 const REFUSED =
   'checkout|switch|reset|stash|rebase|merge|cherry-pick|revert|apply|am|restore|clean|commit|add|rm|mv|bisect|update-index|read-tree|checkout-index|update-ref|symbolic-ref|pull';
-const WORD = `(?:"[^"]*"|'[^']*'|\\S+)`;
-// git, then its own options (`-C <path>`, `-c <setting>`, `--git-dir <path>`, `--no-pager`, …), then the subcommand as
-// the next word. So `git worktree add`, `git log --grep revert` and `gh api …/commits` are not refused commands.
-const GIT = `\\bgit(?:\\s+(?:-[Cc]\\s+${WORD}|--(?:git-dir|work-tree|namespace)(?:=|\\s+)${WORD}|-[-\\w]+(?:=\\S+)?))*\\s+(?:${REFUSED})(?![-\\w])`;
-const GH = `\\bgh\\s+(?:(?:-R|--repo)(?:=|\\s+)\\S+\\s+)?(?:pr\\s+(?:checkout|merge)|repo\\s+sync)\\b`;
+// Between words: white space, or a backslash and the line's end.
+const SP = '(?:\\s|\\\\\\n)+';
+// A word as the shell reads one: quoted parts and a `$(…)` may hold spaces, anywhere in it (`user.name="A B"`).
+const WORD = `(?:"[^"]*"|'[^']*'|\\$\\([^)]*\\)|[^\\s"'])+`;
+// git, then its own options, then the subcommand as the next word. So `git worktree add`, `git log --grep revert` and
+// `gh api …/commits` are not refused commands. An option that takes its value as the next word is named; any other
+// word that starts with `-` is an option whole.
+const VALUED = '-[Cc]|--(?:git-dir|work-tree|namespace|exec-path|attr-source|super-prefix|config-env)';
+const GIT = `\\bgit(?:${SP}(?:(?:${VALUED})${SP}${WORD}|-${WORD}))*${SP}(?:${REFUSED})(?![-\\w])`;
+// gh's commands that move a checkout's HEAD: a pull request's, the repository's sync, and every `gh stack` command
+// but view, link, push and submit.
+const STACK = 'add|checkout|init|modify|unstack|rebase|sync|merge|bottom|down|up|switch|top|trunk';
+const GH = `\\bgh${SP}(?:(?:-R|--repo)(?:=|${SP})${WORD}${SP})?(?:pr${SP}(?:checkout|merge)|repo${SP}sync|stack${SP}(?:${STACK}))\\b`;
 const NAMES = new RegExp(`${GIT}|${GH}`);
 const NAMES_GIT = new RegExp(GIT, 'g');
 const NAMES_GH = new RegExp(GH);
@@ -45,7 +54,7 @@ const SETS = /^\s*([A-Za-z_]\w*)=("\/[^"$`\\]*"|'\/[^']*'|\/[^\s;&|()<>$`"'\\]*)
 
 /**
  * The command after the variables it sets at its start, each put in where it is used. One the rest could change (set
- * again, or named by for, read, unset, local, declare, export or typeset) is left as written, so a target that uses
+ * again, added to, or named by for, read, unset, local, declare, export, typeset or printf) is left as written, so a target that uses
  * it is one the hook cannot follow.
  */
 export function expand(command: string): string {
@@ -58,7 +67,7 @@ export function expand(command: string): string {
   }
   for (const [name, value] of values) {
     const changed = new RegExp(
-      `\\b${name}=|\\b(for|read|unset|local|declare|export|typeset)\\b[^;\\n&|]*\\b${name}\\b`,
+      `\\b${name}\\+?=|\\b(for|read|unset|local|declare|export|typeset|printf)\\b[^;\\n&|]*\\b${name}\\b`,
     );
     if (value === undefined || changed.test(rest)) continue;
     rest = rest.replace(new RegExp(`\\$\\{${name}\\}|\\$${name}(?!\\w)`, 'g'), () => value);

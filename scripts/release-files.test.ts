@@ -50,10 +50,10 @@ describe('the files a release changes', () => {
       'apps/factory/src/line/agents/coder.ts',
       // The reviewer's prompt for a move, which names the range package.json gives the package as the pin step's.
       'apps/factory/src/line/agents/reviewer.ts',
-      // A move's pins before and after, which take the package's range in package.json from the diff.
-      'apps/factory/src/line/moves.ts',
       // The bench's dependency move, whose spec names package.json's range for a package and its locked version.
       'apps/factory/src/line/bench/fixtures.ts',
+      // A move's pins before and after, which take the package's range in package.json from the diff.
+      'apps/factory/src/line/moves.ts',
       // The pin step's guard and the bench's, on invented manifests' dependency ranges.
       'apps/factory/test/github/pin-step.test.ts',
       'apps/factory/test/line/bench.test.ts',

@@ -969,7 +969,9 @@ export const PAYLOADS = {
      * what in the ticket's evidence asks for it: a line of the ticket, or a signal. `quote` gives the words there that
      * ask for it, which the line found in what `from` names before it took the spec. A version 1 spec said neither,
      * and a version 2 spec only `from`. `withFlag` is the side of an improvement's flag the criterion holds on: on,
-     * the change; off, the app as before.
+     * the change; off, the app as before. `shownBy` is what shows it: a test the coder writes, or, for a move's
+     * criterion alone, the scan gates and the required checks. A move whose every criterion the gates show needs no
+     * coder (`movesAlone`). Absent, a test shows it, as every criterion of a version 5 spec.
      */
     criteria: z
       .array(
@@ -980,6 +982,7 @@ export const PAYLOADS = {
           from: text(200).optional(),
           quote: text(200).optional(),
           withFlag: z.enum(['on', 'off']).optional(),
+          shownBy: z.enum(['test', 'gates']).optional(),
         }),
       )
       .min(1)

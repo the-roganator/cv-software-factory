@@ -47,6 +47,7 @@
 import { cutTo, MAX_FINDINGS, PATH_CHARS, type PayloadOf } from '@software-factory/events';
 import { z } from 'zod';
 import { type Answer, LIMITS, suggestionsGoBack, type WorkItemState } from '../machine.ts';
+import { type PinnedMove, targetWords } from '../moves.ts';
 import {
   answerThreads,
   cites,
@@ -88,6 +89,11 @@ export interface ReviewerInput {
   suggested?: Finding[] | undefined;
   /** The suggestions of the review before this one that the coder declined, each with its reason. */
   declined?: { finding: Finding; reason: string }[] | undefined;
+  /**
+   * A dependency's move, from its newest signal: the line's pin step writes its pins, which are in scope by rule and
+   * never the coder's, and its target is a floor (`movedLines`).
+   */
+  move?: Pick<PinnedMove, 'ecosystem' | 'name' | 'from' | 'to'> | undefined;
 }
 
 const finding = z.strictObject({
@@ -247,6 +253,31 @@ function contradictedReview(spec: PayloadOf<'spec.written'>, improvement: boolea
   ];
 }
 
+/**
+ * What the reviewer is told of a dependency's move: the pin step's files are the line's, in scope by rule, and the
+ * version it writes is the newest its range admits at or above the move's floor. What it still escalates: a version
+ * below the floor, another package moved that the move does not require, a file neither the coder's scope nor the pin
+ * step's.
+ */
+export function movedLines(move: ReviewerInput['move']): string[] {
+  if (!move) return [];
+  const npm = move.ecosystem === 'npm';
+  const files = npm
+    ? `the range package.json gives ${move.name}, and every lockfile (pnpm-lock.yaml)`
+    : move.ecosystem === 'node'
+      ? 'Node’s version in mise.toml and mise.lock, and each FROM of a Node image'
+      : `each FROM of ${move.name}`;
+  return [
+    `This change is a dependency’s move: ${move.name} (${move.ecosystem}), from ${move.from} to ${targetWords(move)}. The line’s pin step writes its pins before the coder, in the change: ${files}. Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone, and never ask for a pin to be moved by hand.`,
+    ...(npm
+      ? [
+          `The pin step takes the newest release of ${move.name} its range admits, past the app’s release age, at or above ${move.to}: a version above ${move.to} is the move as it should be, not a finding. A title or note that names the version written is right.`,
+        ]
+      : []),
+    `Escalate, as only Martin can settle it: ${npm ? `${move.name} resolved below ${move.to}; ` : ''}another package moved that ${move.name}’s new version does not require; or a file changed that is neither in the scope nor one of the pin step’s.`,
+  ];
+}
+
 function prompt({
   workItem,
   asked,
@@ -260,6 +291,7 @@ function prompt({
   blocked = [],
   suggested = [],
   declined = [],
+  move,
 }: ReviewerInput): string {
   const earlier = blocked.length + suggested.length;
   const improvement = asked.kind === 'request';
@@ -287,7 +319,8 @@ function prompt({
     ...spec.criteria.map(
       (c, i) => `${i + 1}. Given ${c.given}, when ${c.when}, then ${c.expect}.${side(c)}${source(c)}`,
     ),
-    `Scope, the only files it may change: ${spec.scope.join(', ')}.`,
+    `Scope, the only files ${move ? 'the coder' : 'it'} may change: ${spec.scope.join(', ')}.`,
+    ...movedLines(move),
     ...contradictedReview(spec, improvement),
     ...(blocked.length
       ? [
@@ -394,10 +427,13 @@ export const reviewer = defineAgent<ReviewerInput, ReviewerResult>({
   readsChange: true,
   input: async ({ workItem, state, round, ticket, request, signals }) => {
     const pushed = need(state.pullRequest, 'a pull request');
+    const seen = await signals();
+    // A move's newest signal names it: triage joins a changed target as a later signal.
+    const moved = seen.findLast((signal) => signal.move)?.move;
     return {
       workItem,
       asked: await askedOf({ state, ticket, request }),
-      signals: await signals(),
+      signals: seen,
       answers: state.answers,
       // What was reported is what the ticket points at, or Martin's shared words (`reportRule`).
       ...(state.firstSense === 'report' ? { aboutReport: true } : {}),
@@ -406,6 +442,7 @@ export const reviewer = defineAgent<ReviewerInput, ReviewerResult>({
       title: pushed.title,
       round,
       ...earlierOf(state),
+      ...(moved ? { move: moved } : {}),
     };
   },
   schema: ({ spec, blocked = [], suggested = [] }) =>

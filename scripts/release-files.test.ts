@@ -48,13 +48,22 @@ describe('the files a release changes', () => {
       'apps/factory/src/github/paths.ts',
       // The coder's prompt, which tells it to move a dependency's range in package.json and never the lockfile.
       'apps/factory/src/line/agents/coder.ts',
+      // The reviewer's prompt for a move, which names the range package.json gives the package as the pin step's.
+      'apps/factory/src/line/agents/reviewer.ts',
       // The bench's dependency move, whose spec names package.json's range for a package and its locked version.
       'apps/factory/src/line/bench/fixtures.ts',
+      // A move's pins before and after, which take the package's range in package.json from the diff.
+      'apps/factory/src/line/moves.ts',
       // The pin step's guard and the bench's, on invented manifests' dependency ranges.
       'apps/factory/test/github/pin-step.test.ts',
       'apps/factory/test/line/bench.test.ts',
       // flagd's evaluation library's own package.json, for the version the sides were recorded with.
       'apps/factory/test/line/compare.test.ts',
+      // The version the pin step wrote, read from its invented patches to package.json and the lockfile.
+      'apps/factory/test/line/moves.test.ts',
+      'apps/factory/test/line/pins.test.ts',
+      // The reviewer told that the pin step writes package.json's range for a move.
+      'apps/factory/test/line/reviewer.test.ts',
       // A step's patch that changes a manifest, for the pin step's lockfile after it.
       'apps/factory/test/runners.test.ts',
       // package.json's packageManager, for another pnpm of its major, and a package.json of its own, written for a

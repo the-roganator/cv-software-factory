@@ -138,7 +138,7 @@ export function attempts(item: ItemState): Attempt[] {
     switch (event.type) {
       case 'pull-request.pushed': {
         // Dependabot's pull requests and Martin's are not the coder's attempts.
-        if (event.actor !== 'coder') break;
+        if (!builds(event)) break;
         const { attempt, testsFirst, files } = event.payload;
         current = {
           attempt,
@@ -235,7 +235,7 @@ export function roundsNow(item: ItemState, list: readonly Attempt[]): RoundsNow 
   const pass = item.events.findLastIndex(startsPass);
   const since = (found: (event: PublicEvent) => boolean) => item.events.findLastIndex(found) > pass;
   const returnedNow = since((event) => event.type === 'work.returned' && event.payload.to === 'build');
-  const pushedNow = since((event) => event.type === 'pull-request.pushed' && event.actor === 'coder');
+  const pushedNow = since((event) => event.type === 'pull-request.pushed' && builds(event));
   const next =
     last?.returned && !last.returned.declined && returnedNow && item.closedAt === undefined && item.stage === 'build'
       ? { attempt: last.attempt + 1, building: inHand('build') }
@@ -258,7 +258,7 @@ export function reviewThread(item: ItemState, spec: PayloadOf<'spec.written'> | 
   let attempt: number | undefined;
   const reviews: ThreadReview[] = [];
   for (const event of item.events) {
-    if (event.type === 'pull-request.pushed' && event.actor === 'coder') attempt = event.payload.attempt;
+    if (event.type === 'pull-request.pushed' && builds(event)) attempt = event.payload.attempt;
     if (event.type !== 'review.submitted') continue;
     const { verdict, note, findings } = event.payload;
     reviews.push({
@@ -293,7 +293,13 @@ export function reviewThread(item: ItemState, spec: PayloadOf<'spec.written'> | 
   return reviews;
 }
 
-const coderPushes = (item: ItemState) => ofType(item, 'pull-request.pushed').filter((event) => event.actor === 'coder');
+/**
+ * Whether a push is Build's: the coder's, or the line's own for a move that asks for nothing but its pins, which no
+ * coder made. Dependabot's pull requests and Martin's are neither.
+ */
+export const builds = (event: PublicEvent) => event.actor === 'coder' || event.actor === 'factory';
+
+const coderPushes = (item: ItemState) => ofType(item, 'pull-request.pushed').filter((event) => builds(event));
 
 interface Refusal {
   patch: number;
@@ -310,7 +316,7 @@ function refusals(item: ItemState): Refusal[] {
   let patches = 0;
   let since: Refusal[] = [];
   for (const event of item.events) {
-    if (event.type === 'pull-request.pushed' && event.actor === 'coder') patches += 1;
+    if (event.type === 'pull-request.pushed' && builds(event)) patches += 1;
     if (event.type === 'hold.answered') since = [];
     if (event.type === 'action.refused' && event.payload.mechanism === 'scope-fence') {
       patches += 1;

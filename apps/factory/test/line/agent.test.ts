@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { boundsOn, closesAnIssue, commitTitle, holdDraft, mentions, stepFrom } from '../../src/line/agents/agent.ts';
+import { z } from 'zod';
+import {
+  boundsOn,
+  closesAnIssue,
+  commitTitle,
+  holdDraft,
+  mentions,
+  problemOf,
+  stepFrom,
+} from '../../src/line/agents/agent.ts';
 import { AGENTS } from '../../src/line/agents/index.ts';
 
 describe('a fix’s title', () => {
@@ -18,6 +27,25 @@ describe('a fix’s title', () => {
     expect(commitTitle.safeParse(title(80)).success).toBe(true);
     expect(commitTitle.safeParse(title(81)).success).toBe(false);
     expect(commitTitle.safeParse(title(81, 'cart')).success).toBe(false);
+  });
+});
+
+describe('a result’s problem, as the next attempt is told it', () => {
+  it('names the field, the rule, and how long a string that broke a rule of characters was', () => {
+    const schema = z.object({ title: commitTitle, unchanged: z.string().max(200) });
+    const result = { title: `fix(deps): ${'m'.repeat(83)}`, unchanged: 'u'.repeat(241) };
+    const issues = schema.safeParse(result).error?.issues ?? [];
+    expect(issues.map((issue) => problemOf(issue, result))).toEqual([
+      'title: Too big: expected string to have <=80 characters (it had 94)',
+      'title: a Conventional Commit title of 80 characters at most (it had 94)',
+      'unchanged: Too big: expected string to have <=200 characters (it had 241)',
+    ]);
+    // As the rule counts it, whitespace too.
+    const padded = { title: 'fix(deps): ok', unchanged: ` ${'u'.repeat(200)} ` };
+    const [issue] = z.object({ unchanged: z.string().max(200) }).safeParse(padded).error?.issues ?? [];
+    expect(issue && problemOf(issue, padded)).toBe(
+      'unchanged: Too big: expected string to have <=200 characters (it had 202)',
+    );
   });
 });
 

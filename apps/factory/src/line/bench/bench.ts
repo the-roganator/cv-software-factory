@@ -35,7 +35,7 @@ import { mkdir, readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { inScope } from '@software-factory/events';
+import { inScope, type PayloadOf } from '@software-factory/events';
 import { endJobToken, issueJobToken } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import type { AgentOptions } from '../../../../runner/src/agent.ts';
@@ -48,6 +48,7 @@ import { type AgentDefinition, stepFrom } from '../agents/agent.ts';
 import { type CoderInput, coderInputAfterRefusal, fenceFor } from '../agents/coder.ts';
 import { AGENTS } from '../agents/index.ts';
 import { LIMITS, type LineAgent } from '../machine.ts';
+import { movesAlone } from '../moves.ts';
 import { APP_REPOSITORY } from '../worker.ts';
 import type { Fixture, InputOf } from './fixtures.ts';
 
@@ -95,6 +96,11 @@ export interface Benched {
   pins?: string;
   /** For a coder's patch that changed a manifest: the lockfile the pin step wrote after it, as a patch. */
   lockfile?: string;
+  /**
+   * For a planner's spec of a move: what Build does with it, as the line decides (`movesAlone`). `pins` is the pin
+   * step alone, with no agent and no model call; `coder` runs the coder.
+   */
+  build?: { by: 'pins' | 'coder' };
   again?: Benched;
 }
 
@@ -177,6 +183,8 @@ export async function bench<A extends LineAgent>(o: BenchOptions<A>): Promise<Be
     if (o.agent === 'coder' && changesManifest(benched.handback.patch)) {
       benched.lockfile = await lockfileFor(o, dir, benched.pins, benched.handback.patch);
     }
+    const build = buildOf(o.fixture.input, benched.result);
+    if (build) benched.build = build;
     steps.push(benched);
     if (o.agent !== 'coder' || !benched.handback.patch) break;
     const coderInput = input as CoderInput;
@@ -191,6 +199,15 @@ export async function bench<A extends LineAgent>(o: BenchOptions<A>): Promise<Be
   }
   // Each step, with the one after it.
   return steps.reduceRight((after, benched) => ({ ...benched, again: after }));
+}
+
+/** What Build does with a planner's spec of a move, as the line decides it: nothing for any other step. */
+function buildOf(input: unknown, result: Benched['result']): Benched['build'] {
+  const { asked } = input as { asked?: { kind: string; ticket?: { fingerprint: object } } };
+  const spec = result.fits ? (result.value as { spec?: PayloadOf<'spec.written'> }).spec : undefined;
+  if (!spec || asked?.kind !== 'ticket' || !asked.ticket || !('ecosystem' in asked.ticket.fingerprint))
+    return undefined;
+  return { by: movesAlone(spec) ? 'pins' : 'coder' };
 }
 
 /** The last line the runner printed with a message, as JSON. */

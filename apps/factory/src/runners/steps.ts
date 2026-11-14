@@ -54,6 +54,9 @@ import {
 import type { Kube } from './kube.ts';
 import type { StepEnding, StepLogs } from './logs.ts';
 
+/** Why a move's step fails when its pin step wrote nothing: the checkout pins it where it moves already. */
+export const EMPTY_PINS = 'The pin step wrote nothing for the move: the checkout pins it where it moves already.';
+
 /** The most a result may be, as JSON: the runner's own bound (`apps/runner/src/step.ts`), which a test holds equal. */
 export const RESULT_BYTES = 64 * 1024;
 
@@ -87,6 +90,11 @@ export interface StepRequest extends Step {
   deadlineSeconds: number;
   /** Stops the step, at any point, as `cancel` does: the line aborts it when it stops. */
   signal?: AbortSignal;
+  /**
+   * For a move whose spec asks for nothing but the move (`movesAlone`): the prepare pod writes the pins, and no agent
+   * pod is made. The step ends `pinned`, with them.
+   */
+  pinsOnly?: boolean;
 }
 
 export type StepOutcome =
@@ -99,6 +107,8 @@ export type StepOutcome =
       /** The lockfile the pin step wrote after the agent's patch changed a manifest, which goes on that patch. */
       lockfile?: string;
     }
+  /** The pin step wrote the move's pins, and no agent ran, as the step asked (`pinsOnly`). Empty when nothing moved. */
+  | { kind: 'pinned'; job: string; pins: string }
   /** The move's pins need a file only Martin may change: no agent ran. */
   | { kind: 'held'; job: string; path: string; reason: string }
   /** The prepare or agent pod failed, or ran out of time, without handing anything back. */
@@ -183,7 +193,7 @@ export class Runners {
 
   async run(request: StepRequest): Promise<StepOutcome> {
     const { sql, kube, log } = this.#o;
-    const { workItem, round, attempt = 1, deadlineSeconds, signal, ...step } = request;
+    const { workItem, round, attempt = 1, deadlineSeconds, signal, pinsOnly = false, ...step } = request;
     const job = jobName(step.agent, workItem, round, attempt);
     const names = { job, workItem };
     const jobs = `/apis/batch/v1/namespaces/${NAMESPACE}/jobs`;
@@ -202,7 +212,7 @@ export class Runners {
     let outcome: StepOutcome | undefined;
     let thrown: unknown;
     try {
-      outcome = await this.#attempt(names, step, token, deadlineSeconds, signal);
+      outcome = await this.#attempt(names, step, token, deadlineSeconds, signal, pinsOnly);
       return outcome;
     } catch (error) {
       thrown = error;
@@ -232,6 +242,7 @@ export class Runners {
     token: string,
     deadlineSeconds: number,
     signal: AbortSignal | undefined,
+    pinsOnly = false,
   ): Promise<StepOutcome> {
     const { kube, log } = this.#o;
     const { job, workItem } = names;
@@ -257,7 +268,11 @@ export class Runners {
       }
       if (typeof said.pins !== 'string')
         return { kind: 'failed', job, reason: 'The prepare pod printed no pins for the move.' };
-      pins = said.pins || undefined;
+      // A move the checkout already has writes nothing: no agent builds on a move that is not there.
+      if (!said.pins) return { kind: 'failed', job, reason: EMPTY_PINS };
+      pins = said.pins;
+      log.info({ job, workItem, files: pathsIn(pins).length }, 'the pin step wrote the pins');
+      if (pinsOnly) return { kind: 'pinned', job, pins };
     }
 
     const handedBack = new Promise<Handback>((resolve) => this.#waiting.set(job, resolve));
@@ -573,6 +588,8 @@ function endingOf(outcome: StepOutcome): [StepEnding, string | null] {
   if (outcome.kind === 'failed') return ['failed', outcome.reason];
   // No agent ran: the step stopped at the pins, which wait for Martin.
   if (outcome.kind === 'held') return ['stopped', outcome.reason];
+  // No agent ran, as the step asked: the pins are all it was for.
+  if (outcome.kind === 'pinned') return ['handed-back', null];
   return [outcome.kind, null];
 }
 

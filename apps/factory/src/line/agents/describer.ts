@@ -31,6 +31,7 @@ import type { PayloadOf, Stage } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import { z } from 'zod';
 import { LOCKFILE_NAMES } from '../../github/paths.ts';
+import type { WorkItemState } from '../machine.ts';
 import { moveSection, pinChanges, replacedFor } from '../moves.ts';
 import { cites } from '../review.ts';
 import {
@@ -69,12 +70,19 @@ export interface DescriberInput {
   returns: { from: Stage; reason: string }[];
   /** Martin's answer to the hold before this step, if he wrote one. */
   answer?: string | undefined;
+  /**
+   * Whether Martin approved the hold the latest review's escalation put the change in, words or none: what it escalated
+   * is settled, by him.
+   */
+  accepted?: boolean | undefined;
+  /** For a dependency's move, the package or image that moves, as its signal names it: the summary names it. */
+  moved?: string | undefined;
   /** Why the step's last attempt failed, if it did. */
   failure?: string | null | undefined;
 }
 
 /** The describer's result, with the title its work item's pull request takes: a fix's, or an improvement's. */
-export const describerResultFor = (title: z.ZodType<string>) =>
+export const describerResultFor = (title: z.ZodType<string>, moved?: string) =>
   z.strictObject({
     /** The pull request's title, and so its squash commit's headline. */
     title,
@@ -89,7 +97,16 @@ export const describerResultFor = (title: z.ZodType<string>) =>
       .superRefine((body, ctx) => {
         for (const message of unrenderedFolds(body)) ctx.addIssue({ code: 'custom', message });
       }),
-    summary: PAYLOADS['work-item.summarised'],
+    summary: PAYLOADS['work-item.summarised'].superRefine((summary, ctx) => {
+      // A move's summary names what moves, each part of it: the console shows the title and the card alone.
+      if (!moved) return;
+      for (const field of ['title', 'description', 'story'] as const) {
+        // As a sentence would write it: `node` in “Node.js”, an image’s name as its signal names it.
+        if (summary[field].toLowerCase().includes(moved.toLowerCase())) continue;
+        const message = `a move’s summary names ${moved}, the package that moves, as its signal does, in its ${field} too`;
+        ctx.addIssue({ code: 'custom', path: [field], message });
+      }
+    }),
   });
 
 /** A fix's describer's result. */
@@ -103,6 +120,16 @@ const VERDICT: Record<Review['verdict'], string> = {
   escalated: 'escalated it',
 };
 
+/** Whether Martin approved the hold the latest review's escalation made: the answer stands until the summary. */
+const acceptedEscalation = (state: WorkItemState) =>
+  state.reviews.at(-1)?.verdict === 'escalated' &&
+  state.answer?.cause === 'review' &&
+  state.answer.decision === 'approved';
+
+/** The package or image a move moves, as its ticket's fingerprint names it, which is the signal's name. */
+const movedName = (asked: Asked) =>
+  asked.kind === 'ticket' && 'ecosystem' in asked.ticket.fingerprint ? asked.ticket.fingerprint.name : undefined;
+
 /** The review thread, as lines of the prompt: each review's verdict and note, then its findings. */
 function thread(reviews: Review[]): string[] {
   return reviews.flatMap((review, i) => [
@@ -115,7 +142,8 @@ function thread(reviews: Review[]): string[] {
 }
 
 function prompt(input: DescriberInput): string {
-  const { workItem, asked, signals, spec, pullRequest, title, reviews, returns, answer, failure } = input;
+  const { workItem, asked, signals, spec, pullRequest, title, reviews, returns, answer, accepted, moved, failure } =
+    input;
   const rounds = returns.length + 1;
   // A return from review is in the thread already, with its findings.
   const otherReturns = returns.filter((r) => r.from !== 'review');
@@ -149,12 +177,18 @@ function prompt(input: DescriberInput): string {
     'The review thread:',
     ...thread(reviews),
     '',
+    ...(accepted
+      ? [
+          'Martin approved the change after the latest review escalated it: what it escalated is settled, by him. Say so where the description or the summary speaks of it, never that it waits on anyone.',
+          '',
+        ]
+      : []),
     ...(answer ? [`Martin answered the hold before this step: ${answer}`, ''] : []),
     ...(failure ? [...failedAttemptLines(failure, 'description'), ''] : []),
     'The gates and the reviewer have passed the change: do not run the tests, start the app, send it requests or change anything. Read what you need to explain it, and no more.',
     '',
     ...(asked.kind === 'request' ? improvementWriting(spec) : FIX_WRITING),
-    ...(asked.kind === 'ticket' && isMove(asked.ticket) ? MOVE_WRITING : []),
+    ...(asked.kind === 'ticket' && isMove(asked.ticket) ? moveWriting(moved) : []),
   ].join('\n');
 }
 
@@ -175,9 +209,14 @@ const FIX_WRITING = [
 ];
 
 /** What the describer is told of a move's description, whose figures the line writes itself. */
-const MOVE_WRITING = [
+const moveWriting = (moved: string | undefined) => [
   '',
   'This change is a dependency’s move. The line adds a section of its own after your description: the spec, each pin before and after, and what the scan gates counted on `main` and on the change, from their own notices, and the Dependabot pull request it replaces, if there is one. So write no version, pin, digest, advisory or count of findings in the description or the summary: say what moves and why in words, naming the package or image that moves as the move’s signal names it, which the ticket’s issue, opened before the plan, made public, and what, if anything, the coder had to change beyond the pins.',
+  ...(moved
+    ? [
+        `The summary’s \`title\`, \`description\` and \`story\` each name ${moved}, exactly so: the line refuses a summary of a move that leaves the package out of any of them. Still no version, advisory or count in any of them.`,
+      ]
+    : []),
 ];
 
 /**
@@ -209,9 +248,10 @@ export const describer = defineAgent<DescriberInput, DescriberResult>({
   resultFiles: { body: 'description.md' },
   input: async ({ workItem, state, failure, ticket, request, signals }) => {
     const pushed = need(state.pullRequest, 'a pull request');
+    const asked = await askedOf({ state, ticket, request });
     return {
       workItem,
-      asked: await askedOf({ state, ticket, request }),
+      asked,
       signals: await signals(),
       spec: need(state.spec, 'a spec'),
       pullRequest: pushed.number,
@@ -219,10 +259,12 @@ export const describer = defineAgent<DescriberInput, DescriberResult>({
       reviews: state.reviews,
       returns: state.returns,
       answer: answerOf(state),
+      ...(acceptedEscalation(state) ? { accepted: true } : {}),
+      ...(movedName(asked) ? { moved: movedName(asked) } : {}),
       failure,
     };
   },
-  schema: ({ asked }) => describerResultFor(titleFor(asked)),
+  schema: ({ asked, moved }) => describerResultFor(titleFor(asked), moved),
   prompt,
   apply: async (described, _handback, { pullRequest: number, spec, asked }, context) => {
     const pr = await context.read('pullRequest', { number });

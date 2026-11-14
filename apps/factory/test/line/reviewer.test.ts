@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { EffectsContext } from '../../src/line/agents/agent.ts';
 import { type ReviewerInput, reviewer } from '../../src/line/agents/reviewer.ts';
 import { FIXTURE_WORK_ITEM, FIXTURES } from '../../src/line/bench/fixtures.ts';
+import { fold } from '../../src/line/machine.ts';
 import {
   acceptedThreads,
   answerThreads,
@@ -470,5 +471,65 @@ describe('the reviewer of a spec that contradicts a test', () => {
     );
     expect(prompt).toContain('blocking finding with `"ticket":true` that cites the criterion said to contradict it');
     expect(reviewer.prompt(input)).not.toContain('the criteria contradict');
+  });
+});
+
+describe('the reviewer of a dependency’s move', () => {
+  const moved = FIXTURES.reviewer['move-above-floor']?.input as ReviewerInput;
+
+  it('is told the pin step’s files are the line’s, in scope by rule, and to judge the scope by the coder’s files', () => {
+    const prompt = reviewer.prompt(moved);
+    expect(prompt).toContain('Scope, the only files the coder may change: src/log.ts, test/logging.test.ts.');
+    expect(prompt).toContain(
+      'This change is a dependency’s move: pino (npm), from 10.4.0 to 10.4.1 or later. The line’s pin step writes its pins before the coder, in the change: the range package.json gives pino, and every lockfile (pnpm-lock.yaml). Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone',
+    );
+  });
+
+  it('is told a version above the floor is the move as it should be', () => {
+    expect(reviewer.prompt(moved)).toContain(
+      'The pin step takes the newest release of pino its range admits, past the app’s release age, at or above 10.4.1: a version above 10.4.1 is the move as it should be, not a finding.',
+    );
+  });
+
+  it('still escalates a version below the floor, another package moved, or a file neither the coder’s nor the pin step’s', () => {
+    const prompt = reviewer.prompt(moved);
+    expect(prompt).toContain('Escalate, as only Martin can settle it: pino resolved below 10.4.1;');
+    expect(prompt).toContain('another package moved that pino’s new version does not require;');
+    expect(prompt).toContain('or a file changed that is neither in the scope nor one of the pin step’s.');
+  });
+
+  it('says nothing of a move to the reviewer of any other change', () => {
+    const prompt = reviewer.prompt(input);
+    expect(prompt).not.toContain('dependency’s move');
+    expect(prompt).toContain('Scope, the only files it may change:');
+  });
+
+  it('takes the move from its newest signal, as the line starts the step', async () => {
+    const { signals } = moved;
+    const started = await reviewer.input({
+      workItem: FIXTURE_WORK_ITEM,
+      issue: null,
+      round: 1,
+      state: {
+        ...fold([]),
+        pullRequest: { number: 106, title: 'fix(deps): move pino to 10.4.2' },
+        spec: moved.spec,
+      },
+      commit: 'a'.repeat(40),
+      base: 'a'.repeat(40),
+      session: null,
+      failure: null,
+      ticket: async () => (moved.asked as unknown as { ticket: never }).ticket,
+      request: async () => {
+        throw new Error('no request');
+      },
+      signals: async () => signals,
+      scanCounts: async () => [],
+      flagsTaken: async () => [],
+      read: async () => {
+        throw new Error('no read');
+      },
+    } as unknown as Parameters<typeof reviewer.input>[0]);
+    expect(started.move).toMatchObject({ name: 'pino', ecosystem: 'npm', from: '10.4.0', to: '10.4.1' });
   });
 });

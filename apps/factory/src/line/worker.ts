@@ -149,7 +149,7 @@ import type {
 } from '../github/server.ts';
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import type { PictureIndex } from '../pictures/index.ts';
-import type { Step, StepOutcome, StepRequest } from '../runners/steps.ts';
+import { EMPTY_PINS, type Step, type StepOutcome, type StepRequest } from '../runners/steps.ts';
 import { verifyRefusal } from '../signed-refusals.ts';
 import { ATTRIBUTES as A, inSpan } from '../spans.ts';
 import {
@@ -212,7 +212,7 @@ import {
   zeroCounts,
 } from './metrics.ts';
 import { stepCalls, workItemSpend } from './model-calls.ts';
-import { disclosedMove, type GateCounts, moveIssue } from './moves.ts';
+import { disclosedMove, type GateCounts, moveIssue, movesAlone } from './moves.ts';
 import { type Own, pagesFor } from './pictures.ts';
 import { type Pending, Queue, type QueueItem, type Takes, takesOf } from './queue.ts';
 import { type Carried, carried, Releases, type ReleaseWatchOptions } from './release.ts';
@@ -223,6 +223,7 @@ import {
   type FirstSignal,
   type FlagChecksPort,
   type Look,
+  type LookOptions,
   look,
   reopeningComment,
   type Target,
@@ -1306,6 +1307,16 @@ export class Line {
     }
   }
 
+  /** How a look reaches the app's scan of a release: the GitHub worker's moves, and its comparison of two commits. */
+  #scans(): NonNullable<LookOptions['scans']> {
+    return {
+      moves: (repo) => this.#o.github.read('moves', repo, {}),
+      // Whether main's later commit has the release's: GitHub's comparison of the two.
+      carries: async (repo, base, head) =>
+        ['ahead', 'identical'].includes((await this.#o.github.read('commits', repo, { base, head })).status),
+    };
+  }
+
   /** Whether a work item at Verify may be looked at: never twice at once, and not before a look that could not tell. */
   #lookDue(workItem: string): boolean {
     if (this.#inFlight.has(workItem)) return false;
@@ -1323,12 +1334,7 @@ export class Line {
     let found: Look;
     try {
       found = await look(first, target, {
-        scans: {
-          moves: (repo) => this.#o.github.read('moves', repo, {}),
-          // Whether main's later commit has the release's: GitHub's comparison of the two.
-          carries: async (repo, base, head) =>
-            ['ahead', 'identical'].includes((await this.#o.github.read('commits', repo, { base, head })).status),
-        },
+        scans: this.#scans(),
         ...this.#o.verify,
         now,
         dryRun: this.#o.dryRun,
@@ -1503,7 +1509,14 @@ export class Line {
     const target = await this.#stableTarget(promotion, promotion.previous);
     let found: Look;
     try {
-      found = await look(first, target, { ...this.#o.verify, now, dryRun: this.#o.dryRun, signal });
+      // A move's look again reads the scan of the release, as Verify's look does.
+      found = await look(first, target, {
+        scans: this.#scans(),
+        ...this.#o.verify,
+        now,
+        dryRun: this.#o.dryRun,
+        signal,
+      });
     } catch (error) {
       found = { kind: 'wait', why: `the sense could not be asked: ${messageOf(error)}` };
     }
@@ -1832,9 +1845,12 @@ export class Line {
       // A dependency's move is the pin step's to write, before the coder's first round: once the pull request is open,
       // its head has the pins.
       const move = agent === 'coder' && !pr ? await this.#moveOf(workItem) : undefined;
+      // A move whose spec asks for nothing but the move is the pin step's alone: no agent runs, and the line makes the
+      // commit from its patch. The coder runs on a move only for a criterion a test shows, or when the work comes back.
+      const alone = move !== undefined && state.spec !== undefined && movesAlone(state.spec);
       let started: Awaited<ReturnType<typeof definition.start>>;
       try {
-        started = await definition.start({ ...this.#context(item, round, state, commit, base), change });
+        started = await definition.start({ ...this.#context(item, round, state, commit, base), change, move });
       } catch (error) {
         if (!(error instanceof StepFailed)) throw error;
         return await this.#failed(workItem, agent, null, [], error.message);
@@ -1857,6 +1873,7 @@ export class Line {
         attempt,
         deadlineSeconds: bounds.deadlineSeconds,
         signal,
+        ...(alone ? { pinsOnly: true } : {}),
       });
       trace.getActiveSpan()?.setAttributes({
         [A.job]: outcome.job,
@@ -1870,6 +1887,33 @@ export class Line {
         await this.#queue.moved(workItem);
         countStep(agent, provider, 'held');
         this.#o.log.info({ workItem, agent, job: outcome.job, reason: outcome.reason }, 'the pins wait for Martin');
+        return;
+      }
+      if (outcome.kind === 'pinned') {
+        if (!outcome.pins) {
+          return await this.#failed(workItem, agent, outcome.job, [], EMPTY_PINS);
+        }
+        this.#o.log.info({ workItem, agent, job: outcome.job }, 'the move asks for nothing but its pins: no coder');
+        // The move is the whole change, as a coder says it (`{"moved": true}`): the line titles and notes it.
+        const moved: Pending = {
+          agent,
+          round,
+          job: outcome.job,
+          since,
+          commit,
+          base,
+          handback: { ending: 'finished', patch: '', note: '', turns: 0, session: null, result: { moved: true } },
+          pinned: { pins: outcome.pins, alone: true },
+          ...(move ? { move } : {}),
+          called: [],
+          begun: [],
+          done: {},
+          tries: 0,
+          failure: null,
+          retryAt: null,
+        };
+        await this.#queue.keep(workItem, moved);
+        await this.#effects(item, state, moved);
         return;
       }
       if (outcome.kind === 'stopped') {
@@ -1918,6 +1962,7 @@ export class Line {
               },
             }
           : {}),
+        ...(move ? { move } : {}),
         called,
         begun: [],
         done: {},
@@ -2054,6 +2099,7 @@ export class Line {
     const { github, repo } = this.#o;
     return {
       ...this.#context(item, pending.round, state, pending.commit, pending.base),
+      move: pending.move,
       once: async <T>(name: string, write: (again: boolean) => Promise<T>): Promise<T> => {
         // What a write gave back is kept as JSON, and given back as it was kept.
         if (Object.hasOwn(pending.done, name)) return pending.done[name] as T;

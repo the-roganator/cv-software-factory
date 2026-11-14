@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { type DescriberInput, describer, describerResult } from '../../src/line/agents/describer.ts';
 import { FIXTURES } from '../../src/line/bench/fixtures.ts';
+import { fold } from '../../src/line/machine.ts';
 
 const input: DescriberInput =
   FIXTURES.describer['off-by-one']?.input ??
@@ -133,5 +134,79 @@ describe('the describer', () => {
     });
     expect(ok.success).toBe(false);
     expect(ok.error?.issues[0]?.message).toContain('no factory:contradicts marker');
+  });
+});
+
+describe('the describer of a dependency’s move', () => {
+  const moved = FIXTURES.describer['dependency-fix']?.input as DescriberInput;
+  const result = (named: Partial<typeof summary>) => ({
+    title: 'fix(deps): move pino past its vulnerable release',
+    body: 'The move of pino, in npm, which the scan asked for.',
+    summary: {
+      title: 'pino had two advisories',
+      description: 'The logging library pino carried two advisories. The fix moves pino to a patched release.',
+      story: 'The scan found two advisories in pino. The planner asked for the move; the line wrote pino’s pins.',
+      ...named,
+    },
+  });
+
+  it('is told its summary’s title, description and story each name the package, and no version, advisory or count', () => {
+    expect(describer.prompt(moved)).toContain(
+      'The summary’s `title`, `description` and `story` each name pino, exactly so: the line refuses a summary of a move that leaves the package out of any of them. Still no version, advisory or count in any of them.',
+    );
+  });
+
+  it('is refused a summary that leaves the package out of any part of it, saying which and why', () => {
+    const schema = describer.schema(moved);
+    expect(schema.safeParse(result({})).success).toBe(true);
+    const unnamed = schema.safeParse(result({ title: 'Vulnerable logging library in use' }));
+    expect(unnamed.success).toBe(false);
+    expect(unnamed.error?.issues).toEqual([
+      expect.objectContaining({
+        path: ['summary', 'title'],
+        message: 'a move’s summary names pino, the package that moves, as its signal does, in its title too',
+      }),
+    ]);
+    // As a sentence would write it: the name in any case, so Node’s move may say “Node.js”.
+    const node = describer.schema({ ...moved, moved: 'node' });
+    const nodeSummary = { title: 'Node.js had a flaw', description: 'Node moves.', story: 'The scan saw node.' };
+    expect(node.safeParse({ ...result({}), summary: nodeSummary }).success).toBe(true);
+    // Any other change's summary names nothing in particular.
+    expect(describer.schema(input).safeParse({ ...result({}), title: 'fix(smoke): count it' }).success).toBe(true);
+  });
+
+  it('is told Martin approved the change after the review escalated it, with words or none', () => {
+    const escalated = { ...moved.reviews[0], verdict: 'escalated' as const } as DescriberInput['reviews'][number];
+    const accepted = { ...moved, reviews: [escalated], accepted: true };
+    expect(describer.prompt(accepted)).toContain(
+      'Martin approved the change after the latest review escalated it: what it escalated is settled, by him.',
+    );
+    expect(describer.prompt(moved)).not.toContain('what it escalated is settled');
+  });
+
+  it('takes Martin’s approval of the escalation from the work item, words or none, and the package from its ticket', async () => {
+    const escalated = { ...moved.reviews[0], verdict: 'escalated' as const } as DescriberInput['reviews'][number];
+    const context = (answer: object | undefined) =>
+      ({
+        workItem: '1036',
+        issue: 52,
+        round: 1,
+        state: {
+          ...fold([]),
+          pullRequest: { number: 53, title: 'fix(deps): move pino to 10.4.1' },
+          spec: moved.spec,
+          reviews: [escalated],
+          answer,
+        },
+        commit: 'a'.repeat(40),
+        base: 'a'.repeat(40),
+        session: null,
+        failure: null,
+        ticket: async () => (moved.asked as unknown as { ticket: never }).ticket,
+        signals: async () => moved.signals,
+      }) as unknown as Parameters<typeof describer.input>[0];
+    const approved = { cause: 'review', stage: 'review', decision: 'approved', resolution: 'approve', text: undefined };
+    expect(await describer.input(context(approved))).toMatchObject({ accepted: true, moved: 'pino' });
+    expect(await describer.input(context(undefined))).not.toHaveProperty('accepted');
   });
 });

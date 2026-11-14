@@ -71,6 +71,11 @@ export interface StepContext {
    */
   change?: { pullRequest: number; files: string[] } | undefined;
   /**
+   * For a coder's step on a dependency's work item before its pull request has the move: the move the pin step writes
+   * before the agent starts, which the step's commit is made on.
+   */
+  move?: Step['move'] | undefined;
+  /**
    * The work item's ticket, as its public view has it, but a move's title and fingerprint, from its own payload. Throws
    * `StepFailed` when there is none.
    */
@@ -111,9 +116,10 @@ export interface EffectsContext extends StepContext {
   keepSession(session: string | null): Promise<void>;
   /**
    * What the pin step wrote around the agent's patch, for the GitHub worker to apply with it: the move's pins before,
-   * the lockfile after. Nothing when it wrote neither.
+   * the lockfile after. Nothing when it wrote neither. `alone` when no agent ran: the move asks for nothing but its
+   * pins (`movesAlone`), and the line makes the commit itself.
    */
-  pinned?: { pins?: string; lockfile?: string } | undefined;
+  pinned?: { pins?: string; lockfile?: string; alone?: true } | undefined;
   /** The line's log, for what a result does that its events do not say in full. */
   log: Pick<Logger, 'warn'>;
 }
@@ -197,9 +203,7 @@ export function defineAgent<Input, Result>(
         async finish(handback, effects) {
           const parsed = definition.schema(input).safeParse(handback.result);
           if (!parsed.success) {
-            const problems = parsed.error.issues
-              .slice(0, 3)
-              .map((i) => `${i.path.join('.') || 'result'}: ${i.message}`);
+            const problems = parsed.error.issues.slice(0, 3).map((i) => problemOf(i, handback.result));
             throw new StepFailed(
               handback.result === undefined
                 ? `The ${agent} handed back no result${handback.error ? ` (${handback.error})` : ''}`
@@ -211,6 +215,22 @@ export function defineAgent<Input, Result>(
       };
     },
   };
+}
+
+/**
+ * A problem with a result, as the next attempt is told it: the field and what is wrong, and, for a string whose rule
+ * counts its characters, how many the one handed back had, so the attempt knows by how much to shorten it.
+ */
+export function problemOf(issue: z.core.$ZodIssue, result: unknown): string {
+  const field = issue.path.join('.') || 'result';
+  const value = issue.path.reduce<unknown>(
+    (at, key) => (at !== null && typeof at === 'object' ? (at as Record<PropertyKey, unknown>)[key] : undefined),
+    result,
+  );
+  const counted = typeof value === 'string' && /characters/.test(issue.message);
+  // As the rule counts it: every character, whitespace too.
+  const length = counted ? ` (it had ${value.length})` : '';
+  return `${field}: ${issue.message}${length}`;
 }
 
 /**

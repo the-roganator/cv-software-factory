@@ -23,6 +23,7 @@ import { attackStory, isFinish, isLaunch, limitOf, verdictAt } from './attacks.t
 import {
   type Attempt,
   attempts,
+  builds,
   deployPicture,
   type RoundsNow,
   reviewThread,
@@ -654,7 +655,7 @@ function scopeOf(item: ItemState, spec: PayloadOf<'spec.written'>): Sheet['scope
   let of: ScopeOf;
   let files: { path: string; added: number; removed: number; cut?: true | undefined }[] = [];
   for (const event of item.events) {
-    if (event.type === 'pull-request.pushed' && event.actor === 'coder') {
+    if (event.type === 'pull-request.pushed' && builds(event)) {
       patches += 1;
       of = { pullRequest: event.payload.number };
       files = event.payload.whole;
@@ -976,7 +977,7 @@ function reviewsOfPass(item: ItemState): { done: number; of: number; pass: numbe
       current = { pushed: false, done: 0 };
       passes.push(current);
     }
-    if (event.type === 'pull-request.pushed' && event.actor === 'coder') current.pushed = true;
+    if (event.type === 'pull-request.pushed' && builds(event)) current.pushed = true;
     if (event.type === 'review.submitted') current.done += 1;
   }
   // The sheet shows it only once the coder has pushed, so there is a pass that pushed.

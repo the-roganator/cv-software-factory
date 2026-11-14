@@ -11,7 +11,7 @@ import { RESULT_BYTES as RUNNER_RESULT_BYTES } from '../../runner/src/step.ts';
 import { agentJob, lockfileJob, prepareJob } from '../src/runners/jobs.ts';
 import { StepLogs } from '../src/runners/logs.ts';
 import { lineServers } from '../src/runners/serve.ts';
-import { RESULT_BYTES, type Runners } from '../src/runners/steps.ts';
+import { EMPTY_PINS, RESULT_BYTES, type Runners } from '../src/runners/steps.ts';
 import { quiet } from './github/fake.ts';
 import { DONE, database, handBack, line, PATCH, STEP, withRunnersStore } from './runners-harness.ts';
 
@@ -180,6 +180,25 @@ describe('the pin step around a coder’s step', () => {
       reason: 'The prepare pod printed no pins for the move.',
     });
     expect(calls.some((c) => c.includes('agent') && c.startsWith('POST'))).toBe(false);
+  });
+
+  it('fails a move whose pin step wrote nothing, and never starts the agent, pins-only or not', async () => {
+    for (const pinsOnly of [false, true]) {
+      const { runners, calls, close } = await line(() => {}, undefined, quiet, {
+        podLogs: { prepare: printed('the pins', { move: MOVE, pins: '' }) },
+      });
+      const outcome = await runners.run({
+        ...STEP,
+        move: MOVE,
+        workItem: pinsOnly ? '1091' : '1090',
+        round: 1,
+        deadlineSeconds: 60,
+        pinsOnly,
+      });
+      await close();
+      expect(outcome).toEqual({ kind: 'failed', job: `coder-${pinsOnly ? '1091' : '1090'}-1-1`, reason: EMPTY_PINS });
+      expect(calls.some((c) => c.includes('agent') && c.startsWith('POST'))).toBe(false);
+    }
   });
 
   it('writes the lockfile in a Job of its own after a patch that changes a manifest, and gives it beside the patch', async () => {

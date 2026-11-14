@@ -20,7 +20,7 @@
  *   pull request: the actions refuse both, as a branch the factory does not own and a pull request the App did not open.
  *   A pin Dependabot reads with no High or Critical on a deadline is in the `dependabot` lane, and never the watch's.
  * - **A move in the `issue` lane**, a line no longer built, and a move the watch cannot write on its pins' lines, is
- *   one issue, labelled `pin`, that `/implement` can take as it stands: its pins, its target, its counts and its
+ *   one issue, labelled `pin`, that a session can take as it stands: its pins, its target, its counts and its
  *   deadline. It is found again by the mark in its body, and updated, never opened twice; one Martin closed is opened
  *   again only for a later target.
  * - **A move that is gone** closes its pull request, or its issue, with a sentence.

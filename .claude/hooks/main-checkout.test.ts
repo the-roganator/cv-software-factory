@@ -42,7 +42,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 /** Whether the hook refuses the command run from `cwd`, with {main}, {wt}, {link} and {other} put in. */
 function refused(command: string, cwd: string): boolean {
-  const filled = command.replace(/\{(\w+)\}/g, (_, k: string) => at[k] as string);
+  const filled = command.replace(/\{(\w+)\}/g, (whole, k: string) => at[k] ?? whole);
   return judge(filled, at[cwd] as string, mainGitDir(at.link)) !== undefined;
 }
 
@@ -57,7 +57,7 @@ const TABLE: [string, string, boolean][] = [
   ['git commit -m x', 'other', false],
   ['git commit -m x', 'none', false],
   ['git commit -m "cd into the folder"', 'wt', false],
-  // From the main checkout, with nothing that moves it: every refused word is refused, wherever it is.
+  // From the main checkout, with nothing that moves it: every refused command is refused, wherever it is.
   ...['checkout x', 'switch -c x', 'reset --hard', 'stash', 'rebase main', 'commit -m x', 'add .', 'restore .'].map(
     (sub): [string, string, boolean] => [`git ${sub}`, 'main', true],
   ),
@@ -67,6 +67,30 @@ const TABLE: [string, string, boolean][] = [
   ['mise exec -- git checkout x', 'main', true],
   ['gh repo sync', 'main', true],
   ['gh pr checkout 12', 'main', true],
+  ['gh pr merge 12 --squash', 'main', true],
+  ['gh -R o/r pr checkout 12', 'main', true],
+  ['git -c core.editor=true commit -m x', 'main', true],
+  ['git --no-pager checkout x', 'main', true],
+  ['git stash list', 'main', true],
+  // An option's value may be quoted anywhere in it, be a command's output, or sit on the line after a backslash.
+  ['git -c user.name="A B" -c user.email=a@b commit -m x', 'main', true],
+  ["git -c user.name='A B' commit -m x", 'main', true],
+  ['git -C {wt} add . && git -c user.name="A B" commit -m x', 'main', true],
+  ['git -c user.name="A B" -C {main} commit -m x', 'wt', true],
+  ['git -C $(git rev-parse --show-toplevel) checkout main', 'main', true],
+  ['git -C $(git rev-parse --git-common-dir)/.. pull --ff-only', 'wt', true],
+  ['git \\\n  commit -m x', 'main', true],
+  ['git -C {main} \\\n  checkout main', 'wt', true],
+  ['git --exec-path /x checkout x', 'main', true],
+  ['git --attr-source HEAD checkout x', 'main', true],
+  ['git -c user.name=A\\ B commit -m x', 'main', true],
+  ['git -C {main}\\ copy reset --hard', 'wt', true],
+  ['gh --hostname github.com pr checkout 12', 'main', true],
+  ['gh --hostname github.com repo sync', 'main', true],
+  ...['checkout 12', 'rebase', 'add feat/x', 'sync', 'top', 'merge 3 --squash', 'create x', 'unlink 3'].map(
+    (sub): [string, string, boolean] => [`gh stack ${sub}`, 'main', true],
+  ),
+  ["cat > scratch/notes.md <<'EOF'\nthen run git commit -m x\nEOF", 'main', true],
   ['git pull --ff-only origin some-feature', 'main', true],
   ['git pull --rebase', 'main', true],
   ['git pull --ff-only', 'main', false],
@@ -84,12 +108,46 @@ const TABLE: [string, string, boolean][] = [
     'branch -D old',
   ].map((sub): [string, string, boolean] => [`git ${sub}`, 'main', false]),
   ['grep -rn foo docs && gh pr view 12', 'main', false],
+  // A refused word that is not git's subcommand is only a word: in gh's arguments, a path, a note or another command.
+  ['gh api repos/o/r/pulls/12/commits', 'main', false],
+  ['gh pr view 12 --json commits,mergeable', 'main', false],
+  ['gh pr edit 12 --add-reviewer @copilot', 'main', false],
+  ['git log --grep revert', 'main', false],
+  ['git log --oneline -3 && rm -rf scratch/old', 'main', false],
+  ['git worktree remove scratch/worktrees/k && rm -rf scratch/old', 'main', false],
+  ["cat > scratch/notes.md <<'EOF'\ngit says there is nothing to add; the merge of main is next\nEOF", 'main', false],
+  ['gh run list --branch merge-queue & wait', 'main', false],
+  ['gh stack view', 'main', false],
+  ['gh stack link 12 13', 'main', false],
+  ['gh stack --help', 'main', false],
+  ['gh pr create --title "fix: the checkout" --body "pr merge"', 'main', false],
+  ['gh api repos/o/r/pulls --jq .pr checkout', 'main', false],
   // From the main checkout, moved to a worktree or another repository by a literal path.
   ['cd {wt} && git commit -m "x"', 'main', false],
   ['cd scratch/worktrees/k && git add . && git commit -m x', 'main', false],
   ['git -C {wt} reset --hard', 'main', false],
   ['git -C {wt} add . && git -C {other} commit -m x', 'main', false],
   ['cd {other} && gh pr checkout 12', 'main', false],
+  ['git -C {wt} commit -m "git said so"', 'main', false],
+  // … or by a variable the command sets first, to a literal absolute path, in a statement of its own.
+  ['WT={wt}; git -C $WT reset --hard', 'main', false],
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's ${WT}, not a template's
+  ['WT={wt} && git -C "$WT" add . && git -C ${WT} commit -m x', 'main', false],
+  ['WT={wt}\ncd "$WT" && git commit -m x', 'main', false],
+  ['R={other}; W={wt}; git -C $W add . && git -C $R commit -m x', 'main', false],
+  ['WT={main}; git -C $WT reset --hard', 'main', true],
+  ['WT={main}; git -C $WT reset --hard', 'wt', true],
+  ['WT={wt} git -C "$WT" reset --hard', 'main', true],
+  ['WT={wt}; WT={main}; git -C $WT reset --hard', 'main', true],
+  ['WT={wt}; for WT in {main}; do git -C $WT reset --hard; done', 'main', true],
+  ['WT={wt}; read WT; git -C "$WT" reset --hard', 'main', true],
+  ['(WT={wt}); git -C "$WT" reset --hard', 'main', true],
+  ['WT=scratch/worktrees/k; git -C $WT reset --hard', 'main', true],
+  ['WT={wt}; git -C $WTX reset --hard', 'main', true],
+  ['WT="{wt} b"; git -C "$WT" reset --hard', 'main', true],
+  ["WT='{wt};x'; git -C $WT reset --hard", 'main', true],
+  ['WT={wt}; WT+=/../../..; git -C $WT reset --hard', 'main', true],
+  ['WT={wt}; printf -v WT %s {main}; git -C $WT reset --hard', 'main', true],
   // … and refused when it cannot be sure.
   ['cd gone; git add . && git commit -m x', 'main', true],
   ['cd {wt}; git commit -m x', 'main', true],

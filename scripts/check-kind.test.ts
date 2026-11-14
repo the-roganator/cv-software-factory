@@ -557,7 +557,7 @@ describe('the classes a cluster is not made from', () => {
       'policy/triage.ts',
       '.github/workflows/check.yml',
       '.github/CODEOWNERS',
-      '.claude/skills/implement/SKILL.md',
+      '.claude/skills/try-the-line/SKILL.md',
       '.devcontainer/devcontainer.json',
       'pnpm-lock.yaml',
       'pnpm-workspace.yaml',

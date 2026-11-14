@@ -21,17 +21,17 @@ Each part starts when the one before has met its criteria and its pull requests 
 
 ## How each part is built
 
-The part's session orchestrates with the `/implement` skill (`.claude/skills/implement`): it writes a brief for each task from this file, and a sub-agent takes each to a pull request, one at a time, its report checked before it is believed. On top of what the skill does:
+A session takes each task from this file to a pull request with Martin, one at a time, and does the work itself. As it goes:
 
-- **`/security-review` on every Part A pull request,** and on any in B or C that touches sign-in, the admin service, a credential, a fence or the approval routing. Each brief says so.
-- **The orchestrator does what a worker skips:**
+- **`/security-review` on every Part A pull request,** and on any in B or C that touches sign-in, the admin service, a credential, a fence or the approval routing.
+- **What one pull request cannot carry is the session's too:**
   - a `deploy/` change that waits for an image (a new Deployment, a migration, a new setting), opened once Martin has merged the change that builds the image and the App's deploy pull request that pins it. Only the App's deploy watch opens a pin's pull request (ADR 0005);
   - a proof on the local cluster, run with the `try-the-line` skill on Claude, time-boxed and within the spend caps;
   - a drill.
 
-  Each is in the run's summary until it is done.
+  Each is on Martin's list until it is done.
 - **Console designs come first.** Each new view is drawn in the mockup and the design system's README, and agreed with him before it is built. Snapshots are updated in the pinned image.
-- **Work in the app's repository** (Part B's OpenFeature and flagd) goes through `/implement` too, each work item's key beginning `app-`.
+- **Work in the app's repository** (Part B's OpenFeature and flagd) is done the same way, in a worktree of the app's repository.
 
 ## Decisions
 
@@ -178,7 +178,7 @@ Public profiles get their certificates from Cloudflare (milestone 10).
   - **Every gate passes.**
 
   The fix is read from the scans, never from an advisory's or a pull request's words. The canary still guards after the merge, and Martin is notified of each such merge. Any other dependency change keeps its dependency-change tag and waits in Needs you with the lockfile change and the scan's summary. The scanner must see the Node binary itself, not only the packages, proved as task 28 is.
-- **The factory's and the platform's pins are moved by the App, and merged by the gate or by Martin.** The line works only in the app's repository. Here the GitHub worker opens a pull request for each move that changes the pin and nothing else, and the review gate passes it, as it passes a deploy pin, only when it can prove the move from the pull request: forward on its line, not a scanner's own pin, signed where its publisher signs, its scans showing the fix and nothing new, nothing else that runs changed, and a check that ran it. The worker adds what the gate passes to the merge queue. Every other move waits for Martin in Needs you: a major, a chart that changes more than its images, and what only his cluster can apply. What no pull request of the App's can write (anything mise pins, a workflow, a package in this repository's lockfile that Dependabot has not moved) opens an issue that `/implement` can take as it stands. Routine updates stay Dependabot's, and reach Martin as its pull requests do. The line taking this repository as a second app is a later milestone's idea.
+- **The factory's and the platform's pins are moved by the App, and merged by the gate or by Martin.** The line works only in the app's repository. Here the GitHub worker opens a pull request for each move that changes the pin and nothing else, and the review gate passes it, as it passes a deploy pin, only when it can prove the move from the pull request: forward on its line, not a scanner's own pin, signed where its publisher signs, its scans showing the fix and nothing new, nothing else that runs changed, and a check that ran it. The worker adds what the gate passes to the merge queue. Every other move waits for Martin in Needs you: a major, a chart that changes more than its images, and what only his cluster can apply. What no pull request of the App's can write (anything mise pins, a workflow, a package in this repository's lockfile that Dependabot has not moved) opens an issue that a session can take as it stands. Routine updates stay Dependabot's, and reach Martin as its pull requests do. The line taking this repository as a second app is a later milestone's idea.
 
 ## Part A: admin
 
@@ -300,12 +300,12 @@ On the local cluster, on Claude, at Supervised:
 
 ## Part B: improvements and feature flags
 
-Each task is its own pull request, or a few in order, each demonstrable. Work in the app's repository goes through `/implement` like the rest, and nothing it writes there, in code, commits, pull requests or replies, mentions or hints at seeded defects.
+Each task is its own pull request, or a few in order, each demonstrable. Nothing that work in the app's repository writes there, in code, commits, pull requests or replies, mentions or hints at seeded defects.
 
 ### 0. Settled before the start
 
 - Martin has agreed the decisions above (2026-10-24).
-- **`/implement` takes work in the app's repository,** the run's first pull request. A work item may name the app's repository. Its worktree lives under this checkout's `scratch/`, its worker follows the app's `AGENTS.md` and `docs/REVIEWERS.md` and runs the app's `make check`, its description is written by `/visual-pr` with the app's pull request template, and every brief for it carries the rule on seeded defects. A pull request that needs one in the other repository first says so, and the orchestrator orders them.
+- **Work in the app's repository is done from this checkout.** Its worktree lives under this checkout's `scratch/`, the session follows the app's `AGENTS.md` and `docs/REVIEWERS.md` and runs the app's `make check`, its description is written by `/visual-pr` with the app's pull request template, and the rule on seeded defects holds for all of it. A pull request that needs one in the other repository first says so, and they are opened in that order.
 - **Carried from Part A:** the store (`DiskArtifacts.open()` in `packages/store/src/artifacts.ts`) and the console (`artifact()` in `apps/console/src/app.ts`) each read an artifact's size apart from opening it, so a file replaced between the two reads sends the wrong `Content-Length`. Each opens once and takes the size from the handle, in a small pull request of its own.
 
 ### 14. OpenFeature and flagd
@@ -383,7 +383,7 @@ Then:
 
 ## Part C: guardrails
 
-Each task is its own pull request, or a few in order, each demonstrable, and each taken by one orchestrating session through `/implement`. Work in the app's repository goes through it too, with keys beginning `app-`, and nothing it writes there mentions or hints at seeded defects. `/security-review` runs on every pull request that touches a workflow, the review gate, the admin service, a credential, a fence, an admission rule, a Role or a store grant, and each brief says so.
+Each task is its own pull request, or a few in order, each demonstrable. Nothing that work in the app's repository writes there mentions or hints at seeded defects. `/security-review` runs on every pull request that touches a workflow, the review gate, the admin service, a credential, a fence, an admission rule, a Role or a store grant.
 
 ### 0. Settled before the start
 
@@ -394,7 +394,7 @@ Each task is its own pull request, or a few in order, each demonstrable, and eac
   - **The red-team attacks are scripted against the real mechanisms, with no agent.** No model writes an attack. Where the mechanism is itself a model's typed judgement (triage's questions to Jev, attack 1), it is called as it is for any report, since that is what is shown. Each makes the real attempt itself, from where an agent would be, and records the mechanism's refusal verbatim, so it costs almost nothing, repeats exactly, and suits milestone 8's menu for visitors. An agent given a hostile instruction was turned down: it costs money each time, and a model that declines proves nothing about the mechanism.
 - **Order.** 20, 26, 27, 25, then 23's recording, 21, 22, 23's panel, and 24 last. The checks that need no cluster come first; alerts come before the proofs and drills, so a failed one pages; every mechanism records its refusals before `make guardrails` and the harness show them; the panel waits for the events it draws; and approval routing, which changes how anything merges, ends the part with Guarded run for real.
 - **The designs first.** One pull request draws, in the mockup and the design system's README, the guardrails panel (task 23), the red-team menu with all five attacks and an attack's card (task 22; the mockup has three), the auto-rollback switch live and a canary paused for Martin (task 25), Lights-out's note on the repository variable, and a merge held for its risk tags in Needs you (task 24), each with its read-only form. Martin agrees it before any of those is built. It can be drawn while tasks 20, 26 and 27 are built.
-- **Try before review** (`/implement`): a task that changes what runs on the cluster is built to branches, tried on local images with `try-the-line`, and only then reviewed, once.
+- **Try before review:** a task that changes what runs on the cluster is built to branches, tried on local images with `try-the-line`, and only then reviewed, once.
 
 ### 20. Proofs in CI
 
@@ -502,7 +502,7 @@ Three pull requests, a stack: the rules, the phone's switch, and the admin servi
 
 Part D starts when Part C is done. Tasks 28 to 30 make the scan, its gates and its deadlines; tasks 31 to 37 act on what it finds.
 
-Each task is a few pull requests in order, each demonstrable. Those in the app's repository go through `/implement` with keys beginning `app-`, and nothing they write there, in code, commits, pull requests or replies, mentions or hints at seeded defects: they describe the scan, and nothing it might find. Every pull request that changes a workflow, the scan's scripts, the exceptions, the routing check or the GitHub worker has `/security-review` as well as `/code-review`. A required check is added to `scripts/github-settings.ts` in the pull request that brings the job, or after the app's pull request that first calls it; Martin applies the settings once it merges.
+Each task is a few pull requests in order, each demonstrable. Nothing those in the app's repository write there, in code, commits, pull requests or replies, mentions or hints at seeded defects: they describe the scan, and nothing it might find. Every pull request that changes a workflow, the scan's scripts, the exceptions, the routing check or the GitHub worker has `/security-review` as well as `/code-review`. A required check is added to `scripts/github-settings.ts` in the pull request that brings the job, or after the app's pull request that first calls it; Martin applies the settings once it merges.
 
 ### 0. Settled before the start
 
@@ -652,7 +652,7 @@ The App already opens this repository's deploy pins, the gate already passes an 
 - **A pin written twice is made one pin** (here; proof: the workflow's run on the branch): Syft's version is in `deploy/images/syft/Dockerfile` and again in `build.yml`, where the App may not write and Dependabot does not look, so every bump fails until someone moves the second by hand. `build.yml` reads the version from the Dockerfile at its own commit, a test refuses a second literal version, and a bump of that one file is then the whole change. Any other pin the list finds written twice gets the same before the watch moves it.
 - **The pin watch** (here; proof: a live try on the branch's `github` image, dry run first, then the first real pull request): `apps/factory/src/github/pins.ts`, beside the deploy watch. Each day, for each move of this repository with a target in the `worker`, `approval` or `cluster` lane, it commits to `factory/pin/<move>` (signed by GitHub, as the deploy watch's commits are) and opens one pull request, labelled `pin`. Its guard lets it replace the version or digest at each pin's file and line and nothing else, and refuses `.github/`, `policy/`, a lockfile and mise's files. The description is the factory's own: each pin before and after, what the move clears in counts, its deadline, and, when it will wait for Martin, why and what to do. A target that moves on moves the branch; a move that is gone closes its pull request with a sentence. Its tests, against the fake GitHub: one pull request for each move and never two; a moved target; a move gone; each refusal of its guard, recorded as the worker's others are; and each case of Dependabot's below.
   - **It does not fight Dependabot.** A pin Dependabot reads is Dependabot's while its move has no High or Critical on a deadline. When it has one, the watch opens its own pull request unless Dependabot's is open at the same target or a newer one; it never pushes to Dependabot's branch and never closes its pull request, which Dependabot closes itself once `main` has moved. Routine updates of pins nothing reads (the charts, ZAP, k3s) stay Martin's, by hand.
-  - **What it cannot write.** A move in the `issue` lane, and a line no longer built, opens an issue here, one for each move, updated rather than opened again, that `/implement` can take as it stands: the pins, the target, the counts and the deadline. mise's pins need `mise lock`, and the toolchain moves only when someone upgrades it; the App writes no lockfile and no workflow.
+  - **What it cannot write.** A move in the `issue` lane, and a line no longer built, opens an issue here, one for each move, updated rather than opened again, that a session can take as it stands: the pins, the target, the counts and the deadline. mise's pins need `mise lock`, and the toolchain moves only when someone upgrades it; the App writes no lockfile and no workflow.
 - **The worker queues what the gate passes** (here; proof: the live try's pull request, merged by the queue): `deploy-queue.ts` also adds a `pin` pull request to the merge queue, on the same terms as a deploy pin's, when the review App's verdict at its head is `pin-move`. A pull request the gate holds is Martin's: his approval of its head passes it, and he adds it. ADR 0017 and `AGENTS.md`'s merge rule say so.
 
 Exceptions stay one finding each. A finding with no fix fails nothing, and one with a fix is chased by its move, so an entry for a whole item would only hide what the moves already handle. Shrinking what is pinned (a slimmer base image) is a move like any other. Should a move held for Martin ever leave many fixable findings past their deadline, an exception by move is designed then.

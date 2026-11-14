@@ -148,7 +148,7 @@ A live try runs unmerged images with `LINE_MODE=live` on `line` and `GITHUB_DRY_
 
 ## A stack of unmerged branches
 
-A task of several pull requests is tried together, before review (the implement skill's Try before review), from branches with no pull request yet:
+A task of several pull requests is tried together, before review, from branches with no pull request yet:
 
 - **Build from the top branch**, which holds every branch below it: `factory` and `factory-runner` from its head, as above, in its worktree, never in the main checkout. Build `console` too if any branch in the stack changed it or adds a migration, since the `migrate` Job runs on the console's image and only it holds the migrations; run the `migrate` copy (step 7) on that image if any branch adds one: compare against every branch, not only the top one's own diff (`git diff origin/main...<top branch> --stat`). The manifests (step 8) and the alert rules (step 9) come from the top branch too, which holds every branch's.
 - **A fault** goes back to the branch it belongs in, and the branches above take it by merges, bottom first. Build again from the top branch's new head, with a new tag (the tag is its short sha), point the deployments at it, and try again; `docker rmi` the tags each try leaves behind, or leave them for the undo list.

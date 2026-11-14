@@ -177,7 +177,7 @@ const FIX_WRITING = [
 /** What the describer is told of a move's description, whose figures the line writes itself. */
 const MOVE_WRITING = [
   '',
-  'This change is a dependency’s move. The line adds a section of its own after your description: the spec, each pin before and after, and what the scan gates counted on `main` and on the change, from their own notices, and the Dependabot pull request it replaces, if there is one. So write no version, pin, digest, advisory or count of findings in the description or the summary: say what moves and why in words, and what, if anything, the coder had to change beyond the pins.',
+  'This change is a dependency’s move. The line adds a section of its own after your description: the spec, each pin before and after, and what the scan gates counted on `main` and on the change, from their own notices, and the Dependabot pull request it replaces, if there is one. So write no version, pin, digest, advisory or count of findings in the description or the summary: say what moves and why in words, naming the package or image that moves as the move’s signal names it, which the ticket’s issue, opened before the plan, made public, and what, if anything, the coder had to change beyond the pins.',
 ];
 
 /**

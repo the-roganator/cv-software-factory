@@ -119,8 +119,14 @@ export interface ItemState {
   failure: { stage: Stage; at: number } | undefined;
   /** The last thing that happened in each stage, for the stage panels. */
   latest: Partial<Record<Stage, PublicEvent>>;
+  /**
+   * The move it is, as a lockfile's public views withhold it (`a package`, no versions) until its issue opens, and as
+   * the issue named it once it has (`issue.opened`): the one moment of disclosure.
+   */
   dependency: PayloadOf<'work-item.opened'>['dependency'];
   pullRequest: number | undefined;
+  /** Its issue in the app's repository, once GitHub has it: a ticket the line took, or Martin's improvement. */
+  issue: { repository: string; number: number } | undefined;
   /**
    * Versions: the one it broke (an injection) or replaced, the one it shipped, and whether that was rolled back, or
    * stopped, and by what.
@@ -388,6 +394,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     latest: {},
     dependency: opened.payload.dependency,
     pullRequest: undefined,
+    issue: undefined,
     versions: { from: undefined, to: undefined, rolledBack: false, stopped: undefined, live: false },
     canary: undefined,
     captures: [],
@@ -436,6 +443,8 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
   let rebuilding = false;
   /** Whether the change has merged since the work item last went back to Plan: a release before it carries nothing. */
   let merged = false;
+  // The move's name as its issue disclosed it, which the events after it are read with.
+  let disclosed: string | undefined;
   for (const event of events) {
     // A look of a canary's background analysis lands every minute and changes nothing of the work item's: its time is
     // not the work item's latest.
@@ -561,6 +570,24 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.latest.plan = event;
         state.queued = true;
         break;
+      // Its issue opened: for a move, the disclosure. The move's name, and its versions where the issue gave them, are
+      // read from here on, in place of the withheld words of the events before it.
+      case 'issue.opened': {
+        const { repository, number, move } = event.payload;
+        state.issue = { repository, number };
+        if (!move) break;
+        if (state.dependency) {
+          const { from = state.dependency.from, to = state.dependency.to } = move;
+          state.dependency = { ...state.dependency, name: move.name, from, to };
+        }
+        if (state.ticket && 'ecosystem' in state.ticket.fingerprint) {
+          state.ticket = { ...state.ticket, fingerprint: { ...state.ticket.fingerprint, name: move.name } };
+        }
+        disclosed = move.name;
+        if (state.reopened?.move)
+          state.reopened = { ...state.reopened, move: { ...state.reopened.move, name: move.name } };
+        break;
+      }
       case 'ticket.rated':
         // Triage raised the ticket's severity: a move's worst finding is worse. It never lowers it, and it moves the
         // work item nowhere.
@@ -773,7 +800,11 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.releaseStopped = false;
         state.versions = { from: undefined, to: undefined, rolledBack: false, stopped: undefined, live: false };
         state.evidence.verified = undefined;
-        state.reopened = { ...event.payload, at: time };
+        state.reopened = {
+          ...event.payload,
+          ...(event.payload.move && disclosed && { move: { ...event.payload.move, name: disclosed } }),
+          at: time,
+        };
         break;
     }
     if (event.type === 'judgement.made') {

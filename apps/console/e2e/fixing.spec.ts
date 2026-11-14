@@ -30,7 +30,7 @@ test.describe('fixing', () => {
     await expect(centre(page).locator('.ticks span', { hasText: 'The reviewer approved' })).toHaveText(
       'The reviewer approved',
     );
-    await page.getByRole('button', { name: /^Review: needs you, 2 waiting/ }).click();
+    await page.getByRole('button', { name: /^Review: needs you, 3 waiting/ }).click();
     await expect(page.getByRole('dialog', { name: 'Review' })).toContainText('Needs you · waiting for Martin’s merge');
   });
 

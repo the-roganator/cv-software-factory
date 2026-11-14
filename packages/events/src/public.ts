@@ -183,7 +183,14 @@ export const PUBLIC_VIEWS = {
   },
   // A ticket's severity raised: two severities, and nothing else.
   'ticket.rated': redacted,
-  'spec.written': redacted,
+  // The work item's issue, and for a move what the issue disclosed: its package, versions, pins and findings. It is
+  // the disclosure, so its view is the event whole; every view before it withholds them.
+  'issue.opened': redacted,
+  // A criterion's `quote` is the words it quotes from the ticket's evidence, which for a move are a finding's line,
+  // advisory and package: withheld from every spec, since a view sees the payload alone and cannot tell a finding's
+  // from another's. Its `from` says where it was found, and stays.
+  'spec.written': ({ payload, ...event }) =>
+    redacted({ ...event, payload: { ...payload, criteria: payload.criteria.map(({ quote: _quote, ...c }) => c) } }),
   'pull-request.pushed': redacted,
   'suggestions.answered': redacted,
   'wait.started': redacted,

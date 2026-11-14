@@ -72,7 +72,8 @@ describe('the line, stopped', () => {
     await it.tick();
     await it.idle();
     expect(steps.working).toBe(0);
-    expect(await types(workItem)).toEqual(['work-item.opened', 'ticket.opened']);
+    // Its issue opened before the step started: nothing of the step is recorded.
+    expect(await types(workItem)).toEqual(['work-item.opened', 'ticket.opened', 'issue.opened']);
     await pass(); // stopped: nothing starts
     expect(steps.requests).toHaveLength(1);
 

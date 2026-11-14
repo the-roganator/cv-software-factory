@@ -148,6 +148,93 @@ describe("a move's public views", () => {
   });
 });
 
+describe("a move's disclosure", () => {
+  const disclosed = {
+    repository: 'the-roganator/cv-worlds-worst-website',
+    number: 41,
+    move: {
+      name: 'left-pad',
+      ecosystem: 'npm',
+      from: '1.2.3',
+      to: '1.2.4',
+      pins: [{ file: 'pnpm-lock.yaml', line: 812 }],
+      findings: [
+        {
+          advisory: 'GHSA-aaaa-bbbb-cccc',
+          package: 'left-pad',
+          severity: { scanner: 'high', publisher: 'critical' },
+          fixed: '1.2.4',
+        },
+      ],
+    },
+  };
+
+  it('is `issue.opened`, whose public view is the event whole', () => {
+    expect(view('issue.opened', disclosed)).toEqual(disclosed);
+    const { move: _move, ...improvement } = disclosed;
+    expect(view('issue.opened', improvement)).toEqual(improvement);
+  });
+
+  it('names a move’s versions and pins together, or neither, as the fingerprint alone does', () => {
+    const parse = (move: object) => PAYLOADS['issue.opened'].safeParse({ ...disclosed, move }).success;
+    expect(parse({ name: 'left-pad', ecosystem: 'npm' })).toBe(true);
+    expect(parse({ name: 'left-pad', ecosystem: 'npm', from: '1.2.3', to: '1.2.4' })).toBe(false);
+    expect(parse({ ...disclosed.move, findings: [] })).toBe(false);
+  });
+
+  it('is the only one: no public view of the events before it names the package, its versions, lines or advisory', () => {
+    const before = [
+      view('work-item.opened', {
+        kind: 'dependency-update',
+        title: 'Move a package in `pnpm-lock.yaml`',
+        sample: false,
+        category: 'security',
+        dependency: { name: 'left-pad', ecosystem: 'npm', from: '1.2.3', to: '1.2.4', security: true },
+      }),
+      view('signal.received', signal(lockfile)),
+      view('ticket.opened', {
+        title: 'Move left-pad in `pnpm-lock.yaml`',
+        category: 'security',
+        severity: 'broken',
+        fingerprint: { name: 'left-pad', ecosystem: 'npm' },
+        traces: [],
+      }),
+      view('ticket.rated', { severity: 'broken', was: 'degraded' }),
+    ];
+    // Every input here is fixed, so the whole text holds a version's digits only where a field carries one.
+    for (const shown of before) expect(JSON.stringify(shown)).not.toMatch(/left-pad|GHSA|1\.2\.[34]|812/);
+  });
+
+  it('leaves no spec’s criterion its quote, which may be a finding’s line, and keeps where it was found', () => {
+    const spec = {
+      outcome: 'The move fixes what the scan found.',
+      criteria: [
+        {
+          given: 'the change’s lockfile',
+          when: 'the scan gates scan it',
+          expect: 'the finding is gone',
+          from: 'signal 1',
+          quote: 'GHSA-aaaa-bbbb-cccc in left-pad',
+        },
+        { given: 'a page', when: 'it loads', expect: 'it shows', from: 'the ticket' },
+      ],
+      scope: ['src/log.ts'],
+      risks: ['dependency-change'],
+      rollout: 'As it is.',
+    };
+    const shown = view('spec.written', spec) as { criteria: object[] };
+    expect(shown.criteria).toEqual([
+      {
+        given: 'the change’s lockfile',
+        when: 'the scan gates scan it',
+        expect: 'the finding is gone',
+        from: 'signal 1',
+      },
+      { given: 'a page', when: 'it loads', expect: 'it shows', from: 'the ticket' },
+    ]);
+  });
+});
+
 describe("a ticket's rating", () => {
   it('only raises a severity', () => {
     expect(PAYLOADS['ticket.rated'].safeParse({ severity: 'degraded', was: 'broken' }).success).toBe(false);

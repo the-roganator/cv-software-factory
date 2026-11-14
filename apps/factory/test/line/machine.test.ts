@@ -24,6 +24,7 @@ import {
   LIMITS,
   type LineEvent,
   needsHold,
+  recordFirst,
   UNDESCRIBED_ASKS,
   unchangedHold,
   undescribed,
@@ -2414,5 +2415,37 @@ describe("a ticket's severity, raised", () => {
     expect(fold([degraded, rated]).ticket?.severity).toBe('broken');
     const lower: LineEvent = { type: 'ticket.rated', payload: { severity: 'degraded', was: 'cosmetic' } };
     expect(fold([degraded, rated, lower]).ticket?.severity).toBe('broken');
+  });
+});
+
+describe('the record of a work item’s issue', () => {
+  const planner = { do: 'step', agent: 'planner', round: 1 } as const;
+  const ticket: LineEvent = {
+    type: 'ticket.opened',
+    payload: {
+      title: 'Move invented-pkg, in npm',
+      category: 'security',
+      severity: 'broken',
+      fingerprint: { name: 'invented-pkg', ecosystem: 'npm' },
+      traces: [],
+    },
+  };
+  it('comes before the planner’s first step when the row names an issue none records', () => {
+    expect(recordFirst(planner, fold([ticket]), 41)).toEqual({ do: 'record-issue', issue: 41 });
+    const recorded: LineEvent = {
+      type: 'issue.opened',
+      payload: { repository: 'the-roganator/cv-worlds-worst-website', number: 41 },
+    };
+    expect(recordFirst(planner, fold([ticket, recorded]), 41)).toEqual(planner);
+  });
+
+  it('never for a dry run’s issue, one with no issue yet, or a work item already planned: nothing is backfilled', () => {
+    expect(recordFirst(planner, fold([ticket]), DRY_RUN_NUMBERS_FROM)).toEqual(planner);
+    expect(recordFirst(planner, fold([ticket]), null)).toEqual(planner);
+    const returned: LineEvent = {
+      type: 'work.returned',
+      payload: { from: 'verify', to: 'plan', reason: 'The probe still saw it' },
+    };
+    expect(recordFirst(planner, fold([ticket, returned]), 41)).toEqual(planner);
   });
 });

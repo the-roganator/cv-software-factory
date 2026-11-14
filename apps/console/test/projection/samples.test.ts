@@ -96,7 +96,7 @@ describe('the samples, projected', () => {
     // Build works on another item beside the two it holds: at work, with its beacon lit.
     expect(station('build')).toMatchObject({ status: 'working', beacon: 'needs-you', figure: '2 held' });
     expect(station('gates')).toMatchObject({ status: 'blocked', figure: '1 held' });
-    expect(station('review')).toMatchObject({ status: 'blocked', figure: '2 waiting' });
+    expect(station('review')).toMatchObject({ status: 'blocked', figure: '3 waiting' });
   });
 
   it('say how far each item got, and where it stopped', () => {
@@ -388,5 +388,46 @@ describe('replay', () => {
     expect(projectSheet(project(SAMPLES, before1302), '1302')).toBeUndefined();
     expect(project(SAMPLES, before1302).cards.map((c) => c.number)).not.toContain('1302');
     expect(STAGES).toHaveLength(8);
+  });
+});
+
+describe('the samples’ move of the app’s lockfile, #1335', () => {
+  const events = SAMPLES.filter((e) => e.work_item === '1335');
+  const opened = events.find((e) => e.type === 'issue.opened');
+  if (!opened) throw new Error('#1335 has no issue opened');
+  const at = Date.parse(opened.ts);
+
+  it('names its package in no public view before its issue opens', () => {
+    const before = events.filter((e) => e.seq < opened.seq);
+    expect(before.map((e) => e.type)).toEqual([
+      'work-item.opened',
+      'signal.received',
+      'ticket.opened',
+      'work-item.summarised',
+    ]);
+    // Every input is fixed, so the whole text holds a version's digits only where a field carries one.
+    for (const event of before) expect(JSON.stringify(event)).not.toMatch(/@example\/parser|4\.2\.[013]|GHSA/);
+  });
+
+  it('reads “a package” on its ticket line and its picture until then, and the move named from its issue on', () => {
+    const sheetAt = (t: number) => projectSheet(project(SAMPLES, t), '1335');
+    const before = sheetAt(at - 1000);
+    expect(before?.facts.ticket?.fingerprint).toBe('a package · npm');
+    expect(before?.evidence).toMatchObject({ type: 'package', dependency: { name: 'a package', from: '', to: '' } });
+    expect(before?.issue).toBeUndefined();
+    const after = sheetAt(END);
+    expect(after?.facts.ticket?.fingerprint).toBe('@example/parser · npm');
+    expect(after?.evidence).toMatchObject({
+      type: 'scan',
+      dependency: { name: '@example/parser', from: '4.2.0', to: '4.2.3' },
+    });
+    expect(after?.issue).toEqual({ repository: 'the-roganator/cv-worlds-worst-website', number: 1336 });
+  });
+
+  it('leaves #1325 its issue, with no move', () => {
+    expect(projectSheet(view, '1325')?.issue).toEqual({
+      repository: 'the-roganator/cv-worlds-worst-website',
+      number: 1333,
+    });
   });
 });

@@ -123,6 +123,7 @@ describe('migrations', () => {
       { version: 49, name: 'admin-step-up-ended' },
       { version: 50, name: 'patching' },
       { version: 51, name: 'patching-sends' },
+      { version: 52, name: 'issue-opened-the-lines' },
     ]);
   });
 });

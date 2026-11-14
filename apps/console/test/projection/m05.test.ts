@@ -553,6 +553,7 @@ describe('a round on the line', () => {
   it('keeps each return as a row in Review’s panel, one row per work item', () => {
     const rows = view.panels.review.rows.map((r) => [r.item, r.earlier, r.note.slice(0, 26)]);
     expect(rows).toEqual([
+      ['1335', [], 'Needs you · waiting for Ma'],
       ['1323', ['sent back'], 'Needs you · held by review'],
       ['1311', [], 'Needs you · waiting for Ma'],
       ['1325', [], 'Sent back to Build · round'],

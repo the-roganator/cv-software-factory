@@ -195,6 +195,7 @@ import {
   lookDue,
   type Next,
   needsHold,
+  recordFirst,
   STAGE_OF,
   type WorkItemState,
 } from './machine.ts';
@@ -211,7 +212,7 @@ import {
   zeroCounts,
 } from './metrics.ts';
 import { stepCalls, workItemSpend } from './model-calls.ts';
-import { type GateCounts, moveIssue } from './moves.ts';
+import { disclosedMove, type GateCounts, moveIssue } from './moves.ts';
 import { type Own, pagesFor } from './pictures.ts';
 import { type Pending, Queue, type QueueItem, type Takes, takesOf } from './queue.ts';
 import { type Carried, carried, Releases, type ReleaseWatchOptions } from './release.ts';
@@ -345,6 +346,10 @@ const EFFECTS_LEASE_SECONDS = 900;
 const VERIFY_LEASE_SECONDS = 2700;
 /** How long the line waits before trying a handback's effects again: doubling from 30 seconds, to 10 minutes. */
 const retryAfterMs = (tries: number) => Math.min(30_000 * 2 ** (tries - 1), 600_000);
+
+/** A move's ticket, not an improvement's: one whose issue is written from its dependency signal. */
+const movedBy = (state: WorkItemState) =>
+  !state.request && state.ticket !== undefined && 'ecosystem' in state.ticket.fingerprint;
 
 /**
  * The app's own words as plain text in an issue's Markdown: a page's passage or a link's words may hold anything the
@@ -768,7 +773,9 @@ export class Line {
       // A ticket the line took while the sense looked at it beside another's fix: the look's to finish first.
       if (this.#beside.has(item.workItem)) return;
       const { events, last } = await this.#events(item.workItem);
-      const { stage, next } = decide(events, await this.#facts(item, events));
+      const decided = decide(events, await this.#facts(item, events));
+      const { stage } = decided;
+      const next = recordFirst(decided.next, fold(events), item.issue);
       if (fold(events).merged) await this.#dropVolume(item.workItem);
       // A kept handback is for the step the work item still needs, with nothing appended since; any other is over.
       const pending = item.effects;
@@ -951,11 +958,28 @@ export class Line {
     const { workItem } = item;
     switch (next.do) {
       case 'open-issue': {
+        // A move's issue and its record are written from one read of its newest dependency signal, so a scan appended
+        // in between is never disclosed by the record when the issue did not name it.
+        const dependency = movedBy(state) ? await this.#dependencySignal(workItem) : undefined;
         const issue = state.request
           ? await this.#openImprovementIssue(workItem)
-          : await this.#openIssue(workItem, state);
-        await this.#queue.setIssue(workItem, issue);
+          : await this.#openIssue(workItem, state, dependency?.signal);
+        // The row names the issue first, with the signal it was written from, so a pass after a failure here goes on
+        // with it and never opens a second public issue; one whose record failed records it on the next pass, before
+        // the planner (`record-issue`), from that same signal.
+        await this.#queue.setIssue(workItem, issue, movedBy(state) ? (dependency?.seq ?? 0) : null);
         this.#o.log.info({ workItem, issue }, 'opened the work item’s issue');
+        if (issue < DRY_RUN_NUMBERS_FROM) await this.#recordIssue(workItem, state, issue, dependency?.signal);
+        return;
+      }
+      case 'record-issue': {
+        // The signal its issue was written from; 0 when it had none; unknown on a row named before the line kept it,
+        // whose issue was written from the newest then.
+        const dependency =
+          !movedBy(state) || item.issueSignal === 0
+            ? undefined
+            : await this.#dependencySignal(workItem, item.issueSignal ?? undefined);
+        await this.#recordIssue(workItem, state, next.issue, dependency?.signal);
         return;
       }
       case 'hand-over': {
@@ -2058,16 +2082,14 @@ export class Line {
 
   /**
    * Opens the ticket's issue in the app's repository, from the ticket's public view; a move's from the ticket's own
-   * payload and its newest signal's scan (`moveIssue`), since the issue is where its package and advisories first
-   * become public.
+   * payload and its newest dependency signal's scan (`moveIssue`), since the issue is where its package and advisories
+   * first become public.
    */
-  async #openIssue(workItem: string, state: WorkItemState): Promise<number> {
+  async #openIssue(workItem: string, state: WorkItemState, signal: Signal | undefined): Promise<number> {
     const ticket = await this.#publicTicket(workItem, state);
     const own = state.ticket;
     if (own && 'ecosystem' in own.fingerprint) {
-      const signal = (await this.#signals(workItem)).findLast((each) => each.sense === 'dependency');
-      const issue = moveIssue(workItem, own, ticket, signal);
-      return this.#o.github.act('openIssue', this.#o.repo, issue, { workItem });
+      return this.#o.github.act('openIssue', this.#o.repo, moveIssue(workItem, own, ticket, signal), { workItem });
     }
     const where =
       'class' in ticket.fingerprint
@@ -2088,6 +2110,24 @@ export class Line {
       'The factory is working on it: its fix will come as a pull request that refers here. The issue closes when the fix is verified in production.',
     ].join('\n');
     return this.#o.github.act('openIssue', this.#o.repo, { title: ticket.title, body }, { workItem });
+  }
+
+  /**
+   * Records the work item's issue, which GitHub has, as `issue.opened`: for a move, what its issue named, from the same
+   * ticket and the signal its issue was written from (`disclosedMove`); with none, the package alone, which every move's
+   * issue names. It is the one moment of the move's disclosure in public.
+   */
+  async #recordIssue(workItem: string, state: WorkItemState, issue: number, signal: Signal | undefined): Promise<void> {
+    const own = state.request ? undefined : state.ticket;
+    const move = own && 'ecosystem' in own.fingerprint ? disclosedMove(own.fingerprint, signal) : undefined;
+    await this.#append(workItem, [
+      {
+        type: 'issue.opened',
+        actor: 'factory',
+        summary: `Opened issue #${issue} in ${this.#o.repo}`,
+        payload: { repository: this.#o.repo, number: issue, ...(move && { move }) },
+      },
+    ]);
   }
 
   /**
@@ -2376,6 +2416,23 @@ export class Line {
       order by r.seq limit 1`;
     if (!row) throw new StepFailed('The work item has no request of Martin’s');
     return row;
+  }
+
+  /**
+   * A move's dependency signal, as its own payload: the newest, or the one at `seq`, which the row names as the one its
+   * issue was written from. None when there is none. A signal carrying a visitor's report is passed over, as `#signals`
+   * passes it over.
+   */
+  async #dependencySignal(workItem: string, seq?: number): Promise<{ seq: number; signal: Signal } | undefined> {
+    const [row] = await this.#o.sql<{ seq: string; payload: PayloadOf<'signal.received'> }[]>`
+      select seq, payload from events
+      where work_item = ${workItem} and type = 'signal.received' and payload->>'sense' = 'dependency'
+        and not payload ? 'report'
+        ${seq === undefined ? this.#o.sql`` : this.#o.sql`and seq = ${seq}`}
+      order by seq desc limit 1`;
+    if (!row) return undefined;
+    const { report: _report, ...signal } = row.payload;
+    return { seq: Number(row.seq), signal };
   }
 
   /**
@@ -2689,6 +2746,7 @@ const untaken = (workItem: string): QueueItem => ({
   failures: 0,
   failure: null,
   issue: null,
+  issueSignal: null,
   session: null,
   effects: null,
 });

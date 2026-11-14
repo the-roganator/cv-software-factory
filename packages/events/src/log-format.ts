@@ -4,6 +4,7 @@
  *
  *     <log>/events.ndjson
  *     <log>/artifacts/<sha256>
+ *     <log>/private.ndjson       the samples' alone: each event's own summary and payload where its view changes them
  *
  * Parsing and formatting only, with no file system, so the browser reads a log with the same code as Node.
  */

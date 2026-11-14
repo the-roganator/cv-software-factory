@@ -171,6 +171,8 @@ export class FakeGitHub implements GitHubPort {
   /** The pull requests in the merge queue, and the last taken out of it, with why. */
   readonly queued = new Set<number>();
   readonly dequeued = new Map<number, { reason: string; failed: string[]; at: string }>();
+  /** The number GitHub gives each issue the line opens: a dry run's are `DRY_RUN_NUMBERS_FROM` up. */
+  issueNumber = 41;
   #commits = 0;
 
   /** The merge queue taking a pull request out without merging it, with GitHub's reason and the checks that failed. */
@@ -209,7 +211,7 @@ export class FakeGitHub implements GitHubPort {
   #act(action: ActionName, args: Record<string, unknown>): unknown {
     switch (action) {
       case 'openIssue':
-        return 41;
+        return this.issueNumber;
       case 'describeDeploy':
         return true;
       case 'applyPatch': {

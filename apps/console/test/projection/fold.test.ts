@@ -146,3 +146,100 @@ describe('a move reopened', () => {
     expect(item?.reopened).not.toHaveProperty('route');
   });
 });
+
+describe('a move named by its issue', () => {
+  // As the public views have them: a lockfile move's package and versions withheld until its issue opens.
+  const { events } = work('1502')
+    .add(0, 'work-item.opened', 'triage', {
+      kind: 'dependency-update',
+      title: 'Move a package in `pnpm-lock.yaml`',
+      sample: false,
+      category: 'security',
+      dependency: { name: 'a package', ecosystem: 'npm', from: '', to: '', security: true },
+    })
+    .add(0, 'ticket.opened', 'triage', {
+      title: 'Move a package in `pnpm-lock.yaml`',
+      category: 'security',
+      severity: 'broken',
+      fingerprint: { name: 'a package', ecosystem: 'npm' },
+      traces: [],
+    })
+    .add(2, 'issue.opened', 'factory', {
+      repository: 'the-roganator/cv-worlds-worst-website',
+      number: 77,
+      move: {
+        name: 'left-pad',
+        ecosystem: 'npm',
+        from: '1.2.3',
+        to: '1.2.4',
+        pins: [{ file: 'pnpm-lock.yaml', line: 812 }],
+        findings: [
+          { advisory: 'GHSA-aaaa-bbbb-cccc', package: 'left-pad', severity: { scanner: 'high' }, fixed: '1.2.4' },
+        ],
+      },
+    })
+    .add(3, 'ticket.rated', 'triage', { severity: 'broken', was: 'degraded' });
+  const sheetAt = (minute: number) =>
+    projectSheet(project(events, Date.parse('2026-10-03T09:00:00Z') + minute * 60_000), '1502');
+
+  it('withholds the move on its ticket line and its picture until the issue opens, and links no issue', () => {
+    const sheet = sheetAt(1);
+    expect(sheet?.facts.ticket?.fingerprint).toBe('a package · npm');
+    expect(sheet?.evidence).toMatchObject({ type: 'package', dependency: { name: 'a package', from: '', to: '' } });
+    expect(sheet?.issue).toBeUndefined();
+  });
+
+  it('names it from `issue.opened` on, and links the issue, whatever follows', () => {
+    const sheet = sheetAt(4);
+    expect(sheet?.facts.ticket?.fingerprint).toBe('left-pad · npm');
+    expect(sheet?.evidence).toMatchObject({
+      type: 'package',
+      dependency: { name: 'left-pad', ecosystem: 'npm', from: '1.2.3', to: '1.2.4', security: true },
+    });
+    expect(sheet?.issue).toEqual({ repository: 'the-roganator/cv-worlds-worst-website', number: 77 });
+  });
+
+  it('keeps the versions it had when the issue named the fingerprint’s move alone', () => {
+    const fingerprint = events.map((event) =>
+      event.type === 'issue.opened'
+        ? { ...event, payload: { ...event.payload, move: { name: 'left-pad', ecosystem: 'npm' } } }
+        : event,
+    ) as PublicEvent[];
+    expect(foldItem(fingerprint)?.dependency).toEqual({
+      name: 'left-pad',
+      ecosystem: 'npm',
+      from: '',
+      to: '',
+      security: true,
+    });
+  });
+});
+
+describe('a disclosed move reopened', () => {
+  it('reads its reopening with the name its issue gave, whichever came first', () => {
+    const reopened = {
+      sense: 'dependency',
+      check: 'the vulnerability scan',
+      move: { name: 'a package', ecosystem: 'npm' },
+      version: 'a'.repeat(40),
+      reason: 'The day’s scan found the move again',
+      dryRun: false,
+    } as const;
+    const issue = {
+      repository: 'the-roganator/cv-worlds-worst-website',
+      number: 78,
+      move: { name: 'left-pad', ecosystem: 'npm' },
+    } as const;
+    const after = work('1503')
+      .open('dependency-update')
+      .add(1, 'issue.opened', 'factory', issue)
+      .add(2, 'work-item.closed', 'factory', { outcome: 'verified', reason: 'Gone from the scan' })
+      .add(3, 'work-item.reopened', 'triage', reopened);
+    expect(foldItem(after.events)?.reopened?.move?.name).toBe('left-pad');
+    const before = work('1504')
+      .open('dependency-update')
+      .add(1, 'work-item.reopened', 'triage', reopened)
+      .add(2, 'issue.opened', 'factory', issue);
+    expect(foldItem(before.events)?.reopened?.move?.name).toBe('left-pad');
+  });
+});

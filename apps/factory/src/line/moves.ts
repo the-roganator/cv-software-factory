@@ -75,6 +75,28 @@ export function moveIssue(
   return { title: own.title, body };
 }
 
+/** What a move's issue discloses, as `issue.opened` records it. */
+export type DisclosedMove = NonNullable<PayloadOf<'issue.opened'>['move']>;
+
+/**
+ * What a move's issue names (`moveIssue`), from the same inputs: the fingerprint's name and ecosystem, or the newest
+ * signal's move with its versions and pins, and each of the scan's findings the issue lists, by its advisory, its
+ * package, its ratings and its fix. The line records it as the issue opens, so the console names the move from it.
+ */
+export function disclosedMove(
+  fingerprint: { name: string; ecosystem: Move['ecosystem'] },
+  signal: Signal | undefined,
+): DisclosedMove {
+  const move = signal?.move;
+  const findings = scanOf(signal)?.findings.map(({ deadline: _deadline, ...finding }) => finding);
+  return {
+    ...(move
+      ? { name: move.name, ecosystem: move.ecosystem, from: move.from, to: move.to, pins: move.pins }
+      : { name: fingerprint.name, ecosystem: fingerprint.ecosystem }),
+    ...(findings?.length && { findings }),
+  };
+}
+
 const directoryOf = (file: string) => `/${file.split('/').slice(0, -1).join('/')}`;
 const bare = (name: string) => name.replace(/^@/, '');
 /** The ecosystem, as `dependabot.yml` names it, that moves each kind of move's pin: Node's is an image's. */

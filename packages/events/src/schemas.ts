@@ -1001,6 +1001,36 @@ export const PAYLOADS = {
       .max(10)
       .optional(),
   }),
+  /**
+   * The work item's issue, once GitHub has it: the repository and its number, which the console links as it does a
+   * pull request. A move's names what the issue disclosed: the move's name and ecosystem, its versions and pins from
+   * its newest signal, and each of the scan's findings the issue lists, by its advisory, its package, its ratings and
+   * the versions that fix it. Until this event, every public view withholds them; its public view is the event whole,
+   * since it is the disclosure. A dry run's issue, which GitHub never had, has none.
+   */
+  'issue.opened': z.strictObject({
+    repository,
+    number: pullRequest,
+    move: z
+      .strictObject({
+        name: dependencyName,
+        ecosystem: z.enum(V.ECOSYSTEMS),
+        /** From the newest signal, which a ticket's issue opened before any lacks: then the fingerprint's alone. */
+        from: dependencyVersion.optional(),
+        to: dependencyVersion.optional(),
+        pins: move.shape.pins.optional(),
+        findings: z
+          .array(scanEvidence.shape.findings.element.omit({ deadline: true }))
+          .min(1)
+          .max(8)
+          .optional(),
+      })
+      .refine(
+        (m) => (m.from === undefined) === (m.to === undefined) && (m.from === undefined) === (m.pins === undefined),
+        'a move’s versions and pins come together, from its signal',
+      )
+      .optional(),
+  }),
   /** A change pushed for review: a new pull request, or another attempt on one that was sent back. */
   'pull-request.pushed': z.strictObject({
     number: pullRequest,

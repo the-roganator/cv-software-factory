@@ -904,6 +904,7 @@ describe('Needs you', () => {
       ['1300', 'question'],
       ['1334', 'spec'],
       ['1311', 'merge'],
+      ['1335', 'merge'],
       ['1315', 'scope'],
       ['1317', 'tests-first'],
       ['1319', 'spend'],

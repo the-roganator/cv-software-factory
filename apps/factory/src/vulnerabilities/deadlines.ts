@@ -394,8 +394,13 @@ export interface Row {
   excepted: boolean;
   /** When its fix became installable, or undefined while none is. */
   installable?: number | undefined;
-  /** When it was first seen: its alert's creation, a renamed item's, or now. */
+  /** When it was first seen: its place's first day (the state's, or its alert's creation), a renamed item's, or now. */
   seen: number;
+  /**
+   * When this result itself was first seen, where that is later than its place's day: another result of the same
+   * place was there before it. The state keeps this one, so the place's day goes with the result that brought it.
+   */
+  own?: number | undefined;
   firstSeenToday: boolean;
   due?: number | undefined;
   bucket: Bucket;
@@ -970,16 +975,29 @@ export function seenIn(findings: Finding[], targets: ReadTarget[], state: State,
   const onList = new Set(targets.map((target) => itemKey({ file: target.file, repository: itemOf(target.label) })));
   const days = new Map<string, { day: number; item: string }>();
   const gone = new Map<string, number>();
+  // Each result's own day, by its place and Trivy's type of it: two results may share a place, each with its day.
+  const owns = new Map<string, number>();
   for (const each of state.findings) {
     const day = Date.parse(each.seen);
     const key = placeKey(each);
+    owns.set(ownKey(each), Math.min(owns.get(ownKey(each)) ?? day, day));
     if (day < (days.get(key)?.day ?? Number.POSITIVE_INFINITY)) days.set(key, { day, item: itemKey(each) });
     if (onList.has(itemKey(each))) continue;
     const renamed = renameKey(each);
     gone.set(renamed, Math.min(gone.get(renamed) ?? day, day));
   }
-  return clocked(findings, days, gone, now);
+  // A result new to a place that was there before it is first seen now, itself, whatever day its place gives it.
+  return clocked(findings, days, gone, now).map((clock, index) => {
+    const finding = findings[index] as Finding;
+    const place = placeOf(finding);
+    const own = owns.get(ownKey({ ...place, type: finding.type })) ?? (days.has(placeKey(place)) ? now : clock.seen);
+    return own > clock.seen ? { ...clock, own } : clock;
+  });
 }
+
+/** What tells apart two results of one place: Trivy's type of the result (sarif.ts's fingerprint has it too). */
+const ownKey = (each: Pick<Place, 'advisory' | 'file' | 'package' | 'repository'> & { type: string }) =>
+  JSON.stringify([placeKey(each), each.type]);
 
 /**
  * Each result's clock, from each place's first day and its item, and the first day of each package and advisory whose
@@ -1080,21 +1098,31 @@ export function rows(
   findings: Finding[],
   excepted: Set<string>,
   fixes: (number | undefined)[],
-  seens: { seen: number; firstSeenToday: boolean }[],
+  seens: { seen: number; firstSeenToday: boolean; own?: number | undefined }[],
   now: number,
 ): Row[] {
   return findings.map((finding, index) => {
     const severity = severityOf(finding);
     const isExcepted = excepted.has(alertKey(finding));
     const fix = fixes[index];
-    const { seen: first, firstSeenToday } = seens[index] ?? { seen: now, firstSeenToday: true };
+    const { seen: first, firstSeenToday, own: ownDay } = seens[index] ?? { seen: now, firstSeenToday: true };
+    const own = ownDay === undefined ? {} : { own: ownDay };
     // A fix not yet installable (still inside pnpm's wait) starts no clock.
     if (isExcepted || fix === undefined || fix > now)
-      return { finding, severity, excepted: isExcepted, installable: fix, seen: first, firstSeenToday, bucket: 'none' };
+      return {
+        finding,
+        severity,
+        excepted: isExcepted,
+        installable: fix,
+        seen: first,
+        ...own,
+        firstSeenToday,
+        bucket: 'none',
+      };
     const due = Math.max(fix, first) + DAYS[severity] * DAY;
     const left = due - now;
     const bucket: Bucket = left <= 0 ? 'overdue' : left <= DAY ? 'day' : left <= 7 * DAY ? 'week' : 'later';
-    return { finding, severity, excepted: false, installable: fix, seen: first, firstSeenToday, due, bucket };
+    return { finding, severity, excepted: false, installable: fix, seen: first, ...own, firstSeenToday, due, bucket };
   });
 }
 
@@ -1659,7 +1687,9 @@ export function stateOf(repository: string, run: string, rows: Row[], findings: 
       repository: itemOf(finding.label),
       severity: finding.severity,
       ...(finding.fixed ? { fixed: finding.fixed } : {}),
-      seen: dayText(rows[index]?.seen ?? Number.NaN),
+      type: finding.type,
+      // Its own day, where its place's is an older result's: the place's day is the earliest of those it still has.
+      seen: dayText(rows[index]?.own ?? rows[index]?.seen ?? Number.NaN),
       ...(finding.fix ? { fix: fixOf(finding.fix) } : {}),
       ...(finding.fix && finding.move ? { move: finding.move.index } : {}),
     })),

@@ -29,6 +29,7 @@ const STATE: State = {
       file: 'pnpm-lock.yaml',
       line: 120,
       repository: 'pnpm-lock.yaml',
+      type: 'pnpm',
       severity: 'HIGH',
       fixed: '1.0.1',
       seen: '2026-10-01T00:00:00Z',
@@ -42,6 +43,7 @@ const STATE: State = {
       file: '.devcontainer/Dockerfile',
       line: 2,
       repository: 'node',
+      type: 'debian',
       severity: 'LOW',
       seen: '2026-11-10T04:30:00Z',
     },
@@ -100,6 +102,7 @@ describe('a state’s shape', () => {
       (s) => Object.assign(finding(s), { file: 'pnpm-lock.yaml\n' }),
       'gives finding 1 no file',
     ],
+    ['a finding with no type', (s) => Object.assign(finding(s), { type: undefined }), 'gives finding 1 no type'],
     [
       'a severity that is none',
       (s) => Object.assign(finding(s), { severity: 'SEVERE' }),
@@ -115,6 +118,13 @@ describe('a state’s shape', () => {
     ['a move that is no place', (s) => Object.assign(finding(s), { move: 0 }), 'a move that is not one'],
   ])('refuses %s, naming the finding by its place alone', (_name, change, message) => {
     expect(() => open(sealedWith(change), KEY, REPOSITORY, STATE.run)).toThrow(message);
+  });
+});
+
+describe('a state the scan wrote', () => {
+  it('opens with a finding Trivy gave no installed version, as the scan writes it', () => {
+    const sealed = sealedWith((s) => Object.assign(finding(s), { installed: '' }));
+    expect(open(sealed, KEY, REPOSITORY, STATE.run).findings[0]?.installed).toBe('');
   });
 });
 

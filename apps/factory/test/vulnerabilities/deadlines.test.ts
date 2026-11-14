@@ -942,6 +942,29 @@ describe('the clock, from the state the last scan kept', () => {
     expect(second.rows[0]?.due).toBe(first.rows[0]?.due);
   });
 
+  it('gives two results of one place the earlier day, and the later its own once the earlier is fixed, as the alerts do', async () => {
+    // One package and advisory in one item, read by Trivy as two types: two results, two alerts, one place.
+    const older = npm();
+    const younger = npm({ type: 'node-pkg' });
+    const first = await judge({ findings: [older], published, alerts: [alertOf(older, '2026-10-01T00:00:00Z')] });
+    const both = await judge({ findings: [older, younger], published, state: first.kept() }, NOW + DAY);
+    expect(both.rows.map((row) => row.seen)).toEqual([at('2026-10-01T00:00:00Z'), at('2026-10-01T00:00:00Z')]);
+    expect(both.rows[1]?.own).toBe(NOW + DAY);
+    const after = await judge({ findings: [older, younger], published, state: both.kept() }, NOW + 2 * DAY);
+    expect(after.rows.map((row) => row.seen)).toEqual([at('2026-10-01T00:00:00Z'), at('2026-10-01T00:00:00Z')]);
+    // The run that first finds the older one gone still has its day for the place, as its alert is open until
+    // that run's upload closes it; the run after has the younger's own.
+    const fixed = await judge({ findings: [younger], published, state: after.kept() }, NOW + 3 * DAY);
+    expect(fixed.rows[0]).toMatchObject({ seen: at('2026-10-01T00:00:00Z'), own: NOW + DAY });
+    const alone = await judge({ findings: [younger], published, state: fixed.kept() }, NOW + 4 * DAY);
+    expect(alone.rows[0]).toMatchObject({ seen: NOW + DAY, firstSeenToday: false });
+    const fromAlerts = await judge(
+      { findings: [younger], published, alerts: [alertOf(younger, new Date(NOW + DAY).toISOString())] },
+      NOW + 4 * DAY,
+    );
+    expect(alone.rows[0]?.due).toBe(fromAlerts.rows[0]?.due);
+  });
+
   it('keeps each finding’s place in its move, and none for one excepted or with no fix', () => {
     const fix = { target: { kind: 'version', versions: ['1.0.1'] } as Target, day: at('2026-11-03T00:00:00Z') };
     const row = (finding: Finding) => ({
@@ -965,6 +988,7 @@ describe('the clock, from the state the last scan kept', () => {
         file: 'pnpm-lock.yaml',
         line: 120,
         repository: 'pnpm-lock.yaml',
+        type: 'pnpm',
         severity: 'HIGH',
         fixed: '1.0.1',
         seen: '2026-10-01T00:00:00Z',

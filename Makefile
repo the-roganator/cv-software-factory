@@ -269,7 +269,7 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 # `factory`, is the GitHub worker's and the one this reads; each repository's `scan-state` environment, which only main
 # may use (scripts/github-settings.ts makes it), is given the same key again each time, as SCAN_STATE_KEY. A key made
 # anew opens no state sealed before it: the next scan reads the alerts, and seals with the new one. The worker reads
-# its keys as it starts, so a new one starts it again.
+# its keys as it starts, so a new one starts it again, before GitHub is given it: a run that stops there has done so.
 SCAN_STATE_REPOSITORIES := the-roganator/cv-software-factory the-roganator/cv-worlds-worst-website
 scan-state-key: ## Give each repository's scan and the GitHub worker the key the scan's state is sealed with, made once
 	@$(call namespace,factory)
@@ -281,15 +281,14 @@ scan-state-key: ## Give each repository's scan and the GitHub worker the key the
 				$(KUBECTL) -n factory create secret generic scan-state-key >/dev/null || exit 1; \
 			printf '{"data":{"%s":"%s"}}' "$$name" "$$(printf %s "$$key" | base64)" | \
 				$(KUBECTL) -n factory patch secret scan-state-key --type merge --patch-file /dev/stdin >/dev/null || exit 1; \
-			new=1; echo "  $$repository has a new key for its scan's state."; \
+			echo "  $$repository has a new key for its scan's state."; \
+			$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=github --ignore-not-found >/dev/null && \
+			echo "  The GitHub worker starts again with it." || exit 1; \
 		fi; \
 		$(KUBECTL) -n factory get secret scan-state-key -o "jsonpath={.data.$$name}" | base64 -d | \
 			gh secret set SCAN_STATE_KEY --env scan-state --repo "$$repository" >/dev/null && \
 			echo "  $$repository's scan-state environment has its key." || exit 1; \
-	done; \
-	if [ -n "$$new" ]; then \
-		$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=github --ignore-not-found >/dev/null && \
-		echo "  The GitHub worker starts again with the new key."; fi
+	done
 
 # The GitHub worker's key for signing its refusals (apps/factory/src/github/refusals.ts): an Ed25519 key pair, made once,
 # as share-key's is. The private key is the Secret refusal-signing-key in `factory`, which only the GitHub worker reads;

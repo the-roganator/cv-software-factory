@@ -96,7 +96,9 @@ spec:
             - name: TUF_CACHE_DIR
               value: /var/cache/sigstore
             # The moves the pin watch takes, by their names in the scan's moves.json, comma-separated
-            # (docs/COMPONENTS/GITHUB-WORKER.md#pins). A move is named here only by a pull request Martin merged.
+            # (docs/COMPONENTS/GITHUB-WORKER.md#pins): it opens each one's pull request, and the pin queue adds that to
+            # the merge queue once the gate passes it as `pin-move`. A move is named here only by a pull request Martin
+            # merged, as CODEOWNERS gives him deploy/.
             - name: PIN_WATCH_ONLY
               value: mcr.microsoft.com/devcontainers/base
           readinessProbe:

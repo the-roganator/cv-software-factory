@@ -6,12 +6,12 @@
 //   1. Where the command starts (the call's cwd): the main checkout (git's directory is the common one, and it is the
 //      project's repository), a worktree, another repository, or no repository.
 //   2. Whether the text holds a refused command: `git`, its options, then a refused subcommand (REFUSED) as the next
-//      word; or `gh pr checkout`, `gh pr merge`, `gh repo sync` or a `gh stack` command that moves HEAD. Code and
+//      word; or `gh pr checkout`, `gh pr merge`, `gh repo sync` or a `gh stack` command that may move HEAD. Code and
 //      quoted text alike. If not, the command
 //      passes: reading is never refused, nor is a word like "commit" or "add" anywhere else in the text.
 //   3. Whether the text moves where commands act: cd, pushd, popd, -C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE,
 //      as whole words. A variable in a target is followed only when the command begins by setting it to a literal
-//      absolute path, in a statement of its own (`WT=/a/worktree; git -C $WT …`), and nothing after could change it.
+//      absolute path of one plain word, in a statement of its own (`WT=/a/worktree; git -C $WT …`), and nothing after could change it.
 // From a worktree, another repository or none, with no such word, it passes, whatever the text: a commit there is the
 // common case. From the main checkout with none, it refuses, but `git pull --ff-only` (or `… origin main`) alone with
 // HEAD on main. With such words, each target must be a literal path (no variable, no `cd -`, no popd), and only the
@@ -35,17 +35,19 @@ const REFUSED =
   'checkout|switch|reset|stash|rebase|merge|cherry-pick|revert|apply|am|restore|clean|commit|add|rm|mv|bisect|update-index|read-tree|checkout-index|update-ref|symbolic-ref|pull';
 // Between words: white space, or a backslash and the line's end.
 const SP = '(?:\\s|\\\\\\n)+';
-// A word as the shell reads one: quoted parts and a `$(…)` may hold spaces, anywhere in it (`user.name="A B"`).
-const WORD = `(?:"[^"]*"|'[^']*'|\\$\\([^)]*\\)|[^\\s"'])+`;
+// A word as the shell reads one: quoted parts, a `$(…)` and a character after a backslash may be spaces, anywhere in
+// it (`user.name="A B"`, `/a/main\ checkout`).
+const WORD = `(?:"[^"]*"|'[^']*'|\\$\\([^)]*\\)|\\\\.|[^\\s"'\\\\])+`;
 // git, then its own options, then the subcommand as the next word. So `git worktree add`, `git log --grep revert` and
 // `gh api …/commits` are not refused commands. An option that takes its value as the next word is named; any other
 // word that starts with `-` is an option whole.
 const VALUED = '-[Cc]|--(?:git-dir|work-tree|namespace|exec-path|attr-source|super-prefix|config-env)';
 const GIT = `\\bgit(?:${SP}(?:(?:${VALUED})${SP}${WORD}|-${WORD}))*${SP}(?:${REFUSED})(?![-\\w])`;
-// gh's commands that move a checkout's HEAD: a pull request's, the repository's sync, and every `gh stack` command
-// but view, link, push and submit.
-const STACK = 'add|checkout|init|modify|unstack|rebase|sync|merge|bottom|down|up|switch|top|trunk';
-const GH = `\\bgh${SP}(?:(?:-R|--repo)(?:=|${SP})${WORD}${SP})?(?:pr${SP}(?:checkout|merge)|repo${SP}sync|stack${SP}(?:${STACK}))\\b`;
+// gh, its own options (each with the word after it, which may be its value), then a command that moves a checkout's
+// HEAD: a pull request's checkout or merge, the repository's sync, and every `gh stack` command but the four that
+// leave the checkout alone, so one the extension adds is refused until it is named here.
+const STACK_SAFE = 'view|link|push|submit';
+const GH = `\\bgh(?:${SP}-${WORD}(?:${SP}${WORD})?)*?${SP}(?:pr${SP}(?:checkout|merge)|repo${SP}sync|stack${SP}(?!(?:${STACK_SAFE})\\b)[a-z])`;
 const NAMES = new RegExp(`${GIT}|${GH}`);
 const NAMES_GIT = new RegExp(GIT, 'g');
 const NAMES_GH = new RegExp(GH);
@@ -62,7 +64,9 @@ export function expand(command: string): string {
   let rest = command;
   for (let m = SETS.exec(rest); m; m = SETS.exec(rest)) {
     const name = m[1] as string;
-    values.set(name, values.has(name) ? undefined : (m[2] as string).replace(/^["']|["']$/g, ''));
+    const value = (m[2] as string).replace(/^["']|["']$/g, '');
+    // One plain word only: a value with a space or a character the shell reads would not stay one word where it is put.
+    values.set(name, values.has(name) || !/^[\w./@+,:=-]+$/.test(value) ? undefined : value);
     rest = rest.slice(m[0].length);
   }
   for (const [name, value] of values) {

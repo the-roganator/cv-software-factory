@@ -83,7 +83,11 @@ const TABLE: [string, string, boolean][] = [
   ['git -C {main} \\\n  checkout main', 'wt', true],
   ['git --exec-path /x checkout x', 'main', true],
   ['git --attr-source HEAD checkout x', 'main', true],
-  ...['checkout 12', 'rebase', 'add feat/x', 'sync', 'top', 'merge 3 --squash'].map(
+  ['git -c user.name=A\\ B commit -m x', 'main', true],
+  ['git -C {main}\\ copy reset --hard', 'wt', true],
+  ['gh --hostname github.com pr checkout 12', 'main', true],
+  ['gh --hostname github.com repo sync', 'main', true],
+  ...['checkout 12', 'rebase', 'add feat/x', 'sync', 'top', 'merge 3 --squash', 'create x', 'unlink 3'].map(
     (sub): [string, string, boolean] => [`gh stack ${sub}`, 'main', true],
   ),
   ["cat > scratch/notes.md <<'EOF'\nthen run git commit -m x\nEOF", 'main', true],
@@ -115,6 +119,9 @@ const TABLE: [string, string, boolean][] = [
   ['gh run list --branch merge-queue & wait', 'main', false],
   ['gh stack view', 'main', false],
   ['gh stack link 12 13', 'main', false],
+  ['gh stack --help', 'main', false],
+  ['gh pr create --title "fix: the checkout" --body "pr merge"', 'main', false],
+  ['gh api repos/o/r/pulls --jq .pr checkout', 'main', false],
   // From the main checkout, moved to a worktree or another repository by a literal path.
   ['cd {wt} && git commit -m "x"', 'main', false],
   ['cd scratch/worktrees/k && git add . && git commit -m x', 'main', false],
@@ -137,6 +144,8 @@ const TABLE: [string, string, boolean][] = [
   ['(WT={wt}); git -C "$WT" reset --hard', 'main', true],
   ['WT=scratch/worktrees/k; git -C $WT reset --hard', 'main', true],
   ['WT={wt}; git -C $WTX reset --hard', 'main', true],
+  ['WT="{wt} b"; git -C "$WT" reset --hard', 'main', true],
+  ["WT='{wt};x'; git -C $WT reset --hard", 'main', true],
   ['WT={wt}; WT+=/../../..; git -C $WT reset --hard', 'main', true],
   ['WT={wt}; printf -v WT %s {main}; git -C $WT reset --hard', 'main', true],
   // … and refused when it cannot be sure.

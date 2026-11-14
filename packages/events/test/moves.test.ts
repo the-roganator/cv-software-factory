@@ -1,6 +1,7 @@
 /**
  * A move's events, as triage writes them for the dependency sense's signal: their shapes, and their public views,
- * which withhold every finding's advisory and package, and a lockfile move's package, its versions and its lines,
+ * which withhold every finding's advisory, package and fixed versions, and a lockfile move's package, its versions and
+ * its lines,
  * always: the issue the line opens is where they become public.
  */
 import { describe, expect, it } from 'vitest';
@@ -74,13 +75,17 @@ describe("a move's public views", () => {
     ]);
   });
 
-  it('keep an image’s name and versions, as the day’s moves do, but never a finding’s advisory or package', () => {
-    const shown = view('signal.received', signal(image));
+  it('keep an image’s name and versions, as the day’s moves do, but never a finding’s advisory, package or fix', () => {
+    // An image's finding is a package inside it, whose fixed versions would name it to anyone who looked them up.
+    const inside = {
+      ...scan,
+      findings: [{ ...scan.findings[0], package: 'golang.org/x/net', fixed: '0.60.0, 0.62.0' }],
+    };
+    const shown = view('signal.received', { ...signal(image), evidence: [inside] });
     expect(shown.move).toMatchObject({ name: 'node', from: '24.11.0-alpine', to: '24.11.1-alpine' });
-    expect(JSON.stringify(shown)).not.toMatch(/left-pad|GHSA/);
+    expect(JSON.stringify(shown)).not.toMatch(/x\/net|GHSA|0\.6[02]\.0/);
     expect((shown.evidence as { findings: object[] }[])[0]?.findings[0]).toEqual({
       severity: { scanner: 'high', publisher: 'critical' },
-      fixed: '1.2.4',
       deadline: '2026-11-15T00:00:00.000Z',
     });
   });

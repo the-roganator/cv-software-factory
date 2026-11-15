@@ -120,7 +120,7 @@ A finding is evidence; a move is the unit of work. `apps/factory/src/vulnerabili
 | Lane | Who moves it | What |
 | --- | --- | --- |
 | `none` | nobody | a line no longer built |
-| `dependabot` | Dependabot | in the app, a pin where no patch of the line's may write (`deploy/`, `.github/`), in a directory its docker entries read, whatever its deadline: Syft's |
+| `dependabot` | Dependabot | in the app, an image's pin where no patch of the line's may write (`deploy/`, `.github/`), in a directory its docker entries read, whatever its deadline: Syft's |
 | `line` | the app's line | the app's other moves |
 | `cluster` | the cluster's own command | k3s, and what its release brings |
 | `issue` | Martin, from an issue | anything mise or the Makefile pins, a major or not (k3d, Argo CD's chart with its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a day of its fix, an image whose other half is in the lockfile |

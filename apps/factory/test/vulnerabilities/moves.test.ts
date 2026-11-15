@@ -171,6 +171,8 @@ describe('the day’s moves', () => {
       expect(laneOf(result({ ...syft, severity: 'LOW', due: undefined }), app)).toBe('dependabot');
       // One Dependabot does not read stays the line's, whose guard refuses it: nobody else is there to move it.
       expect(laneOf(result({ pin: { file: 'deploy/base/rollout.yaml', line: 67 } }), app)).toBe('line');
+      // Only an image's: a version there is nothing Dependabot's docker entries move.
+      expect(laneOf(result({ ...syft, target: { kind: 'version', versions: ['1.0.1'] } }), app)).toBe('line');
       // The root Dockerfile is the line's to write, though Dependabot reads it too.
       expect(laneOf(result({ pin: { file: 'Dockerfile', line: 5 } }), app)).toBe('line');
     });

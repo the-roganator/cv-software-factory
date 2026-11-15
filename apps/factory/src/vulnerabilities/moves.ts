@@ -10,7 +10,7 @@
  * Its lane says who moves it, worked out, never chosen, in this order:
  *
  * - `none`: nothing to move to (a line no longer built);
- * - `dependabot`, in the app: a pin where no patch of the line's may write (`LINE_NEVER`), in a directory
+ * - `dependabot`, in the app: an image's pin where no patch of the line's may write (`LINE_NEVER`), in a directory
  *   `dependabot.yml`'s docker entries read, whatever its deadline: nobody else can move it;
  * - `line`: the app's, which its line moves;
  * - `cluster`: k3s, which only the cluster's own command applies;
@@ -150,7 +150,9 @@ export function laneOf(
   if (context.app) {
     // A pin the line may not write is refused at the worker's guard every time: Dependabot's, where it reads it.
     const forbidden = move.pins.some((pin) => LINE_NEVER.some((path) => pin.file.startsWith(path)));
-    if (forbidden && move.pins.every((pin) => readByDependabot(pin, context.dependabot))) return 'dependabot';
+    // An image's alone: Dependabot's docker entries move a `FROM`, and nothing else a directory they read may hold.
+    if (forbidden && target.kind === 'image' && move.pins.every((pin) => readByDependabot(pin, context.dependabot)))
+      return 'dependabot';
     return 'line';
   }
   if (target.kind === 'k3s' || kinds.has('k3s') || kinds.has('k3s-release')) return 'cluster';

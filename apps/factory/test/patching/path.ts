@@ -7,10 +7,9 @@
  * shapes the scan hands on (`deadlines.json`), and the registries' answers.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { codeOwners, type FileChange, fixTagsHold, tagsOf } from '../../../../scripts/review-routing.ts';
 import { PinsHeld, PinsRefused, writePins } from '../../../runner/src/pins.ts';
 import { filesIn } from '../../src/github/patches.ts';
@@ -31,16 +30,15 @@ import {
 import { type Finding, fingerprint } from '../../src/vulnerabilities/sarif.ts';
 import type { Handoff, ReadTarget, TrivyReport } from '../../src/vulnerabilities/scan.ts';
 import { newKey, open, readKey, seal } from '../../src/vulnerabilities/state.ts';
+import { FILES } from './app-checkout.ts';
 
-/** The app's checkout the path runs on: its pins' files, copied (app-checkout/README.md). */
-export const CHECKOUT = fileURLToPath(new URL('./app-checkout', import.meta.url));
-export const fileOf = (path: string): string | undefined => {
-  try {
-    return readFileSync(join(CHECKOUT, path), 'utf8');
-  } catch {
-    return undefined;
-  }
-};
+/** The app's checkout the path runs on, written once to a folder of its own (app-checkout.ts). */
+export const CHECKOUT = mkdtempSync(join(tmpdir(), 'app-checkout-'));
+for (const [path, text] of Object.entries(FILES)) {
+  mkdirSync(dirname(join(CHECKOUT, path)), { recursive: true });
+  writeFileSync(join(CHECKOUT, path), text);
+}
+export const fileOf = (path: string): string | undefined => FILES[path];
 
 export const NOW = Date.parse('2026-11-15T05:00:00Z');
 const RUN: ScanRun = {

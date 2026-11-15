@@ -12,7 +12,7 @@ import {
   toRunAgain,
 } from '../../src/gates/journeys.ts';
 import { testsIn } from '../../src/gates/tests.ts';
-import { changedTests, outcomes, pinsAlone } from '../../src/gates/tests-first.ts';
+import { changedTests, outcomes } from '../../src/gates/tests-first.ts';
 
 const FILE = `import { describe, expect, it } from 'vitest';
 
@@ -579,37 +579,5 @@ describe('the gates’ scripts, end to end', () => {
       ],
     };
     expect(outcomes(manifest, elsewhere).map((o) => o.outcome)).toEqual(['did not run']);
-  });
-});
-
-describe('a change that moves pins alone', () => {
-  const files = (over: Record<string, string> = {}) =>
-    new Map(
-      Object.entries({
-        'pnpm-lock.yaml': 'a@1',
-        'package.json': '{}',
-        Dockerfile: 'FROM a:1',
-        'src/a.ts': '1',
-        ...over,
-      }),
-    );
-
-  it('is one that changes a lockfile, a manifest, a Dockerfile or mise’s files, and nothing else', () => {
-    expect(pinsAlone(files(), files({ 'pnpm-lock.yaml': 'a@2' }))).toBe(true);
-    expect(pinsAlone(files(), files({ 'package.json': '{"a":2}', 'pnpm-lock.yaml': 'a@2' }))).toBe(true);
-    expect(pinsAlone(files(), files({ Dockerfile: 'FROM a:2', 'mise.toml': 'node = "2"', 'mise.lock': '2' }))).toBe(
-      true,
-    );
-    expect(pinsAlone(files(), files({ 'deploy/images/syft/Dockerfile': 'FROM b:2' }))).toBe(true);
-  });
-
-  it('is not one that changes anything else, or nothing', () => {
-    expect(pinsAlone(files(), files())).toBe(false);
-    expect(pinsAlone(files(), files({ 'pnpm-lock.yaml': 'a@2', 'src/a.ts': '2' }))).toBe(false);
-    expect(pinsAlone(files(), files({ 'docs/Dockerfile.md': 'x' }))).toBe(false);
-    // A file taken away is a change too.
-    const without = files();
-    without.delete('src/a.ts');
-    expect(pinsAlone(files(), without)).toBe(false);
   });
 });

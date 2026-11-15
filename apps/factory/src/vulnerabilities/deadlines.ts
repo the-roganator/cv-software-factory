@@ -802,7 +802,9 @@ export async function installable(
           pin: target.pin,
           from: pinned(target.image ?? ''),
         };
-      return { kind: 'chart', name: chartName, pin: own, from: target.chart.version };
+      // The chart's own name, not its Application's: one chart two Applications run at one version is one move of
+      // two pins, as one image in two Dockerfiles is.
+      return { kind: 'chart', name: target.chart.chart, pin: own, from: target.chart.version };
     }
     return { kind: target.kind, name: repositoryOf(target.image ?? ''), pin: own, from: pinned(target.image ?? '') };
   };

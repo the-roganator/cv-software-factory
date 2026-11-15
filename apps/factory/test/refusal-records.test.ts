@@ -201,11 +201,13 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
   const kept = () => admissionHashWith(() => {});
 
   it('stands when a third-party digest moves, as #951 moved Postgres’s', () => {
-    // #951, Dependabot's: postgres:18.6-alpine3.24 from 898c60c to 123b179, which took the record again on a cluster.
+    // #951, Dependabot's, moved postgres:18.6-alpine3.24 from 898c60c to 123b179, which took the record again on a
+    // cluster. Replayed on whatever Postgres is pinned now, so a move of the pin leaves this standing.
     const before = 'postgres:18.6-alpine3.24@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5';
-    const after = 'postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395';
     const now = allowedOf(imagePolicy(rendering(), 'factory-images')).expression;
-    expect(now, 'the factory’s copy admits the Postgres #951 pinned').toContain(after);
+    const [after] = /postgres:[\w.-]+@sha256:[0-9a-f]{64}/.exec(now) ?? [];
+    if (!after) throw new Error('the factory’s copy admits no Postgres by tag and digest');
+    expect(after).not.toBe(before);
     const replayed = admissionHashWith((m) => {
       const v = allowedOf(imagePolicy(m, 'factory-images'));
       v.expression = v.expression.replace(after, before);

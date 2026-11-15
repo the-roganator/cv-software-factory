@@ -2,7 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    env: { LOG_LEVEL: 'silent' },
+    // The real two repositories, whatever a shell set for a try against copies (policy/repositories.ts).
+    env: { LOG_LEVEL: 'silent', FACTORY_REPOSITORY: '', APP_REPOSITORY: '' },
     projects: [
       {
         extends: true,

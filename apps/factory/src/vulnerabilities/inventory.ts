@@ -165,9 +165,8 @@ export function ciCopy(reference: string) {
 
 /**
  * The identity `build.yml` on main signs an image of ours with, for the factory's and the app's images in GHCR alone:
- * the pipeline apps/factory/src/github/signatures.ts verifies, for the repositories scripts/review-routing.ts trusts,
- * which a test holds this to (those modules need what the scan's sparse checkout does not have). Any other image has
- * no signer the scan can verify, and none is named.
+ * the pipeline apps/factory/src/github/signatures.ts verifies, for the two repositories (../repositories.ts), as the
+ * review gate trusts them. Any other image has no signer the scan can verify, and none is named.
  */
 export function signerOf(image: string) {
   const repository = repositoryOfImage(image);

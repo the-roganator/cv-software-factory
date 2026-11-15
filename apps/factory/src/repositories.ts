@@ -10,12 +10,15 @@ export const { factory: FACTORY_REPOSITORY, app: APP_REPOSITORY } = repositories
 /** Both, the factory's first. */
 export const REPOSITORIES = [FACTORY_REPOSITORY, APP_REPOSITORY] as const;
 
+/** An image in GHCR under OWNER: its repository's name, then the image's own, if it has one. */
+const IMAGE = new RegExp(String.raw`^ghcr\.io/${OWNER}/([\w.-]+)(?:/[\w.-]+)?$`);
+
 /**
  * The repository whose `build.yml` signs an image, from its name in GHCR (`ghcr.io/<owner>/<name>[/<image>]`): one of
  * the two, or undefined for any other.
  */
 export function repositoryOfImage(image: string): string | undefined {
-  const name = new RegExp(String.raw`^ghcr\.io/${OWNER}/([\w.-]+)(?:/[\w.-]+)?$`).exec(image)?.[1];
+  const name = IMAGE.exec(image)?.[1];
   const repository = name && `${OWNER}/${name}`;
   return REPOSITORIES.find((r) => r === repository);
 }

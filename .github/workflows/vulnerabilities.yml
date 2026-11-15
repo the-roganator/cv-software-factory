@@ -61,6 +61,7 @@ on:
       - apps/factory/src/vulnerabilities/**
       - apps/factory/src/gates/**
       - deploy/images/trivy/**
+      - policy/repositories.ts
 
 permissions: {}
 

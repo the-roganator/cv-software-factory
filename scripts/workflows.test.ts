@@ -647,6 +647,7 @@ describe('vulnerabilities.yml', () => {
       'apps/factory/src/vulnerabilities/**',
       'apps/factory/src/gates/**',
       'deploy/images/trivy/**',
+      'policy/repositories.ts',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     // The base branch as it is now, not as it was at the pull request's last push, read once by coverage and the same
@@ -722,10 +723,12 @@ describe('dependency-graph.yml', () => {
     const on = workflow.on as Record<string, { paths?: string[] } | null>;
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/dependency-graph.yml',
+      'apps/factory/src/repositories.ts',
       'apps/factory/src/vulnerabilities/**',
       'deploy/images/syft/**',
       'mise.toml',
       'mise.lock',
+      'policy/repositories.ts',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));

@@ -8,18 +8,22 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const COPIES = { factory: 'the-roganator/scratch-factory', app: 'the-roganator/scratch-app' };
 
 describe('the two repositories', () => {
-  it('are the real two unless a setting names another, blank or spaced as unset', () => {
+  it('are the real two unless a setting names another, an empty one as unset', () => {
     expect(repositoriesFrom({})).toEqual(REAL);
-    expect(repositoriesFrom({ FACTORY_REPOSITORY: '', APP_REPOSITORY: '  ' })).toEqual(REAL);
-    expect(repositoriesFrom({ FACTORY_REPOSITORY: ` ${COPIES.factory} `, APP_REPOSITORY: COPIES.app })).toEqual(COPIES);
+    expect(repositoriesFrom({ FACTORY_REPOSITORY: '', APP_REPOSITORY: '' })).toEqual(REAL);
+    expect(repositoriesFrom({ FACTORY_REPOSITORY: COPIES.factory, APP_REPOSITORY: COPIES.app })).toEqual(COPIES);
     expect(repositoriesFrom({ APP_REPOSITORY: COPIES.app })).toEqual({ factory: REAL.factory, app: COPIES.app });
   });
 
-  it('refuses a name outside the-roganator, in another case, not owner/name, or one for both', () => {
+  it('refuses a name outside the-roganator, in another case, with a dot or a space, not owner/name, or one for both', () => {
     for (const name of [
       'someone/cv-worlds-worst-website',
       'The-Roganator/scratch-app',
       'the-roganator/Scratch',
+      'the-roganator/scratch.app',
+      ` ${COPIES.app}`,
+      `${COPIES.app} `,
+      '  ',
       'scratch-app',
       'the-roganator/a/b',
     ])

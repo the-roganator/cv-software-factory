@@ -23,10 +23,12 @@ on:
   pull_request:
     paths:
       - .github/workflows/dependency-graph.yml
+      - apps/factory/src/repositories.ts
       - apps/factory/src/vulnerabilities/**
       - deploy/images/syft/**
       - mise.toml
       - mise.lock
+      - policy/repositories.ts
 
 permissions: {}
 

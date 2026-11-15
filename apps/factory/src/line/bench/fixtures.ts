@@ -16,6 +16,7 @@
 import type { Evidence, PayloadOf } from '@software-factory/events';
 import { reportedTitle, ticketTitle } from '@software-factory/triage/events';
 import { protectedFrom } from '../../github/paths.ts';
+import { APP_REPOSITORY } from '../../repositories.ts';
 import { fence } from '../../runners/scope.ts';
 import { SMOKE_SCOPE, SMOKE_SEED } from '../../runners/smoke.ts';
 import type { Step } from '../../runners/steps.ts';
@@ -360,9 +361,6 @@ const PRICE_SIGNALS: Signal[] = [
   },
 ];
 
-/** The app's repository, as a move names it. */
-const APP_REPOSITORY = 'the-roganator/cv-worlds-worst-website';
-
 /** A routine update of vitest, as the coder's `dependency-move` moves it: triage's ticket for it. */
 const VITEST_TICKET: PayloadOf<'ticket.opened'> = {
   title: 'Move vitest, in npm',
@@ -610,7 +608,7 @@ const PINO_SPEC: PayloadOf<'spec.written'> = {
       when: 'every required check runs on it',
       expect: 'each passes',
       from: 'signal 1',
-      quote: 'pino (npm) in the-roganator/cv-worlds-worst-website, from 10.4.0 to 10.4.1',
+      quote: `pino (npm) in ${APP_REPOSITORY}, from 10.4.0 to 10.4.1`,
       shownBy: 'gates',
     },
   ],

@@ -10,15 +10,19 @@
  * Its lane says who moves it, worked out, never chosen, in this order:
  *
  * - `none`: nothing to move to (a line no longer built);
+ * - `dependabot`, in the app: an image's pin where no patch of the line's may write (`LINE_NEVER`), in a directory
+ *   `dependabot.yml`'s docker entries read, whatever its deadline: nobody else can move it;
  * - `line`: the app's, which its line moves;
  * - `cluster`: k3s, which only the cluster's own command applies;
  * - `issue`: what no pull request of the App's can write: anything mise or the Makefile pins (k3d, Argo CD's chart with
  *   its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a
- *   day of its fix, and an image whose other half is in the lockfile;
+ *   day of its fix, an image whose other half is in the lockfile, and Playwright's image, whose library is in the
+ *   lockfile, where Dependabot does not read its pin;
  * - `approval`: a major, of any kind (a chart's, or a version past every copy's major), which needs more than its pins'
- *   lines written; whether a chart within its major changes
+ *   lines written, what judges a move (Kyverno, Trivy, Syft), and one chart at two Applications' pins, neither of which the gate passes; whether a chart within its major changes
  *   more than its images is the review gate's to prove from the pull request, not the scan's to assume;
- * - `dependabot`: a pin `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
+ * - `dependabot`: Playwright's image where Dependabot reads its pin, whose group moves it with its library; a pin
+ *   `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
  *   package of the lockfile within a day of its fix, which its security update moves;
  * - `worker`: every other pin, which the GitHub worker moves: a chart within its major among them.
  *
@@ -115,6 +119,12 @@ const pinKey = (each: Pick<Judged, 'name' | 'from' | 'kind'>) =>
 
 const MISE_FILES = new Set(['mise.toml', 'mise.lock']);
 
+/**
+ * Where no patch of the line's may write, in the app's repository: the GitHub worker's `NEVER` (github/paths.ts),
+ * written again here as this runs with no dependencies; a test holds the two together.
+ */
+export const LINE_NEVER = ['.github/', 'deploy/'];
+
 /** A pin `dependabot.yml`'s docker entries read: one in a directory they name. */
 const readByDependabot = (pin: Pin, directories: string[]) => {
   const dir = `/${pin.file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';
@@ -130,6 +140,23 @@ const readByDependabot = (pin: Pin, directories: string[]) => {
 
 const isLockfile = (file: string) => /(^|\/)pnpm-lock\.yaml$/.test(file);
 
+/** Playwright's image, whose browsers are one release with the lockfile's library. */
+export const PLAYWRIGHT_IMAGE = 'mcr.microsoft.com/playwright';
+
+/**
+ * What judges a move, by its name and pins: Kyverno (its chart, and each image of it a values file pins), Trivy and
+ * Syft. The review gate never passes one as a pin move (scripts/pin-move.ts, condition 2), so it waits for Martin from
+ * the start.
+ */
+export const JUDGES: Record<string, (move: Pick<Move, 'name' | 'pins'>) => boolean> = {
+  Kyverno: (move) => /^kyverno(:|$)/.test(move.name) || /(^|[\s/])kyverno\//.test(move.name),
+  Trivy: (move) =>
+    move.pins.some((pin) => pin.file.startsWith('deploy/images/trivy/')) ||
+    /(^|\/)aquasec(urity)?\/trivy$/.test(move.name),
+  Syft: (move) =>
+    move.pins.some((pin) => pin.file.startsWith('deploy/images/syft/')) || /(^|\/)anchore\/syft$/.test(move.name),
+};
+
 /** A move's lane, worked out from what it is: see the module's comment for the order. */
 export function laneOf(
   move: Pick<Move, 'to' | 'major' | 'pins' | 'name' | 'lockfile'>,
@@ -139,7 +166,19 @@ export function laneOf(
 ): Lane {
   const target = move.to;
   if (!target || target.kind === 'unbuilt') return 'none';
-  if (context.app) return 'line';
+  // Playwright's image and its library in the lockfile are one release (scripts/image-pins.test.ts): no change that
+  // writes the image alone can pass. Dependabot's group moves both, in either repository, where it reads the pin;
+  // otherwise a person does here, from an issue, and in the app it is the line's as any other.
+  if (move.name === PLAYWRIGHT_IMAGE && move.pins.every((pin) => readByDependabot(pin, context.dependabot)))
+    return 'dependabot';
+  if (context.app) {
+    // A pin the line may not write is refused at the worker's guard every time: Dependabot's, where it reads it.
+    const forbidden = move.pins.some((pin) => LINE_NEVER.some((path) => pin.file.startsWith(path)));
+    // An image's alone: Dependabot's docker entries move a `FROM`, and nothing else a directory they read may hold.
+    if (forbidden && target.kind === 'image' && move.pins.every((pin) => readByDependabot(pin, context.dependabot)))
+      return 'dependabot';
+    return 'line';
+  }
   if (target.kind === 'k3s' || kinds.has('k3s') || kinds.has('k3s-release')) return 'cluster';
   // What mise or the Makefile pins (Argo CD's chart with its CLI) no pull request of the App's writes, a major or not.
   if (
@@ -148,10 +187,16 @@ export function laneOf(
     move.pins.some((pin) => MISE_FILES.has(pin.file) || pin.file === 'Makefile')
   )
     return 'issue';
+  if (move.name === PLAYWRIGHT_IMAGE) return 'issue';
+  // What judges a move is Martin's to move, as the review gate holds it (scripts/pin-move.ts's `JUDGES`).
+  if (Object.values(JUDGES).some((judge) => judge(move))) return 'approval';
   // A major, of any kind: the one move the scan can tell needs more than its pins' lines written. Whether a chart on its
   // major changes more than its images is the gate's to prove from the pull request, not the scan's to assume.
   if (move.major) return 'approval';
   if (move.pins.some((pin) => pin.file.startsWith('.github/workflows/'))) return 'issue';
+  // One chart two Applications run: the gate proves a chart's move from one Application's rendering (pin-move.ts),
+  // so it holds a move of two, and Martin approves it.
+  if (target.kind === 'chart' && move.pins.length > 1) return 'approval';
   // An Application's chart within its major, the worker's: Dependabot's docker entries read no Application's
   // targetRevision, though they read the directory it is in.
   if (target.kind === 'chart') return 'worker';

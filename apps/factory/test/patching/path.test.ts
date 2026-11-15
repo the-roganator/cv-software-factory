@@ -100,7 +100,14 @@ interface Case {
   findings: () => Finding[];
   world?: World;
   /** Where each of the scan's moves ends, and the step's own words where it ends short. */
-  ends: { ends: Carried['ends']; why?: string | RegExp; tags?: string[]; nodeApart?: true }[];
+  ends: {
+    ends: Carried['ends'];
+    lane?: string;
+    why?: string | RegExp;
+    tags?: string[];
+    wrote?: string[];
+    nodeApart?: true;
+  }[];
   /** What is wrong, for a move sent to the line that it cannot make, or makes wrongly. */
   gap?: string;
 }
@@ -143,20 +150,19 @@ const CASES: Case[] = [
   {
     name: 'the lockfile: a package at two versions, an advisory of the newer alone',
     findings: () => [npm('example-twice', '7.6.4', '7.6.6', 31)],
-    ends: [{ ends: 'pin step', why: /example-twice stays at 6\.11\.5: example-old@2\.0\.0 admit no 7\.6\.6/ }],
-    gap: 'the pin step wants every copy at the target, so a copy on another major, with no advisory, holds the move for an override',
+    // The older major's copy has no advisory here, and stays.
+    ends: [{ ends: 'pull request', tags: ['dependency-change'] }],
   },
   {
     name: 'the Dockerfile’s build stage: an operating system’s package in Node’s image',
     findings: () => [found(T.node, { type: 'alpine' })],
-    ends: [{ ends: 'pull request', tags: ['code-owned'], nodeApart: true }],
-    gap: 'the newest tag is a newer Node’s, and the image’s move leaves mise.toml and mise.lock behind',
+    // The newest tag is a newer Node's: a move of Node, which writes mise's pin with the `FROM`s.
+    ends: [{ ends: 'pull request', tags: ['code-owned'], wrote: ['Dockerfile', 'mise.lock', 'mise.toml'] }],
   },
   {
     name: 'the Dockerfile’s build stage: Node’s own advisory',
     findings: () => [found(T.node, NODE_ADVISORY)],
-    ends: [{ ends: 'pin step', why: 'mise.toml does not pin node at 24.22.2-alpine3.24.' }],
-    gap: 'the scan names what the FROM pins, a tag, and the pin step reads a Node move’s `from` as mise.toml’s version',
+    ends: [{ ends: 'pull request', tags: ['code-owned'], wrote: ['Dockerfile', 'mise.lock', 'mise.toml'] }],
   },
   {
     name: 'the Dockerfile’s runtime stage: an operating system’s package in its image',
@@ -164,11 +170,10 @@ const CASES: Case[] = [
     ends: [{ ends: 'pull request', tags: ['code-owned'] }],
   },
   {
-    name: 'the Dockerfile’s runtime stage: the same, in distroless as it is published',
+    name: 'the Dockerfile’s runtime stage: the same, in distroless, which gives no time it was made',
     findings: () => [found(T.distroless, {})],
     world: { ...WORLD, undated: ['gcr.io/distroless/nodejs24-debian13:nonroot'] },
-    ends: [],
-    gap: 'distroless gives no time it was made, so its fix has no day, and the scan makes no move of it',
+    ends: [{ ends: 'pull request', tags: ['code-owned'] }],
   },
   {
     name: 'the app’s image: a package its runtime stage brings',
@@ -182,15 +187,15 @@ const CASES: Case[] = [
     name: 'the app’s image: Node’s own advisory',
     findings: () => [found(T.ours, NODE_ADVISORY)],
     ends: [{ ends: 'never sent', why: /a target of no ecosystem a signal names/ }],
-    gap: 'the move is the runtime stage’s image to a version of Node, which the sense has no ecosystem for',
+    gap: 'the runtime’s Node is its image’s publisher’s, and the move is that image to a release of Node, which no ecosystem names',
   },
   {
     name: 'deploy/images/syft/Dockerfile: Syft',
     findings: () => [
       found(T.syft, { type: 'gobinary', package: 'github.com/example/jose', installed: 'v4.1.5', fixed: '4.1.6' }),
     ],
-    ends: [{ ends: 'guard', why: 'deploy/images/syft/Dockerfile: the pin step never writes it' }],
-    gap: 'every move of the app’s is the line’s, and the line writes nothing under deploy/',
+    // Where the line may not write, and Dependabot reads: Dependabot's, and never sent.
+    ends: [{ ends: 'not the line’s', lane: 'dependabot' }],
   },
   {
     name: '.devcontainer/Dockerfile: its base, built again',
@@ -212,7 +217,7 @@ describe('a move of the app’s, from the scan’s finding to a pull request', (
   for (const each of CASES)
     it(`${each.name}${each.gap ? ` (gap: ${each.gap})` : ''}`, async () => {
       const carried = await carry(each.findings(), TARGETS, each.world ?? WORLD);
-      expect(carried.map((one) => one.move.lane)).toEqual(each.ends.map(() => 'line'));
+      expect(carried.map((one) => one.move.lane)).toEqual(each.ends.map((end) => end.lane ?? 'line'));
       for (const [i, wanted] of each.ends.entries()) {
         const got = carried[i] as Carried;
         expect(got.ends, whyOf(got)).toBe(wanted.ends);
@@ -220,6 +225,7 @@ describe('a move of the app’s, from the scan’s finding to a pull request', (
         else if (wanted.why) expect(whyOf(got)).toMatch(wanted.why);
         else expect(whyOf(got) ?? '').toBe('');
         if (wanted.tags) expect(got.tags).toEqual(wanted.tags);
+        if (wanted.wrote) expect([...(got.wrote ?? [])].sort()).toEqual(wanted.wrote);
         expect(got.nodeApart !== undefined, got.nodeApart).toBe(wanted.nodeApart ?? false);
       }
     });
@@ -229,12 +235,7 @@ describe('a move of the app’s, from the scan’s finding to a pull request', (
       [
         "the lockfile: a package at two versions, one advisory of both",
         "the lockfile: a package at two versions, an advisory of each",
-        "the lockfile: a package at two versions, an advisory of the newer alone",
-        "the Dockerfile’s build stage: an operating system’s package in Node’s image",
-        "the Dockerfile’s build stage: Node’s own advisory",
-        "the Dockerfile’s runtime stage: the same, in distroless as it is published",
         "the app’s image: Node’s own advisory",
-        "deploy/images/syft/Dockerfile: Syft",
       ]
     `);
   });

@@ -54,17 +54,18 @@ const image: ReadMove = {
   name: 'node',
   pins: [{ file: 'Dockerfile', line: 1 }],
   from: '24.11.0-alpine',
-  to: `image 24.11.1-alpine@${digest(7)}`,
+  to: `image 24.11.0-alpine@${digest(7)}`,
   lockfile: false,
   leaves: { ...zero, LOW: 2 },
-  findings: [found(3, 'CRITICAL', `image 24.11.1-alpine@${digest(7)}`, '3.5.1')],
+  findings: [found(3, 'CRITICAL', `image 24.11.0-alpine@${digest(7)}`, '3.5.1')],
 };
 const node: ReadMove = {
   ...image,
   index: 3,
   name: 'node',
-  pins: [{ file: 'mise.toml', line: 3 }],
-  from: '24.11.0',
+  // As the scan names it: the pin is the build stage's `FROM`, at its tag, and the target a release of Node.
+  pins: [{ file: 'Dockerfile', line: 1 }],
+  from: '24.11.0-alpine',
   to: 'version 24.11.1',
   leaves: zero,
   findings: [found(4, 'HIGH', 'version 24.11.1', '24.11.1')],
@@ -90,7 +91,7 @@ describe("the sense's sends", () => {
         name: 'node',
         ecosystem: 'docker',
         from: '24.11.0-alpine',
-        to: `24.11.1-alpine@${digest(7)}`,
+        to: `24.11.0-alpine@${digest(7)}`,
         pins: [{ file: 'Dockerfile', line: 1 }],
       },
       {
@@ -99,7 +100,7 @@ describe("the sense's sends", () => {
         ecosystem: 'node',
         from: '24.11.0',
         to: '24.11.1',
-        pins: [{ file: 'mise.toml', line: 3 }],
+        pins: [{ file: 'Dockerfile', line: 1 }],
       },
     ]);
     for (const { signal } of sends) expect(validateSignal(signal)).toEqual({ ok: true });
@@ -124,11 +125,35 @@ describe("the sense's sends", () => {
     expect(sends[1]?.signal.evidence?.[0]).toMatchObject({ rest: { low: 2 } });
   });
 
+  it('sends a move that needs another Node as a move of Node, release to release, which the pin step writes whole', () => {
+    const moveOf = (move: ReadMove) => {
+      const { sends, skipped } = sendsOf(read([move]), '2026-11-11T04:59:00Z');
+      return sends[0]?.signal.move ?? skipped;
+    };
+    const asNode = { repository: APP, name: 'node', ecosystem: 'node', from: '24.11.0', to: '24.11.1' };
+    // The build stage's image, moving to a tag of another release: its `FROM` alone would leave mise's pin behind.
+    const newer = { ...image, to: `image 24.11.1-alpine@${digest(7)}` };
+    expect(moveOf(newer)).toEqual({ ...asNode, pins: image.pins });
+    // The same tag, built again, is the image's own move.
+    expect(moveOf(image)).toMatchObject({ ecosystem: 'docker', name: 'node' });
+    // Node's own fix in the runtime's image, whose tag names no release, is its publisher's: said, and not sent.
+    const runtime: ReadMove = {
+      ...node,
+      name: 'gcr.io/distroless/nodejs24-debian13',
+      pins: [{ file: 'Dockerfile', line: 20 }],
+      from: 'nonroot',
+      findings: [{ ...found(4, 'HIGH', 'version 24.11.1', '24.11.1'), package: 'node', installed: '24.11.0' }],
+    };
+    expect(moveOf(runtime)).toEqual([
+      'move 3: gcr.io/distroless/nodejs24-debian13: a target of no ecosystem a signal names',
+    ]);
+  });
+
   it('gives a finding’s fixed versions as its advisory gives them, never the move’s target in their place', () => {
     // An image moves to its tag; its packages' advisories are fixed in their own versions, or not yet.
     const findings = [found(3, 'CRITICAL', image.to, '3.5.1, 3.6.0'), found(5, 'HIGH', image.to, null)];
     const [send] = sendsOf(read([{ ...image, findings }]), '2026-11-11T04:59:00Z').sends;
-    expect(send?.signal.move?.to).toBe(`24.11.1-alpine@${digest(7)}`);
+    expect(send?.signal.move?.to).toBe(`24.11.0-alpine@${digest(7)}`);
     expect(send?.signal.evidence?.[0]).toMatchObject({
       findings: [
         { advisory: 'CVE-2026-1003', package: 'left-pad', severity: { scanner: 'critical' }, fixed: '3.5.1, 3.6.0' },
@@ -138,7 +163,7 @@ describe("the sense's sends", () => {
     const scan = send?.signal.evidence?.[0];
     expect(scan?.kind === 'scan' ? scan.findings[1] : undefined).not.toHaveProperty('fixed');
     // The tag is the move's, and in no finding.
-    expect(JSON.stringify(scan)).not.toContain('24.11.1-alpine');
+    expect(JSON.stringify(scan)).not.toContain('24.11.0-alpine');
     expect(validateSignal(send?.signal)).toEqual({ ok: true });
   });
 

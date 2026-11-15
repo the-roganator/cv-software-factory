@@ -475,10 +475,25 @@ describe('an image’s fix', () => {
       expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
     });
 
-    it('gives no day to count from when the newest says it was made in 1970, as a reproducible build does', async () => {
+    it('counts from the day the scan first saw the fix when the newest says it was made in 1970, as a reproducible build does', async () => {
+      const undated = world([inOurs(), inStage()], {
+        'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('1970-01-01T00:00:00Z'),
+      });
+      const first = await judge(undated);
+      expect(first.rows[0]?.installable).toBe(NOW);
+      expect(first.fixes[0]?.target.kind).toBe('image');
+      expect(first.lines.join('\n')).toContain('gives no time it was made');
+      // The next day's run reads the state this one kept, and the day stays the first.
+      const next = await judge({ ...undated, state: first.kept() }, NOW + DAY);
+      expect(next.rows[0]?.installable).toBe(NOW);
+    });
+
+    it('has no fix from an undated newest that still has the finding', async () => {
       const { rows } = await judge(
         world([inOurs(), inStage()], {
-          'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('1970-01-01T00:00:00Z'),
+          'gcr.io/distroless/nodejs24-debian13:nonroot': {
+            ...imageReport('1970-01-01T00:00:00Z', [{ package: inStage().package, advisory: inStage().advisory }]),
+          },
         }),
       );
       expect(rows[0]?.installable).toBeUndefined();
@@ -1305,6 +1320,39 @@ describe('what fixes it', () => {
       },
       images,
       kubeVersion: '1.37.2',
+    });
+
+    it('names a chart two Applications pin at one version for the chart, as one move, and for each apart', async () => {
+      // A second Application of the same chart, under a release of its own.
+      const second = (version: string): ReadTarget => ({
+        ...target,
+        key: 'chart other quay.io/example/sidecar',
+        file: 'deploy/base/other.yaml',
+        chart: { ...CHART, release: 'other', version },
+      });
+      const named = async (version: string) => {
+        const twice = second(version);
+        const findings = [
+          inChart(),
+          inChart({ item: twice.key, file: twice.file, listed: 'other', advisory: 'CVE-2099-20077' }),
+        ];
+        const { judged } = await judge({
+          ...world(findings[0] as Finding, { 'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z') }),
+          findings,
+          targets: [target, twice],
+          alerts: findings.map((each) => alertOf(each, '2026-10-01T00:00:00Z')),
+        });
+        return judged.map((each) => [each.name, each.pin.file, each.from]);
+      };
+      expect(await named(CHART.version)).toEqual([
+        ['example', 'deploy/base/example.yaml', '13.2.7'],
+        ['example', 'deploy/base/other.yaml', '13.2.7'],
+      ]);
+      // At two versions they are two moves, which one name would make one branch: each is its Application's.
+      expect(await named('13.2.6')).toEqual([
+        ['example', 'deploy/base/example.yaml', '13.2.7'],
+        ['other', 'deploy/base/other.yaml', '13.2.6'],
+      ]);
     });
 
     it('is fixed by the newest chart on the pinned major whose image lacks it, dated from the chart', async () => {

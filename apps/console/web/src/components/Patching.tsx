@@ -155,6 +155,11 @@ function why(row: PatchingRow, who: Who): string {
         case 'worker':
           return 'A pin forward on its own line, which the review gate can prove from its pull request: the factory’s App moves it.';
         case 'dependabot':
+          // In the app, a pin where the line may not write: Dependabot's whatever its deadline.
+          if (isApp(row))
+            return row.link?.kind === 'pull'
+              ? `Dependabot opened #${row.link.number}, to ${row.link.version}. The line writes nothing where this is pinned, so the pin is Dependabot’s, and the pull request waits for ${yours(who)} approval.`
+              : `The line writes nothing where this is pinned, and Dependabot reads it, so the pin is Dependabot’s. Its pull request will wait for ${yours(who)} approval.`;
           return row.link?.kind === 'pull'
             ? `Dependabot opened #${row.link.number}, to ${row.link.version}, and the move has no High or Critical on a deadline, so the pin stays Dependabot’s.`
             : 'A pin Dependabot reads, with no High or Critical on a deadline, so it stays Dependabot’s.';

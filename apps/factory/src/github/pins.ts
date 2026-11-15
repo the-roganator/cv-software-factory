@@ -281,11 +281,16 @@ const RunText = (moves: Moves) => `T${runText(moves).slice(1)}`;
 function waitsFor(move: ReadMove): string | undefined {
   if (move.lane === 'cluster')
     return 'k3s moves with your cluster, so the review gate holds it for you. Approve and merge it, then run `make upgrade-cluster`, which moves the local cluster to the new pin and keeps everything in it.';
-  if (move.lane === 'approval')
-    return 'It crosses a major, which the review gate holds for you. Read what the new major changes, and approve it if nothing else needs to change with it; otherwise close it, and the move becomes an issue.';
   if (/(^|\/)(trivy|syft)$/.test(bare(move.name)))
     return 'It moves a scanner’s own pin, which the review gate holds for you: a scanner cannot vouch for its replacement. Approve it once the scans on it read as you expect.';
-  return undefined;
+  if (move.lane !== 'approval') return undefined;
+  if (move.major)
+    return 'It crosses a major, which the review gate holds for you. Read what the new major changes, and approve it if nothing else needs to change with it; otherwise close it, and the move becomes an issue.';
+  if (/(^|[\s/])kyverno(:|\/|$)/.test(move.name))
+    return 'It moves Kyverno’s own pin, which the review gate holds for you: what enforces admission cannot vouch for its replacement. Approve it once the platform check’s cluster ran with it.';
+  if (move.pins.length > 1)
+    return 'It moves one chart at each Application that pins it, which the review gate holds for you: it proves a chart’s move from one Application’s rendering. Approve it once the platform check’s cluster ran with it.';
+  return 'The review gate holds it for you. Approve it if nothing else needs to change with it; otherwise close it, and the move becomes an issue.';
 }
 
 /** A pull request's description, the factory's own. */

@@ -68,6 +68,30 @@ function targetWord(target: Target | undefined): string | undefined {
   }
 }
 
+/** The release a tag or a version starts with: `24.22.2-alpine3.24` is Node 24.22.2. */
+const releaseOf = (text: string) => /^v?(\d+\.\d+\.\d+)(?![\d.])/.exec(text)?.[1];
+
+/**
+ * A move of the build stage's image (`node`, pinned by a tag that names its release) that needs another Node, as a
+ * move of Node from one release to another, which the pin step writes whole (mise.toml, mise.lock and each `FROM` of a
+ * Node image, apps/runner/src/pins.ts): Node's own fix, and the image moving to a tag of another release, which would
+ * leave mise's pin behind were its `FROM` written alone. Nothing for any other move: Node's own fix found in the
+ * runtime's image, whose tag names no release and whose Node is its publisher's to move, is no move a signal names.
+ */
+function nodeMove(read: ReadMove, target: Target | undefined): { from: string; to: string } | undefined {
+  if (read.name !== 'node') return undefined;
+  const from = releaseOf(read.from);
+  const to =
+    target?.kind === 'version'
+      ? target.versions.length === 1
+        ? target.versions[0]
+        : undefined
+      : target?.kind === 'image'
+        ? releaseOf(target.tag)
+        : undefined;
+  return from && to && from !== to ? { from, to } : undefined;
+}
+
 /** A read move as the signal names it, or why it cannot be sent: it has no target to move to, or no ecosystem. */
 function moveOf(repository: string, read: ReadMove): Move | string {
   if (read.lockfile) {
@@ -81,10 +105,10 @@ function moveOf(repository: string, read: ReadMove): Move | string {
   const target = readTarget(read.to);
   const to = targetWord(target);
   if (!to || !read.from) return `${read.name}: no target to move to`;
-  // Node's own fix, in mise.toml or an image's binary, is a version of `node`; any other image moves to an image.
-  const ecosystem = target?.kind === 'image' ? 'docker' : read.name === 'node' ? 'node' : undefined;
-  if (!ecosystem) return `${read.name}: a target of no ecosystem a signal names`;
-  return { repository, name: read.name, ecosystem, from: read.from, to, pins: read.pins };
+  const node = nodeMove(read, target);
+  if (node) return { repository, name: 'node', ecosystem: 'node', ...node, pins: read.pins };
+  if (target?.kind !== 'image') return `${read.name}: a target of no ecosystem a signal names`;
+  return { repository, name: read.name, ecosystem: 'docker', from: read.from, to, pins: read.pins };
 }
 
 /**

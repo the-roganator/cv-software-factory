@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { JUDGES as GATE_JUDGES } from '../../../../scripts/pin-move.ts';
+import { NEVER } from '../../src/github/paths.ts';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
 import {
   APP,
@@ -7,10 +9,13 @@ import {
   directPackages,
   furthest,
   isMajor,
+  JUDGES,
   type Judged,
+  LINE_NEVER,
   MOVES_VERSION,
   moves,
   movesFile,
+  PLAYWRIGHT_IMAGE,
   table,
 } from '../../src/vulnerabilities/moves.ts';
 import type { Finding, Severity } from '../../src/vulnerabilities/sarif.ts';
@@ -161,6 +166,82 @@ describe('the day’s moves', () => {
     });
     it('line: the app’s', () => {
       expect(laneOf(result(), { repository: APP, app: true })).toBe('line');
+    });
+    it('dependabot, in the app: a pin where the line may not write, in a directory Dependabot reads, on a deadline or not', () => {
+      const app = { repository: APP, app: true, dependabot: ['/', '/deploy/images/syft'] };
+      const syft = { pin: { file: 'deploy/images/syft/Dockerfile', line: 5 } };
+      expect(laneOf(result(syft), app)).toBe('dependabot');
+      expect(laneOf(result({ ...syft, severity: 'LOW', due: undefined }), app)).toBe('dependabot');
+      // One Dependabot does not read stays the line's, whose guard refuses it: nobody else is there to move it.
+      expect(laneOf(result({ pin: { file: 'deploy/base/rollout.yaml', line: 67 } }), app)).toBe('line');
+      // Only an image's: a version there is nothing Dependabot's docker entries move.
+      expect(laneOf(result({ ...syft, target: { kind: 'version', versions: ['1.0.1'] } }), app)).toBe('line');
+      // The root Dockerfile is the line's to write, though Dependabot reads it too.
+      expect(laneOf(result({ pin: { file: 'Dockerfile', line: 5 } }), app)).toBe('line');
+    });
+    it('approval: what judges a move, which the gate never passes', () => {
+      const value = (name: string) => laneOf(result({ kind: 'chart', name }));
+      expect(value('kyverno: reg.kyverno.io/kyverno/kyverno')).toBe('approval');
+      expect(value('kyverno: ghcr.io/kyverno/readiness-checker')).toBe('approval');
+      expect(
+        laneOf(
+          result({ name: 'ghcr.io/aquasecurity/trivy', pin: { file: 'deploy/images/trivy/Dockerfile', line: 3 } }),
+        ),
+      ).toBe('approval');
+      expect(laneOf(result({ name: 'ghcr.io/anchore/syft' }))).toBe('approval');
+      // A name that only holds the word is no judge.
+      expect(value('grafana: quay.io/example/kyverno-exporter')).toBe('worker');
+    });
+    it('approval: one chart at two Applications’ pins, as one move', () => {
+      const chart = { kind: 'chart' as const, name: 'opentelemetry-collector', from: '0.174.0' };
+      const target = { kind: 'chart' as const, chart: 'opentelemetry-collector', version: '0.178.3', major: false };
+      const list = moves(
+        [
+          result({ ...chart, target, pin: { file: 'deploy/base/telemetry/otel-collector.yaml', line: 14 } }),
+          result({ ...chart, target, pin: { file: 'deploy/base/pod-logs/pod-logs.yaml', line: 16 } }),
+        ],
+        context(),
+      );
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({ name: 'opentelemetry-collector', lane: 'approval' });
+      expect(list[0]?.pins).toHaveLength(2);
+      expect(laneOf(result({ ...chart, target }))).toBe('worker');
+    });
+    it('dependabot, or an issue: Playwright’s image, whose library in the lockfile is the same release', () => {
+      const image = () =>
+        result({ name: PLAYWRIGHT_IMAGE, pin: { file: 'apps/factory/Dockerfile.browser', line: 26 } });
+      // On a deadline or not, where Dependabot reads the pin: its group moves the image and the library together.
+      expect(laneOf(image())).toBe('dependabot');
+      expect(laneOf(image(), { dependabot: [] })).toBe('issue');
+      // In the app too, where Dependabot reads it; where it does not, the app's moves are the line's.
+      const app = { repository: APP, app: true };
+      expect(laneOf(image(), app)).toBe('dependabot');
+      expect(laneOf(image(), { ...app, dependabot: [] })).toBe('line');
+    });
+    it('names the judges the review gate names', () => {
+      expect(Object.keys(JUDGES)).toEqual(GATE_JUDGES.map((judge) => judge.name));
+      // Each as the gate reads it, from the pin it moved, and as the scan does, from the move's name and pins.
+      const cases = [
+        [
+          'kyverno: reg.kyverno.io/kyverno/kyverno',
+          'deploy/base/admission/values/kyverno.yaml',
+          'reg.kyverno.io/kyverno/kyverno:v1.19.1',
+        ],
+        ['ghcr.io/aquasecurity/trivy', 'deploy/images/trivy/Dockerfile', 'ghcr.io/aquasecurity/trivy:0.76.2'],
+        ['ghcr.io/anchore/syft', 'deploy/images/syft/Dockerfile', 'ghcr.io/anchore/syft:v1.54.0'],
+        ['postgres', 'deploy/base/postgres/statefulset.yaml', 'postgres:18.6-alpine3.24'],
+      ] as const;
+      for (const [name, file, from] of cases) {
+        const place = { file, line: 1 };
+        const gate = GATE_JUDGES.find((judge) =>
+          judge.test({ what: 'image', kind: 'third-party', item: name, place, from, to: from }),
+        )?.name;
+        const scan = Object.entries(JUDGES).find(([, judge]) => judge({ name, pins: [place] }))?.[0];
+        expect(scan, name).toBe(gate);
+      }
+    });
+    it('holds where the line may not write to the GitHub worker’s own list', () => {
+      expect(LINE_NEVER).toEqual(NEVER);
     });
     it('cluster: k3s', () => {
       expect(

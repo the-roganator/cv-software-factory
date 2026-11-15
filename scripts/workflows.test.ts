@@ -201,6 +201,12 @@ describe('every workflow', () => {
       expect(holds, id).toBe(id === SCAN_JOB);
       expect(environmentOf(job), id).toBe(id === SCAN_JOB ? SCAN_STATE_ENVIRONMENT.name : undefined);
     }
+    // A repository that calls the scan passes the key by name, from its own environment: GitHub gives a called job no
+    // secret its caller does not pass, so the workflow declares that one, not required, and no other.
+    const called = (workflow.on as { workflow_call?: { secrets?: unknown } }).workflow_call;
+    expect(called?.secrets).toEqual({
+      [SCAN_STATE_ENVIRONMENT.key]: { description: expect.any(String), required: false },
+    });
     const job = workflow.jobs[SCAN_JOB] as Job;
     // A pull request's run skips the job, its first step refuses any event but the default branch's, and GitHub gives
     // the environment's secrets to no ref but main (github-settings.ts), whatever a branch's copy of this file says.

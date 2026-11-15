@@ -912,6 +912,11 @@ describe('platform.yml', () => {
     expect((pods as { if?: string } | undefined)?.if).toBeUndefined();
     expect(pods?.env?.OUT).toBe(`${expression('runner.temp')}/measure/pods`);
     expect(names.indexOf('Every pod running and ready')).toBeGreaterThan(names.indexOf('Take the refusal records'));
+    // Where the time went, on every outcome (scripts/platform-timeline.test.ts).
+    const timeline = steps.find((step) => step.name === 'Where the time went');
+    expect(timeline?.run).toContain('scripts/platform-timeline.sh');
+    expect((timeline as { if?: string } | undefined)?.if).toBe(expression('always()'));
+    expect(names.indexOf('Where the time went')).toBeGreaterThan(names.indexOf('Every pod running and ready'));
     // What the cluster showed, kept on every outcome but success, cancellation included.
     const kept = steps.find((step) => step.with?.name === 'cluster');
     expect(kept?.uses).toMatch(/^actions\/upload-artifact@/);

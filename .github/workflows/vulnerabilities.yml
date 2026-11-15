@@ -3,11 +3,12 @@
 # that repository's code scanning, at the line that pins it, in one of the categories `vulnerabilities/01` to
 # `vulnerabilities/20`: the file has a run for each, no run over the 5,000 results code scanning keeps of one.
 #
-# Shared: cv-worlds-worst-website calls this workflow at a pinned commit and grants `contents: read`, `packages: read`
-# and `security-events: write`, and its results reach its own code scanning, since the upload names the calling
-# repository. The scripts (the lockfile gate's reading of a lockfile among them, which the scan shares) and Trivy's pin
-# come from this repository at the workflow's own commit, and the exceptions (policy/vulnerabilities.ts) from its main
-# alone; the scanned repository's checkout is data, and nothing in it runs.
+# Shared: cv-worlds-worst-website calls this workflow at a pinned commit, grants `actions: read`, `contents: read`,
+# `packages: read` and `security-events: write`, and passes SCAN_STATE_KEY by name; its results reach its own code
+# scanning, since the upload names the calling repository. The scripts (the lockfile gate's reading of a lockfile
+# among them, which the scan shares) and Trivy's pin come from this repository at the workflow's own commit, and the
+# exceptions (policy/vulnerabilities.ts) from its main alone; the scanned repository's checkout is data, and nothing in
+# it runs.
 #
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
@@ -44,7 +45,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # A caller passes SCAN_STATE_KEY by name, from its own `scan-state` environment: the scan's job names that
+  # environment, the caller's, but GitHub resolves a called job's secret to empty unless the caller passes it, even one
+  # held in the environment alone (review.yml's key is passed the same way). Unpassed, the scan fails before it reads
+  # anything, as with no key.
   workflow_call:
+    secrets:
+      SCAN_STATE_KEY:
+        description: The key the scan's state is sealed with, from the caller's `scan-state` environment.
+        required: false
   pull_request:
     paths:
       - .github/workflows/vulnerabilities.yml

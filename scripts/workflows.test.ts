@@ -961,9 +961,9 @@ describe('platform.yml', () => {
 function importClosure(start: string): Set<string> {
   const seen = new Set<string>();
   const walk = (file: string) => {
-    // A quoted path the pattern takes for an import (a list of files, as pin-move-ran.ts keeps) is no module: tsc
-    // holds every real import to a file that exists.
-    if (seen.has(file) || !existsSync(file)) return;
+    // A quoted path the pattern takes for an import (a list of workflows, as pin-move-ran.ts keeps) is no module; a
+    // module that is not there still fails the read below.
+    if (seen.has(file) || !file.endsWith('.ts')) return;
     seen.add(file);
     const source = readFileSync(file, 'utf-8');
     for (const [, path] of source.matchAll(/^\s*(?:import|export)\b[^;]*?(?:from\s+)?'(\.[^']+)';?$/gm))

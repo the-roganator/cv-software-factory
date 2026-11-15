@@ -7,6 +7,7 @@
  *     node scripts/github-settings.ts --check          # change nothing: say where the live settings differ
  *     node scripts/github-settings.ts --check --see-bypass   # and fail on what it could not see
  *     node scripts/github-settings.ts --names          # print `names=<factory>,<app>`, for a token's repositories
+ *     node scripts/github-settings.ts --repositories   # print `<owner/factory> <owner/app>`, for make scan-state-key
  *
  * The repositories are the two FACTORY_REPOSITORY and APP_REPOSITORY name (policy/repositories.ts): the real two
  * unless those settings name copies.
@@ -494,13 +495,26 @@ export function environmentProblems(name: string, live: unknown, policies: unkno
   return problems;
 }
 
+/** The flags `main` reads. */
+const FLAGS = ['--check', '--see-bypass', '--names', '--repositories'];
+
 function main(args: string[]): number {
+  // A flag it does not know is refused: with none it knows, it applies the settings to every repository.
+  const unknown = args.filter((a) => a.startsWith('--') && !FLAGS.includes(a));
+  if (unknown.length) {
+    console.error(`${unknown.join(', ')}: not a flag of this script. It takes ${FLAGS.join(', ')}.`);
+    return 2;
+  }
   if (args.includes('--names')) {
     console.log(
       `names=${Object.keys(REPOSITORIES)
         .map((r) => r.split('/')[1])
         .join(',')}`,
     );
+    return 0;
+  }
+  if (args.includes('--repositories')) {
+    console.log(Object.keys(REPOSITORIES).join(' '));
     return 0;
   }
   const checking = args.includes('--check');

@@ -15,11 +15,20 @@
 #                                   the step output <name>, for build-push-action's build-contexts: apps/<name>/Dockerfile,
 #                                   or for `browser`, apps/factory/Dockerfile.browser
 #   ci-images.sh sync               copy into GHCR every pinned digest, each pinned tag's current one, and the newest tag
-#                                   of each pin's line; skopeo must be logged in to ghcr.io (mirror.yml)
+#                                   of each pin's line, then each image the cluster runs (`cluster`); skopeo must be
+#                                   logged in to ghcr.io (mirror.yml)
+#   ci-images.sh cluster            each third-party image the cluster runs (scripts/cluster-images.ts), its copy, and
+#                                   whether the copy is there and current, copying nothing
 #
 # A copy is byte for byte, by digest: Docker Hub's <name>@<digest> at ghcr.io/<repository>/mirror/docker/library/<name>,
 # Microsoft's mcr.microsoft.com/<name>@<digest> at ghcr.io/<repository>/mirror/mcr/<name>. Its one tag,
 # digest-<hex>, never moves, and nothing reads it.
+#
+# The platform check's cluster pulls every image it runs from a registry deploy/k3d/ci-registries.yaml names from the
+# copy that file's rewrite gives (Docker Hub's official images among them, at the same copies), and from the image's
+# own registry when the copy is not there. An image pinned by digest is copied as a pin is; one the cluster pulls by
+# tag (most charts' images) is copied under that tag, and again whenever the tag names another digest upstream, so the
+# copy is what the image's own registry would give, to the day.
 set -uo pipefail
 
 # Microsoft's registry, which the repository pins Playwright's image from, by its whole name.
@@ -141,10 +150,75 @@ sync() {
   return 1
 }
 
+# The platform check's cluster's registries, and where each one's copies are.
+REGISTRIES=deploy/k3d/ci-registries.yaml
+
+# An image as containerd pulls it: its registry, its path there, its tag and its digest (`-` for none), Docker Hub's
+# for a name with no registry, and under `library/` for one of Docker's official images.
+parse() {
+  local ref=$1 digest=- tag=- registry=docker.io
+  [[ "$ref" == *@* ]] && digest=${ref##*@} && ref=${ref%@*}
+  if [[ "$ref" == */* && ("${ref%%/*}" == *.* || "${ref%%/*}" == *:* || "${ref%%/*}" == localhost) ]]; then
+    registry=${ref%%/*}
+    ref=${ref#*/}
+  fi
+  [[ "$registry" == docker.io && "$ref" != */* ]] && ref=library/$ref
+  [[ "${ref##*/}" == *:* ]] && tag=${ref##*:} && ref=${ref%:*}
+  echo "$registry $ref $tag $digest"
+}
+
+# The digest a reference names now, with no credentials, as containerd would resolve it.
+digest_of() { skopeo inspect --raw --no-creds "$1" | sha256sum | sed 's/^/sha256:/; s/ .*//'; }
+
+# Each image the cluster runs, against its copy: `check` says whether each is there and current, `sync` copies each
+# that is not.
+cluster() {
+  local mode=$1 failed=() images ref registry path tag digest rewrite copy from target want have
+  images=$(node scripts/cluster-images.ts .) || failed+=("the cluster's images could not all be listed: the errors above say which")
+  for ref in $images; do
+    read -r registry path tag digest <<< "$(parse "$ref")"
+    rewrite=$(yq ".mirrors[\"$registry\"].rewrite[\"^(.*)\$\"] // \"\"" "$REGISTRIES")
+    if [ -z "$rewrite" ]; then
+      failed+=("$ref: $REGISTRIES names no copy for $registry, so the platform check pulls it from there")
+      continue
+    fi
+    copy=ghcr.io/${rewrite//\$1/$path}
+    if [ "$digest" != - ]; then
+      from=docker://$registry/$path@$digest
+      target=$copy@$digest
+      if pullable "$target"; then echo "$target: copied already"; continue; fi
+    else
+      from=docker://$registry/$path:$tag
+      target=$copy:$tag
+      if ! want=$(digest_of "$from"); then failed+=("$ref: could not read its digest"); continue; fi
+      have=$(digest_of "docker://$target" 2> /dev/null) || have=
+      if [ "$want" = "$have" ]; then echo "$target: copied already, at $want"; continue; fi
+    fi
+    if [ "$mode" = check ]; then echo "$target: not copied${have:+ (the copy is at $have)}, from $from"; continue; fi
+    echo "$target: copying from $from"
+    # Every platform, byte for byte, so the digest is the source's. A digest's copy is tagged digest-<hex>, as a pin's.
+    if ! skopeo copy --all --preserve-digests --retry-times 3 "$from" \
+      "docker://$([ "$digest" != - ] && echo "$copy:digest-${digest#sha256:}" || echo "$target")"; then
+      failed+=("$target: the copy failed")
+    elif ! pullable "$target"; then
+      failed+=("$target: copied, but it cannot be pulled with no credentials: make $copy public in its settings")
+    fi
+  done
+  [ ${#failed[@]} -eq 0 ] && return 0
+  printf '::error::%s\n' "${failed[@]}"
+  return 1
+}
+
 case "${1:-}" in
   resolve) resolve "$2" ;;
   postgres) postgres ;;
   contexts) shift && contexts "$@" ;;
-  sync) sync ;;
-  *) echo "usage: $0 resolve <ref> | postgres | contexts <app>... | sync" >&2 && exit 2 ;;
+  sync)
+    status=0
+    sync || status=1
+    cluster sync || status=1
+    exit "$status"
+    ;;
+  cluster) cluster check ;;
+  *) echo "usage: $0 resolve <ref> | postgres | contexts <app>... | sync | cluster" >&2 && exit 2 ;;
 esac

@@ -51,6 +51,13 @@ const pulled = (namespace: string, name: string, seconds: number, image: string,
     `Successfully pulled image "${image}" in ${pull}s (${total}s including waiting). Image size: 39123456 bytes.`,
   );
 
+const argo = (seconds: number, name: string, reason: string, message: string) => ({
+  reason,
+  involvedObject: { kind: 'Application', namespace: 'argocd', name },
+  firstTimestamp: at(seconds),
+  message,
+});
+
 function tables(applications: object[], pods: object[], events: object[]) {
   const dir = mkdtempSync(join(tmpdir(), 'platform-timeline-'));
   dirs.push(dir);
@@ -89,6 +96,16 @@ describe('platform-timeline.sh', () => {
       pulled('telemetry', 'grafana-1', 360, 'quay.io/kiwigrid/k8s-sidecar:2.14.3', '1.5', '20.0'),
       event('Pulled', 'factory', 'migrate-abc', 402, 'Container image "postgres:18" already present on machine'),
       event('Created', 'telemetry', 'grafana-1', 361, 'Created container grafana'),
+      argo(
+        57,
+        'kyverno',
+        'ResourceUpdated',
+        'Updated health status: Healthy -> Progressing (Caused by apps/Deployment:kyverno/kyverno-admission-controller)',
+      ),
+      argo(54, 'kyverno', 'OperationStarted', "Initiated automated sync to '3.9.1, abc'"),
+      argo(120, 'kyverno', 'ResourceUpdated', 'Updated health status: Progressing -> Healthy'),
+      argo(121, 'root', 'OperationCompleted', 'Sync operation to abc | def succeeded'),
+      argo(122, 'root', 'UnknownReason', 'not shown'),
     ],
   );
 
@@ -100,6 +117,17 @@ describe('platform-timeline.sh', () => {
       '| grafana | +3:30 | +5:30 | +6:35 | Healthy |',
       // Never synced: last, with no time.
       '| website | +5:00 | - | +5:00 | Progressing |',
+    ]);
+  });
+
+  it('gives each sync and health change Argo CD recorded, in order, with the resource that caused it', () => {
+    const said = lines.slice(lines.indexOf('### What Argo CD said'), lines.indexOf('### Pods'));
+    expect(said.filter((line) => /^\| \+/.test(line))).toEqual([
+      "| +0:54 | kyverno | Initiated automated sync to '3.9.1, abc' |",
+      '| +0:57 | kyverno | Updated health status: Healthy -> Progressing (Caused by apps/Deployment:kyverno/kyverno-admission-controller) |',
+      '| +2:00 | kyverno | Updated health status: Progressing -> Healthy |',
+      // A pipe in a message would break the table's row.
+      '| +2:01 | root | Sync operation to abc / def succeeded |',
     ]);
   });
 

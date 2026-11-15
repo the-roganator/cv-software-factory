@@ -9,7 +9,8 @@
  * `prepare` copies the change's new and changed test files, and what changed beside them in test folders, into the
  * base's checkout, writes which tests to look for to the manifest, and prints the test files to run. The workflow
  * then runs Vitest there with its JSON reporter, and `report` says which of those tests failed on the base. It exits
- * 0 when at least one did, and 1 when none did or there were none.
+ * 0 when at least one did, and 1 when none did or there were none; but 0 for a change with no test that moves pins
+ * and nothing else (a lockfile, a manifest's ranges, a Dockerfile, mise's files), which has no fix of its own to show.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -24,6 +25,19 @@ interface Manifest {
   files: string[];
   /** The new and changed tests, by file and name. */
   tests: { file: string; name: string }[];
+  /** Set when the change moves pins and nothing else: there is no fix of the change's own for a test to show. */
+  pinsAlone?: boolean;
+}
+
+/** What pins a version: pnpm's lockfile and a manifest's ranges, a Dockerfile's images, and mise's two files. */
+const PIN_FILE = /(^|\/)(pnpm-lock\.yaml|package\.json|Dockerfile|[^/]+\.Dockerfile|mise\.toml|mise\.lock)$/;
+
+/** Whether a change touches pins' files alone, and one at least: a move of a dependency, with no code of its own. */
+export function pinsAlone(base: Map<string, string>, change: Map<string, string>): boolean {
+  const changed = [...new Set([...base.keys(), ...change.keys()])].filter(
+    (path) => base.get(path) !== change.get(path),
+  );
+  return changed.length > 0 && changed.every((path) => PIN_FILE.test(path));
 }
 
 /** The new and changed tests, and every file in a test folder the change added or changed. */
@@ -83,7 +97,8 @@ async function prepare(base: string, change: string, manifestPath: string): Prom
     await mkdir(dirname(join(base, path)), { recursive: true });
     await writeFile(join(base, path), await readFile(join(change, path)));
   }
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  const moved = !manifest.tests.length && pinsAlone(await filesIn(base, /./), await filesIn(change, /./));
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, ...(moved && { pinsAlone: true }) }, null, 2));
   // One file a line, for the workflow to read into a list: a name with a space stays one name.
   console.log(manifest.files.join('\n'));
   return 0;
@@ -92,6 +107,12 @@ async function prepare(base: string, change: string, manifestPath: string): Prom
 async function report(manifestPath: string, resultsPath: string | undefined): Promise<number> {
   // Written by `prepare` in the same job, so it is the shape it was written in; Node alone runs this, with no Zod.
   const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as Manifest;
+  if (!manifest.tests.length && manifest.pinsAlone) {
+    await summarise(
+      '## Tests first\n\nThis change moves pins and nothing else: it has no fix of its own for a test to show.',
+    );
+    return 0;
+  }
   if (!manifest.tests.length) {
     annotate('warning', 'This change adds or changes no test, so nothing shows it fixes anything.');
     await summarise('## Tests first\n\nThis change adds or changes no test.');

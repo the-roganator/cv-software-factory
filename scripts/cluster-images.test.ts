@@ -62,6 +62,17 @@ describe('cluster-images.ts', () => {
   });
 });
 
+describe('cluster-images.ts, on what it cannot read', () => {
+  it('names an empty render or an empty list of k3s’s images, rather than copy none of them', async () => {
+    const { failed } = await clusterImages(
+      '.',
+      tools(() => 'kind: ConfigMap\n', '# nothing\n'),
+    );
+    expect(failed.some((why) => why.endsWith(': Error: its chart renders no image'))).toBe(true);
+    expect(failed.some((why) => /^k3s .*: Error: it names no image$/.test(why))).toBe(true);
+  });
+});
+
 describe(REGISTRIES, () => {
   const file = parse(readFileSync(REGISTRIES, 'utf-8')) as {
     mirrors: Record<string, { endpoint: string[]; rewrite: Record<string, string> }>;

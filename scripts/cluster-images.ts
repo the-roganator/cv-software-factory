@@ -23,11 +23,12 @@ const PULLED: ReadonlySet<Item['kind']> = new Set(['chart', 'k3s-release', 'thir
 const inGhcr = (reference: string) => reference.startsWith('ghcr.io/');
 
 export async function clusterImages(root: string, tools = realTools('', tmpdir(), tmpdir())) {
-  const { items } = inventory(root);
+  const { items, unplaced } = inventory(root);
   const kubeVersion = kubeVersionOf(items);
   const apiVersions = apiVersionsOf(root);
   const found = new Set<string>();
-  const failed: string[] = [];
+  // What the list could not place, as `inventory.ts --unlisted` names it: an image among them would go uncopied.
+  const failed = unplaced.map((entry) => `${entry.reference} (${entry.file}:${entry.line}): ${entry.why}`);
   for (const item of items.filter((each) => PULLED.has(each.kind))) {
     try {
       let images: string[];
@@ -38,6 +39,8 @@ export async function clusterImages(root: string, tools = realTools('', tmpdir()
           .map((line) => line.trim())
           .filter((line) => line && !line.startsWith('#'));
       else images = item.image ? [item.image] : [];
+      // As the scan has it: a chart that renders no image, or an empty list, is one not read.
+      if (!images.length) throw new Error(item.chart ? 'its chart renders no image' : 'it names no image');
       for (const image of images) found.add(image);
     } catch (error) {
       failed.push(`${item.name} (${item.file}:${item.line}): ${String(error).split('\n')[0]}`);

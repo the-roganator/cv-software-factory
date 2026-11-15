@@ -64,6 +64,8 @@ describe('the files a release changes', () => {
       'apps/factory/test/line/pins.test.ts',
       // The reviewer told that the pin step writes package.json's range for a move.
       'apps/factory/test/line/reviewer.test.ts',
+      // The app's pins' files as text, for the path's test: its Dockerfile copies package.json, and its pins have versions.
+      'apps/factory/test/patching/app-checkout.ts',
       // A step's patch that changes a manifest, for the pin step's lockfile after it.
       'apps/factory/test/runners.test.ts',
       // package.json's packageManager, for another pnpm of its major, and a package.json of its own, written for a

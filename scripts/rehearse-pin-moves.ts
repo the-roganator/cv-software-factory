@@ -364,7 +364,14 @@ async function tested(work: Work, sha: string, name: string): Promise<Failure[]>
     .update(readFileSync(join(work.dir, 'pnpm-lock.yaml')))
     .digest('hex');
   const stamp = join(work.dir, 'node_modules/.rehearse-lock');
-  if (!existsSync(stamp) || readFileSync(stamp, 'utf-8') !== lock) {
+  // Read in one step: a stamp that is not there is one that does not match.
+  let installed = '';
+  try {
+    installed = readFileSync(stamp, 'utf-8');
+  } catch {
+    installed = '';
+  }
+  if (installed !== lock) {
     await exec('pnpm', ['install', '--frozen-lockfile'], { cwd: work.dir, maxBuffer: 64 * 1024 * 1024 });
     writeFileSync(stamp, lock);
   }
@@ -386,8 +393,13 @@ async function tested(work: Work, sha: string, name: string): Promise<Failure[]>
     child.on('error', fail);
     child.on('close', () => done());
   });
-  if (!existsSync(out)) throw new Error(`vitest wrote no results for ${name}: see ${logFile}`);
-  const report = JSON.parse(readFileSync(out, 'utf-8')) as {
+  let written: string;
+  try {
+    written = readFileSync(out, 'utf-8');
+  } catch {
+    throw new Error(`vitest wrote no results for ${name}: see ${logFile}`);
+  }
+  const report = JSON.parse(written) as {
     testResults: {
       name: string;
       status: string;
@@ -407,7 +419,7 @@ async function tested(work: Work, sha: string, name: string): Promise<Failure[]>
 }
 
 const key = (failure: Failure) => `${failure.file}\0${failure.test}`;
-const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+const cell = (text: string) => text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
 function table(rows: Row[], o: Options, baseline: Failure[] | undefined): string {
   const head = [

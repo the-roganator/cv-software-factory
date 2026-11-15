@@ -1,0 +1,29 @@
+# The rules are human-owned: what runs in CI, what is deployed, what may be installed, and how the shop talks.
+
+/.github/                    @mrogan
+/deploy/                     @mrogan
+/Dockerfile                  @mrogan
+/.dockerignore               @mrogan
+/pnpm-workspace.yaml         @mrogan
+/release-please-config.json  @mrogan
+
+# Gate configuration
+/Makefile                    @mrogan
+/mise.toml                   @mrogan
+/mise.lock                   @mrogan
+/lefthook.yml                @mrogan
+/biome.json                  @mrogan
+/tsconfig.json               @mrogan
+/vitest.config.ts            @mrogan
+/scripts/commit-msg.ts       @mrogan
+
+# The flag context: it reads the mark, checks the share's signature and names the preview, and is the only code that
+# may ask OpenFeature (biome.json)
+/src/flags/                  @mrogan
+
+# Intent
+/AGENTS.md                   @mrogan
+/docs/BRIEF.md               @mrogan
+/docs/REVIEWERS.md           @mrogan
+/SECURITY.md                 @mrogan
+/LICENSE                     @mrogan

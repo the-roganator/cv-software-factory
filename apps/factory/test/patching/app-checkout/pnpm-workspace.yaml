@@ -1,0 +1,9 @@
+# Supply chain. pnpm already waits a day before installing a new release (minimumReleaseAge) and runs no
+# dependency's install scripts unless allowed here.
+trustPolicy: no-downgrade # refuse a release published with weaker provenance than the one before it
+trustPolicyExclude:
+  # Published by the same maintainer without provenance in January 2025, after two releases with it; used by Vitest.
+  - why-is-node-running@3.2.2
+allowBuilds:
+  lefthook: false # its postinstall only installs the git hooks, which `prepare` does
+  protobufjs: false # its postinstall only prints a version-scheme warning

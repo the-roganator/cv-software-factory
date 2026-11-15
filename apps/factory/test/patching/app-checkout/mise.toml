@@ -1,0 +1,17 @@
+# The whole toolchain: `mise install` sets up a laptop, and CI and the dev container use the same file. Each tool names
+# the releases it may move within, and mise.lock holds the exact version of each, with the checksum of its download for
+# each platform below, so every install is the same until someone upgrades. To upgrade, `mise upgrade` (within these
+# ranges; `--bump` past them) and a `chore(toolchain)` pull request with both files; Dependabot does not read mise.
+[settings]
+lockfile = true
+# A Mac (Apple Silicon or Intel), CI's runners, and the dev container on either kind of host.
+lockfile_platforms = ["macos-arm64", "macos-x64", "linux-x64", "linux-arm64"]
+# `mise upgrade` takes a release only once it is three days old, as Dependabot's cooldown does.
+minimum_release_age = "3d"
+
+[tools]
+# Exact: the Node both of the Dockerfile's stages run, which test/node-pins.test.ts and check.yml hold them to.
+node = "24.22.2"
+# The one package.json's packageManager names (test/toolchain.test.ts holds them together).
+pnpm = "12"
+kustomize = "5"

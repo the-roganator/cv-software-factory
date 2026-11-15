@@ -113,7 +113,7 @@ describe('platform-timeline.sh', () => {
     ]);
   });
 
-  it('gives each image pulled, in the order it was, with the wait for the pulls before it, and the totals', () => {
+  it('gives each image pulled, in the order it was, with the wait before it started, and the totals', () => {
     const pulls = lines.slice(lines.indexOf('### Pulls'));
     expect(pulls).toContain('3 images, 12s of pulling, 117 MB.');
     expect(pulls.filter((line) => line.endsWith(' MB |'))).toEqual([

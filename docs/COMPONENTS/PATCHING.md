@@ -62,3 +62,10 @@ Every pass that reads, the day changed or not, the sense sends each of the app's
 **The same send** is one move of one repository from one run of the scan, and has one id, derived from those three: a sense restarted on the same day sends each again under the same id, and the inbox keeps the first. Triage says it too, since the inbox prunes counted signals after three days: a signal that says what its ticket's last said is counted and appends nothing. A new run is a new send, counted on the ticket, or joining it when its target or findings changed.
 
 Its role may send only its own sense's signals and reads none of the inbox (`0051_patching-sends.sql`). A send that fails fails the pass, the day appended, and the next pass sends again.
+
+## Trying a move before a push
+
+Two things carry a move the whole way on the Mac, with nothing pushed, so a move that cannot pass is found before it is a pull request.
+
+- **The app's moves:** `apps/factory/test/patching/path.test.ts` carries a scan's finding through the real code of every step (the scan's judgement and moves, the sealed state, the worker's read, the sense's signal, the pin step on a copy of the app's pins, the worker's guard and the review gate's tags), one case for each kind of move the scan can make of the app. A case with a `gap` is a move the scan sends the line that the line cannot make, and says what stops it.
+- **This repository's moves:** `node scripts/rehearse-pin-moves.ts --moves <moves.json>` makes each move of a day as the pin watch would, in a repository of its own, and says of each what the review gate's proof says of it and which of the unit and database tests fail on it that pass on the base; `--branches` does the same for the pin branches origin has. What only GitHub has (the check runs at the head, the pull request's events) it names as not read. A day's `moves.json` is the scan's artifact, or a local judgement's: `scan.ts <checkout> --out <dir>` then `deadlines.ts <dir> --checkout <checkout> --prove`, which upload nothing.

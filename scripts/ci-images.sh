@@ -18,7 +18,8 @@
 #                                   of each pin's line, then each image the cluster runs (`cluster`); skopeo must be
 #                                   logged in to ghcr.io (mirror.yml)
 #   ci-images.sh cluster            each third-party image the cluster runs (scripts/cluster-images.ts), its copy, and
-#                                   whether the copy is there and current, copying nothing
+#                                   whether the copy is there and current, copying nothing; it fails only when an image
+#                                   cannot be listed, read or given a copy, not for a copy not made yet
 #
 # A copy is byte for byte, by digest: Docker Hub's <name>@<digest> at ghcr.io/<repository>/mirror/docker/library/<name>,
 # Microsoft's mcr.microsoft.com/<name>@<digest> at ghcr.io/<repository>/mirror/mcr/<name>. Its one tag,
@@ -153,22 +154,27 @@ sync() {
 # The platform check's cluster's registries, and where each one's copies are.
 REGISTRIES=deploy/k3d/ci-registries.yaml
 
-# An image as containerd pulls it: its registry, its path there, its tag and its digest (`-` for none), Docker Hub's
-# for a name with no registry, and under `library/` for one of Docker's official images.
+# An image as containerd pulls it: its registry, its path there, its tag (`latest` for none) and its digest (`-` for
+# none), Docker Hub's for a name with no registry or index.docker.io's, and under `library/` for one of Docker's
+# official images.
 parse() {
-  local ref=$1 digest=- tag=- registry=docker.io
+  local ref=$1 digest=- tag=latest registry=docker.io
   [[ "$ref" == *@* ]] && digest=${ref##*@} && ref=${ref%@*}
   if [[ "$ref" == */* && ("${ref%%/*}" == *.* || "${ref%%/*}" == *:* || "${ref%%/*}" == localhost) ]]; then
     registry=${ref%%/*}
     ref=${ref#*/}
   fi
+  [[ "$registry" == index.docker.io ]] && registry=docker.io
   [[ "$registry" == docker.io && "$ref" != */* ]] && ref=library/$ref
   [[ "${ref##*/}" == *:* ]] && tag=${ref##*:} && ref=${ref%:*}
   echo "$registry $ref $tag $digest"
 }
 
-# The digest a reference names now, with no credentials, as containerd would resolve it.
-digest_of() { skopeo inspect --raw --no-creds "$1" | sha256sum | sed 's/^/sha256:/; s/ .*//'; }
+# The digest a reference names now, with no credentials, as containerd would resolve it; tried again on a fault, as a
+# registry that limits by address now and then refuses one.
+# The manifest is piped as it is (a command substitution would drop its last newline, and so change its digest), and
+# pipefail fails the function when skopeo does.
+digest_of() { skopeo inspect --raw --no-creds --retry-times 3 "$1" | sha256sum | sed 's/^/sha256:/; s/ .*//'; }
 
 # Each image the cluster runs, against its copy: `check` says whether each is there and current, `sync` copies each
 # that is not.
@@ -176,6 +182,7 @@ cluster() {
   local mode=$1 failed=() images ref registry path tag digest rewrite copy from target want have
   images=$(node scripts/cluster-images.ts .) || failed+=("the cluster's images could not all be listed: the errors above say which")
   for ref in $images; do
+    want= have=
     read -r registry path tag digest <<< "$(parse "$ref")"
     rewrite=$(yq ".mirrors[\"$registry\"].rewrite[\"^(.*)\$\"] // \"\"" "$REGISTRIES")
     if [ -z "$rewrite" ]; then

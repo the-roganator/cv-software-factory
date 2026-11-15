@@ -82,8 +82,8 @@ describe(REGISTRIES, () => {
   });
 
   it('is what the platform check makes its cluster with, and the local cluster is not', () => {
-    expect(readFileSync('.github/workflows/platform.yml', 'utf-8')).toContain(`REGISTRIES=${REGISTRIES}`);
-    expect(readFileSync('Makefile', 'utf-8')).toMatch(/^REGISTRIES \?=$/m);
+    expect(readFileSync('.github/workflows/platform.yml', 'utf-8')).toContain(`K3D_REGISTRIES=${REGISTRIES}`);
+    expect(readFileSync('Makefile', 'utf-8')).toMatch(/^K3D_REGISTRIES \?=$/m);
     expect(readFileSync('deploy/k3d/cluster.yaml', 'utf-8')).not.toMatch(/registries/);
   });
 });
@@ -147,6 +147,25 @@ describe('ci-images.sh cluster', () => {
     );
     expect(lines[3]).toBe(
       `${copy('ecr-public/docker/library/redis:8.6.4-alpine')}: not copied, from docker://ecr-public.aws.com/docker/library/redis:8.6.4-alpine`,
+    );
+  });
+
+  it('pulls a bare name at latest, takes index.docker.io for Docker Hub, and says only each image’s own copy', () => {
+    const run = check(
+      ['quay.io/prometheus/prometheus:v3.15.0', `busybox@${digest}`, 'index.docker.io/otel/collector', 'busybox'],
+      { [copy('quay/prometheus/prometheus:v3.15.0')]: 'old' },
+      { 'quay.io/prometheus/prometheus:v3.15.0': 'new', 'docker.io/library/busybox:latest': 'b' },
+    );
+    expect(run.status, run.stdout).toBe(1);
+    const lines = run.stdout.trim().split('\n');
+    expect(lines[0]).toMatch(/: not copied \(the copy is at sha256:[0-9a-f]+\), from /);
+    // Not the digest of the image before it.
+    expect(lines[1]).toBe(
+      `${copy(`docker/library/busybox@${digest}`)}: not copied, from docker://docker.io/library/busybox@${digest}`,
+    );
+    expect(lines).toContain('::error::index.docker.io/otel/collector: could not read its digest');
+    expect(lines).toContain(
+      `${copy('docker/library/busybox:latest')}: not copied, from docker://docker.io/library/busybox:latest`,
     );
   });
 

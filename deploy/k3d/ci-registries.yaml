@@ -1,6 +1,6 @@
 # The platform check's cluster pulls third-party images from CI's copies in GHCR first: hosted runners share their
 # addresses, and a registry that limits anonymous pulls by address (Docker Hub, ECR Public) now and then refuses one,
-# which fails the check. `make up REGISTRIES=deploy/k3d/ci-registries.yaml` gives it to k3s; the local cluster pulls
+# which fails the check. `make up K3D_REGISTRIES=deploy/k3d/ci-registries.yaml` gives it to k3s; the local cluster pulls
 # from each image's own registry.
 #
 # For each registry the cluster pulls from, where its copies are: the image's path on that registry, under a prefix of

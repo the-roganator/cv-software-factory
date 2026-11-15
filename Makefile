@@ -18,7 +18,7 @@ REVISION ?= main
 PLATFORM_CHECK ?=
 # The registries file k3s pulls through, when the cluster is made (`k3d cluster create --registry-config`): the
 # platform check gives it deploy/k3d/ci-registries.yaml, CI's copies in GHCR. Unset, each image comes from its own.
-REGISTRIES ?=
+K3D_REGISTRIES ?=
 # The private checkout, which holds the answer key: `make up` gives the scoreboard each entry's id and fingerprint.
 PRIVATE_DIR ?= $(CURDIR)/../cv-software-factory-private
 # The workers that connect to the store, each as a role of its own (packages/store/migrations/0022_worker-roles.sql).
@@ -105,7 +105,7 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 		if docker volume inspect $(STATE) >/dev/null 2>&1; then \
 			echo "  $(STATE) holds a cluster's state, and there is no cluster: 'make upgrade-cluster' makes it again on it, 'make down' deletes it."; exit 1; fi; \
 		docker volume create --label software-factory.cluster=$(CLUSTER) $(STATE) >/dev/null && \
-		{ k3d cluster create --config deploy/k3d/cluster.yaml $(if $(REGISTRIES),--registry-config $(REGISTRIES)) || { docker volume rm $(STATE) >/dev/null; exit 1; }; }; }
+		{ k3d cluster create --config deploy/k3d/cluster.yaml $(if $(K3D_REGISTRIES),--registry-config $(K3D_REGISTRIES)) || { docker volume rm $(STATE) >/dev/null; exit 1; }; }; }
 	@# A cluster without the console's HTTPS port gets it in place: k3d makes the cluster's load balancer again, and keeps
 	@# everything in the cluster, the store included. The load balancer's configured ports, so a stopped one counts too.
 	@docker inspect -f '{{json .HostConfig.PortBindings}}' k3d-$(CLUSTER)-serverlb | grep -q '"443/tcp"' || { \

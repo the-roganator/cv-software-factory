@@ -135,7 +135,7 @@ jobs:
           REVISION: ${{ github.sha }}
         run: |
           unset TYPESAFE_API_KEY ANTHROPIC_API_KEY GITHUB_APP_PRIVATE_KEY PUSHOVER_APP_TOKEN PUSHOVER_USER_KEY
-          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 REGISTRIES=deploy/k3d/ci-registries.yaml SYNC_TIMEOUT=20m TIMEOUT=1200 &
+          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 K3D_REGISTRIES=deploy/k3d/ci-registries.yaml SYNC_TIMEOUT=20m TIMEOUT=1200 &
           make=$!
           # make has a session of its own, so a cancelled step stops it here.
           trap 'kill -- "-$make" 2>/dev/null' TERM INT

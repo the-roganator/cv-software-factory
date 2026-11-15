@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { JUDGES as GATE_JUDGES } from '../../../../scripts/pin-move.ts';
 import { NEVER } from '../../src/github/paths.ts';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
 import {
@@ -8,6 +9,7 @@ import {
   directPackages,
   furthest,
   isMajor,
+  JUDGES,
   type Judged,
   LINE_NEVER,
   MOVES_VERSION,
@@ -205,10 +207,34 @@ describe('the day’s moves', () => {
       expect(list[0]?.pins).toHaveLength(2);
       expect(laneOf(result({ ...chart, target }))).toBe('worker');
     });
-    it('issue: Playwright’s image, whose library in the lockfile is the same release', () => {
-      expect(
-        laneOf(result({ name: PLAYWRIGHT_IMAGE, pin: { file: 'apps/factory/Dockerfile.browser', line: 26 } })),
-      ).toBe('issue');
+    it('dependabot, or an issue: Playwright’s image, whose library in the lockfile is the same release', () => {
+      const image = () =>
+        result({ name: PLAYWRIGHT_IMAGE, pin: { file: 'apps/factory/Dockerfile.browser', line: 26 } });
+      // On a deadline or not, where Dependabot reads the pin: its group moves the image and the library together.
+      expect(laneOf(image())).toBe('dependabot');
+      expect(laneOf(image(), { dependabot: [] })).toBe('issue');
+    });
+    it('names the judges the review gate names', () => {
+      expect(Object.keys(JUDGES)).toEqual(GATE_JUDGES.map((judge) => judge.name));
+      // Each as the gate reads it, from the pin it moved, and as the scan does, from the move's name and pins.
+      const cases = [
+        [
+          'kyverno: reg.kyverno.io/kyverno/kyverno',
+          'deploy/base/admission/values/kyverno.yaml',
+          'reg.kyverno.io/kyverno/kyverno:v1.19.1',
+        ],
+        ['ghcr.io/aquasecurity/trivy', 'deploy/images/trivy/Dockerfile', 'ghcr.io/aquasecurity/trivy:0.76.2'],
+        ['ghcr.io/anchore/syft', 'deploy/images/syft/Dockerfile', 'ghcr.io/anchore/syft:v1.54.0'],
+        ['postgres', 'deploy/base/postgres/statefulset.yaml', 'postgres:18.6-alpine3.24'],
+      ] as const;
+      for (const [name, file, from] of cases) {
+        const place = { file, line: 1 };
+        const gate = GATE_JUDGES.find((judge) =>
+          judge.test({ what: 'image', kind: 'third-party', item: name, place, from, to: from }),
+        )?.name;
+        const scan = Object.entries(JUDGES).find(([, judge]) => judge({ name, pins: [place] }))?.[0];
+        expect(scan, name).toBe(gate);
+      }
     });
     it('holds where the line may not write to the GitHub worker’s own list', () => {
       expect(LINE_NEVER).toEqual(NEVER);

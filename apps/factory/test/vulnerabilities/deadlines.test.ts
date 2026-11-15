@@ -1322,6 +1322,39 @@ describe('what fixes it', () => {
       kubeVersion: '1.37.2',
     });
 
+    it('names a chart two Applications pin at one version for the chart, as one move, and for each apart', async () => {
+      // A second Application of the same chart, under a release of its own.
+      const second = (version: string): ReadTarget => ({
+        ...target,
+        key: 'chart other quay.io/example/sidecar',
+        file: 'deploy/base/other.yaml',
+        chart: { ...CHART, release: 'other', version },
+      });
+      const named = async (version: string) => {
+        const twice = second(version);
+        const findings = [
+          inChart(),
+          inChart({ item: twice.key, file: twice.file, listed: 'other', advisory: 'CVE-2099-20077' }),
+        ];
+        const { judged } = await judge({
+          ...world(findings[0] as Finding, { 'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z') }),
+          findings,
+          targets: [target, twice],
+          alerts: findings.map((each) => alertOf(each, '2026-10-01T00:00:00Z')),
+        });
+        return judged.map((each) => [each.name, each.pin.file, each.from]);
+      };
+      expect(await named(CHART.version)).toEqual([
+        ['example', 'deploy/base/example.yaml', '13.2.7'],
+        ['example', 'deploy/base/other.yaml', '13.2.7'],
+      ]);
+      // At two versions they are two moves, which one name would make one branch: each is its Application's.
+      expect(await named('13.2.6')).toEqual([
+        ['example', 'deploy/base/example.yaml', '13.2.7'],
+        ['other', 'deploy/base/other.yaml', '13.2.6'],
+      ]);
+    });
+
     it('is fixed by the newest chart on the pinned major whose image lacks it, dated from the chart', async () => {
       const finding = inChart();
       const { fixes, asked } = await judge(

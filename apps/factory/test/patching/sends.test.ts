@@ -136,7 +136,7 @@ describe("the sense's sends", () => {
     expect(moveOf(newer)).toEqual({ ...asNode, pins: image.pins });
     // The same tag, built again, is the image's own move.
     expect(moveOf(image)).toMatchObject({ ecosystem: 'docker', name: 'node' });
-    // Node's own fix in the runtime's image, whose tag names no release: the one its findings found.
+    // Node's own fix in the runtime's image, whose tag names no release, is its publisher's: said, and not sent.
     const runtime: ReadMove = {
       ...node,
       name: 'gcr.io/distroless/nodejs24-debian13',
@@ -144,9 +144,7 @@ describe("the sense's sends", () => {
       from: 'nonroot',
       findings: [{ ...found(4, 'HIGH', 'version 24.11.1', '24.11.1'), package: 'node', installed: '24.11.0' }],
     };
-    expect(moveOf(runtime)).toEqual({ ...asNode, pins: runtime.pins });
-    // A version that is not Node's own, of an image no ecosystem moves by a version, is said and not sent.
-    expect(moveOf({ ...runtime, findings: node.findings })).toEqual([
+    expect(moveOf(runtime)).toEqual([
       'move 3: gcr.io/distroless/nodejs24-debian13: a target of no ecosystem a signal names',
     ]);
   });

@@ -16,11 +16,13 @@
  * - `cluster`: k3s, which only the cluster's own command applies;
  * - `issue`: what no pull request of the App's can write: anything mise or the Makefile pins (k3d, Argo CD's chart with
  *   its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a
- *   day of its fix, an image whose other half is in the lockfile, and Playwright's image, whose library is;
+ *   day of its fix, an image whose other half is in the lockfile, and Playwright's image, whose library is in the
+ *   lockfile, where Dependabot does not read its pin;
  * - `approval`: a major, of any kind (a chart's, or a version past every copy's major), which needs more than its pins'
  *   lines written, what judges a move (Kyverno, Trivy, Syft), and one chart at two Applications' pins, neither of which the gate passes; whether a chart within its major changes
  *   more than its images is the review gate's to prove from the pull request, not the scan's to assume;
- * - `dependabot`: a pin `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
+ * - `dependabot`: Playwright's image where Dependabot reads its pin, whose group moves it with its library; a pin
+ *   `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
  *   package of the lockfile within a day of its fix, which its security update moves;
  * - `worker`: every other pin, which the GitHub worker moves: a chart within its major among them.
  *
@@ -146,14 +148,14 @@ export const PLAYWRIGHT_IMAGE = 'mcr.microsoft.com/playwright';
  * Syft. The review gate never passes one as a pin move (scripts/pin-move.ts, condition 2), so it waits for Martin from
  * the start.
  */
-const JUDGES: ((move: Pick<Move, 'name' | 'pins'>) => boolean)[] = [
-  (move) => /^kyverno(:|$)/.test(move.name) || /(^|[\s/])kyverno\//.test(move.name),
-  (move) =>
+export const JUDGES: Record<string, (move: Pick<Move, 'name' | 'pins'>) => boolean> = {
+  Kyverno: (move) => /^kyverno(:|$)/.test(move.name) || /(^|[\s/])kyverno\//.test(move.name),
+  Trivy: (move) =>
     move.pins.some((pin) => pin.file.startsWith('deploy/images/trivy/')) ||
     /(^|\/)aquasec(urity)?\/trivy$/.test(move.name),
-  (move) =>
+  Syft: (move) =>
     move.pins.some((pin) => pin.file.startsWith('deploy/images/syft/')) || /(^|\/)anchore\/syft$/.test(move.name),
-];
+};
 
 /** A move's lane, worked out from what it is: see the module's comment for the order. */
 export function laneOf(
@@ -181,10 +183,11 @@ export function laneOf(
   )
     return 'issue';
   // Playwright's image and its library in the lockfile are one release (scripts/image-pins.test.ts): no pull request
-  // that writes the image alone can pass, so a person moves both, or Dependabot's group does.
-  if (move.name === PLAYWRIGHT_IMAGE) return 'issue';
+  // that writes the image alone can pass. Dependabot's group moves both, where it reads the pin; a person, otherwise.
+  if (move.name === PLAYWRIGHT_IMAGE)
+    return move.pins.every((pin) => readByDependabot(pin, context.dependabot)) ? 'dependabot' : 'issue';
   // What judges a move is Martin's to move, as the review gate holds it (scripts/pin-move.ts's `JUDGES`).
-  if (JUDGES.some((judge) => judge(move))) return 'approval';
+  if (Object.values(JUDGES).some((judge) => judge(move))) return 'approval';
   // A major, of any kind: the one move the scan can tell needs more than its pins' lines written. Whether a chart on its
   // major changes more than its images is the gate's to prove from the pull request, not the scan's to assume.
   if (move.major) return 'approval';

@@ -802,9 +802,15 @@ export async function installable(
           pin: target.pin,
           from: pinned(target.image ?? ''),
         };
-      // The chart's own name, not its Application's: one chart two Applications run at one version is one move of
-      // two pins, as one image in two Dockerfiles is.
-      return { kind: 'chart', name: target.chart.chart, pin: own, from: target.chart.version };
+      // The chart's own name, not its Application's, where every Application that pins the chart pins one version:
+      // one chart two Applications run is one move of two pins, as one image in two Dockerfiles is. Pinned at two
+      // versions they are two moves, each its Application's, as two moves of one name would be one branch.
+      const { repo, chart, version } = target.chart;
+      const together = targets.every(
+        (each) =>
+          !each.chart || each.chart.repo !== repo || each.chart.chart !== chart || each.chart.version === version,
+      );
+      return { kind: 'chart', name: together ? chart : chartName, pin: own, from: version };
     }
     return { kind: target.kind, name: repositoryOf(target.image ?? ''), pin: own, from: pinned(target.image ?? '') };
   };

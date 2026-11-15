@@ -118,7 +118,7 @@ export type PinMoveResult = { move: Move; ran: string[]; fixed: number } | { rea
 export const PLATFORMS = ['linux/amd64', 'linux/arm64'];
 
 /** What judges a move, whose own pins are Martin's to move: none of them can vouch for its replacement. */
-const JUDGES: { name: string; test: (moved: Moved) => boolean }[] = [
+export const JUDGES: { name: string; test: (moved: Moved) => boolean }[] = [
   // Kyverno is admission itself: on the platform check's cluster it is what says every image policy enforces and
   // `make admission-ready` passes, so it cannot vouch for its own replacement either.
   {

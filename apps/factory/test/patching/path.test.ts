@@ -186,7 +186,8 @@ const CASES: Case[] = [
   {
     name: 'the app’s image: Node’s own advisory',
     findings: () => [found(T.ours, NODE_ADVISORY)],
-    ends: [{ ends: 'pull request', tags: ['code-owned'], wrote: ['Dockerfile', 'mise.lock', 'mise.toml'] }],
+    ends: [{ ends: 'never sent', why: /a target of no ecosystem a signal names/ }],
+    gap: 'the runtime’s Node is its image’s publisher’s, and the move is that image to a release of Node, which no ecosystem names',
   },
   {
     name: 'deploy/images/syft/Dockerfile: Syft',
@@ -234,6 +235,7 @@ describe('a move of the app’s, from the scan’s finding to a pull request', (
       [
         "the lockfile: a package at two versions, one advisory of both",
         "the lockfile: a package at two versions, an advisory of each",
+        "the app’s image: Node’s own advisory",
       ]
     `);
   });

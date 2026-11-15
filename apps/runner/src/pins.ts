@@ -277,7 +277,8 @@ export const movedRange = (spec: string, version: string): string =>
 /**
  * Moves a package: each manifest's range that does not admit the target first, then `pnpm update` at every depth,
  * under the app's own policy. A copy the parents' ranges hold below the target holds the work item for an override:
- * the copy the move names, and any on the target's major; one on another major is no part of the move.
+ * the copy the move names, and any on the target's line (its major, or below 1.0 its minor); one on another line is no
+ * part of the move.
  */
 export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<void> {
   if (!VERSION.test(move.to)) throw new PinsRefused(`${move.to} is not a version, so ${move.name} cannot move to it.`);
@@ -286,8 +287,12 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   const versions = lockedVersions(before, move.name);
   if (!versions.length) throw new PinsRefused(`The lockfile resolves no ${move.name}.`);
   // A copy on another major that the move does not name has no advisory this move fixes: it stays where it is.
-  const major = (version: string) => version.split('.')[0];
-  const itsOwn = (version: string) => version === move.from || major(version) === major(move.to);
+  // The line a caret range keeps a version on: its major, or below 1.0 its minor.
+  const line = (version: string) => {
+    const [major, minor] = version.split('.');
+    return major === '0' ? `0.${minor}` : major;
+  };
+  const itsOwn = (version: string) => version === move.from || line(version) === line(move.to);
   const own = versions.filter(itsOwn);
   // Already made: every copy is at the target or past it, or every copy of the move's own is, and there is one.
   const there = (list: string[]) => list.every((v) => compareVersions(v, move.to) >= 0);

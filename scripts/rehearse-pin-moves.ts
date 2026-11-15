@@ -21,7 +21,7 @@
  */
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { Actions } from '../apps/factory/src/github/actions.ts';
@@ -295,9 +295,13 @@ async function fromMoves(o: Options, work: Work, base: string): Promise<Candidat
 const wanted = (o: Options, name: string) =>
   !o.only.length || o.only.includes(name) || o.only.includes(segmentOf(pinBranchFor(name)));
 
+/** Origin's pin branches as they are now: one it deleted is gone here too. */
+const fetchPins = () =>
+  here('fetch', '--quiet', '--prune', 'origin', 'refs/heads/factory/pin/*:refs/remotes/origin/factory/pin/*');
+
 /** The pin branches origin has, each as the move its branch names. */
 function fromBranches(o: Options, work: Work): Candidate[] {
-  if (o.fetch) here('fetch', '--quiet', 'origin', 'refs/heads/factory/pin/*:refs/remotes/origin/factory/pin/*');
+  if (o.fetch) fetchPins();
   const prefix = `refs/remotes/origin/${PIN_PREFIX}`;
   return here('for-each-ref', '--format=%(objectname) %(refname)', prefix)
     .split('\n')
@@ -368,6 +372,8 @@ async function tested(work: Work, sha: string, name: string): Promise<Failure[]>
   mkdirSync(results, { recursive: true });
   const out = join(results, `${name}.json`);
   const logFile = join(results, `${name}.log`);
+  // Never a result an earlier run left: a run that writes none has none.
+  rmSync(out, { force: true });
   await new Promise<void>((done, fail) => {
     const log = createWriteStream(logFile);
     const child = spawn(
@@ -447,6 +453,8 @@ async function main() {
   const base = here('rev-parse', '--verify', `${o.base}^{commit}`);
   const work = workRepository(o.work);
   work.git('update-ref', 'refs/rehearse/base', base);
+  // What `--compare` reads is origin's branches as they are now.
+  if (o.mode === 'moves' && o.compare && o.fetch) fetchPins();
   const candidates = o.mode === 'moves' ? await fromMoves(o, work, base) : fromBranches(o, work);
   console.error(`${candidates.length} move${candidates.length === 1 ? '' : 's'} on ${base.slice(0, 8)}, in ${o.work}`);
 
@@ -472,7 +480,12 @@ async function main() {
     // The proof reads its own two worktrees, and the tests the work repository's: side by side.
     const [gate, failures] = await Promise.all([
       o.gate ? judged(work, base, head) : undefined,
-      o.tests ? tested(work, head, segment) : undefined,
+      // A move whose tests could not be run is a row that says so, and the rehearsal goes on.
+      o.tests
+        ? tested(work, head, segment).catch((error: unknown): Failure[] => [
+            { file: 'the tests could not be run', test: error instanceof Error ? error.message : String(error) },
+          ])
+        : undefined,
     ]);
     if (gate) row.gate = gate;
     if (failures) row.failures = failures.filter((each) => !known.has(key(each)));

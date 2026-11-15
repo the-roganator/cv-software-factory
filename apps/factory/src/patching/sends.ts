@@ -72,28 +72,24 @@ function targetWord(target: Target | undefined): string | undefined {
 const releaseOf = (text: string) => /^v?(\d+\.\d+\.\d+)(?![\d.])/.exec(text)?.[1];
 
 /**
- * A move that needs another Node, as a move of Node from one release to another, which the pin step writes whole
- * (mise.toml, mise.lock and each `FROM` of a Node image, apps/runner/src/pins.ts): Node's own fix, wherever the scan
- * found the binary, in the build stage's image (pinned by a tag that names the release) or the runtime's (whose
- * findings name it); and the build stage's image moving to a tag of another release, which would leave mise's pin
- * behind were its `FROM` written alone. Nothing for any other move.
+ * A move of the build stage's image (`node`, pinned by a tag that names its release) that needs another Node, as a
+ * move of Node from one release to another, which the pin step writes whole (mise.toml, mise.lock and each `FROM` of a
+ * Node image, apps/runner/src/pins.ts): Node's own fix, and the image moving to a tag of another release, which would
+ * leave mise's pin behind were its `FROM` written alone. Nothing for any other move: Node's own fix found in the
+ * runtime's image, whose tag names no release and whose Node is its publisher's to move, is no move a signal names.
  */
 function nodeMove(read: ReadMove, target: Target | undefined): { from: string; to: string } | undefined {
-  if (target?.kind === 'version') {
-    const [to, ...others] = target.versions;
-    const installed = new Set(read.findings.filter((each) => each.package === 'node').map((each) => each.installed));
-    const [found, ...more] = installed;
-    // The scan names the pin, a tag: the release in it, or, for an image whose tag names none, the one it found.
-    const from = read.name === 'node' ? releaseOf(read.from) : more.length ? undefined : found;
-    const ownFix = read.name === 'node' || read.findings.every((each) => each.package === 'node');
-    return ownFix && from && to && !others.length ? { from, to } : undefined;
-  }
-  if (target?.kind === 'image' && read.name === 'node') {
-    const from = releaseOf(read.from);
-    const to = releaseOf(target.tag);
-    return from && to && from !== to ? { from, to } : undefined;
-  }
-  return undefined;
+  if (read.name !== 'node') return undefined;
+  const from = releaseOf(read.from);
+  const to =
+    target?.kind === 'version'
+      ? target.versions.length === 1
+        ? target.versions[0]
+        : undefined
+      : target?.kind === 'image'
+        ? releaseOf(target.tag)
+        : undefined;
+  return from && to && from !== to ? { from, to } : undefined;
 }
 
 /** A read move as the signal names it, or why it cannot be sent: it has no target to move to, or no ecosystem. */

@@ -199,6 +199,18 @@ describe('a package’s move', () => {
     expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'sonic-boom')).toEqual(['4.2.1', '5.0.2']);
   });
 
+  it('takes a 0.x package’s minor as its line: a copy on another minor stays where it is', async () => {
+    const twice = (newer: string) =>
+      LOCK('5.0.5', '0.5.1').replace(
+        '\nsnapshots:',
+        `\n  sonic-boom@${newer}:\n    resolution: {integrity: sha512-newer}\n\nsnapshots:`,
+      );
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': twice('0.6.2') });
+    const { pnpm } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), twice('0.6.3')));
+    await writePins(dir, { ecosystem: 'npm', name: 'sonic-boom', from: '0.6.2', to: '0.6.3' }, tools(pnpm));
+    expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'sonic-boom')).toEqual(['0.5.1', '0.6.3']);
+  });
+
   it('refuses a move whose copy the lockfile does not have, though another major’s is there', async () => {
     const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
     const stale = writePins(

@@ -13,6 +13,7 @@
  * tests directly.
  */
 import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-factory/events';
+import { REPOSITORIES } from '../repositories.ts';
 import type { ItemState } from './items.ts';
 import { DAY, dependabotWaits, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
 
@@ -29,7 +30,7 @@ export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent
 }
 
 /** The app's repository, whose moves go down the line and whose pins read "the app's". */
-export const APP_REPOSITORY = 'the-roganator/cv-worlds-worst-website';
+export const APP_REPOSITORY = REPOSITORIES.app;
 
 type Day = PayloadOf<'patching.read'>;
 type Repository = Day['repositories'][number];

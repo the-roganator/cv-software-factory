@@ -430,7 +430,7 @@ describe("the review gate's workflows", () => {
     expect(gate).not.toMatch(/inputs/);
     // The gate's modules, and nothing of the pull request's, from main's sparse checkout; cosign for an exact pin.
     expect(gate).toMatch(
-      /sparse-checkout: \|\n {12}mise\.toml\n {12}mise\.lock\n {12}scripts\/review-gate\.ts\n {12}scripts\/review-routing\.ts\n {12}policy\/review-verdict\.ts\n/,
+      /sparse-checkout: \|\n {12}mise\.toml\n {12}mise\.lock\n {12}scripts\/review-gate\.ts\n {12}scripts\/review-routing\.ts\n {12}apps\/factory\/src\/repositories\.ts\n {12}policy\/repositories\.ts\n {12}policy\/review-verdict\.ts\n/,
     );
     expect(gate).toContain('install_args: node cosign');
   });

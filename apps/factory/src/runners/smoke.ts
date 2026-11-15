@@ -14,10 +14,12 @@ import { randomBytes } from 'node:crypto';
 import { cutTo } from '@software-factory/events';
 import type { Logger } from 'pino';
 import type { GitHubWorker } from '../github/worker-client.ts';
+import { APP_REPOSITORY } from '../repositories.ts';
 import { type Fenced, fence } from './scope.ts';
 import type { Runners, StepOutcome } from './steps.ts';
 
-export const SMOKE_REPOSITORY = 'the-roganator/cv-worlds-worst-website';
+/** The smoke run's repository: the app's. */
+export const SMOKE_REPOSITORY = APP_REPOSITORY;
 export const SMOKE_BRANCH = 'factory/smoke';
 
 /** A new module with an off-by-one in it, as a patch. */

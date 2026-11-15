@@ -128,7 +128,7 @@ jobs:
     name: pin move
     # The app's line moves its own pins: its pull requests are never pin moves.
     if: >-
-      ${{ github.repository != 'the-roganator/cv-worlds-worst-website' && (github.event.workflow_run.name != 'platform' ||
+      ${{ github.repository != (vars.APP_REPOSITORY || 'the-roganator/cv-worlds-worst-website') && (github.event.workflow_run.name != 'platform' ||
       github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -158,6 +158,8 @@ jobs:
       - id: moves
         name: Work out the pin moves
         env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
           AUTONOMY: ${{ vars.AUTONOMY }}
         run: node scripts/pin-moves.ts --pin-moves
@@ -166,7 +168,7 @@ jobs:
   # commits, in the app's repository alone, whose line moves its own dependencies.
   critical-fix:
     name: critical fix
-    if: ${{ github.repository == 'the-roganator/cv-worlds-worst-website' }}
+    if: ${{ github.repository == (vars.APP_REPOSITORY || 'the-roganator/cv-worlds-worst-website') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -195,6 +197,8 @@ jobs:
       - id: fixes
         name: Work out the Critical fixes
         env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
           AUTONOMY: ${{ vars.AUTONOMY }}
         run: node scripts/critical-fixes.ts --critical-fixes
@@ -229,6 +233,8 @@ jobs:
             mise.lock
             scripts/review-gate.ts
             scripts/review-routing.ts
+            apps/factory/src/repositories.ts
+            policy/repositories.ts
             policy/review-verdict.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -249,6 +255,8 @@ jobs:
           permission-checks: write
       - name: Judge the pull request, and post the check
         env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
           CHECKS_TOKEN: ${{ steps.app.outputs.token }}
           AUTONOMY: ${{ vars.AUTONOMY }}

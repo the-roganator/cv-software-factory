@@ -33,12 +33,13 @@
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
 
+import { APP_REPOSITORY } from '../repositories.ts';
 import { dayText, type Target, targetText } from './fixes.ts';
 import type { Kind } from './inventory.ts';
 import { type Finding, fingerprint, SEVERITIES, type Severity } from './sarif.ts';
 
 /** The app's repository, whose moves its line makes. */
-export const APP = 'the-roganator/cv-worlds-worst-website';
+export const APP = APP_REPOSITORY;
 
 /** The shape of `moves.json`: a reader refuses a version it does not know. */
 export const MOVES_VERSION = 1;

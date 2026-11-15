@@ -65,8 +65,10 @@ jobs:
           sparse-checkout: |
             mise.toml
             mise.lock
+            apps/factory/src/repositories.ts
             apps/factory/src/vulnerabilities/
             deploy/images/syft/Dockerfile
+            policy/repositories.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # Node to run the script, and yq for the list and the lockfile: each at the version this repository's mise.lock holds.
@@ -77,6 +79,9 @@ jobs:
           working_directory: factory
           install_args: node yq
       - name: Make the snapshot
+        env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
         run: |
           node factory/apps/factory/src/vulnerabilities/graph.ts scanned \
             --syft-pin factory/deploy/images/syft/Dockerfile --out "$RUNNER_TEMP/graph" \
@@ -117,8 +122,10 @@ jobs:
           sparse-checkout: |
             mise.toml
             mise.lock
+            apps/factory/src/repositories.ts
             apps/factory/src/vulnerabilities/
             deploy/images/syft/Dockerfile
+            policy/repositories.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -130,6 +137,8 @@ jobs:
       # The pnpm the checkout's mise pins, read as data, installed by this repository's mise, as the scan's coverage does.
       - name: Make the snapshot and compare it with pnpm's list
         env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |

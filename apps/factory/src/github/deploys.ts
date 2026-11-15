@@ -61,6 +61,7 @@
 import type { Logger } from 'pino';
 import { parse } from 'yaml';
 import { z } from 'zod';
+import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../repositories.ts';
 import type { Actions } from './actions.ts';
 import type { WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
@@ -96,35 +97,35 @@ export interface DeployTarget {
 
 export const DEPLOYS: DeployTarget[] = [
   {
-    repo: 'the-roganator/cv-software-factory',
+    repo: FACTORY_REPOSITORY,
     profile: 'local',
     branch: 'deploy/local',
     pins: [
       {
         what: 'console',
         file: 'deploy/overlays/local/console-image/kustomization.yaml',
-        images: [{ name: 'console', image: 'the-roganator/cv-software-factory/console' }],
+        images: [{ name: 'console', image: `${FACTORY_REPOSITORY}/console` }],
       },
       {
         what: 'the factory',
         file: 'deploy/overlays/local/factory-image/kustomization.yaml',
         images: [
-          { name: 'factory', image: 'the-roganator/cv-software-factory/factory' },
-          { name: 'factory-browser', image: 'the-roganator/cv-software-factory/factory-browser' },
-          { name: 'factory-runner', image: 'the-roganator/cv-software-factory/factory-runner' },
+          { name: 'factory', image: `${FACTORY_REPOSITORY}/factory` },
+          { name: 'factory-browser', image: `${FACTORY_REPOSITORY}/factory-browser` },
+          { name: 'factory-runner', image: `${FACTORY_REPOSITORY}/factory-runner` },
         ],
       },
     ],
   },
   {
-    repo: 'the-roganator/cv-worlds-worst-website',
+    repo: APP_REPOSITORY,
     profile: 'local',
     branch: 'deploy/local',
     pins: [
       {
         what: '',
         file: 'deploy/overlays/local/image/kustomization.yaml',
-        images: [{ name: 'website', image: 'the-roganator/cv-worlds-worst-website' }],
+        images: [{ name: 'website', image: APP_REPOSITORY }],
         jobs: ['build and push', 'sign and attest'],
       },
     ],

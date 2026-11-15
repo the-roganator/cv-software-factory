@@ -6,6 +6,10 @@
  *     node scripts/github-settings.ts <owner/repo>     # one of them
  *     node scripts/github-settings.ts --check          # change nothing: say where the live settings differ
  *     node scripts/github-settings.ts --check --see-bypass   # and fail on what it could not see
+ *     node scripts/github-settings.ts --names          # print `names=<factory>,<app>`, for a token's repositories
+ *
+ * The repositories are the two FACTORY_REPOSITORY and APP_REPOSITORY name (policy/repositories.ts): the real two
+ * unless those settings name copies.
  *
  * `--check` reads each repository's rulesets, environments and fork-run approval and compares them with the ones
  * here, and names any ruleset it does not know, such as one added in the browser. It exits 1 if anything it can see differs.
@@ -24,13 +28,14 @@
  * workflow runs it.
  */
 import { execFileSync } from 'node:child_process';
+import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../apps/factory/src/repositories.ts';
 
 /**
  * Each repository, and the jobs that must pass before anything merges into its main. A job in a shared workflow
  * reports as "<calling job> / <job>".
  */
 export const REPOSITORIES: Record<string, string[]> = {
-  'the-roganator/cv-software-factory': [
+  [FACTORY_REPOSITORY]: [
     'lint, types, tests',
     'browser tests',
     'image builds',
@@ -40,7 +45,7 @@ export const REPOSITORIES: Record<string, string[]> = {
     'platform',
   ],
   // The app's gates come from this repository (app-gates.yml); tests first is a signal, not a requirement.
-  'the-roganator/cv-worlds-worst-website': [
+  [APP_REPOSITORY]: [
     'lint, types, tests',
     'image builds',
     'title / pull request title',
@@ -94,8 +99,8 @@ export const SCAN_STATE_ENVIRONMENT: KeyEnvironment = { name: 'scan-state', key:
  * (scripts/workflows.test.ts). `--check` reads these, and not the repository's own secrets or other environments.
  */
 export const ENVIRONMENTS: Record<string, KeyEnvironment[]> = {
-  'the-roganator/cv-software-factory': [REVIEW_ENVIRONMENT, DRIFT_CHECK_ENVIRONMENT, SCAN_STATE_ENVIRONMENT],
-  'the-roganator/cv-worlds-worst-website': [REVIEW_ENVIRONMENT, SCAN_STATE_ENVIRONMENT],
+  [FACTORY_REPOSITORY]: [REVIEW_ENVIRONMENT, DRIFT_CHECK_ENVIRONMENT, SCAN_STATE_ENVIRONMENT],
+  [APP_REPOSITORY]: [REVIEW_ENVIRONMENT, SCAN_STATE_ENVIRONMENT],
 };
 
 /** An App's permission, as GitHub names it, and its level. */
@@ -490,6 +495,14 @@ export function environmentProblems(name: string, live: unknown, policies: unkno
 }
 
 function main(args: string[]): number {
+  if (args.includes('--names')) {
+    console.log(
+      `names=${Object.keys(REPOSITORIES)
+        .map((r) => r.split('/')[1])
+        .join(',')}`,
+    );
+    return 0;
+  }
   const checking = args.includes('--check');
   const seeBypass = args.includes('--see-bypass');
   const only = args.find((a) => !a.startsWith('--'));

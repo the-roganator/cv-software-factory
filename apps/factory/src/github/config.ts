@@ -15,8 +15,9 @@
  *                                     it the worker cannot read that repository's moves, and says so
  *     GITHUB_DRY_RUN_CHECKS_SECONDS   how long after a dry run's commit its checks pass (default 120)
  *     GITHUB_DRY_RUN_MERGE_SECONDS    how long after a dry run's pull request is readied it is merged (default 1200)
- *     GITHUB_REPOSITORIES             the repositories it acts on, separated by commas (default: both public ones)
- *                                     written as GitHub names them: one of those two in another case is refused
+ *     GITHUB_REPOSITORIES             the repositories it acts on, separated by commas (default: both of
+ *                                     FACTORY_REPOSITORY and APP_REPOSITORY, policy/repositories.ts), written as
+ *                                     GitHub names them: one of those two in another case is refused
  *     GITHUB_POLL_SECONDS             how often it polls (default 60)
  *     GITHUB_API_URL, GHCR_URL        GitHub's API and GHCR, for a stand-in
  *     TUF_CACHE_DIR                   where Sigstore's trust root is kept, to check images' signatures (default: the
@@ -32,6 +33,7 @@
  *                                     0.0.0.0)
  */
 import type { KeyObject } from 'node:crypto';
+import { REPOSITORIES } from '../repositories.ts';
 import { signingKey } from '../signed-refusals.ts';
 import { readKey } from '../vulnerabilities/state.ts';
 import type { AppCredentials } from './app.ts';
@@ -40,8 +42,8 @@ import type { DryRunTimes } from './dry-run-reads.ts';
 import { type PinScope, readPinScope } from './pins.ts';
 import { GHCR } from './registry.ts';
 
-/** The two public repositories: the factory's own, and the app it looks after. */
-export const REPOSITORIES = ['the-roganator/cv-software-factory', 'the-roganator/cv-worlds-worst-website'] as const;
+/** The two repositories, the factory's own and the app it looks after: the real two unless the settings name copies. */
+export { REPOSITORIES } from '../repositories.ts';
 
 export interface GitHubConfig {
   credentials: AppCredentials | undefined;

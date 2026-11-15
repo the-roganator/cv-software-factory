@@ -24,7 +24,7 @@ make scan-state-key            # the key each repository's scan seals its state 
 make guardrails                # every guardrail's proof but the attacks, recorded in the store, from a clean main (PROOFS="…" for some); the drill asks first
 ```
 
-The local cluster (its console at `https://console.localhost:8443`, its certificate, its state, `make upgrade-cluster`, signing in, Pushover, the scoreboard's key) is [`docs/LOCAL-CLUSTER.md`](docs/LOCAL-CLUSTER.md). Running a part of the factory on the host against it (each worker, the gateway, the admin service, the smoke run, the line's settings and `soak-check`, the bench, the flags) is [`docs/ON-THE-HOST.md`](docs/ON-THE-HOST.md).
+The local cluster (its console at `https://console.localhost:8443`, its certificate, its state, `make upgrade-cluster`, signing in, Pushover, the scoreboard's key) is [`docs/LOCAL-CLUSTER.md`](docs/LOCAL-CLUSTER.md). Running a part of the factory on the host against it (each worker, the gateway, the admin service, the smoke run, the line's settings and `soak-check`, the bench, the flags, scratch copies of the two repositories) is [`docs/ON-THE-HOST.md`](docs/ON-THE-HOST.md).
 
 - Node 24 runs TypeScript directly: erasable syntax only, `.ts` extensions in imports, no build step. The console's browser code is the exception: Vite builds it.
 - In the console, anything that runs every frame (a drag, a wipe, the reel settling) writes to the DOM through refs, and component state changes only when the movement ends. A test counts renders during a drag.

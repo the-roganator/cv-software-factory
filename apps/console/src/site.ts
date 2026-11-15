@@ -4,7 +4,8 @@
  *
  * The page is told the profile whose policy bounds Martin's settings, and whether the gateway sends every agent to the
  * local model, from the same FACTORY_PROFILE and ALL_LOCAL the gateway reads: a visitor needs the bounds as much as he
- * does, and they are no secret.
+ * does, and they are no secret. It is told the two repositories the factory looks after (policy/repositories.ts), for
+ * which rows are the app's and where its links go.
  *
  * Text files are compressed once, here, with Brotli and gzip, so each request only picks the encoding.
  */
@@ -13,6 +14,7 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 import { MODELS } from '../../../policy/models.ts';
+import { REAL, type Repositories, repositoriesFrom } from '../../../policy/repositories.ts';
 import { PROFILES, type Profile } from '../../../policy/spend.ts';
 
 export const DIST = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -55,6 +57,8 @@ export interface PageSettings {
   allLocal: boolean;
   /** The app's origin, which the flags' "Preview it on the app" opens: none, and the console draws no such link. */
   app?: string;
+  /** The factory's and the app's repositories, from FACTORY_REPOSITORY and APP_REPOSITORY. */
+  repositories: Repositories;
 }
 
 /**
@@ -71,7 +75,7 @@ export function pageSettings(env: NodeJS.ProcessEnv): PageSettings {
   if (allLocal && !MODELS[profile].local) {
     throw new Error(`ALL_LOCAL sends every agent to the local model, and the ${profile} profile has none.`);
   }
-  return { profile, allLocal, ...appOf(env.APP_URL) };
+  return { profile, allLocal, ...appOf(env.APP_URL), repositories: repositoriesFrom(env) };
 }
 
 /** APP_URL as the page may link to it: an http or https address with no credentials, by its origin alone. */
@@ -89,15 +93,26 @@ function appOf(given: string | undefined): { app?: string } {
   return { app: url.origin };
 }
 
-/** The built page with the profile, ALL_LOCAL and the app's address written into its meta tags. */
-export function withSettings(html: string, { profile, allLocal, app }: PageSettings): string {
+/** The built page with the profile, ALL_LOCAL, the app's address and the two repositories written into its meta tags. */
+export function withSettings(html: string, { profile, allLocal, app, repositories }: PageSettings): string {
   return html
     .replace('<meta name="sf-profile" content="local">', `<meta name="sf-profile" content="${profile}">`)
     .replace('<meta name="sf-all-local" content="false">', `<meta name="sf-all-local" content="${allLocal}">`)
-    .replace('<meta name="sf-app" content="">', `<meta name="sf-app" content="${app ?? ''}">`);
+    .replace('<meta name="sf-app" content="">', `<meta name="sf-app" content="${app ?? ''}">`)
+    .replace(
+      '<meta name="sf-factory-repository" content="">',
+      `<meta name="sf-factory-repository" content="${repositories.factory}">`,
+    )
+    .replace(
+      '<meta name="sf-app-repository" content="">',
+      `<meta name="sf-app-repository" content="${repositories.app}">`,
+    );
 }
 
-export function loadSite(dist = DIST, settings: PageSettings = { profile: 'local', allLocal: false }): Site {
+export function loadSite(
+  dist = DIST,
+  settings: PageSettings = { profile: 'local', allLocal: false, repositories: REAL },
+): Site {
   if (!existsSync(join(dist, '.vite/manifest.json')) && process.env.NODE_ENV !== 'production') {
     // In development Vite serves the page; this server only answers for events and artifacts.
     const page = {

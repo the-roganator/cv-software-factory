@@ -12,6 +12,7 @@ import { APPS, REPOSITORIES as SETTINGS } from '../../../../scripts/github-setti
 import { named, nameOf, policyHash, type RecordName, type Resource } from '../../../../scripts/policy-hash.ts';
 import { REPOSITORIES } from '../github/config.ts';
 import type { Refusal } from '../github/refusal.ts';
+import { FACTORY_REPOSITORY } from '../repositories.ts';
 import { readCiProof } from './ci.ts';
 import { type Installation, judgeInstallations } from './github.ts';
 import { type DrillTaken, type RunnerPod, rollback, stopTheLine } from './line.ts';
@@ -79,7 +80,7 @@ export const text = (...parts: string[]) =>
   cutTo(parts.filter(Boolean).join('\n').trim() || '(nothing printed)', OUTPUT);
 
 /** The repository the CI proofs are read from: this one. */
-export const REPOSITORY = 'the-roganator/cv-software-factory';
+export const REPOSITORY = FACTORY_REPOSITORY;
 const ORGANISATION = REPOSITORY.split('/')[0] as string;
 
 /** A refusal script, taken again to a file of the run's own, and judged against the record kept in deploy/test/. */

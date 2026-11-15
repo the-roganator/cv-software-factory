@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Where the platform check's time goes (.github/workflows/platform.yml): when each Application Argo CD deploys was made,
 # first synced and last turned Healthy, when each pod was made, scheduled and ready, and each image the node pulled,
-# how long it took, the wait for the pulls before it included (the kubelet pulls one image at a time), and its size.
+# how long it took, with and without the time it waited for the kubelet to start it, and its size.
 # Every time is minutes and seconds after kube-system was made, which is when k3s started.
 #
 # Read from what the cluster keeps: the Applications' status, the pods' conditions, and the kubelet's Pulled events,

@@ -448,7 +448,11 @@ export async function moveNode(dir: string, move: Move, get: Get, now = Date.now
   );
 }
 
-/** Moves a base image: each `FROM` of it at `from` to `to`, a tag and its digest, once its registry agrees. */
+/**
+ * Moves a base image: each `FROM` of it at `from` to `to`, a tag and its digest, once its registry agrees. `from` is
+ * what the image is pinned at now: a tag with its digest, or the tag alone, as the daily scan names a pin
+ * (`moves.json`'s `from`), which then moves each `FROM` of the image at that tag, whatever its digest.
+ */
 export async function moveImage(dir: string, move: Move, get: Get): Promise<void> {
   const [toTag, toDigest] = move.to.split('@');
   if (!toTag || !toDigest || !DIGEST.test(toDigest))
@@ -461,7 +465,9 @@ export async function moveImage(dir: string, move: Move, get: Get): Promise<void
     dir,
     // The digest the registry was just asked for, and agreed was the move's: never a second answer.
     (image, tag, digest) =>
-      image === move.name && `${tag}@${digest}` === move.from ? { tag: toTag, digest: toDigest } : undefined,
+      image === move.name && (move.from.includes('@') ? `${tag}@${digest}` : tag) === move.from
+        ? { tag: toTag, digest: toDigest }
+        : undefined,
     get,
   );
   if (!moved) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);

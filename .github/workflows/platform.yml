@@ -197,6 +197,15 @@ jobs:
       # Last of what the check requires, so a record to retake never hides a pod that did not run.
       - name: The API versions are the record's
         run: node scripts/api-versions.ts check "$RUNNER_TEMP/records/api-versions.json"
+      # Where the time went, on every outcome: each Application's sync and health, each pod's start and each image's
+      # pull, in the log and the step summary (scripts/platform-timeline.sh).
+      - name: Where the time went
+        if: ${{ always() }}
+        env:
+          KUBECTL: kubectl --context k3d-software-factory
+        run: |
+          if [ -e "$RUNNER_TEMP/queue-gone" ]; then echo "The merge queue let this entry go: nothing to show."; exit 0; fi
+          scripts/platform-timeline.sh | tee "$RUNNER_TEMP/measure/timeline.md"
       # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}

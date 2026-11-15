@@ -7,7 +7,7 @@
 # Read from what the cluster keeps: the Applications' status, the pods' conditions, and the kubelet's Pulled events,
 # which last an hour, longer than the check. A pod or a pull that went before the end (a Job's pod deleted, a pull
 # that failed) is not in them. On the cluster (no arguments), it prints the tables and adds them to the step summary
-# ($GITHUB_STEP_SUMMARY); KUBECTL is the kubectl command with its context. It never fails the check: what it cannot
+# ($GITHUB_STEP_SUMMARY); KUBECTL is the kubectl command with its context, each read given READ_TIMEOUT (default 10s). It never fails the check: what it cannot
 # read, it says.
 #
 # With four files, `kubectl get` of the kube-system namespace, and of Applications, pods and events in every
@@ -64,13 +64,15 @@ if [ $# -eq 4 ]; then
   exit
 fi
 
-kubectl=${KUBECTL:-kubectl}
+# Each read bounded, as platform-pods.sh's are: after a `make up` that failed, the API server may not answer at all.
+read -r -a kubectl <<<"${KUBECTL:-kubectl --context k3d-software-factory}"
+kubectl+=(--request-timeout="${READ_TIMEOUT:-10s}")
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
-if ! $kubectl get namespace kube-system -o json > "$dir/ns.json" ||
-  ! $kubectl -n argocd get applications -o json > "$dir/apps.json" ||
-  ! $kubectl get pods -A -o json > "$dir/pods.json" ||
-  ! $kubectl get events -A -o json > "$dir/events.json"; then
+if ! "${kubectl[@]}" get namespace kube-system -o json > "$dir/ns.json" ||
+  ! "${kubectl[@]}" -n argocd get applications -o json > "$dir/apps.json" ||
+  ! "${kubectl[@]}" get pods -A -o json > "$dir/pods.json" ||
+  ! "${kubectl[@]}" get events -A -o json > "$dir/events.json"; then
   echo "The cluster could not be read: no timeline."
   exit 0
 fi

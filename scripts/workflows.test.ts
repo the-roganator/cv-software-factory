@@ -898,6 +898,8 @@ describe('platform.yml', () => {
     const steps = jobs.platform?.steps ?? [];
     const make = steps.find((step) => /\bmake up REVISION=/.test(step.run ?? ''));
     expect(make?.run).toContain('make up REVISION="$REVISION" PLATFORM_CHECK=1');
+    // Each third-party image from CI's copy where there is one, its own registry where not.
+    expect(make?.run).toContain('K3D_REGISTRIES=deploy/k3d/ci-registries.yaml');
     expect((make as { env?: Record<string, string> } | undefined)?.env?.REVISION).toBe(expression('github.sha'));
     const runs = steps.map((step) => step.run ?? '').join('\n');
     // Watched, and stopped at the ceiling or on what waiting will not mend (scripts/platform-watch.test.ts).
@@ -912,6 +914,11 @@ describe('platform.yml', () => {
     expect((pods as { if?: string } | undefined)?.if).toBeUndefined();
     expect(pods?.env?.OUT).toBe(`${expression('runner.temp')}/measure/pods`);
     expect(names.indexOf('Every pod running and ready')).toBeGreaterThan(names.indexOf('Take the refusal records'));
+    // Where the time went, on every outcome (scripts/platform-timeline.test.ts).
+    const timeline = steps.find((step) => step.name === 'Where the time went');
+    expect(timeline?.run).toContain('scripts/platform-timeline.sh');
+    expect((timeline as { if?: string } | undefined)?.if).toBe(expression('always()'));
+    expect(names.indexOf('Where the time went')).toBeGreaterThan(names.indexOf('Every pod running and ready'));
     // What the cluster showed, kept on every outcome but success, cancellation included.
     const kept = steps.find((step) => step.with?.name === 'cluster');
     expect(kept?.uses).toMatch(/^actions\/upload-artifact@/);

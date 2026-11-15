@@ -602,6 +602,7 @@ function PatchCard({
       <p className="ev">
         {c &&
           `Clears ${[c.critical && `${count(c.critical)} Critical`, c.high && `${count(c.high)} High`].filter(Boolean).join(' and ') || 'nothing at High or Critical'}. `}
+        {need.pull !== undefined && `Dependabot opened #${need.pull}. `}
         {his(why)}
       </p>
       {(need.runs || need.to) && <p className="words">{need.runs ? need.runs.image : `${need.from} → ${need.to}`}</p>}
@@ -610,7 +611,11 @@ function PatchCard({
         <button type="button" className="linkish" onClick={() => onRow(need.key)}>
           Open its row in Patching
         </button>
-        {!martin && <span>Martin moves it, on GitHub or his cluster</span>}
+        {!martin && (
+          <span>
+            {need.kind === 'dependabot' ? 'Martin approves it, on GitHub' : 'Martin moves it, on GitHub or his cluster'}
+          </span>
+        )}
       </div>
     </article>
   );

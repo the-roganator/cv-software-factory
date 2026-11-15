@@ -160,6 +160,9 @@ function why(row: PatchingRow, who: Who): string {
             return row.link?.kind === 'pull'
               ? `Dependabot opened #${row.link.number}, to ${row.link.version}. The line writes nothing where this is pinned, so the pin is Dependabot’s, and the pull request waits for ${yours(who)} approval.`
               : `The line writes nothing where this is pinned, and Dependabot reads it, so the pin is Dependabot’s. Its pull request will wait for ${yours(who)} approval.`;
+          // One that clears a High or a Critical on a deadline, its pull request open: it waits for his approval.
+          if (row.waits && row.link?.kind === 'pull')
+            return `Dependabot opened #${row.link.number}, to ${row.link.version}. Dependabot moves this pin, and its pull request merges only with ${yours(who)} approval.`;
           return row.link?.kind === 'pull'
             ? `Dependabot opened #${row.link.number}, to ${row.link.version}, and the move has no High or Critical on a deadline, so the pin stays Dependabot’s.`
             : 'A pin Dependabot reads, with no High or Critical on a deadline, so it stays Dependabot’s.';
@@ -190,6 +193,8 @@ function whatToDo(row: PatchingRow, who: Who): string {
     return 'Run make upgrade-cluster, with the line stopped. It loses nothing in the store.';
   if (source.lane === 'approval')
     return `Move it in a pull request ${who.martin ? 'of your own' : 'of his own'}, and review it there.`;
+  if (source.lane === 'dependabot')
+    return `Review Dependabot’s pull request${row.link?.kind === 'pull' ? `, #${row.link.number},` : ''} and approve it there: it merges once ${who.martin ? 'you have' : 'Martin has'}.`;
   return 'Move it by hand in a pull request: the App writes no mise file, workflow or lockfile.';
 }
 

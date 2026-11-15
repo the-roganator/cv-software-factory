@@ -213,6 +213,10 @@ describe('the day’s moves', () => {
       // On a deadline or not, where Dependabot reads the pin: its group moves the image and the library together.
       expect(laneOf(image())).toBe('dependabot');
       expect(laneOf(image(), { dependabot: [] })).toBe('issue');
+      // In the app too, where Dependabot reads it; where it does not, the app's moves are the line's.
+      const app = { repository: APP, app: true };
+      expect(laneOf(image(), app)).toBe('dependabot');
+      expect(laneOf(image(), { ...app, dependabot: [] })).toBe('line');
     });
     it('names the judges the review gate names', () => {
       expect(Object.keys(JUDGES)).toEqual(GATE_JUDGES.map((judge) => judge.name));

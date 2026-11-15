@@ -166,6 +166,11 @@ export function laneOf(
 ): Lane {
   const target = move.to;
   if (!target || target.kind === 'unbuilt') return 'none';
+  // Playwright's image and its library in the lockfile are one release (scripts/image-pins.test.ts): no change that
+  // writes the image alone can pass. Dependabot's group moves both, in either repository, where it reads the pin;
+  // otherwise a person does here, from an issue, and in the app it is the line's as any other.
+  if (move.name === PLAYWRIGHT_IMAGE && move.pins.every((pin) => readByDependabot(pin, context.dependabot)))
+    return 'dependabot';
   if (context.app) {
     // A pin the line may not write is refused at the worker's guard every time: Dependabot's, where it reads it.
     const forbidden = move.pins.some((pin) => LINE_NEVER.some((path) => pin.file.startsWith(path)));
@@ -182,10 +187,7 @@ export function laneOf(
     move.pins.some((pin) => MISE_FILES.has(pin.file) || pin.file === 'Makefile')
   )
     return 'issue';
-  // Playwright's image and its library in the lockfile are one release (scripts/image-pins.test.ts): no pull request
-  // that writes the image alone can pass. Dependabot's group moves both, where it reads the pin; a person, otherwise.
-  if (move.name === PLAYWRIGHT_IMAGE)
-    return move.pins.every((pin) => readByDependabot(pin, context.dependabot)) ? 'dependabot' : 'issue';
+  if (move.name === PLAYWRIGHT_IMAGE) return 'issue';
   // What judges a move is Martin's to move, as the review gate holds it (scripts/pin-move.ts's `JUDGES`).
   if (Object.values(JUDGES).some((judge) => judge(move))) return 'approval';
   // A major, of any kind: the one move the scan can tell needs more than its pins' lines written. Whether a chart on its

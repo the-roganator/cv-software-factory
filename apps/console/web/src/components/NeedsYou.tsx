@@ -547,6 +547,11 @@ const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: strin
     (name) => `${name} needs moving by hand`,
     'No pull request of the App’s can write it: mise pins it, or it is a workflow or a lockfile.',
   ],
+  dependabot: [
+    '{his} approval',
+    (name) => `${name} waits in Dependabot’s pull request`,
+    'Dependabot moves this pin, and its pull request merges only with {his} approval.',
+  ],
   'unlisted-image': [
     '{his} cluster',
     () => 'An unscanned image is running',

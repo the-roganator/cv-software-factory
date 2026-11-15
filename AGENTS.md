@@ -20,6 +20,7 @@ make enrol                     # a one-time code to enrol a passkey on the conso
 make share-key                 # the traffic generator's signing key, made once, and its public half for the app
 make refusal-key               # the GitHub worker's key for signing its refusals, made once, and its public half for the line and the console
 make judgements-token          # triage's token for the gateway's judgements, made once
+make scan-state-key            # the key each repository's scan seals its state with, made once, for its environment and the GitHub worker
 make guardrails                # every guardrail's proof but the attacks, recorded in the store, from a clean main (PROOFS="…" for some); the drill asks first
 ```
 

@@ -25,6 +25,7 @@ import {
   reportLines,
   rules,
   rulesetProblems,
+  SCAN_STATE_ENVIRONMENT,
 } from './github-settings.ts';
 
 const [checks] = Object.values(REPOSITORIES) as [string[]];
@@ -338,10 +339,14 @@ describe('the GitHub Apps', () => {
 });
 
 describe('the environments that hold a key', () => {
-  it('are review in both repositories, and the drift check in this one alone', () => {
+  it('are review and the scan’s state in both repositories, and the drift check in this one alone', () => {
     expect(Object.keys(ENVIRONMENTS)).toEqual(Object.keys(REPOSITORIES));
-    expect(ENVIRONMENTS['the-roganator/cv-software-factory']).toEqual([REVIEW_ENVIRONMENT, DRIFT_CHECK_ENVIRONMENT]);
-    expect(ENVIRONMENTS['the-roganator/cv-worlds-worst-website']).toEqual([REVIEW_ENVIRONMENT]);
+    expect(ENVIRONMENTS['the-roganator/cv-software-factory']).toEqual([
+      REVIEW_ENVIRONMENT,
+      DRIFT_CHECK_ENVIRONMENT,
+      SCAN_STATE_ENVIRONMENT,
+    ]);
+    expect(ENVIRONMENTS['the-roganator/cv-worlds-worst-website']).toEqual([REVIEW_ENVIRONMENT, SCAN_STATE_ENVIRONMENT]);
   });
 });
 

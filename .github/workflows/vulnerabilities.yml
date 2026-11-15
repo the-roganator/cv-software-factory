@@ -12,9 +12,12 @@
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
 #   fails and uploads nothing, so no alert closes because its item went unread. Before the upload, deadlines.ts finds
-#   what fixes each finding and since when, reading the alerts for the day each one already states, ends each result's
-#   message with it (`Fixed by <target>, first seen <day>.`), judges each deadline and groups the results into moves:
-#   their table is in the log and the step summary, and `moves.json`, the artifact `moves`, holds the same. A source
+#   what fixes each finding and since when, reading the state the last run kept for each finding's days (state.ts, ADR
+#   0021: the artifact `state` of the newest earlier run on the default branch, sealed with the key in the environment
+#   `scan-state`, which only main may use), or the alerts where there is none it can open, ends each result's message
+#   with its fix (`Fixed by <target>, first seen <day>.`), judges each deadline and groups the results into moves:
+#   their table is in the log and the step summary, and `moves.json`, the artifact `moves`, holds the same. It seals
+#   the state the next run reads, uploaded before the results, so every upload has its state. A source
 #   it cannot read fails the run before the upload, so no message loses its day. After the upload it holds its
 #   categories' alerts to policy/vulnerabilities.ts, read from this repository's main alone: each excepted result's
 #   alert dismissed as won't fix, and any dismissed with no exception in force reopened (alerts.ts). Then the run
@@ -23,7 +26,7 @@
 # - scan (proving): on a pull request that changes the scan itself, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
 #   not showing CVE-2026-111497, and its log carries the counts, the deadlines' and the moves' too, read against the
-#   repository's alerts and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job
+#   repository's alerts, as a scan with no state reads them (it holds no key), and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job
 #   that writes refuses any event but a push to the default branch, the schedule or a run by hand there; this one writes
 #   nothing, and runs on a pull request alone, from a branch of this repository: its first step refuses a fork's, whose
 #   token would read the alerts, which are not public. A fork supplies its own copy of this file, so the step binds a
@@ -31,7 +34,8 @@
 #
 # Kept between runs, by the default branch's runs alone (a pull request's restores): Trivy's analysis of each layer,
 # keyed by Trivy's pin, and the day's lookups of registries and releases (memo.ts). Neither is what a verdict depends
-# on: the advisory databases are pulled afresh every run, and code scanning and the exceptions are read every run.
+# on: the advisory databases are pulled afresh every run, and the exceptions are read every run. The state is no cache:
+# it is an artifact of its run, sealed, which only a run on the default branch reads or writes.
 name: vulnerabilities
 
 on:
@@ -130,7 +134,11 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    # The key the state is sealed with, which only a run on main may use (scripts/github-settings.ts). One step reads
+    # it, and nothing of a pull request's runs in this job.
+    environment: scan-state
     permissions:
+      actions: read # the last run's state, an artifact of that run
       contents: read
       packages: read # the advisory database and the images in GHCR, with the job's token
       security-events: write # upload the results to code scanning
@@ -232,8 +240,8 @@ jobs:
             --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" --upload \
             --repository "$GITHUB_REPOSITORY" --cache "$RUNNER_TEMP/trivy"
       # What fixes each finding and since when, ended into each result's message before the upload, each deadline, and the
-      # moves (deadlines.ts, moves.ts). It reads code scanning with the job's token, for the day each alert states and
-      # when each was made, npm's registry, Node's release index, k3s's releases, the charts' repositories, the tools'
+      # moves (deadlines.ts, moves.ts). It reads the state the last run kept, with the job's token and the key, for each
+      # finding's days (code scanning's alerts, where there is none it can open), and seals the next. It reads npm's registry, Node's release index, k3s's releases, the charts' repositories, the tools'
       # releases, and the newer images on each line with a fixed finding (skopeo for the tags and the index digests,
       # Trivy on the scan's database). It fails, and nothing is uploaded, on a source it cannot read.
       - name: Deadlines and moves
@@ -241,10 +249,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           LOOKUPS_DAY: ${{ steps.day.outputs.day }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SCAN_STATE_KEY: ${{ secrets.SCAN_STATE_KEY }}
         run: |
           node factory/apps/factory/src/vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan" --checkout scanned \
-            --trivy-pin factory/deploy/images/trivy/Dockerfile --write --memo "$RUNNER_TEMP/lookups/deadlines.json" \
-            --memo-day "$LOOKUPS_DAY"
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --write --state "$DEFAULT_BRANCH" \
+            --memo "$RUNNER_TEMP/lookups/deadlines.json" --memo-day "$LOOKUPS_DAY"
       # The default branch's runs alone save, each entry once (a day's key is not saved again). Trivy writes its cache as
       # root, in its image: the runner's user is given it to read.
       - name: Give the runner Trivy's analysis to save
@@ -268,6 +278,15 @@ jobs:
           name: moves
           path: ${{ runner.temp }}/scan/moves.json
           if-no-files-found: error
+      # The state the next run and the GitHub worker read (state.ts), sealed: uploaded before the results, so no upload
+      # is without one. Kept as long as GitHub keeps an artifact; a scan that finds none reads the alerts.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ steps.scan.outputs.sarif == 'true' }}
+        with:
+          name: state
+          path: ${{ runner.temp }}/scan/state.sealed
+          if-no-files-found: error
+          retention-days: 90
       # The scan writes the file only when every item was read and it is within code scanning's limits: no run over 5,000
       # results, and no more than 20 runs.
       - name: Refuse to upload from anything but the default branch's push, the schedule or a run by hand

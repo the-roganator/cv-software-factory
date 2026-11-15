@@ -64,10 +64,10 @@ export const REVIEW_APP = 5470762;
 /** The check the review App posts, `scripts/review-gate.ts`. */
 export const REVIEW_CHECK = 'review';
 
-/** An environment that holds an App's key, which only workflows on `main` may use (ADR 0014). */
+/** An environment that holds a key, which only workflows on `main` may use (ADR 0014, ADR 0021). */
 export interface KeyEnvironment {
   name: string;
-  /** The App's key, as its workflow reads it from the environment. */
+  /** The key, as its workflow reads it from the environment. */
   key: string;
 }
 
@@ -84,12 +84,18 @@ export const REVIEW_ENVIRONMENT: KeyEnvironment = { name: 'review', key: 'REVIEW
 export const DRIFT_CHECK_ENVIRONMENT: KeyEnvironment = { name: 'drift-check', key: 'DRIFT_CHECK_APP_PRIVATE_KEY' };
 
 /**
+ * The key each repository's scan seals its state with (apps/factory/src/vulnerabilities/state.ts, ADR 0021), which
+ * vulnerabilities.yml's scan reads: one for each repository, made by `make scan-state-key`.
+ */
+export const SCAN_STATE_ENVIRONMENT: KeyEnvironment = { name: 'scan-state', key: 'SCAN_STATE_KEY' };
+
+/**
  * Each repository's environments that hold a key, the only ones its workflows may read a secret from
  * (scripts/workflows.test.ts). `--check` reads these, and not the repository's own secrets or other environments.
  */
 export const ENVIRONMENTS: Record<string, KeyEnvironment[]> = {
-  'the-roganator/cv-software-factory': [REVIEW_ENVIRONMENT, DRIFT_CHECK_ENVIRONMENT],
-  'the-roganator/cv-worlds-worst-website': [REVIEW_ENVIRONMENT],
+  'the-roganator/cv-software-factory': [REVIEW_ENVIRONMENT, DRIFT_CHECK_ENVIRONMENT, SCAN_STATE_ENVIRONMENT],
+  'the-roganator/cv-worlds-worst-website': [REVIEW_ENVIRONMENT, SCAN_STATE_ENVIRONMENT],
 };
 
 /** An App's permission, as GitHub names it, and its level. */
@@ -460,7 +466,7 @@ function readable<T>(read: () => T): T | undefined {
   }
 }
 
-/** Whether an environment holds its App's key, by name: GitHub never shows a secret's value. */
+/** Whether an environment holds its key, by name: GitHub never shows a secret's value. */
 function hasKey(wanted: KeyEnvironment): boolean {
   const secrets = found(
     () =>

@@ -42,9 +42,9 @@ import {
   type ScannedImage,
 } from '../vulnerabilities/moves.ts';
 import { readMessage, SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
+import { type ZipError, zipEntry } from '../vulnerabilities/zip.ts';
 import { type GitHub, GitHubError, READ_AGAIN } from './client.ts';
 import { DIGEST } from './registry.ts';
-import { type ZipError, zipEntry } from './zip.ts';
 
 /** The scan's workflow, in both repositories: the app's calls the factory's. */
 export const SCAN_WORKFLOW = 'vulnerabilities.yml';

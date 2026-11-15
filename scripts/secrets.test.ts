@@ -156,6 +156,7 @@ describe('every Secret the Makefile writes', () => {
         'postgres',
         'pushover',
         'refusal-signing-key',
+        'scan-state-key',
         'share-signing-key',
         'typesafe',
       ].sort(),

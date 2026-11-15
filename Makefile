@@ -88,7 +88,7 @@ define cluster-held
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store bench-down stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
+.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key scan-state-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store bench-down stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -263,6 +263,32 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 			node scripts/share-key.ts public)" && printf '%s\n' "$$public" | \
 		$(KUBECTL) -n website create configmap share-key --from-file=public-key=/dev/stdin --dry-run=client -o yaml | \
 		$(KUBECTL) apply -f - >/dev/null && echo "  The app has the generator's public key, in share-key."
+
+# The key each repository's scan seals its state with (apps/factory/src/vulnerabilities/state.ts, ADR 0021): 32 random
+# bytes for each, made once, through stdin and never a file on the Mac. The cluster's copy, the Secret scan-state-key in
+# `factory`, is the GitHub worker's and the one this reads; each repository's `scan-state` environment, which only main
+# may use (scripts/github-settings.ts makes it), is given the same key again each time, as SCAN_STATE_KEY. A key made
+# anew opens no state sealed before it: the next scan reads the alerts, and seals with the new one. The worker reads
+# its keys as it starts, so a new one starts it again, before GitHub is given it: a run that stops there has done so.
+SCAN_STATE_REPOSITORIES := the-roganator/cv-software-factory the-roganator/cv-worlds-worst-website
+scan-state-key: ## Give each repository's scan and the GitHub worker the key the scan's state is sealed with, made once
+	@$(call namespace,factory)
+	@for repository in $(SCAN_STATE_REPOSITORIES); do name="$${repository#*/}"; \
+		held="$$($(KUBECTL) -n factory get secret scan-state-key -o "jsonpath={.data.$$name}" --ignore-not-found)" || exit 1; \
+		if [ -z "$$held" ]; then \
+			key="$$(node apps/factory/src/vulnerabilities/state.ts new)" && [ -n "$$key" ] || exit 1; \
+			$(KUBECTL) -n factory get secret scan-state-key -o name --ignore-not-found | grep -q . || \
+				$(KUBECTL) -n factory create secret generic scan-state-key >/dev/null || exit 1; \
+			printf '{"data":{"%s":"%s"}}' "$$name" "$$(printf %s "$$key" | base64)" | \
+				$(KUBECTL) -n factory patch secret scan-state-key --type merge --patch-file /dev/stdin >/dev/null || exit 1; \
+			echo "  $$repository has a new key for its scan's state."; \
+			$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=github --ignore-not-found >/dev/null && \
+			echo "  The GitHub worker starts again with it." || exit 1; \
+		fi; \
+		$(KUBECTL) -n factory get secret scan-state-key -o "jsonpath={.data.$$name}" | base64 -d | \
+			gh secret set SCAN_STATE_KEY --env scan-state --repo "$$repository" >/dev/null && \
+			echo "  $$repository's scan-state environment has its key." || exit 1; \
+	done
 
 # The GitHub worker's key for signing its refusals (apps/factory/src/github/refusals.ts): an Ed25519 key pair, made once,
 # as share-key's is. The private key is the Secret refusal-signing-key in `factory`, which only the GitHub worker reads;

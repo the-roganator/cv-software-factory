@@ -28,30 +28,31 @@ describe('Patching, projected from the samples', () => {
   it('has a row for each move and each row the sense made, what waits on Martin first, then by deadline', () => {
     expect(view.moves).toBe(11);
     expect(view.running['unlisted-image']).toBe(1);
-    expect(view.waiting).toBe(4);
+    expect(view.waiting).toBe(5);
     expect(names(view.rows)).toEqual([
       'example-cd',
       'example-logs',
       'k3s',
+      'example/sbom-tool',
       'example/debug-shell:1.4',
       'example/scanner-proxy',
       '(withheld) the-roganator/cv-worlds-worst-website lockfile 1',
       'example-dashboards',
-      'example/sbom-tool',
       'example/sidecar',
       'example/node-base',
       '@example/tokens',
       'example/cluster-proxy',
     ]);
-    expect(view.rows.slice(0, 4).every((row) => row.waits)).toBe(true);
-    expect(view.rows.slice(4).some((row) => row.waits)).toBe(false);
+    expect(view.rows.slice(0, 5).every((row) => row.waits)).toBe(true);
+    expect(view.rows.slice(5).some((row) => row.waits)).toBe(false);
   });
 
   it('reads each move’s state from its lane, its pull request where Dependabot opened one, and none it cannot', () => {
     const state = (name: string) => view.rows.find((row) => row.name === name)?.state;
     expect(state('example-logs')).toEqual({ kind: 'waits' });
     expect(state('example/scanner-proxy')).toEqual({ kind: 'lane', lane: 'worker' });
-    expect(state('example/sbom-tool')).toEqual({ kind: 'opened' });
+    // Dependabot's, clearing a High on a deadline with its pull request open: it waits for his approval.
+    expect(state('example/sbom-tool')).toEqual({ kind: 'waits' });
     expect(state('example/node-base')).toEqual({ kind: 'lane', lane: 'line' });
     expect(state('example/cluster-proxy')).toEqual({ kind: 'no-route' });
     expect(view.rows.find((row) => row.name === 'example/sbom-tool')?.link).toEqual({

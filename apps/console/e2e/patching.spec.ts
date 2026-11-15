@@ -39,7 +39,7 @@ test('the summary counts every open finding and what the moves clear at a glance
   await ready(page);
   const card = summary(page);
   await expect(card.getByRole('heading', { level: 2 })).toHaveText('Patching');
-  await expect(card.locator('.panel-head .label')).toHaveText('11 moves · 4 wait on Martin');
+  await expect(card.locator('.panel-head .label')).toHaveText('11 moves · 5 wait on Martin');
   // Needs you's rule: moves wait on Martin, a deadline is within a day, and the scan failed.
   await expect(card).toHaveClass(/\battn\b/);
   await expect(card.locator('.clr-head span')).toHaveText(['C', 'H', 'M', 'L']);
@@ -81,23 +81,23 @@ test('a visitor reads the day: what waits on Martin first, then by deadline, and
 }) => {
   await patching(page);
   await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText(
-    '11 moves · 1 unscanned image running · 4 wait on Martin · Read only',
+    '11 moves · 1 unscanned image running · 5 wait on Martin · Read only',
   );
   await expect(panel(page).locator('.pm .name')).toHaveText([
     'example-cd',
     'example-logs',
     'k3s',
+    'example/sbom-tool',
     'Unscanned image running',
     'example/scanner-proxy',
     'A package in the app’s lockfile',
     'example-dashboards',
-    'example/sbom-tool',
     'example/sidecar',
     'example/node-base',
     '@example/tokens',
     'example/cluster-proxy',
   ]);
-  await expect(panel(page).locator('.pm.wait')).toHaveCount(4);
+  await expect(panel(page).locator('.pm.wait')).toHaveCount(5);
   await expect(panel(page).locator('.pm.wait .v').first()).toHaveText('Waits on Martin');
   await expect(row(page, 'A package in the app’s lockfile')).toContainText('versions once its pull request opens');
   await expect(panel(page).locator('.patch-day')).toContainText('Scan failed today');
@@ -150,7 +150,7 @@ test('a row opens in place, one at a time: why it waits, what to do, what it cle
 test('Martin reads the app’s lockfile move whole, and “you” for himself', async ({ page }) => {
   await patching(page, 'martin');
   await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText(
-    '11 moves · 1 unscanned image running · 4 wait on you',
+    '11 moves · 1 unscanned image running · 5 wait on you',
   );
   await expect(row(page, '@example/parser')).toContainText('4.2.0 → 4.2.3');
   await expect(panel(page).locator('.pm.wait .v').first()).toHaveText('Waits on you');
@@ -242,8 +242,8 @@ test('an event Patching does not read renders nothing in its summary or sheet, a
     }),
   };
   await send(after(2, day, payload));
-  await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText('11 moves · 3 wait on Martin · Read only');
-  await expect(summary(page).locator('.panel-head .label')).toHaveText('11 moves · 3 wait on Martin');
+  await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText('11 moves · 4 wait on Martin · Read only');
+  await expect(summary(page).locator('.panel-head .label')).toHaveText('11 moves · 4 wait on Martin');
   expect(await renders()).toEqual(before.map((n) => n + 1));
   // All open is a dash under each header, in the summary and under the sheet's rows, never a figure worked out from
   // what the moves clear; what they clear is still there.
@@ -265,12 +265,14 @@ test('each move that waits on Martin is a card in Needs you, which opens its row
     'example-cd needs moving by hand',
     'example-logs waits for a review',
     'k3s needs the cluster moved',
+    'example/sbom-tool waits in Dependabot’s pull request',
     'An unscanned image is running',
   ]);
   await expect(cards.locator('.kick b')).toHaveText([
     'Patch · an issue',
     'Patch · your approval',
     'Patch · your cluster',
+    'Patch · your approval',
     'Patch · your cluster',
   ]);
   const logs = cards.filter({ hasText: 'example-logs waits for a review' });

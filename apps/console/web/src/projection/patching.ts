@@ -14,7 +14,7 @@
  */
 import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-factory/events';
 import type { ItemState } from './items.ts';
-import { DAY, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
+import { DAY, dependabotWaits, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
 
 export { dueSoon, dueWords, PATCHING_ROLE, targetWords } from './patch-needs.ts';
 
@@ -171,7 +171,7 @@ function carrying(items: readonly ItemState[], name: string): ItemState | undefi
 function moveRow(repository: string, move: ScanMove, items: readonly ItemState[], key: string): PatchingRow {
   const shown = move.lockfile ? move.package : undefined;
   const name = move.lockfile ? shown?.name : move.name;
-  const waits = HIS.includes(move.lane);
+  const waits = HIS.includes(move.lane) || dependabotWaits(move);
   const item = move.lane === 'line' && repository === APP_REPOSITORY && name ? carrying(items, name) : undefined;
   const stage = item?.stage === 'plan' || item?.stage === 'build' || item?.stage === 'review' ? item.stage : undefined;
   const link: Link | undefined = move.pullRequest

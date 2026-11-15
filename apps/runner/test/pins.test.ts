@@ -365,6 +365,23 @@ describe('a base image’s move', () => {
     expect(read(dir, 'Dockerfile')).toBe(`FROM gcr.io/distroless/static:nonroot@sha256:${'5'.repeat(64)}\n`);
   });
 
+  it('moves a pin the scan names by its tag alone, whatever its digest, and no other tag of the image', async () => {
+    const to = `sha256:${'5'.repeat(64)}`;
+    const get: Get = async () => new Response(null, { headers: { 'docker-content-digest': to } });
+    const dir = checkout({
+      Dockerfile: `FROM ghcr.io/anchore/syft:v1.54.0@sha256:${'2'.repeat(64)}\n`,
+      'older.Dockerfile': `FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`,
+    });
+    const move = { ecosystem: 'docker' as const, name: 'ghcr.io/anchore/syft', from: 'v1.54.0', to: `v1.57.1@${to}` };
+    await writePins(dir, move, { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir });
+    expect(read(dir, 'Dockerfile')).toBe(`FROM ghcr.io/anchore/syft:v1.57.1@${to}\n`);
+    expect(read(dir, 'older.Dockerfile')).toBe(`FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`);
+    // A tag no FROM has is refused, as a tag and digest no FROM has is.
+    await expect(
+      writePins(dir, { ...move, from: 'v1.50.0' }, { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir }),
+    ).rejects.toThrow('No FROM pins ghcr.io/anchore/syft at v1.50.0.');
+  });
+
   it('refuses a registry digest that is not a SHA-256’s', async () => {
     const get: Get = async () => new Response(null, { headers: { 'docker-content-digest': 'md5:abc' } });
     await expect(digestOf('node', '24', get)).rejects.toThrow(/gives no SHA-256 digest/);

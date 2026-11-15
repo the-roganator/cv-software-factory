@@ -33,7 +33,7 @@ reportsController:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8000"
   image:
-    tag: v1.19.1@sha256:c0eee97b9b44a0dd35805d56b358fa52548480f79d4944602b9609538eccd64c
+    tag: v1.20.0@sha256:f54e3cc106fadb1a615d0ec11c42f741f51d3580a5f70dfbe7bd7ec58864ef03
   resources:
     requests:
       cpu: 10m

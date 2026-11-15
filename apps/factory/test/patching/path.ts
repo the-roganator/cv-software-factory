@@ -261,11 +261,10 @@ export async function carry(findings: Finding[], targets: ReadTarget[], world: W
     const sent = send.signal.move;
     if (!sent) continue;
     // Each of the scan's moves this signal carries: one, or the two of a name at two versions.
+    const pinned = new Set(sent.pins.map((pin) => `${pin.file}:${pin.line}`));
     const own = out.filter(
-      (each) =>
-        each.move.lane === 'line' &&
-        each.move.name.replace(' (withheld)', '') === sent.name &&
-        sent.from.split(',').includes(each.move.from),
+      (each, index) =>
+        each.move.lane === 'line' && (list[index]?.pins ?? []).some((pin) => pinned.has(`${pin.file}:${pin.line}`)),
     );
     const step: Partial<Carried> & Pick<Carried, 'ends'> = {
       sent: { ecosystem: sent.ecosystem, name: sent.name, from: sent.from, to: sent.to },

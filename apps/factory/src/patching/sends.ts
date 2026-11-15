@@ -68,6 +68,34 @@ function targetWord(target: Target | undefined): string | undefined {
   }
 }
 
+/** The release a tag or a version starts with: `24.22.2-alpine3.24` is Node 24.22.2. */
+const releaseOf = (text: string) => /^v?(\d+\.\d+\.\d+)(?![\d.])/.exec(text)?.[1];
+
+/**
+ * A move that needs another Node, as a move of Node from one release to another, which the pin step writes whole
+ * (mise.toml, mise.lock and each `FROM` of a Node image, apps/runner/src/pins.ts): Node's own fix, wherever the scan
+ * found the binary, in the build stage's image (pinned by a tag that names the release) or the runtime's (whose
+ * findings name it); and the build stage's image moving to a tag of another release, which would leave mise's pin
+ * behind were its `FROM` written alone. Nothing for any other move.
+ */
+function nodeMove(read: ReadMove, target: Target | undefined): { from: string; to: string } | undefined {
+  if (target?.kind === 'version') {
+    const [to, ...others] = target.versions;
+    const installed = new Set(read.findings.filter((each) => each.package === 'node').map((each) => each.installed));
+    const [found, ...more] = installed;
+    // The scan names the pin, a tag: the release in it, or, for an image whose tag names none, the one it found.
+    const from = read.name === 'node' ? releaseOf(read.from) : more.length ? undefined : found;
+    const ownFix = read.name === 'node' || read.findings.every((each) => each.package === 'node');
+    return ownFix && from && to && !others.length ? { from, to } : undefined;
+  }
+  if (target?.kind === 'image' && read.name === 'node') {
+    const from = releaseOf(read.from);
+    const to = releaseOf(target.tag);
+    return from && to && from !== to ? { from, to } : undefined;
+  }
+  return undefined;
+}
+
 /** A read move as the signal names it, or why it cannot be sent: it has no target to move to, or no ecosystem. */
 function moveOf(repository: string, read: ReadMove): Move | string {
   if (read.lockfile) {
@@ -81,10 +109,10 @@ function moveOf(repository: string, read: ReadMove): Move | string {
   const target = readTarget(read.to);
   const to = targetWord(target);
   if (!to || !read.from) return `${read.name}: no target to move to`;
-  // Node's own fix, in mise.toml or an image's binary, is a version of `node`; any other image moves to an image.
-  const ecosystem = target?.kind === 'image' ? 'docker' : read.name === 'node' ? 'node' : undefined;
-  if (!ecosystem) return `${read.name}: a target of no ecosystem a signal names`;
-  return { repository, name: read.name, ecosystem, from: read.from, to, pins: read.pins };
+  const node = nodeMove(read, target);
+  if (node) return { repository, name: 'node', ecosystem: 'node', ...node, pins: read.pins };
+  if (target?.kind !== 'image') return `${read.name}: a target of no ecosystem a signal names`;
+  return { repository, name: read.name, ecosystem: 'docker', from: read.from, to, pins: read.pins };
 }
 
 /**

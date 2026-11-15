@@ -186,6 +186,19 @@ describe('a package’s move', () => {
     expect(range).toBe('~5.1.0');
   });
 
+  it('leaves a copy on another major the move does not name where it is', async () => {
+    // sonic-boom twice: 4.2.1 under pino, and 5.0.1 beside it, which alone has the advisory.
+    const twice = (newer: string) =>
+      LOCK('5.0.5', '4.2.1').replace(
+        '\nsnapshots:',
+        `\n  sonic-boom@${newer}:\n    resolution: {integrity: sha512-newer}\n\nsnapshots:`,
+      );
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': twice('5.0.1') });
+    const { pnpm } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), twice('5.0.2')));
+    await writePins(dir, { ecosystem: 'npm', name: 'sonic-boom', from: '5.0.1', to: '5.0.2' }, tools(pnpm));
+    expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'sonic-boom')).toEqual(['4.2.1', '5.0.2']);
+  });
+
   it('holds for Martin when a parent’s range admits no fix: an override is his, in pnpm-workspace.yaml', async () => {
     const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
     // pnpm finds nothing pino admits: the lockfile is as it was.

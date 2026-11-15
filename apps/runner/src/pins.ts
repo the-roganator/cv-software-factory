@@ -288,7 +288,10 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   // A copy on another major that the move does not name has no advisory this move fixes: it stays where it is.
   const major = (version: string) => version.split('.')[0];
   const itsOwn = (version: string) => version === move.from || major(version) === major(move.to);
-  if (versions.filter(itsOwn).every((v) => compareVersions(v, move.to) >= 0)) return;
+  const own = versions.filter(itsOwn);
+  // Already made: every copy is at the target or past it, or every copy of the move's own is, and there is one.
+  const there = (list: string[]) => list.every((v) => compareVersions(v, move.to) >= 0);
+  if (there(versions) || (own.length > 0 && there(own))) return;
   if (!versions.includes(move.from)) {
     throw new PinsRefused(`The lockfile has ${move.name} at ${versions.join(', ')}, not at ${move.from}.`);
   }

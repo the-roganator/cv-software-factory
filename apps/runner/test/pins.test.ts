@@ -199,6 +199,16 @@ describe('a package’s move', () => {
     expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'sonic-boom')).toEqual(['4.2.1', '5.0.2']);
   });
 
+  it('refuses a move whose copy the lockfile does not have, though another major’s is there', async () => {
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
+    const stale = writePins(
+      dir,
+      { ecosystem: 'npm', name: 'sonic-boom', from: '5.0.1', to: '5.0.2' },
+      tools(fakePnpm(() => {}).pnpm),
+    );
+    await expect(stale).rejects.toThrow('The lockfile has sonic-boom at 4.2.1, not at 5.0.1.');
+  });
+
   it('holds for Martin when a parent’s range admits no fix: an override is his, in pnpm-workspace.yaml', async () => {
     const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
     // pnpm finds nothing pino admits: the lockfile is as it was.

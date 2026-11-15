@@ -13,7 +13,7 @@ const digest = (c: string) => `sha256:${c.repeat(64)}`;
 const NODE = 'node:24.22.2-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85';
 const DISTROLESS =
   'gcr.io/distroless/nodejs24-debian13:nonroot@sha256:b8cec4b2f2126ff7bd034ec9ac207ffb3272667dfdc48376e3b035d3270549ba';
-const SYFT = 'ghcr.io/anchore/syft:v1.54.0@sha256:0356562f495d432056237fbea5cbc2d4839c9c75cd500784a66de2e7cc95ca7c';
+const SYFT = 'ghcr.io/anchore/syft:v1.57.1@sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060';
 const DEVCONTAINER =
   'mcr.microsoft.com/devcontainers/base:ubuntu-24.04@sha256:d94c97dd9cacf183d0a6fd12a8e87b526e9e928307674ae9c94139139c0c6eae';
 const OURS =
@@ -68,13 +68,13 @@ const WORLD: World = {
   tags: {
     node: ['24.22.2-alpine3.24', '24.22.3-alpine3.24'],
     'gcr.io/distroless/nodejs24-debian13': ['nonroot'],
-    'ghcr.io/anchore/syft': ['v1.54.0', 'v1.57.1'],
+    'ghcr.io/anchore/syft': ['v1.57.1', 'v1.58.0'],
     'mcr.microsoft.com/devcontainers/base': ['ubuntu-24.04'],
   },
   digests: {
     'node:24.22.3-alpine3.24': digest('1'),
     'gcr.io/distroless/nodejs24-debian13:nonroot': digest('2'),
-    'ghcr.io/anchore/syft:v1.57.1': digest('3'),
+    'ghcr.io/anchore/syft:v1.58.0': digest('3'),
     'mcr.microsoft.com/devcontainers/base:ubuntu-24.04': digest('4'),
   },
   node: [

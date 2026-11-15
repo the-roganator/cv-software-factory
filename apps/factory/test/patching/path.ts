@@ -274,10 +274,12 @@ export async function carry(findings: Finding[], targets: ReadTarget[], world: W
     const dir = checkedOut();
     try {
       await writePins(dir, sent, {
-        pnpm: async (at) => {
+        // `pnpm update <name>`: every copy of the package it was asked for, and no other package.
+        pnpm: async (at, args) => {
           let lock = readFileSync(join(at, 'pnpm-lock.yaml'), 'utf8');
           for (const [from, to] of Object.entries(world.pnpm ?? {})) {
             const name = from.slice(0, from.lastIndexOf('@'));
+            if (!args.includes(name)) continue;
             lock = lock
               .replaceAll(`${from}:`, `${name}@${to}:`)
               .replaceAll(`${name}: ${from.slice(name.length + 1)}`, `${name}: ${to}`);

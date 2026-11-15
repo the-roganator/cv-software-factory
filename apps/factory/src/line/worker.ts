@@ -149,6 +149,7 @@ import type {
 } from '../github/server.ts';
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import type { PictureIndex } from '../pictures/index.ts';
+import { APP_REPOSITORY } from '../repositories.ts';
 import { EMPTY_PINS, type Step, type StepOutcome, type StepRequest } from '../runners/steps.ts';
 import { verifyRefusal } from '../signed-refusals.ts';
 import { ATTRIBUTES as A, inSpan } from '../spans.ts';
@@ -335,7 +336,7 @@ export interface LineSettings {
   holdForSpend?(hold: NewEvent, spentUsd: number): Promise<boolean>;
 }
 
-export const APP_REPOSITORY = 'the-roganator/cv-worlds-worst-website';
+export { APP_REPOSITORY };
 
 /** How long a work item stays leased for an action that is not a step. */
 const ACTION_LEASE_SECONDS = 300;

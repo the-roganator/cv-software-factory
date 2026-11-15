@@ -30,6 +30,7 @@ import {
   total,
 } from '../projection/patching.ts';
 import { renders } from '../renders.ts';
+import { REPOSITORIES } from '../repositories.ts';
 import { CountsHead, SeverityCounts, severityWords } from './Counts.tsx';
 import { Glyph, type GlyphName } from './Glyph.tsx';
 import { movesWords, onDay, runningWords, waitWords, you } from './panel-words.ts';
@@ -37,9 +38,8 @@ import { patchingNow } from './patching-view.ts';
 import { bringIntoSheet, SheetFrame } from './SheetFrame.tsx';
 import '../styles/patching.css';
 
-const FACTORY = 'https://github.com/the-roganator/cv-software-factory';
-const repoUrl = (repository: string | undefined) =>
-  `https://github.com/${repository ?? 'the-roganator/cv-software-factory'}`;
+const repoUrl = (repository: string | undefined) => `https://github.com/${repository ?? REPOSITORIES.factory}`;
+const FACTORY = repoUrl(undefined);
 
 /** Who a word names: Martin, signed in, reads "you"; everyone else reads "Martin". */
 interface Who {

@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { syftPin } from '../apps/factory/src/vulnerabilities/graph.ts';
+import { REAL } from '../policy/repositories.ts';
 import { ENVIRONMENTS, KEY_BRANCH, SCAN_STATE_ENVIRONMENT } from './github-settings.ts';
 
 /**
@@ -33,16 +34,27 @@ const SCAN_JOB = 'scan';
  * its one script.
  */
 const CHECKED_OUT: Record<string, string[]> = {
-  'drift-check.yml': ['mise.toml', 'mise.lock', 'scripts/github-settings.ts'],
+  'drift-check.yml': [
+    'mise.toml',
+    'mise.lock',
+    'apps/factory/src/repositories.ts',
+    'policy/repositories.ts',
+    'scripts/github-settings.ts',
+  ],
   'review.yml': [
     'mise.toml',
     'mise.lock',
     'scripts/review-gate.ts',
     'scripts/review-routing.ts',
+    'apps/factory/src/repositories.ts',
+    'policy/repositories.ts',
     'policy/review-verdict.ts',
   ],
   'copilot-held-runs.yml': ['mise.toml', 'mise.lock', 'scripts/copilot-held-runs.ts'],
 };
+
+/** The app's repository, as a job's condition names it: the caller's APP_REPOSITORY variable, or the real one. */
+const APP_EXPRESSION = `(vars.APP_REPOSITORY || '${REAL.app}')`;
 
 /** review.yml's job that works out the gate's pin moves (scripts/pin-moves.ts), with no secret. */
 const PIN_MOVE_JOB = 'pin-move';
@@ -287,7 +299,7 @@ describe('every workflow', () => {
     const onlyApp =
       "(github.event.workflow_run.name != 'platform' || github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]')";
     expect(review.if).toBe(expression(`!cancelled() && ${onlyApp}`));
-    expect(job.if).toBe(expression(`github.repository != 'the-roganator/cv-worlds-worst-website' && ${onlyApp}`));
+    expect(job.if).toBe(expression(`github.repository != ${APP_EXPRESSION} && ${onlyApp}`));
     const judge = (review.steps ?? []).find((s) => s.run === 'node scripts/review-gate.ts') as Step & {
       env?: Record<string, unknown>;
     };
@@ -301,7 +313,7 @@ describe('every workflow', () => {
     expect(secretsOf(workflow, job)).toEqual({ names: [], passed: false });
     expect(job.environment).toBeUndefined();
     expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'read', checks: 'read', actions: 'read' });
-    expect(job.if).toBe(expression("github.repository == 'the-roganator/cv-worlds-worst-website'"));
+    expect(job.if).toBe(expression(`github.repository == ${APP_EXPRESSION}`));
     const checkouts = (job.steps ?? []).filter((s) => s.uses?.startsWith('actions/checkout@'));
     expect(checkouts).toHaveLength(1);
     expect(checkouts[0]?.with).toEqual({
@@ -631,9 +643,11 @@ describe('vulnerabilities.yml', () => {
     const on = workflow.on as Record<string, { paths?: string[] } | null>;
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/vulnerabilities.yml',
+      'apps/factory/src/repositories.ts',
       'apps/factory/src/vulnerabilities/**',
       'apps/factory/src/gates/**',
       'deploy/images/trivy/**',
+      'policy/repositories.ts',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     // The base branch as it is now, not as it was at the pull request's last push, read once by coverage and the same
@@ -709,10 +723,12 @@ describe('dependency-graph.yml', () => {
     const on = workflow.on as Record<string, { paths?: string[] } | null>;
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/dependency-graph.yml',
+      'apps/factory/src/repositories.ts',
       'apps/factory/src/vulnerabilities/**',
       'deploy/images/syft/**',
       'mise.toml',
       'mise.lock',
+      'policy/repositories.ts',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
@@ -945,7 +961,9 @@ describe('platform.yml', () => {
 function importClosure(start: string): Set<string> {
   const seen = new Set<string>();
   const walk = (file: string) => {
-    if (seen.has(file)) return;
+    // A quoted path the pattern takes for an import (a list of workflows, as pin-move-ran.ts keeps) is no module; a
+    // module that is not there still fails the read below.
+    if (seen.has(file) || !file.endsWith('.ts')) return;
     seen.add(file);
     const source = readFileSync(file, 'utf-8');
     for (const [, path] of source.matchAll(/^\s*(?:import|export)\b[^;]*?(?:from\s+)?'(\.[^']+)';?$/gm))
@@ -999,5 +1017,36 @@ describe('every workflow’s sparse checkouts', () => {
     }
     // The gates', the daily scan's and the dependency graph's scripts, at least, are read here.
     expect(scripts).toBeGreaterThanOrEqual(10);
+  });
+});
+
+/**
+ * A script that decides by the two repositories' names (apps/factory/src/repositories.ts) reads them from the step's
+ * environment: each step that runs one is given both of the caller's variables, so a copy that sets them is told its
+ * own two, and the real two, which set neither, read the real names.
+ */
+describe('the two repositories’ names', () => {
+  it('reach each step that runs a script reading them, from the caller’s variables', () => {
+    const NODE = /\bnode\s+(?:--\S+\s+)*"?(?:\$GITHUB_WORKSPACE\/)?([\w./-]+\.ts)\b/g;
+    const READER = 'apps/factory/src/repositories.ts';
+    const ran: string[] = [];
+    for (const { file, workflow } of workflows) {
+      for (const [id, job] of Object.entries(workflow.jobs ?? {})) {
+        for (const step of job.steps ?? []) {
+          for (const [, script] of (step.run ?? '').matchAll(NODE)) {
+            // A script of a checkout under a path of its own (`factory/…`) is that path's; one of a checkout of
+            // another repository's (`scanned/…`, `base/…`) is none of this one's.
+            const path = [script ?? '', (script ?? '').replace(/^[\w-]+\//, '')].find((p) => existsSync(p));
+            if (!path || !importClosure(path).has(READER)) continue;
+            ran.push(`${file} ${id}: ${path}`);
+            const env = (step as { env?: Record<string, unknown> }).env ?? {};
+            expect(env.FACTORY_REPOSITORY, `${file} ${id}: ${path}`).toBe(expression('vars.FACTORY_REPOSITORY'));
+            expect(env.APP_REPOSITORY, `${file} ${id}: ${path}`).toBe(expression('vars.APP_REPOSITORY'));
+          }
+        }
+      }
+    }
+    // The review gate's three, the daily scan's, the dependency graph's and the drift check's, at least.
+    expect(ran.length, ran.join('\n')).toBeGreaterThanOrEqual(10);
   });
 });

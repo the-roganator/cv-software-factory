@@ -45,6 +45,7 @@
  */
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { FACTORY_REPOSITORY } from '../repositories.ts';
 import type { Actions } from './actions.ts';
 import { APP_LOGIN } from './actions.ts';
 import { BranchRefused, pinBranch, type WatchedHeads } from './branches.ts';
@@ -60,7 +61,7 @@ import type { RefusalRecorder } from './refusals.ts';
 import { refusalOf } from './server.ts';
 
 /** The repository whose deploy pull requests the worker queues: this one's, never the app's, which are the line's. */
-export const QUEUES_DEPLOYS_IN = 'the-roganator/cv-software-factory';
+export const QUEUES_DEPLOYS_IN = FACTORY_REPOSITORY;
 
 /** The deploys the worker adds to the merge queue itself: this repository's local profile alone. */
 export const QUEUED_DEPLOYS: readonly DeployTarget[] = DEPLOYS.filter(

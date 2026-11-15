@@ -33,7 +33,9 @@ COPY packages/events/src packages/events/src
 # flags' stages and the rules of moving one (policy/flags.ts, policy/flag-moves.ts), which the page judges each stop
 # of a flag's slider by, in the admin service's own words; and the guardrails, the red-team attacks and who may record
 # each refusal (policy/guardrails.ts, policy/attacks.ts, policy/refusals.ts), which the Guardrails checklist and an
-# attack's card read each guardrail's proofs and attack, and check an attack's refusals, by.
+# attack's card read each guardrail's proofs and attack, and check an attack's refusals, by; and the two repositories
+# (policy/repositories.ts), which the page reads from its meta tags.
+COPY policy/repositories.ts policy/
 COPY policy/models.ts policy/spend.ts policy/settings.ts policy/line.ts policy/phone.ts policy/flags.ts policy/flag-moves.ts policy/
 COPY policy/guardrails.ts policy/attacks.ts policy/refusals.ts policy/
 COPY docs/design/system/properties.css docs/design/system/station.ts docs/design/system/
@@ -57,8 +59,9 @@ COPY --chmod=a+rX,go-w packages/events/src packages/events/src
 COPY --chmod=a+rX,go-w packages/store/src packages/store/src
 COPY --chmod=a+rX,go-w packages/store/migrations packages/store/migrations
 # Who may do what (policy/access.ts), which the server enforces, Martin's roles in the store (store-grants.ts), and the
-# profiles and their models (spend.ts, models.ts), one of which the server tells the page.
-COPY --chmod=a+rX,go-w policy/access.ts policy/store-grants.ts policy/spend.ts policy/models.ts policy/
+# profiles and their models (spend.ts, models.ts), one of which the server tells the page, as it does the two
+# repositories (repositories.ts).
+COPY --chmod=a+rX,go-w policy/access.ts policy/store-grants.ts policy/spend.ts policy/models.ts policy/repositories.ts policy/
 COPY --from=web --chmod=a+rX,go-w /repo/apps/console/dist apps/console/dist
 WORKDIR /repo/apps/console
 ARG GIT_COMMIT=unknown

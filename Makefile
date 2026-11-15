@@ -270,10 +270,12 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 # may use (scripts/github-settings.ts makes it), is given the same key again each time, as SCAN_STATE_KEY. A key made
 # anew opens no state sealed before it: the next scan reads the alerts, and seals with the new one. The worker reads
 # its keys as it starts, so a new one starts it again, before GitHub is given it: a run that stops there has done so.
-SCAN_STATE_REPOSITORIES := the-roganator/cv-software-factory the-roganator/cv-worlds-worst-website
+# The two repositories as policy/repositories.ts reads FACTORY_REPOSITORY and APP_REPOSITORY, and checks them: the real
+# two unless those name copies.
 scan-state-key: ## Give each repository's scan and the GitHub worker the key the scan's state is sealed with, made once
 	@$(call namespace,factory)
-	@for repository in $(SCAN_STATE_REPOSITORIES); do name="$${repository#*/}"; \
+	@repositories="$$(node scripts/github-settings.ts --repositories)" || exit 1; \
+	for repository in $$repositories; do name="$${repository#*/}"; \
 		held="$$($(KUBECTL) -n factory get secret scan-state-key -o "jsonpath={.data.$$name}" --ignore-not-found)" || exit 1; \
 		if [ -z "$$held" ]; then \
 			key="$$(node apps/factory/src/vulnerabilities/state.ts new)" && [ -n "$$key" ] || exit 1; \

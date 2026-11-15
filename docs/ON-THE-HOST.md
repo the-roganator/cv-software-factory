@@ -74,6 +74,20 @@ SCAN_STATE_KEY_CV_WORLDS_WORST_WEBSITE="$(kubectl --context k3d-software-factory
 
 Without one the worker starts, says which repository's moves it cannot read, and fails that read naming `make scan-state-key`; one that is set and is not a key stops it starting.
 
+## Scratch copies of the two repositories
+
+Everything that decides by a repository's name takes the two from `FACTORY_REPOSITORY` and `APP_REPOSITORY` ([`policy/repositories.ts`](../policy/repositories.ts)): each the real one unless set, both under `the-roganator`, in lower case and with no dot. Given copies, the same code works on them. The line clones the app's copy and opens its pull requests there. The GitHub worker guards, queues deploys and moves pins in them. The scan tells the app's moves from the factory's. The review gate routes by them and trusts each copy's `build.yml` to sign its images. The console marks the app's rows and links to GitHub by them. Set both on each process that takes part (a worker on the host, or the cluster's Deployments for a try, with `GITHUB_REPOSITORIES` left unset or naming the copies), and in the shell for `make scan-state-key` and `node scripts/github-settings.ts`, which then apply to the copies.
+
+The workflows read the same two from each repository's variables of those names, which only Martin sets, as he does `AUTONOMY`: the real two set neither. A pair of copies needs:
+
+- `FACTORY_REPOSITORY` and `APP_REPOSITORY` set as variables in both (`gh variable set FACTORY_REPOSITORY -R <copy> -b the-roganator/<factory copy>`, and the same for the app's);
+- the app copy's workflows calling the factory copy's (`uses: the-roganator/<factory copy>/.github/workflows/…@<commit>`), and its `test/vulnerabilities-workflow.test.ts`, which holds those lines, naming the same;
+- the factory's App and the review App installed on both;
+- the images each copy's `deploy/` pins named as its own builds name them, `ghcr.io/the-roganator/<copy>/…` (`newName` in `deploy/overlays/local/factory-image` and `console-image` in the factory's copy, `deploy/overlays/local/image` in the app's): the GitHub worker refuses a deploy whose pin file names another repository's image, and the scan and the review gate trust only the two named repositories' `build.yml`;
+- their settings and scan keys, from a shell with both names set: `node scripts/github-settings.ts`, then `make scan-state-key`, which puts each copy's key in the Secret `scan-state-key` under the copy's name. The cluster's GitHub worker mounts only the real two's, so a try adds each copy's to its container as `SCAN_STATE_KEY_<NAME>` (the copy's name in capitals, `-` as `_`), read from that Secret's key (`valueFrom.secretKeyRef`), never as a value on a command line, and takes it off again with the rest of its undo list.
+
+`deploy/` names the real two: Argo CD syncs this repository's `main`, and admission admits only the real two's images, signed by their `build.yml`. So the local cluster never deploys a copy's merge, and a try against copies goes as far as the merge: its pull requests, CI, the review gate, the pin moves and the worker's guards.
+
 ## The red-team harness
 
 The red-team harness (`factory red-team`) makes each of spec 5.3's attacks Martin launches ([its page](COMPONENTS/RED-TEAM-HARNESS.md)). It connects as its own role, `factory_redteam` (`make up` makes `postgres-redteam`), and acts only on an `attack.launched` of Martin's. It makes the egress and image attacks' pods in `red-team`, a namespace of their own, so it needs the Kubernetes API (`kubectl proxy`, as the line's `soak-check` uses it); attack 1 posts a report through the app's front door (`APP_URL`, `INGRESS_URL`); attacks 2 and 3 ask the GitHub worker's attack door (`GITHUB_ATTACK_URL`, the worker's `ATTACK_PORT`). Scale the cluster's copy to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/red-team --replicas=0`), and back to one after, so two do not take the same launch:

@@ -54,6 +54,8 @@ jobs:
           sparse-checkout: |
             mise.toml
             mise.lock
+            apps/factory/src/repositories.ts
+            policy/repositories.ts
             scripts/github-settings.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -62,6 +64,12 @@ jobs:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node
+      # The two repositories' names, as the token below asks for them: the real two unless a copy's variables name copies.
+      - id: repositories
+        env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
+        run: node scripts/github-settings.ts --names >> "$GITHUB_OUTPUT"
       # One token for both repositories, with only the reads the check makes.
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -69,11 +77,13 @@ jobs:
           client-id: ${{ vars.DRIFT_CHECK_APP_CLIENT_ID }}
           private-key: ${{ secrets.DRIFT_CHECK_APP_PRIVATE_KEY }}
           owner: the-roganator
-          repositories: cv-software-factory,cv-worlds-worst-website
+          repositories: ${{ steps.repositories.outputs.names }}
           permission-actions: read
           permission-administration: read
           permission-environments: read
       - name: Compare the live settings with the script's
         env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: node scripts/github-settings.ts --check

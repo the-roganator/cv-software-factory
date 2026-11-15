@@ -69,7 +69,7 @@ const A_IMAGE = finding({
 });
 
 describe('the policy', () => {
-  it('is reached only by what checks it out: coverage.ts and graph.ts, which check out the scan folder alone, never import it', () => {
+  it('is reached only by what checks it out: coverage.ts and graph.ts, which check out the scan folder and the two repositories alone, never import it', () => {
     // Every module a file reaches through its relative imports.
     const reach = (file: string, seen = new Set<string>()): Set<string> => {
       if (seen.has(file)) return seen;
@@ -83,7 +83,12 @@ describe('the policy', () => {
         f.slice(ROOT.length + 1),
       );
       expect(
-        reached.filter((f) => !f.startsWith('apps/factory/src/vulnerabilities/')),
+        reached.filter(
+          (f) =>
+            !f.startsWith('apps/factory/src/vulnerabilities/') &&
+            f !== 'apps/factory/src/repositories.ts' &&
+            f !== 'policy/repositories.ts',
+        ),
         start,
       ).toEqual([]);
     }

@@ -37,6 +37,7 @@
 import { createHash } from 'node:crypto';
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { FACTORY_REPOSITORY } from '../repositories.ts';
 import { compareVersions } from '../vulnerabilities/deadlines.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
 import { DIGEST_PATTERN, repositoryOf, splitReference } from '../vulnerabilities/reference.ts';
@@ -53,7 +54,7 @@ import type { RefusalRecorder } from './refusals.ts';
 import type { Moves, ReadMove } from './scanning.ts';
 
 /** The repositories whose pins the watch moves: this one. The app's moves are its line's. */
-export const PIN_REPOS: readonly string[] = ['the-roganator/cv-software-factory'];
+export const PIN_REPOS: readonly string[] = [FACTORY_REPOSITORY];
 
 /** The label on every pull request and issue the watch opens. */
 export const PIN_LABEL = 'pin';

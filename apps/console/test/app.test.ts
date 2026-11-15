@@ -9,6 +9,7 @@ import { type ArtifactStore, DiskArtifacts } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS, type Access, type Name, routeOf, type ServedBy } from '../../../policy/access.ts';
+import { REAL } from '../../../policy/repositories.ts';
 import { createApp, PERMISSIONS_POLICY, SECURITY_HEADERS } from '../src/app.ts';
 import { Feed } from '../src/feed.ts';
 import { RefusalChecks } from '../src/refusals.ts';
@@ -450,10 +451,29 @@ describe('the page’s settings', () => {
     expect(page).toContain('<meta name="sf-profile" content="local">');
     expect(page).toContain('<meta name="sf-all-local" content="true">');
     expect(page).toContain('<meta name="sf-app" content="">');
-    expect(pageSettings({})).toEqual({ profile: 'local', allLocal: false });
-    expect(pageSettings({ FACTORY_PROFILE: 'do' })).toEqual({ profile: 'do', allLocal: false });
+    expect(pageSettings({})).toEqual({ profile: 'local', allLocal: false, repositories: REAL });
+    expect(pageSettings({ FACTORY_PROFILE: 'do' })).toEqual({ profile: 'do', allLocal: false, repositories: REAL });
     expect(() => pageSettings({ FACTORY_PROFILE: 'mars' })).toThrow(/FACTORY_PROFILE/);
     expect(() => pageSettings({ FACTORY_PROFILE: 'do', ALL_LOCAL: 'true' })).toThrow(/has none/);
+  });
+
+  it('writes the two repositories into the page, the real two unless the settings name copies, and refuses another', () => {
+    const dist = fakeBuild();
+    writeFileSync(
+      join(dist, 'index.html'),
+      '<!doctype html><meta name="sf-factory-repository" content=""><meta name="sf-app-repository" content="">',
+    );
+    const real = loadSite(dist, pageSettings({})).page.body.toString();
+    expect(real).toContain(`<meta name="sf-factory-repository" content="${REAL.factory}">`);
+    expect(real).toContain(`<meta name="sf-app-repository" content="${REAL.app}">`);
+    const copies = pageSettings({
+      FACTORY_REPOSITORY: 'the-roganator/scratch-factory',
+      APP_REPOSITORY: 'the-roganator/scratch-app',
+    });
+    const page = loadSite(dist, copies).page.body.toString();
+    expect(page).toContain('<meta name="sf-factory-repository" content="the-roganator/scratch-factory">');
+    expect(page).toContain('<meta name="sf-app-repository" content="the-roganator/scratch-app">');
+    expect(() => pageSettings({ APP_REPOSITORY: 'the-roganator/x"><script>' })).toThrow(/APP_REPOSITORY/);
   });
 
   it('writes the app’s origin alone, which a flag’s preview opens, and refuses an address a link should not take', () => {

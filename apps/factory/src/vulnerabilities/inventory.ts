@@ -37,6 +37,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { FACTORY_REPOSITORY, repositoryOfImage } from '../repositories.ts';
 import { PROOF } from './proof.ts';
 import { DIGEST_PATTERN, splitReference } from './reference.ts';
 
@@ -131,7 +132,7 @@ const NAMED_TO_BE_REFUSED: Record<string, string> = {
 const CI_SCRIPTS = ['apps/console/zap/scan.ts'];
 
 /** Where CI's copies of Docker's official images and Playwright's are kept (scripts/ci-images.sh). */
-const MIRROR = 'ghcr.io/the-roganator/cv-software-factory/mirror/';
+const MIRROR = `ghcr.io/${FACTORY_REPOSITORY}/mirror/`;
 
 /** A reference by digest, as any file writes it, and kustomize's `digest:` beside a name. */
 const BY_DIGEST = new RegExp(
@@ -164,14 +165,12 @@ export function ciCopy(reference: string) {
 
 /**
  * The identity `build.yml` on main signs an image of ours with, for the factory's and the app's images in GHCR alone:
- * the pipeline apps/factory/src/github/signatures.ts verifies, for the repositories scripts/review-routing.ts trusts,
- * which a test holds this to (those modules need what the scan's sparse checkout does not have). Any other image has
- * no signer the scan can verify, and none is named.
+ * the pipeline apps/factory/src/github/signatures.ts verifies, for the two repositories (../repositories.ts), as the
+ * review gate trusts them. Any other image has no signer the scan can verify, and none is named.
  */
 export function signerOf(image: string) {
-  const repository = /^ghcr\.io\/the-roganator\/([\w.-]+)(?:\/[\w.-]+)?$/.exec(image)?.[1];
-  if (repository !== 'cv-software-factory' && repository !== 'cv-worlds-worst-website') return undefined;
-  return `https://github.com/the-roganator/${repository}/.github/workflows/build.yml@refs/heads/main`;
+  const repository = repositoryOfImage(image);
+  return repository && `https://github.com/${repository}/.github/workflows/build.yml@refs/heads/main`;
 }
 
 /**

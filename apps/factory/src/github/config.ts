@@ -157,6 +157,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     }
   }
   if (!(config.pollMs >= 10_000)) throw new Error('GITHUB_POLL_SECONDS must be at least 10.');
+  // Two repositories whose names give one setting could not each have a key: refused, never read with the other's.
+  const named = new Map<string, string>();
+  for (const repo of config.repositories) {
+    const other = named.get(stateKeyName(repo));
+    if (other !== undefined && other !== repo)
+      throw new Error(`${other} and ${repo} would both take their scan’s key from ${stateKeyName(repo)}.`);
+    named.set(stateKeyName(repo), repo);
+  }
   return config;
 }
 

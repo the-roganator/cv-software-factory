@@ -38,6 +38,10 @@ describe('the GitHub worker’s settings', () => {
       SCAN_STATE_KEY_CV_WORLDS_WORST_WEBSITE: '',
     });
     expect([...one.stateKeys.keys()]).toEqual([REPOSITORIES[0]]);
+    // Two repositories that would share one setting are refused, whoever owns them.
+    expect(() => configFromEnv({ GITHUB_REPOSITORIES: 'alice/app-a,bob/app_a' })).toThrow(
+      'alice/app-a and bob/app_a would both take their scan’s key from SCAN_STATE_KEY_APP_A.',
+    );
     // A repository it does not act on has no key read.
     const narrowed = configFromEnv({
       GITHUB_REPOSITORIES: 'someone/else',

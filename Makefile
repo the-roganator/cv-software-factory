@@ -70,12 +70,15 @@ SYNC_TIMEOUT ?= 5m
 # $(deployed): wait for Argo CD to have deployed everything, then say where it is. An Application reads healthy before
 # it has deployed anything, so wait for each to sync before its health; root syncs first, and then every other
 # Application exists. Then everything healthy, except the website, whose health is its release's
-# (scripts/wait-deployed.sh).
+# (scripts/wait-deployed.sh). All the while, each Application still Progressing is refreshed every 15 seconds: Argo CD
+# refreshes none when its CRDs are established, and a sync wave would otherwise wait minutes for that
+# (scripts/refresh-while.sh).
 define deployed
 @echo "Waiting for Argo CD to deploy everything (a few minutes the first time)..."
-@$(KUBECTL) -n argocd wait application/root --for=jsonpath='{.status.sync.status}'=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null
-@$(KUBECTL) -n argocd wait applications --all --for=jsonpath='{.status.sync.status}'=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null
-@KUBECTL="$(KUBECTL)" scripts/wait-deployed.sh
+@KUBECTL="$(KUBECTL)" scripts/refresh-while.sh sh -c ' \
+	$(KUBECTL) -n argocd wait application/root --for=jsonpath="{.status.sync.status}"=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null && \
+	$(KUBECTL) -n argocd wait applications --all --for=jsonpath="{.status.sync.status}"=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null && \
+	KUBECTL="$(KUBECTL)" scripts/wait-deployed.sh'
 @$(MAKE) --no-print-directory status
 endef
 

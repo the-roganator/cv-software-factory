@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { NEVER } from '../../src/github/paths.ts';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
 import {
   APP,
@@ -8,6 +9,7 @@ import {
   furthest,
   isMajor,
   type Judged,
+  LINE_NEVER,
   MOVES_VERSION,
   moves,
   movesFile,
@@ -161,6 +163,19 @@ describe('the day’s moves', () => {
     });
     it('line: the app’s', () => {
       expect(laneOf(result(), { repository: APP, app: true })).toBe('line');
+    });
+    it('dependabot, in the app: a pin where the line may not write, in a directory Dependabot reads, on a deadline or not', () => {
+      const app = { repository: APP, app: true, dependabot: ['/', '/deploy/images/syft'] };
+      const syft = { pin: { file: 'deploy/images/syft/Dockerfile', line: 5 } };
+      expect(laneOf(result(syft), app)).toBe('dependabot');
+      expect(laneOf(result({ ...syft, severity: 'LOW', due: undefined }), app)).toBe('dependabot');
+      // One Dependabot does not read stays the line's, whose guard refuses it: nobody else is there to move it.
+      expect(laneOf(result({ pin: { file: 'deploy/base/rollout.yaml', line: 67 } }), app)).toBe('line');
+      // The root Dockerfile is the line's to write, though Dependabot reads it too.
+      expect(laneOf(result({ pin: { file: 'Dockerfile', line: 5 } }), app)).toBe('line');
+    });
+    it('holds where the line may not write to the GitHub worker’s own list', () => {
+      expect(LINE_NEVER).toEqual(NEVER);
     });
     it('cluster: k3s', () => {
       expect(

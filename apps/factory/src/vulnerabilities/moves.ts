@@ -10,6 +10,8 @@
  * Its lane says who moves it, worked out, never chosen, in this order:
  *
  * - `none`: nothing to move to (a line no longer built);
+ * - `dependabot`, in the app: a pin where no patch of the line's may write (`LINE_NEVER`), in a directory
+ *   `dependabot.yml`'s docker entries read, whatever its deadline: nobody else can move it;
  * - `line`: the app's, which its line moves;
  * - `cluster`: k3s, which only the cluster's own command applies;
  * - `issue`: what no pull request of the App's can write: anything mise or the Makefile pins (k3d, Argo CD's chart with
@@ -115,6 +117,12 @@ const pinKey = (each: Pick<Judged, 'name' | 'from' | 'kind'>) =>
 
 const MISE_FILES = new Set(['mise.toml', 'mise.lock']);
 
+/**
+ * Where no patch of the line's may write, in the app's repository: the GitHub worker's `NEVER` (github/paths.ts),
+ * written again here as this runs with no dependencies; a test holds the two together.
+ */
+export const LINE_NEVER = ['.github/', 'deploy/'];
+
 /** A pin `dependabot.yml`'s docker entries read: one in a directory they name. */
 const readByDependabot = (pin: Pin, directories: string[]) => {
   const dir = `/${pin.file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';
@@ -139,7 +147,12 @@ export function laneOf(
 ): Lane {
   const target = move.to;
   if (!target || target.kind === 'unbuilt') return 'none';
-  if (context.app) return 'line';
+  if (context.app) {
+    // A pin the line may not write is refused at the worker's guard every time: Dependabot's, where it reads it.
+    const forbidden = move.pins.some((pin) => LINE_NEVER.some((path) => pin.file.startsWith(path)));
+    if (forbidden && move.pins.every((pin) => readByDependabot(pin, context.dependabot))) return 'dependabot';
+    return 'line';
+  }
   if (target.kind === 'k3s' || kinds.has('k3s') || kinds.has('k3s-release')) return 'cluster';
   // What mise or the Makefile pins (Argo CD's chart with its CLI) no pull request of the App's writes, a major or not.
   if (

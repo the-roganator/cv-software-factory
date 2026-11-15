@@ -475,10 +475,25 @@ describe('an image’s fix', () => {
       expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
     });
 
-    it('gives no day to count from when the newest says it was made in 1970, as a reproducible build does', async () => {
+    it('counts from the day the scan first saw the fix when the newest says it was made in 1970, as a reproducible build does', async () => {
+      const undated = world([inOurs(), inStage()], {
+        'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('1970-01-01T00:00:00Z'),
+      });
+      const first = await judge(undated);
+      expect(first.rows[0]?.installable).toBe(NOW);
+      expect(first.fixes[0]?.target.kind).toBe('image');
+      expect(first.lines.join('\n')).toContain('gives no time it was made');
+      // The next day's run reads the state this one kept, and the day stays the first.
+      const next = await judge({ ...undated, state: first.kept() }, NOW + DAY);
+      expect(next.rows[0]?.installable).toBe(NOW);
+    });
+
+    it('has no fix from an undated newest that still has the finding', async () => {
       const { rows } = await judge(
         world([inOurs(), inStage()], {
-          'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('1970-01-01T00:00:00Z'),
+          'gcr.io/distroless/nodejs24-debian13:nonroot': {
+            ...imageReport('1970-01-01T00:00:00Z', [{ package: inStage().package, advisory: inStage().advisory }]),
+          },
         }),
       );
       expect(rows[0]?.installable).toBeUndefined();

@@ -26,8 +26,9 @@
  *   has comes that way; anything else its Dockerfile adds, but an npm package, has no fix to count from. A package in
  *   several versions is installable once every copy's fix is, and Node's fix is a release on the major installed. Only
  *   an image with such a finding that Trivy says is fixed has its line's newest scanned, each once, and nothing is
- *   uploaded for it; a newest that gives no time it was made (a reproducible build says 1970) gives no day. While no
- *   fix is installable there is no deadline.
+ *   uploaded for it; a newest that gives no time it was made (a reproducible build says 1970) is installable from the
+ *   day the scan first saw it without the finding, which the state keeps. While no fix is installable there is no
+ *   deadline.
  * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
  *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
  *   first seen today. A rename keeps its clock: when an item is new to the list, and a finding of the same package and
@@ -604,7 +605,9 @@ export async function installable(
       ? once.then((image) => {
           if (image.created === undefined && !undated.has(reference)) {
             undated.add(reference);
-            log(`::warning::${reference} gives no time it was made: its fixes have no day to count from.`);
+            log(
+              `::warning::${reference} gives no time it was made: its fixes count from the day the scan first saw them.`,
+            );
           }
           return image;
         })
@@ -612,7 +615,7 @@ export async function installable(
   };
   const found = (report: TrivyReport) => {
     let created: number | undefined = time(report.Metadata?.ImageConfig?.created);
-    // A reproducible build (distroless's) says it was made in 1970: it gives no day to count from.
+    // A reproducible build (distroless's) says it was made in 1970: it gives no day of its own.
     if (Number.isNaN(created) || created < EARLIEST) created = undefined;
     const set = new Set<string>();
     for (const result of report.Results ?? [])
@@ -887,9 +890,10 @@ export async function installable(
       const latest = await newestOf(pinOf(target) ?? '', listTags);
       if (!latest) return;
       const image = await scanned(latest.reference, true);
-      if (image.created === undefined) return;
       if (!image.has.has(has(finding.package, finding.advisory))) {
-        at[index] = image.created;
+        // An image that gives no time it was made is installable from now, the day the scan first saw it without the
+        // finding: the state keeps that day for every run after (`fixesOf` takes the earlier).
+        at[index] = image.created ?? now;
         fixes[index] =
           target.kind === 'k3s'
             ? { kind: 'k3s', release: latest.tag.replace(/-(k3s\d+)$/, '+$1') }
@@ -897,7 +901,7 @@ export async function installable(
         return;
       }
       // A tag that is not a version, whose image nobody has made for half a year: a line no longer built.
-      if (!latest.version && now - image.created > UNBUILT_DAYS * DAY) {
+      if (!latest.version && image.created !== undefined && now - image.created > UNBUILT_DAYS * DAY) {
         lines.unbuilt++;
         fixes[index] = { kind: 'unbuilt', built: image.created };
       }

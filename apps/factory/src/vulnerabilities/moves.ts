@@ -18,7 +18,7 @@
  *   its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a
  *   day of its fix, an image whose other half is in the lockfile, and Playwright's image, whose library is;
  * - `approval`: a major, of any kind (a chart's, or a version past every copy's major), which needs more than its pins'
- *   lines written, and what judges a move (Kyverno, Trivy, Syft), which the gate never passes; whether a chart within its major changes
+ *   lines written, what judges a move (Kyverno, Trivy, Syft), and one chart at two Applications' pins, neither of which the gate passes; whether a chart within its major changes
  *   more than its images is the review gate's to prove from the pull request, not the scan's to assume;
  * - `dependabot`: a pin `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
  *   package of the lockfile within a day of its fix, which its security update moves;
@@ -189,6 +189,9 @@ export function laneOf(
   // major changes more than its images is the gate's to prove from the pull request, not the scan's to assume.
   if (move.major) return 'approval';
   if (move.pins.some((pin) => pin.file.startsWith('.github/workflows/'))) return 'issue';
+  // One chart two Applications run: the gate proves a chart's move from one Application's rendering (pin-move.ts),
+  // so it holds a move of two, and Martin approves it.
+  if (target.kind === 'chart' && move.pins.length > 1) return 'approval';
   // An Application's chart within its major, the worker's: Dependabot's docker entries read no Application's
   // targetRevision, though they read the directory it is in.
   if (target.kind === 'chart') return 'worker';

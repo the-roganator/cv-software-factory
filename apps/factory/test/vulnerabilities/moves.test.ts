@@ -13,6 +13,7 @@ import {
   MOVES_VERSION,
   moves,
   movesFile,
+  PLAYWRIGHT_IMAGE,
   table,
 } from '../../src/vulnerabilities/moves.ts';
 import type { Finding, Severity } from '../../src/vulnerabilities/sarif.ts';
@@ -175,6 +176,39 @@ describe('the day’s moves', () => {
       expect(laneOf(result({ ...syft, target: { kind: 'version', versions: ['1.0.1'] } }), app)).toBe('line');
       // The root Dockerfile is the line's to write, though Dependabot reads it too.
       expect(laneOf(result({ pin: { file: 'Dockerfile', line: 5 } }), app)).toBe('line');
+    });
+    it('approval: what judges a move, which the gate never passes', () => {
+      const value = (name: string) => laneOf(result({ kind: 'chart', name }));
+      expect(value('kyverno: reg.kyverno.io/kyverno/kyverno')).toBe('approval');
+      expect(value('kyverno: ghcr.io/kyverno/readiness-checker')).toBe('approval');
+      expect(
+        laneOf(
+          result({ name: 'ghcr.io/aquasecurity/trivy', pin: { file: 'deploy/images/trivy/Dockerfile', line: 3 } }),
+        ),
+      ).toBe('approval');
+      expect(laneOf(result({ name: 'ghcr.io/anchore/syft' }))).toBe('approval');
+      // A name that only holds the word is no judge.
+      expect(value('grafana: quay.io/example/kyverno-exporter')).toBe('worker');
+    });
+    it('approval: one chart at two Applications’ pins, as one move', () => {
+      const chart = { kind: 'chart' as const, name: 'opentelemetry-collector', from: '0.174.0' };
+      const target = { kind: 'chart' as const, chart: 'opentelemetry-collector', version: '0.178.3', major: false };
+      const list = moves(
+        [
+          result({ ...chart, target, pin: { file: 'deploy/base/telemetry/otel-collector.yaml', line: 14 } }),
+          result({ ...chart, target, pin: { file: 'deploy/base/pod-logs/pod-logs.yaml', line: 16 } }),
+        ],
+        context(),
+      );
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({ name: 'opentelemetry-collector', lane: 'approval' });
+      expect(list[0]?.pins).toHaveLength(2);
+      expect(laneOf(result({ ...chart, target }))).toBe('worker');
+    });
+    it('issue: Playwright’s image, whose library in the lockfile is the same release', () => {
+      expect(
+        laneOf(result({ name: PLAYWRIGHT_IMAGE, pin: { file: 'apps/factory/Dockerfile.browser', line: 26 } })),
+      ).toBe('issue');
     });
     it('holds where the line may not write to the GitHub worker’s own list', () => {
       expect(LINE_NEVER).toEqual(NEVER);

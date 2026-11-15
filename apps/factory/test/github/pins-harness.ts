@@ -610,6 +610,7 @@ export function factoryMoves(): ReadMove[] {
       to: '',
       lockfile: true,
       lane: 'issue',
+      mark: '3f9a1c0b7e2d',
       withheld: {
         package: '@example/tokens',
         from: '3.0.1',
@@ -618,7 +619,6 @@ export function factoryMoves(): ReadMove[] {
       },
       findings: [
         {
-          alert: 5120,
           advisory: 'GHSA-xxxx-xxxx-xxxx',
           severity: 'MEDIUM',
           package: '@example/tokens',

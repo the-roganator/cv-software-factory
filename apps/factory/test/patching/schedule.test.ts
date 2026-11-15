@@ -4,7 +4,6 @@ import {
   type Next,
   nextDaily,
   SHORTLY_MS,
-  SOON_MS,
   stale,
   timeOfDay,
   waitAfter,
@@ -27,11 +26,6 @@ describe("the sense's day", () => {
     expect(waitAfter(t('2026-11-11T06:00:00Z'), at, 'daily')).toBe(
       t('2026-11-12T05:30:00Z') - t('2026-11-11T06:00:00Z'),
     );
-  });
-
-  it('reads again ten minutes after a read the worker said to take again, never past the day’s read', () => {
-    expect(waitAfter(t('2026-11-11T06:00:00Z'), at, 'soon')).toBe(SOON_MS);
-    expect(waitAfter(t('2026-11-12T05:25:00Z'), at, 'soon')).toBe(5 * 60_000);
   });
 
   it('reads again fifteen seconds after a pass the worker’s door refused, never past the day’s read', () => {
@@ -101,7 +95,7 @@ describe("the sense's day", () => {
       let running = 0;
       let most = 0;
       let passes = 0;
-      // Each pass takes nine minutes, as a moves read of ten thousand alerts may, and fails, so the next is an hour on.
+      // Each pass takes nine minutes and fails, so the next is an hour on.
       const pass = async () => {
         running++;
         most = Math.max(most, running);

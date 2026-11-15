@@ -3,14 +3,8 @@
  * holds the App's key, and nothing else does. Reads go through it too (`reads.ts`), so it is the one place that
  * talks to GitHub.
  *
- * Every call goes over `fetch`, but for `moves`, which goes over `node:http` (`longPost`): Node's `fetch` stops waiting
- * for a response's headers after 300 s whatever the caller's signal, and the worker answers `moves`, the first time for
- * each scan run, only once it has read every open alert, which can take longer. There the only limit is the read's own
- * timeout.
+ * Every call goes over `fetch`, with two minutes to answer.
  */
-import { request as httpRequest } from 'node:http';
-import { request as httpsRequest } from 'node:https';
-import { READ_AGAIN } from './client.ts';
 import {
   type ActingFor,
   type ActionArgs,
@@ -33,20 +27,8 @@ export const ISSUE_GONE = [403, 404, 410];
 /** Whether an action failed on an issue that is gone, or that the App may not change. */
 export const issueGone = (error: unknown) => error instanceof GitHubWorkerError && ISSUE_GONE.includes(error.status);
 
-/**
- * The kind the worker answers, with a 409, when a read should simply be asked again (`scanning.ts`: a scan ran while
- * its moves were read). GitHub's own 409 or 422 is relayed as `conflict`, never as this.
- */
-export { READ_AGAIN };
-
 /** How long an action or a read may take. */
 const TIMEOUT_MS = 120_000;
-
-/**
- * How long `moves` may take: the first read of a scan run pages every open alert of the scan, a hundred to a page, one
- * page after another (the factory's ten thousand took 108 s on 12 November); the worker keeps it for the next.
- */
-export const MOVES_TIMEOUT_MS = 10 * 60_000;
 
 export class GitHubWorkerError extends Error {
   readonly status: number;
@@ -69,25 +51,15 @@ export class GitHubWorker {
   readonly #url: string;
   readonly #dryRun: boolean;
   readonly #onRefusal: OnRefusal | undefined;
-  readonly #movesTimeoutMs: number;
 
   /**
    * With `dryRun`, every action is recorded by the worker and none is done. `onRefusal` is told of each refusal an
-   * action is answered with, to relay; it must not throw, and the action fails as it would have. `movesTimeoutMs` is
-   * for a test of the deadline; the client's own is `MOVES_TIMEOUT_MS`.
+   * action is answered with, to relay; it must not throw, and the action fails as it would have.
    */
-  constructor(
-    url: string,
-    {
-      dryRun = false,
-      onRefusal,
-      movesTimeoutMs = MOVES_TIMEOUT_MS,
-    }: { dryRun?: boolean; onRefusal?: OnRefusal; movesTimeoutMs?: number } = {},
-  ) {
+  constructor(url: string, { dryRun = false, onRefusal }: { dryRun?: boolean; onRefusal?: OnRefusal } = {}) {
     this.#url = url.replace(/\/$/, '');
     this.#dryRun = dryRun;
     this.#onRefusal = onRefusal;
-    this.#movesTimeoutMs = movesTimeoutMs;
   }
 
   /** `on` names the work item, and the agent, an action is taken for, for the worker's log of it. */
@@ -114,9 +86,7 @@ export class GitHubWorker {
    * have been, and anything else as GitHub has it.
    */
   async read<K extends ReadName>(read: K, repo: string, args: ReadArgs[K]): Promise<ReadResult<K>> {
-    const headers = this.#dryRun ? { 'x-factory-dry-run': 'true' } : {};
-    if (read === 'moves') return this.#longPost(`reads/${read}`, repo, args, headers, this.#movesTimeoutMs);
-    return this.#post(`reads/${read}`, repo, args, headers);
+    return this.#post(`reads/${read}`, repo, args, this.#dryRun ? { 'x-factory-dry-run': 'true' } : {});
   }
 
   async #post<T>(path: string, repo: string, args: object, headers: Record<string, string>): Promise<T> {
@@ -137,84 +107,4 @@ export class GitHubWorker {
     }
     return body.result as T;
   }
-
-  /**
-   * `#post` over `node:http`, for a read that may answer after `fetch` stops waiting. An answer that is not the
-   * worker's JSON is not the worker's error, so it is never a `GitHubWorkerError`, whose status callers route on.
-   */
-  async #longPost<T>(
-    path: string,
-    repo: string,
-    args: object,
-    headers: Record<string, string>,
-    timeoutMs: number,
-  ): Promise<T> {
-    const { status, text } = await post(
-      `${this.#url}/v1/${path}`,
-      { 'content-type': 'application/json', ...headers },
-      JSON.stringify({ repo, ...args }),
-      timeoutMs,
-    );
-    let body: unknown;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = undefined;
-    }
-    if (typeof body !== 'object' || body === null)
-      throw new Error(`The GitHub worker's ${path} answered ${status} with something other than its JSON`);
-    const answer = body as { result?: T; error?: string; message?: string; refusal?: unknown };
-    if (status < 200 || status >= 300) {
-      throw new GitHubWorkerError(
-        status,
-        answer.error ?? 'unknown',
-        answer.message ?? `${path} failed`,
-        answer.refusal,
-      );
-    }
-    return answer.result as T;
-  }
-}
-
-/**
- * One POST, its status and its body as text, all within `timeoutMs` from the start, with no other limit on the wait.
- * Past it the call fails naming the address and the time it was allowed.
- */
-function post(
-  url: string,
-  headers: Record<string, string>,
-  payload: string,
-  timeoutMs: number,
-): Promise<{ status: number; text: string }> {
-  const target = new URL(url);
-  const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (done: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      done();
-    };
-    const req = send(
-      target,
-      { method: 'POST', headers: { ...headers, 'content-length': Buffer.byteLength(payload) } },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () =>
-          settle(() => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') })),
-        );
-        res.on('error', (error) => settle(() => reject(error)));
-        // A body cut short ends in neither `end` nor, on every Node, `error`.
-        res.on('close', () => settle(() => reject(new Error(`${target.pathname} closed before its answer ended`))));
-      },
-    );
-    const timer = setTimeout(() => {
-      settle(() => reject(new Error(`${target.pathname} gave no whole answer within ${timeoutMs / 1000} s`)));
-      req.destroy();
-    }, timeoutMs);
-    req.on('error', (error) => settle(() => reject(error)));
-    req.end(payload);
-  });
 }

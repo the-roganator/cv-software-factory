@@ -10,6 +10,9 @@
  *                                     a worker with the key will not start without it
  *     REFUSAL_SIGNING_KEY             the Ed25519 private key, as PEM, it signs each refusal with (`refusals.ts`);
  *                                     without it, it answers each unsigned, and no worker records one
+ *     SCAN_STATE_KEY_<REPOSITORY>     the key a repository's scan seals its state with (vulnerabilities/state.ts), by
+ *                                     its name in capitals, `-` as `_` (SCAN_STATE_KEY_CV_SOFTWARE_FACTORY); without
+ *                                     it the worker cannot read that repository's moves, and says so
  *     GITHUB_DRY_RUN_CHECKS_SECONDS   how long after a dry run's commit its checks pass (default 120)
  *     GITHUB_DRY_RUN_MERGE_SECONDS    how long after a dry run's pull request is readied it is merged (default 1200)
  *     GITHUB_REPOSITORIES             the repositories it acts on, separated by commas (default: both public ones)
@@ -30,6 +33,7 @@
  */
 import type { KeyObject } from 'node:crypto';
 import { signingKey } from '../signed-refusals.ts';
+import { readKey } from '../vulnerabilities/state.ts';
 import type { AppCredentials } from './app.ts';
 import { API } from './client.ts';
 import type { DryRunTimes } from './dry-run-reads.ts';
@@ -45,6 +49,8 @@ export interface GitHubConfig {
   artifactsDir: string | undefined;
   /** What it signs each refusal with, or undefined. */
   refusalKey: KeyObject | undefined;
+  /** Each repository's key for its scan's state, by `owner/name`: only those the environment gives. */
+  stateKeys: Map<string, Buffer>;
   /** When the dry run's checks pass, and its pull requests merge, so a line in dry-run goes round. */
   dryRunTimes: DryRunTimes;
   repositories: string[];
@@ -62,6 +68,19 @@ export interface GitHubConfig {
   host: string;
 }
 
+/** The setting that holds a repository's key for its scan's state: its name in capitals, anything else as `_`. */
+export const stateKeyName = (repo: string) =>
+  `SCAN_STATE_KEY_${(repo.split('/')[1] ?? repo).toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+
+/** A key from its setting. One that is set and is not a key stops the worker starting, named by its setting alone. */
+function stateKey(name: string, text: string): Buffer {
+  try {
+    return readKey(text);
+  } catch {
+    throw new Error(`${name} is not a key for a scan’s state: it must be 32 bytes in base64.`);
+  }
+}
+
 export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
   const clientId = env.GITHUB_APP_CLIENT_ID || undefined;
   const privateKey = env.GITHUB_APP_PRIVATE_KEY || undefined;
@@ -72,6 +91,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     throw new Error(`GITHUB_DRY_RUN is ${JSON.stringify(env.GITHUB_DRY_RUN)}; it must be true or false.`);
   }
   const dryRun = asked === 'true' || asked === '1';
+  const repositories = (env.GITHUB_REPOSITORIES || REPOSITORIES.join(','))
+    .split(',')
+    .map((r) => r.trim())
+    .filter(Boolean);
   const config: GitHubConfig = {
     credentials: clientId && privateKey ? { clientId, privateKey } : undefined,
     dryRun,
@@ -82,10 +105,13 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
       checksAfterMs: seconds(env, 'GITHUB_DRY_RUN_CHECKS_SECONDS', 120) * 1000,
       mergeAfterMs: seconds(env, 'GITHUB_DRY_RUN_MERGE_SECONDS', 1200) * 1000,
     },
-    repositories: (env.GITHUB_REPOSITORIES || REPOSITORIES.join(','))
-      .split(',')
-      .map((r) => r.trim())
-      .filter(Boolean),
+    repositories,
+    stateKeys: new Map(
+      repositories.flatMap((repo): [string, Buffer][] => {
+        const key = env[stateKeyName(repo)]?.trim();
+        return key ? [[repo, stateKey(stateKeyName(repo), key)]] : [];
+      }),
+    ),
     pollMs: Number(env.GITHUB_POLL_SECONDS || 60) * 1000,
     api: env.GITHUB_API_URL || API,
     ghcr: env.GHCR_URL || GHCR,
@@ -131,6 +157,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     }
   }
   if (!(config.pollMs >= 10_000)) throw new Error('GITHUB_POLL_SECONDS must be at least 10.');
+  // Two repositories whose names give one setting could not each have a key: refused, never read with the other's.
+  const named = new Map<string, string>();
+  for (const repo of config.repositories) {
+    const other = named.get(stateKeyName(repo));
+    if (other !== undefined && other !== repo)
+      throw new Error(`${other} and ${repo} would both take their scan’s key from ${stateKeyName(repo)}.`);
+    named.set(stateKeyName(repo), repo);
+  }
   return config;
 }
 

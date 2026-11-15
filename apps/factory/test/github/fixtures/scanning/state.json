@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "repository": "the-roganator/cv-worlds-worst-website",
+  "run": "42000000001",
+  "findings": [
+    {
+      "advisory": "CVE-2099-0001",
+      "package": "libexample",
+      "installed": "3.0.1",
+      "file": "deploy/website.yaml",
+      "line": 12,
+      "repository": "ghcr.io/example/base",
+      "type": "debian",
+      "severity": "HIGH",
+      "fixed": "3.0.2",
+      "seen": "2026-11-01T06:20:00Z",
+      "fix": {
+        "target": "image 1.2.1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "day": "2026-11-01T06:00:00Z"
+      },
+      "move": 1
+    },
+    {
+      "advisory": "CVE-2099-0002",
+      "package": "libexample",
+      "installed": "3.0.1",
+      "file": "deploy/website.yaml",
+      "line": 12,
+      "repository": "ghcr.io/example/base",
+      "type": "debian",
+      "severity": "MEDIUM",
+      "fixed": "3.0.3",
+      "seen": "2026-11-01T06:20:00Z",
+      "fix": {
+        "target": "image 1.2.1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "day": "2026-11-02T06:00:00Z"
+      },
+      "move": 1
+    },
+    {
+      "advisory": "GHSA-0000-0000-0001",
+      "package": "invented-pkg",
+      "installed": "2.0.0",
+      "file": "pnpm-lock.yaml",
+      "line": 210,
+      "repository": "pnpm-lock.yaml",
+      "type": "pnpm",
+      "severity": "HIGH",
+      "fixed": "2.0.1",
+      "seen": "2026-11-01T06:20:00Z",
+      "fix": {
+        "target": "version 2.0.1",
+        "day": "2026-11-10T06:00:00Z"
+      },
+      "move": 2
+    },
+    {
+      "advisory": "GHSA-0000-0000-0002",
+      "package": "invented-pkg",
+      "installed": "2.0.0",
+      "file": "pnpm-lock.yaml",
+      "line": 210,
+      "repository": "pnpm-lock.yaml",
+      "type": "pnpm",
+      "severity": "LOW",
+      "fixed": "2.0.3",
+      "seen": "2026-11-01T06:20:00Z",
+      "fix": {
+        "target": "version 2.0.3",
+        "day": "2026-11-03T06:00:00Z"
+      },
+      "move": 2
+    },
+    {
+      "advisory": "CVE-2099-0003",
+      "package": "otherlib",
+      "installed": "1.0.0",
+      "file": "deploy/website.yaml",
+      "line": 12,
+      "repository": "ghcr.io/example/base",
+      "type": "debian",
+      "severity": "MEDIUM",
+      "seen": "2026-11-01T06:20:00Z"
+    }
+  ]
+}

@@ -89,6 +89,10 @@ describe('the seal', () => {
   it('never repeats a key it cannot read', () => {
     expect(() => readKey('not-a-key')).toThrow('SCAN_STATE_KEY is not 32 bytes in base64');
     expect(() => readKey('')).toThrow(StateError);
+    // Base64 Node would read and never write: unpadded, or with a character it drops.
+    expect(() => readKey('A'.repeat(43))).toThrow(StateError);
+    expect(() => readKey(`${newKey().slice(0, 20)} ${newKey().slice(20)}`)).toThrow(StateError);
+    expect(readKey(`${newKey()}\n`)).toHaveLength(32);
   });
 });
 

@@ -83,8 +83,12 @@ export const newKey = () => randomBytes(32).toString('base64');
 
 /** The key from its secret's text, or an error that never repeats it. */
 export function readKey(text: string) {
-  const key = Buffer.from(text.trim(), 'base64');
-  if (key.length !== 32) throw new StateError(`${STATE_KEY} is not 32 bytes in base64`);
+  const written = text.trim();
+  const key = Buffer.from(written, 'base64');
+  // As `newKey` writes one, and no other spelling: Node reads base64 it would not write (unpadded, or with other
+  // characters dropped), and a key that is not what was made opens nothing.
+  if (key.length !== 32 || key.toString('base64') !== written)
+    throw new StateError(`${STATE_KEY} is not 32 bytes in base64`);
   return key;
 }
 

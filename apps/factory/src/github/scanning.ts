@@ -2,35 +2,27 @@
  * The vulnerability scan's day, as the GitHub worker reads it for the factory: the one door through which the factory
  * learns of a vulnerability.
  *
- * `moves` takes `moves.json` from the last finished run of `vulnerabilities.yml` on the default branch, by schedule,
+ * `moves` takes two artifacts from the last finished run of `vulnerabilities.yml` on the default branch, by schedule,
  * push or hand (a pull request's run of the same workflow is never read, and a run still going is passed over), with
- * that run's conclusion; then it pages through the repository's open alerts in the scan's own categories
- * (`vulnerabilities/01` to `vulnerabilities/20`, never CodeQL's or Scorecard's), each message read by its one grammar
- * (sarif.ts's `readMessage`, through fixes.ts's readers), for what the artifact withholds: a lockfile move's package and
- * versions, and each move's findings.
+ * that run's conclusion: `moves.json`, which is public, and the state the scan kept, sealed with the repository's key
+ * (vulnerabilities/state.ts, ADR 0021), for what `moves.json` withholds: a lockfile move's package and versions, and
+ * each move's findings. It reads no alert: code scanning is where findings are shown, not where the worker learns them.
  *
- * An alert's text is untrusted input. A message that does not parse, a move from another run than the artifact's (or,
- * while that run is still going, a read to try again) or past its list, or a count that differs from the artifact's,
- * fails the whole read, and nothing of it is returned: no word of an advisory is shown or acted on unless the scan's
- * own artifact agrees with it. Only the parts the grammar reads are returned: an advisory's id, never its title or its text.
+ * Both are the scan's by where they are, one run's, and each is held to the other: a state that does not open with
+ * the repository's key for that run, a finding in a move past the list, or a count that differs from `moves.json`'s,
+ * fails the whole read, and nothing of it is returned. A run that left `moves.json` and no state fails it too: there
+ * is no second source. Only what the state's shape holds is returned: an advisory's id, never its title or its text.
  *
- * Each page of alerts is folded as it is read into what the answer takes of it (`fold`), and read plainly, never
- * polled: a read holds its findings and one page, however many alerts GitHub has, and the client keeps no page.
+ * What the App lacks is named: a read refused for want of `actions: read` says so, and a worker with no key for a
+ * repository's state says which.
  *
- * What the App lacks is named: a read refused for want of `actions: read` or `security_events: read` says which.
- *
- * A whole read is kept, one for each repository, and served again only while nothing it was read from has changed:
- * each call still asks which run is the last finished, whether a run of the scan is going, and when the scan's alerts
- * last changed (the one that changed last, of any state: a dismissal or reopening, by hand or by a run, and a run's
- * fixes, all change one; a run seeing an alert again does not, so no read is served from what was kept while a run is
- * going). A new run, a run going, a later change, or the run's artifact past its expiry is a whole read at once. A read
- * whose last change is under a minute older than the call that asked is not kept, so no later change shares its second
- * (GitHub times a change to the second). Callers at
- * once share one read in flight. A read that fails, or is asked for again (`READ_AGAIN`), is never kept.
+ * A whole read is kept, one for each repository, and served again while the last finished run is the same one and its
+ * artifacts are there to read: an artifact never changes, so each call asks only which run is the last finished.
+ * Callers at once share one read in flight. A read that fails is never kept.
  */
+import { createHmac } from 'node:crypto';
 import { z } from 'zod';
-import { isOurs } from '../vulnerabilities/alerts.ts';
-import { dayText, type Fix, readMove, type Target, targetText } from '../vulnerabilities/fixes.ts';
+import { type Fix, type Target, targetText } from '../vulnerabilities/fixes.ts';
 import type { Kind } from '../vulnerabilities/inventory.ts';
 import {
   type DayCounts,
@@ -41,28 +33,33 @@ import {
   type PublicMove,
   type ScannedImage,
 } from '../vulnerabilities/moves.ts';
-import { readMessage, SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
+import { SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
+import {
+  MAX_SEALED_BYTES,
+  open,
+  readStateFix,
+  SCAN_EVENTS,
+  SCAN_WORKFLOW,
+  STATE_ARTIFACT,
+  STATE_FILE,
+  type State,
+  StateError,
+} from '../vulnerabilities/state.ts';
 import { type ZipError, zipEntry } from '../vulnerabilities/zip.ts';
-import { type GitHub, GitHubError, READ_AGAIN } from './client.ts';
+import { type GitHub, GitHubError } from './client.ts';
 import { DIGEST } from './registry.ts';
 
-/** The scan's workflow, in both repositories: the app's calls the factory's. */
-export const SCAN_WORKFLOW = 'vulnerabilities.yml';
+export { SCAN_EVENTS, SCAN_WORKFLOW };
 /** The scan's artifact, and the file in it. */
 export const MOVES_ARTIFACT = 'moves';
 export const MOVES_FILE = 'moves.json';
-/** The events a run of the scan on the default branch is read from: never a pull request's. */
-export const SCAN_EVENTS: readonly string[] = ['schedule', 'push', 'workflow_dispatch'];
-
 /** The most runs looked through for the last finished one, a page at a time. */
 const RUN_PAGES = 5;
 const RUNS_PER_PAGE = 20;
-/** The most alerts read: code scanning keeps 5,000 results in each of the scan's 20 categories. */
-export const MAX_ALERTS = 100_000;
-const ALERTS_PER_PAGE = 100;
-/** The most `moves.json` and its archive may hold: the day's moves, far below this. */
+/** The most `moves.json` may hold: the day's moves, far below this. */
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
-const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
+/** What an archive of one file may hold beyond the file: its name and its directory. A sealed state does not shrink. */
+const ARCHIVE_BYTES = 64 * 1024;
 
 /** The run a day's moves came from. */
 export interface ScanRun {
@@ -76,9 +73,8 @@ export interface ScanRun {
   url: string;
 }
 
-/** One finding a move clears, as its alert's message gives it, and the alert. */
+/** One finding a move clears, as the scan's state gives it. */
 export interface MoveFinding {
-  alert: number;
   advisory: string;
   /** As the scan rated the result; the move's counts are by the higher of this and the publisher's (deadlines.ts). */
   severity: Severity;
@@ -87,8 +83,8 @@ export interface MoveFinding {
   file: string;
   line: number;
   /**
-   * The versions that fix the advisory, as the message gives them (`fixed in …`), joined by `, `; absent for `no fix
-   * yet`. The advisory's own, of the package: not the move's target, which for an image is the image's.
+   * The versions that fix the advisory, as the scan's message gives them (`fixed in …`), joined by `, `; absent for
+   * `no fix yet`. The advisory's own, of the package: not the move's target, which for an image is the image's.
    */
   fixed?: string | undefined;
   /** What fixes it (fixes.ts's text), and the day that was first seen. */
@@ -96,15 +92,21 @@ export interface MoveFinding {
   firstSeen: string;
 }
 
-/** A move as `moves.json` gives it, with what the alerts hold. */
+/** A move as `moves.json` gives it, with what the state holds. */
 export interface ReadMove extends PublicMove {
   /** Its place in `moves.json`, from 1. */
   index: number;
   /**
    * What `moves.json` withholds of a lockfile's move, which it names only by its file: the package, its version, its
-   * target and its pins, as the alerts give them. Absent for any other move, which the artifact names whole.
+   * target and its pins, as the state gives them. Absent for any other move, which the artifact names whole.
    */
   withheld?: { package: string; from: string; to: string; pins: { file: string; line: number }[] } | undefined;
+  /**
+   * A lockfile's move's mark: a name for it that is the same on every read while its package and its files are, and
+   * says nothing of the package to anyone without the state's key (a digest keyed by it). What may be written where
+   * the public reads, in place of the package: an issue is found again by it.
+   */
+  mark?: string | undefined;
   findings: MoveFinding[];
 }
 
@@ -128,8 +130,6 @@ export async function defaultBranch(github: GitHub, repo: string): Promise<strin
   const { body } = await github.poll(repo, `/repos/${repo}`, REPOSITORY);
   return body.default_branch;
 }
-
-const RUN = z.object({ status: z.string().nullable() });
 
 const RUNS = z.object({
   workflow_runs: z.array(
@@ -158,32 +158,6 @@ const ARTIFACTS = z.object({
     }),
   ),
 });
-
-const ALERTS = z.array(
-  z.object({
-    number: z.number().int().positive(),
-    state: z.string(),
-    rule: z.object({ id: z.string().nullable().optional() }).nullable().optional(),
-    tool: z.object({ name: z.string().nullable().optional() }).nullable().optional(),
-    most_recent_instance: z
-      .object({
-        category: z.string().optional(),
-        message: z.object({ text: z.string().optional() }).optional(),
-        location: z.object({ path: z.string().optional(), start_line: z.number().int().optional() }).optional(),
-      })
-      .nullable()
-      .optional(),
-  }),
-);
-
-/** The alert that changed last, whatever its state: what a kept read is checked against. */
-const LATEST = z.array(
-  z.object({
-    number: z.number().int().positive(),
-    state: z.string(),
-    updated_at: z.string().nullable().optional(),
-  }),
-);
 
 const COUNTS = z.strictObject(
   Object.fromEntries(SEVERITIES.map((s) => [s, z.number().int().nonnegative()])) as Record<Severity, z.ZodNumber>,
@@ -300,81 +274,6 @@ const MOVES_FILE_SCHEMA = z.strictObject({
     .refine((list) => new Set(list.map((each) => JSON.stringify(each))).size === list.length, 'an image twice'),
 });
 
-type Alerts = z.infer<typeof ALERTS>;
-
-/**
- * What an alert leaves once its page is read: only an alert of the scan's own with a fix in a move, with what its
- * finding holds, or one whose message does not parse, by its number alone, for `joinedPaged` to fail on in its turn.
- */
-type Folded =
-  | { alert: number; parsed: false }
-  | { alert: number; parsed: true; run: string; index: number; finding: MoveFinding; fix: Fix };
-
-/** Every page of a repository's alerts, folded: how many were read, the later runs their tags name, and each kept. */
-interface Paged {
-  count: number;
-  later: Set<string>;
-  folded: Folded[];
-}
-
-/**
- * One page of alerts folded into what the read keeps: the alerts, the page's text and each message go once it is
- * read, so a read holds what it keeps and one page, however many alerts GitHub has. `runId` is the artifact's run, a
- * later one than which an alert's tag names makes the read one to try again (`#settled`).
- */
-function fold(paged: Paged, alerts: Alerts, runId: number) {
-  paged.count += alerts.length;
-  for (const alert of alerts) {
-    if (!ours(alert)) continue;
-    const text = alert.most_recent_instance?.message?.text ?? '';
-    const advisory = alert.rule?.id ?? '';
-    const message = readMessage(text, advisory);
-    // Only a later run than the artifact's can be a read to try again; any other fails the read in `joinedPaged`. The
-    // tag is the message's own when it parses; a copy is kept, never a slice that would keep the message alive.
-    const tag = message ? message.move : readMove(text);
-    if (tag && BigInt(tag.run) > BigInt(runId)) paged.later.add(structuredClone(tag.run));
-    if (!advisory || !message) {
-      paged.folded.push({ alert: alert.number, parsed: false });
-      continue;
-    }
-    if (!message.fix) continue;
-    const move = message.move;
-    // A result with a fix and no move is excepted (moves.ts leaves those out), its alert open until the run's next step
-    // dismisses it: it is in no move. One the artifact counts and lacks fails the counts in `joinedPaged`.
-    if (!move) continue;
-    paged.folded.push({
-      alert: alert.number,
-      parsed: true,
-      run: move.run,
-      index: move.index,
-      // A copy, so no string the read keeps is a slice of its message, which would keep the whole message alive.
-      finding: structuredClone({
-        alert: alert.number,
-        advisory,
-        severity: message.severity,
-        package: message.package,
-        installed: message.installed,
-        file: alert.most_recent_instance?.location?.path ?? '',
-        line: alert.most_recent_instance?.location?.start_line ?? 0,
-        ...(message.fixed && { fixed: message.fixed }),
-        fix: targetText(message.fix.target),
-        firstSeen: dayText(message.fix.day),
-      }),
-      fix: structuredClone(message.fix),
-    });
-  }
-}
-
-/** Whether an alert is open and the scan's own (alerts.ts's `isOurs`): Trivy's, in its categories. */
-const ours = (alert: Alerts[number]) =>
-  alert.state === 'open' &&
-  isOurs({
-    number: alert.number,
-    state: alert.state,
-    tool: { name: alert.tool?.name ?? '' },
-    most_recent_instance: { category: alert.most_recent_instance?.category ?? '' },
-  });
-
 const total = (counts: Record<Severity, number>) => SEVERITIES.reduce((sum, s) => sum + counts[s], 0);
 
 /** A read the scan's own artifact does not agree with: nothing of it is returned. */
@@ -382,7 +281,7 @@ const disagrees = (repo: string, why: string) =>
   new GitHubError('malformed', `The scan's moves in ${repo} cannot be read: ${why}.`);
 
 /** The permissions the read needs, as GitHub names them. */
-const NEEDED = ['actions', 'security_events'];
+const NEEDED = ['actions'];
 
 const lacksError = (repo: string, lacks: string[]) =>
   new GitHubError(
@@ -395,68 +294,35 @@ const lacksError = (repo: string, lacks: string[]) =>
 const lacking = (error: unknown, permission: string) =>
   error instanceof GitHubError && error.kind === 'refused' && error.status === 403 ? permission : undefined;
 
-/** What a whole read was read at: the last finished run, when the alerts last changed, and whether a run was going. */
-interface ReadAt {
-  run: number;
-  /** The last change's time as GitHub gives it, `none` with no alert at all, undefined when GitHub does not say. */
-  changed: string | undefined;
-  going: boolean;
-  /** When the worker asked, by its own clock: before GitHub answered any of the three. */
-  asked: number;
-}
-
-/** How old the alerts' last change must be for a read to be kept: GitHub gives its time to the second, at best. */
-export const SETTLED_MS = 60_000;
-
-const same = (a: ReadAt, b: ReadAt) => a.run === b.run && a.changed === b.changed && a.going === b.going;
-const changedAt = (at: ReadAt) => (at.changed === 'none' ? '' : (at.changed ?? ''));
-/** Whether `a` is a later point than `b`: a later run, or the same one with a later change. */
-const later = (a: ReadAt, b: ReadAt) => a.run > b.run || (a.run === b.run && changedAt(a) > changedAt(b));
-/**
- * Whether a read at `at` may be kept, and so served again: no run going, and the last change a minute older than the
- * asking, so no change after it can share its second (see the module's comment).
- */
-const keepable = (at: ReadAt) =>
-  !at.going && at.changed !== undefined && (at.changed === 'none' || at.asked - Date.parse(at.changed) >= SETTLED_MS);
-/**
- * Whether a caller at `at` may wait for the read in flight from `reading` instead of starting its own: one from the
- * same point, or from a later one, asked when a run was going if `at` saw one, and with a time if `at` had one.
- * Anything else is a read of its own.
- */
-const joins = (at: ReadAt, reading: ReadAt) =>
-  same(at, reading) ||
-  (later(reading, at) && at.changed !== undefined && reading.changed !== undefined && (!at.going || reading.going));
+/** Each repository's key for its scan's state, or none where the worker holds none. */
+export type StateKeys = (repo: string) => Buffer | undefined;
 
 /** The scan's moves: see the module's comment. */
 export class ScanReads {
   readonly #github: GitHub;
-  /** Each artifact's `moves.json`, by its id: an artifact never changes, so it is downloaded once. */
-  readonly #files = new Map<number, unknown>();
-
-  /** Each repository's last whole read, what it was read at, and until when its artifact is there to read again. */
-  readonly #kept = new Map<string, { at: ReadAt; until: number; moves: Moves }>();
-  /** Each repository's read in flight, which a caller asking at the same or an earlier point waits for. */
-  readonly #reading = new Map<string, { at: ReadAt; read: Promise<{ until: number; moves: Moves }> }>();
+  readonly #keys: StateKeys;
+  /** Each repository's last whole read, the run it is of, and until when its artifacts are there to read again. */
+  readonly #kept = new Map<string, { run: number; until: number; moves: Moves }>();
+  /** Each repository's read in flight, which a caller asking of the same run waits for. */
+  readonly #reading = new Map<string, { run: number; read: Promise<{ until: number; moves: Moves }> }>();
   readonly #now: () => number;
 
-  readonly #maxAlerts: number;
-
-  /** `maxAlerts` for a test of the cap, the scan's own is `MAX_ALERTS`; `now` for a test of the clock. */
+  /** `keys` gives each repository's key; `now` is for a test of the clock. */
   constructor(
     github: GitHub,
-    { maxAlerts = MAX_ALERTS, now = Date.now }: { maxAlerts?: number; now?: () => number } = {},
+    { keys = () => undefined, now = Date.now }: { keys?: StateKeys; now?: () => number } = {},
   ) {
     this.#github = github;
-    this.#maxAlerts = maxAlerts;
+    this.#keys = keys;
     this.#now = now;
   }
 
   async moves(repo: string): Promise<Moves> {
-    // Code scanning's alerts and a run's artifacts are read with the App's token alone, even on a public repository.
+    // A run's artifacts are read with the App's token alone, even on a public repository.
     if (!this.#github.writable)
       throw new GitHubError('read-only', `The worker has no App key, so it cannot read the scan's moves in ${repo}.`);
     // What the token may do, as GitHub granted it: a public repository's runs read without `actions: read`, and only
-    // the artifact's download would be refused, so each permission is named before anything is asked.
+    // the artifact's download would be refused, so the permission is named before anything is asked.
     const granted = await this.#github.permissions(repo);
     if (granted) {
       const lacks = NEEDED.filter((permission) => !['read', 'write'].includes(granted[permission] ?? ''));
@@ -467,36 +333,26 @@ export class ScanReads {
         );
     }
     const branch = await defaultBranch(this.#github, repo);
-    // Whether a run is going is asked before which run is the last finished, so a run that finishes between the two
-    // answers is seen by the second. Both permissions' reads first, so a read the App may not make names every
-    // permission it lacks, not only the first.
-    const asked = this.#now();
-    const [going, latest] = await Promise.allSettled([this.#going(repo, branch), this.#latest(repo)]);
-    const [runs] = going.status === 'fulfilled' ? await Promise.allSettled([this.#run(repo, branch)]) : [going];
-    const missing = [
-      runs.status === 'rejected' ? lacking(runs.reason, '`actions: read`') : undefined,
-      latest.status === 'rejected' ? lacking(latest.reason, '`security_events: read`') : undefined,
-    ].filter(Boolean);
-    if (missing.length) throw lacksError(repo, missing as string[]);
-    if (runs.status === 'rejected') throw runs.reason;
-    if (latest.status === 'rejected') throw latest.reason;
-    if (going.status === 'rejected') throw going.reason;
-    const run = runs.value;
-    const at: ReadAt = { run: run.id, changed: latest.value, going: going.value, asked };
+    let run: ScanRun;
+    try {
+      run = await this.#run(repo, branch);
+    } catch (error) {
+      const lacks = lacking(error, '`actions: read`');
+      throw lacks ? lacksError(repo, [lacks]) : error;
+    }
     const kept = this.#kept.get(repo);
-    if (kept && same(kept.at, at) && keepable(at) && this.#now() < kept.until) return structuredClone(kept.moves);
+    if (kept && kept.run === run.id && this.#now() < kept.until) return structuredClone(kept.moves);
     let reading = this.#reading.get(repo);
-    if (!reading || !joins(at, reading.at)) {
-      const own = { at, read: this.#read(repo, run) };
+    if (!reading || reading.run !== run.id) {
+      const own = { run: run.id, read: this.#read(repo, run) };
       reading = own;
       this.#reading.set(repo, own);
-      // Kept once whole if it may be, unless a later read was asked for meanwhile; a read that fails is never kept.
+      // Kept once whole, unless a later run's read was asked for meanwhile; a read that fails is never kept.
       own.read.then(
         ({ until, moves }) => {
           if (this.#reading.get(repo) !== own) return;
           this.#reading.delete(repo);
-          if (keepable(at)) this.#kept.set(repo, { at, until, moves });
-          else this.#kept.delete(repo);
+          this.#kept.set(repo, { run: run.id, until, moves });
         },
         () => {
           if (this.#reading.get(repo) === own) this.#reading.delete(repo);
@@ -506,69 +362,34 @@ export class ScanReads {
     return structuredClone((await reading.read).moves);
   }
 
-  /** One whole read: every open alert, the run's `moves.json`, each held to the other, and when its artifact expires. */
+  /** One whole read: the run's `moves.json` and its state, each held to the other, and when the first of them expires. */
   async #read(repo: string, run: ScanRun): Promise<{ until: number; moves: Moves }> {
-    // The alerts and the artifact at once: neither waits on the other. The alerts' failure is the one named first.
-    const [paged, file] = await Promise.allSettled([this.#alerts(repo, run), this.#file(repo, run)]);
-    if (paged.status === 'rejected') {
-      const lacks = lacking(paged.reason, '`security_events: read`');
-      throw lacks ? lacksError(repo, [lacks]) : paged.reason;
-    }
-    if (file.status === 'rejected') throw file.reason;
-    const alerts = paged.value;
-    const found = file.value;
-    if (!found) {
+    const [moves, sealed] = await Promise.all([
+      this.#artifact(repo, run, MOVES_ARTIFACT, MOVES_FILE, MAX_FILE_BYTES),
+      this.#artifact(repo, run, STATE_ARTIFACT, STATE_FILE, MAX_SEALED_BYTES),
+    ]);
+    if (!moves) {
       if (run.conclusion === 'success') throw disagrees(repo, `run ${run.id} succeeded and left no ${MOVES_FILE}`);
       return { until: Number.POSITIVE_INFINITY, moves: { repository: repo, run, file: null, moves: [] } };
     }
-    await this.#settled(repo, alerts.later);
-    return { until: found.until, moves: { repository: repo, run, ...joinedPaged(repo, run, found.file, alerts) } };
-  }
-
-  /**
-   * When the scan's alerts last changed: the one GitHub changed last, of any state. A dismissal, a reopening and a fix
-   * each change one; an unchanged answer is GitHub's 304, which costs nothing against the rate limit. Undefined when
-   * GitHub does not say, which no kept read is served for.
-   */
-  async #latest(repo: string): Promise<string | undefined> {
-    const path = `/repos/${repo}/code-scanning/alerts?tool_name=Trivy&sort=updated&direction=desc&per_page=1`;
-    const { body } = await this.#github.poll(repo, path, LATEST);
-    const [last] = body;
-    return last ? (last.updated_at ?? undefined) : 'none';
-  }
-
-  /** Whether a run of the scan on the default branch, by schedule, push or hand, is going: it may have uploaded. */
-  async #going(repo: string, branch: string): Promise<boolean> {
-    const path = `/repos/${repo}/actions/workflows/${SCAN_WORKFLOW}/runs?branch=${encodeURIComponent(branch)}&status=in_progress&exclude_pull_requests=true&per_page=${RUNS_PER_PAGE}`;
-    const { body } = await this.#github.poll(repo, path, RUNS);
-    return body.workflow_runs.some(
-      (run) =>
-        run.status !== 'completed' &&
-        SCAN_EVENTS.includes(run.event) &&
-        run.head_branch === branch &&
-        run.head_repository?.full_name === repo,
-    );
-  }
-
-  /**
-   * A run uploads its artifact and then its results, and is still going while code scanning processes them and the
-   * alerts are held to the policy: alerts that name a run still going, or a later run that finished while this read
-   * paged through the alerts, are a read to try again, not a disagreement. Any other run than the artifact's fails the
-   * read in `joinedPaged`.
-   */
-  async #settled(repo: string, later: Set<string>) {
-    // The tags are the alerts' words, so at most one later run is asked about: two are a disagreement.
-    if (later.size > 1) throw disagrees(repo, `its alerts name ${later.size} runs later than the artifact's`);
-    const [other] = later;
-    if (other === undefined) return;
-    const { body } = await this.#github.poll(repo, `/repos/${repo}/actions/runs/${other}`, RUN);
-    throw new GitHubError(
-      READ_AGAIN,
-      body.status === 'completed'
-        ? `The scan's run ${other} in ${repo} finished while its moves were read: read them again.`
-        : `The scan's run ${other} in ${repo} has uploaded its results and has not finished: read its moves once it has.`,
-      409,
-    );
+    const file = movesFileOf(repo, run, moves.bytes);
+    if (!sealed) throw disagrees(repo, `run ${run.id} left ${MOVES_FILE} and kept no state to read its findings from`);
+    const key = this.#keys(repo);
+    if (!key)
+      throw new GitHubError(
+        'read-only',
+        `The worker has no key for the state ${repo}'s scan keeps, so it cannot read its moves: \`make scan-state-key\` gives it one.`,
+      );
+    let state: State;
+    try {
+      state = open(sealed.bytes, key, repo, String(run.id));
+    } catch (error) {
+      if (error instanceof StateError) throw disagrees(repo, `run ${run.id}'s state cannot be read: ${error.message}`);
+      throw error;
+    }
+    const read = joined(repo, run, file, state);
+    for (const move of read.moves) if (move.withheld) move.mark = markOf(key, repo, move.withheld);
+    return { until: Math.min(moves.until, sealed.until), moves: { repository: repo, run, ...read } };
   }
 
   /** The last finished run of the scan on the default branch, by schedule, push or hand. */
@@ -597,89 +418,76 @@ export class ScanReads {
     throw new GitHubError('not-found', `${repo} has no finished run of ${SCAN_WORKFLOW} on ${branch} to read.`, 404);
   }
 
-  /** The run's `moves.json`, and when its artifact expires, or undefined when it uploaded none. */
-  async #file(repo: string, run: ScanRun): Promise<{ file: MovesFile; until: number } | undefined> {
-    const path = `/repos/${repo}/actions/runs/${run.id}/artifacts?name=${MOVES_ARTIFACT}&per_page=10`;
+  /** One file of one of the run's artifacts, and when the artifact expires, or undefined when the run uploaded none. */
+  async #artifact(
+    repo: string,
+    run: ScanRun,
+    name: string,
+    fileName: string,
+    maxBytes: number,
+  ): Promise<{ bytes: Buffer; until: number } | undefined> {
+    const path = `/repos/${repo}/actions/runs/${run.id}/artifacts?name=${name}&per_page=10`;
     const { body } = await this.#github.poll(repo, path, ARTIFACTS);
-    const artifact = body.artifacts.find((each) => each.name === MOVES_ARTIFACT);
+    const artifact = body.artifacts.find((each) => each.name === name);
     if (!artifact) return undefined;
     if (artifact.expired)
-      throw new GitHubError('not-found', `Run ${run.id}'s ${MOVES_ARTIFACT} artifact in ${repo} has expired.`, 404);
-    if (artifact.size_in_bytes > MAX_ARCHIVE_BYTES) throw disagrees(repo, `run ${run.id}'s artifact is too large`);
-    let json = this.#files.get(artifact.id);
-    if (json === undefined) {
-      const zip = await this.#github.download(
+      throw new GitHubError('not-found', `Run ${run.id}'s ${name} artifact in ${repo} has expired.`, 404);
+    const maxArchive = maxBytes + ARCHIVE_BYTES;
+    if (artifact.size_in_bytes > maxArchive) throw disagrees(repo, `run ${run.id}'s ${name} artifact is too large`);
+    const zip = await this.#github.download(repo, `/repos/${repo}/actions/artifacts/${artifact.id}/zip`, maxArchive);
+    let bytes: Buffer | undefined;
+    try {
+      bytes = zipEntry(zip, fileName, maxBytes);
+    } catch (error) {
+      throw disagrees(
         repo,
-        `/repos/${repo}/actions/artifacts/${artifact.id}/zip`,
-        MAX_ARCHIVE_BYTES,
+        `run ${run.id}'s ${name} artifact is not a readable archive (${(error as ZipError).message})`,
       );
-      let text: Buffer | undefined;
-      try {
-        text = zipEntry(zip, MOVES_FILE, MAX_FILE_BYTES);
-      } catch (error) {
-        throw disagrees(repo, `run ${run.id}'s artifact is not a readable archive (${(error as ZipError).message})`);
-      }
-      if (!text) throw disagrees(repo, `run ${run.id}'s artifact holds no ${MOVES_FILE}`);
-      try {
-        json = JSON.parse(text.toString('utf8'));
-      } catch {
-        throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is not JSON`);
-      }
-      // A few days' artifacts at most: the oldest goes first.
-      if (this.#files.size >= 16) this.#files.delete(this.#files.keys().next().value as number);
-      this.#files.set(artifact.id, json);
     }
-    const parsed = MOVES_FILE_SCHEMA.safeParse(json);
-    if (!parsed.success) {
-      const where = parsed.error.issues
-        .slice(0, 3)
-        .map((issue) => issue.path.join('.') || '(file)')
-        .join(', ');
-      throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is not the shape this worker reads (${where})`);
-    }
+    if (!bytes) throw disagrees(repo, `run ${run.id}'s ${name} artifact holds no ${fileName}`);
     // An artifact whose expiry GitHub does not give, or gives as no date, is read again on each call.
     const until = Date.parse(artifact.expires_at ?? '');
-    return { file: parsed.data as MovesFile, until: Number.isNaN(until) ? 0 : until };
-  }
-
-  /**
-   * Every open alert of the repository's on the default branch, Trivy's, every page, each folded as it is read
-   * (`fold`); more than `MAX_ALERTS` fails. A page is read plainly, not polled: the client would keep every page's
-   * text for its ETag, which is the whole of the alerts, and the kept read already spares reading them again.
-   */
-  async #alerts(repo: string, run: ScanRun): Promise<Paged> {
-    const paged: Paged = { count: 0, later: new Set(), folded: [] };
-    for (let page = 1; ; page++) {
-      const path = `/repos/${repo}/code-scanning/alerts?state=open&tool_name=Trivy&per_page=${ALERTS_PER_PAGE}&page=${page}`;
-      const body = await this.#github.read(repo, path, ALERTS);
-      fold(paged, body, run.id);
-      if (paged.count > this.#maxAlerts) throw disagrees(repo, `more than ${this.#maxAlerts} open alerts`);
-      if (body.length < ALERTS_PER_PAGE) return paged;
-    }
+    return { bytes, until: Number.isNaN(until) ? 0 : until };
   }
 }
 
+/** A lockfile's move's mark (`ReadMove.mark`): its repository, package and files, digested with the state's key. */
+export function markOf(key: Buffer, repo: string, withheld: NonNullable<ReadMove['withheld']>): string {
+  const files = [...new Set(withheld.pins.map((pin) => pin.file))].sort();
+  return createHmac('sha256', key)
+    .update(JSON.stringify(['lockfile move', repo, withheld.package, files]))
+    .digest('hex')
+    .slice(0, 12);
+}
+
+/** A run's `moves.json` from its bytes, through the schema: a version or a shape this worker does not read fails. */
+function movesFileOf(repo: string, run: ScanRun, bytes: Buffer): MovesFile {
+  let json: unknown;
+  try {
+    json = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is not JSON`);
+  }
+  const parsed = MOVES_FILE_SCHEMA.safeParse(json);
+  if (!parsed.success) {
+    const where = parsed.error.issues
+      .slice(0, 3)
+      .map((issue) => issue.path.join('.') || '(file)')
+      .join(', ');
+    throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is not the shape this worker reads (${where})`);
+  }
+  return parsed.data as MovesFile;
+}
+
 /**
- * The artifact's moves with their alerts, each checked against the other: every result with a fix names its move in
- * this run, every move has as many findings as it clears, and the total is the artifact's.
+ * `moves.json`'s moves with their findings from the state, each checked against the other: every move has as many
+ * findings as it clears, none names a move past the list, and the total is `moves.json`'s.
  */
 export function joined(
   repo: string,
   run: ScanRun,
   file: MovesFile,
-  alerts: Alerts,
-): { file: Omit<MovesFile, 'moves'>; moves: ReadMove[] } {
-  const paged: Paged = { count: 0, later: new Set(), folded: [] };
-  fold(paged, alerts, run.id);
-  return joinedPaged(repo, run, file, paged);
-}
-
-/** `joined`, of alerts already folded a page at a time. */
-function joinedPaged(
-  repo: string,
-  run: ScanRun,
-  file: MovesFile,
-  paged: Paged,
+  state: State,
 ): { file: Omit<MovesFile, 'moves'>; moves: ReadMove[] } {
   if (file.repository !== repo) throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is another repository's`);
   if (file.run !== String(run.id))
@@ -695,32 +503,45 @@ function joinedPaged(
 
   const findings: MoveFinding[][] = file.moves.map(() => []);
   const fixes: Fix[][] = file.moves.map(() => []);
-  // In the alerts' order, as GitHub paged them: the first that fails is the one named.
-  for (const each of paged.folded) {
-    if (!each.parsed) throw disagrees(repo, `alert ${each.alert}'s message does not parse`);
-    if (each.run !== String(run.id))
-      throw disagrees(repo, `alert ${each.alert} is from run ${each.run}, and the artifact from run ${run.id}`);
-    const list = findings[each.index - 1];
-    if (!list) throw disagrees(repo, `alert ${each.alert} names move ${each.index} of ${file.moves.length}`);
-    list.push(each.finding);
-    fixes[each.index - 1]?.push(each.fix);
+  for (const [at, each] of state.findings.entries()) {
+    // One with a fix and no move is excepted, or has none: it is in no move.
+    if (each.move === undefined || !each.fix) continue;
+    const list = findings[each.move - 1];
+    if (!list) throw disagrees(repo, `the state's finding ${at + 1} names move ${each.move} of ${file.moves.length}`);
+    list.push({
+      advisory: each.advisory,
+      severity: each.severity,
+      package: each.package,
+      installed: each.installed,
+      file: each.file,
+      line: each.line,
+      ...(each.fixed && { fixed: each.fixed }),
+      fix: each.fix.target,
+      firstSeen: each.fix.day,
+    });
+    fixes[each.move - 1]?.push(readStateFix(each.fix));
   }
 
   const moves = file.moves.map((move, i): ReadMove => {
-    const own = (findings[i] ?? []).sort((a, b) => a.alert - b.alert);
+    const own = (findings[i] ?? []).sort(byPlace);
     if (own.length !== total(move.clears))
-      throw disagrees(repo, `move ${i + 1} clears ${total(move.clears)} results and ${own.length} alerts name it`);
+      throw disagrees(repo, `move ${i + 1} clears ${total(move.clears)} results and the state gives it ${own.length}`);
     return { ...move, index: i + 1, ...lockfileOf(repo, move, i, own, fixes[i] ?? []), findings: own };
   });
   const read = moves.reduce((sum, move) => sum + move.findings.length, 0);
   if (read !== file.totals.fixed)
     throw disagrees(
       repo,
-      `${MOVES_FILE} counts ${file.totals.fixed} results with a fix and ${read} alerts name a move`,
+      `${MOVES_FILE} counts ${file.totals.fixed} results with a fix and the state gives its moves ${read}`,
     );
   const { moves: _, ...rest } = file;
   return { file: rest, moves };
 }
+
+const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+/** A move's findings in one order on every read: by where they are pinned, then advisory and package. */
+const byPlace = (a: MoveFinding, b: MoveFinding) =>
+  order(a.file, b.file) || a.line - b.line || order(a.advisory, b.advisory) || order(a.package, b.package);
 
 /**
  * What `moves.json` withholds of a lockfile's move, from its findings: one package at one version, as moves.ts groups

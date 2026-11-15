@@ -2,8 +2,8 @@
  * What fixes a finding, as the end of its alert's message says it: `Fixed by <target>, first seen <day>.` The one
  * grammar for writing and for reading it. The scan writes it (deadlines.ts) into each result's message before the
  * upload; a later run reads it back from the finding's alert, so the day a fix was first seen never moves forward; and
- * the GitHub worker reads it from the alerts for what `moves.json` withholds. A message that does not end this way says
- * no fix.
+ * the GitHub worker reads the same target and day from the scan's state (state.ts), never from an alert. A message that
+ * does not end this way says no fix.
  *
  * The targets, each as the message writes it:
  *

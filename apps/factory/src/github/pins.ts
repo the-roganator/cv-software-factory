@@ -4,7 +4,7 @@
  * else; for each move the App cannot write, one issue. Beside the deploy watch (`deploys.ts`), and like it the App's.
  *
  * Each pass, at most hourly, it reads the scan's day (`reads.moves`: the last finished run of `vulnerabilities.yml` on
- * `main`, its `moves.json` checked against the alerts) and Dependabot's open pull requests, and then:
+ * `main`, its `moves.json` checked against the state the scan kept) and Dependabot's open pull requests, and then:
  *
  * - **A move in the `worker`, `approval` or `cluster` lane** is committed on `main`'s head, signed by GitHub as every
  *   commit of the App's is, through `commitPins`, whose guard (`pin-guard.ts`) lets the commit replace the version or
@@ -26,12 +26,13 @@
  * - **A move that is gone** closes its pull request, or its issue, with a sentence.
  *
  * What it writes names the move and its counts, never a package or advisory of an open finding: a lockfile's move,
- * which the scan names by its file alone, is only ever an issue, named by its file and its first alert's number.
+ * which the scan names by its file alone, is only ever an issue, named by its file and its mark (scanning.ts's
+ * `ReadMove.mark`).
  *
  * Nothing acts on a day it could not read whole: a moves read that fails, or a run that uploaded no `moves.json`, opens
- * and closes nothing. A `moves.json` that lists no move, its count held to the alerts as every day's is, is a day with
- * nothing to move, and closes what the watch has open. A pin whose line has changed since the scan read it waits for
- * the next scan, and its pull request stays.
+ * and closes nothing. A `moves.json` that lists no move, its count held to the scan's state as every day's is, is a day
+ * with nothing to move, and closes what the watch has open. A pin whose line has changed since the scan read it waits
+ * for the next scan, and its pull request stays.
  */
 import { createHash } from 'node:crypto';
 import type { Logger } from 'pino';
@@ -327,20 +328,16 @@ function cannotWrite(move: ReadMove, why?: string): string {
   return 'It needs more than its pins’ lines written, which no pull request of the App’s makes: move it in a pull request of your own.';
 }
 
-/** The key an issue is found again by: the move's name, or for a lockfile's, its first alert, which names no package. */
+/** The key an issue is found again by: the move's name, or for a lockfile's, its mark, which names no package. */
 function issueKey(move: ReadMove): string {
-  if (move.lockfile) {
-    const first = Math.min(...move.findings.map((f) => f.alert));
-    return `lockfile-alert-${Number.isFinite(first) ? first : move.index}`;
-  }
+  if (move.lockfile) return `lockfile-${move.mark ?? move.index}`;
   return pinBranchFor(move.name).slice(PIN_PREFIX.length);
 }
 
 /** An issue's title and description. */
 export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: string; body: string; key: string } {
   const key = issueKey(move);
-  const first = key.startsWith('lockfile-alert-') ? key.slice('lockfile-alert-'.length) : undefined;
-  const name = move.lockfile ? `${move.name} (code scanning alert #${first})` : move.name;
+  const name = move.lockfile ? `${move.name} (${key.slice('lockfile-'.length)})` : move.name;
   const to = move.lockfile ? 'the version its alerts name' : move.to || 'a line that is built';
   const title =
     move.lane === 'none'

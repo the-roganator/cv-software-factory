@@ -123,7 +123,8 @@ jobs:
       # does not record, or a .pnpmfile.cjs, would run here, before the cluster, with $GITHUB_PATH in reach. The job needs
       # no install script (lefthook's prepare included), and allows no dependency's build.
       - run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
-      # `make up`, at the change's commit, with none of the keys it would take from the Keychain, which the runner has
+      # `make up`, at the change's commit, pulling each third-party image from CI's copy in GHCR where there is one
+      # (deploy/k3d/ci-registries.yaml), with none of the keys it would take from the Keychain, which the runner has
       # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
       # any kind would have it try: the GitHub worker, given one, acts as the App and polls GitHub each pass, and
       # Alertmanager, given Pushover's, sends each alert with a level that fires while the cluster comes up.
@@ -134,7 +135,7 @@ jobs:
           REVISION: ${{ github.sha }}
         run: |
           unset TYPESAFE_API_KEY ANTHROPIC_API_KEY GITHUB_APP_PRIVATE_KEY PUSHOVER_APP_TOKEN PUSHOVER_USER_KEY
-          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 SYNC_TIMEOUT=20m TIMEOUT=1200 &
+          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 K3D_REGISTRIES=deploy/k3d/ci-registries.yaml SYNC_TIMEOUT=20m TIMEOUT=1200 &
           make=$!
           # make has a session of its own, so a cancelled step stops it here.
           trap 'kill -- "-$make" 2>/dev/null' TERM INT

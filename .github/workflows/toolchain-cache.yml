@@ -50,7 +50,8 @@ jobs:
           # review.yml's pin move job: the list, the charts rendered, and policy-hash.ts's one dependency.
           - job: moves
             tools: node pnpm kustomize yq helm
-          # The daily scan (vulnerabilities.yml): the list, its charts rendered, and the SBOMs of ours verified.
+          # The daily scan (vulnerabilities.yml): the list, its charts rendered, and the SBOMs of ours verified. The
+          # copies of the cluster's images (mirror.yml) take the same set, for the list and its charts.
           - job: scan
             tools: node kustomize helm yq cosign
           # The dependency graph (dependency-graph.yml): the list and each lockfile read.

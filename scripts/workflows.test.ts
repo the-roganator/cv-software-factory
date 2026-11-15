@@ -898,6 +898,8 @@ describe('platform.yml', () => {
     const steps = jobs.platform?.steps ?? [];
     const make = steps.find((step) => /\bmake up REVISION=/.test(step.run ?? ''));
     expect(make?.run).toContain('make up REVISION="$REVISION" PLATFORM_CHECK=1');
+    // Each third-party image from CI's copy where there is one, its own registry where not.
+    expect(make?.run).toContain('K3D_REGISTRIES=deploy/k3d/ci-registries.yaml');
     expect((make as { env?: Record<string, string> } | undefined)?.env?.REVISION).toBe(expression('github.sha'));
     const runs = steps.map((step) => step.run ?? '').join('\n');
     // Watched, and stopped at the ceiling or on what waiting will not mend (scripts/platform-watch.test.ts).

@@ -1,0 +1,32 @@
+# The platform check's cluster pulls third-party images from CI's copies in GHCR first: hosted runners share their
+# addresses, and a registry that limits anonymous pulls by address (Docker Hub, ECR Public) now and then refuses one,
+# which fails the check. `make up K3D_REGISTRIES=deploy/k3d/ci-registries.yaml` gives it to k3s; the local cluster pulls
+# from each image's own registry.
+#
+# For each registry the cluster pulls from, where its copies are: the image's path on that registry, under a prefix of
+# its own in this repository's GHCR. scripts/ci-images.sh sync, from mirror.yml, copies each image the cluster runs
+# (scripts/cluster-images.ts) to the path its rewrite gives, and fails on an image from a registry not named here.
+# containerd tries the copy first, and the image's own registry, without the rewrite, when the copy is not there (not
+# copied yet, or private), so a missing copy costs a request, never the pull. Docker Hub's official images are under
+# `library/`, as containerd asks for them, the copies of them check.yml and build.yml pull already.
+mirrors:
+  docker.io:
+    endpoint: [https://ghcr.io]
+    rewrite:
+      '^(.*)$': the-roganator/cv-software-factory/mirror/docker/$1
+  ecr-public.aws.com:
+    endpoint: [https://ghcr.io]
+    rewrite:
+      '^(.*)$': the-roganator/cv-software-factory/mirror/ecr-public/$1
+  quay.io:
+    endpoint: [https://ghcr.io]
+    rewrite:
+      '^(.*)$': the-roganator/cv-software-factory/mirror/quay/$1
+  reg.kyverno.io:
+    endpoint: [https://ghcr.io]
+    rewrite:
+      '^(.*)$': the-roganator/cv-software-factory/mirror/kyverno/$1
+  registry.k8s.io:
+    endpoint: [https://ghcr.io]
+    rewrite:
+      '^(.*)$': the-roganator/cv-software-factory/mirror/k8s/$1

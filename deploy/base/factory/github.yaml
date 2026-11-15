@@ -110,12 +110,12 @@ spec:
             # Sigstore's trust root, fetched through TUF, to check the signatures of the images it proposes.
             - name: TUF_CACHE_DIR
               value: /var/cache/sigstore
-            # The moves the pin watch takes, by their names in the scan's moves.json, comma-separated
-            # (docs/COMPONENTS/GITHUB-WORKER.md#pins): it opens each one's pull request, and the pin queue adds that to
-            # the merge queue once the gate passes it as `pin-move`. A move is named here only by a pull request Martin
-            # merged, as CODEOWNERS gives him deploy/.
+            # The moves the pin watch takes: every move of the day (`*`), or those named as the scan's moves.json names
+            # them, comma-separated (docs/COMPONENTS/GITHUB-WORKER.md#pins). It opens each one's pull request, and the
+            # pin queue adds that to the merge queue once the gate passes it as `pin-move`. It is changed only by a pull
+            # request Martin merged, as CODEOWNERS gives him deploy/.
             - name: PIN_WATCH_ONLY
-              value: mcr.microsoft.com/devcontainers/base
+              value: "*"
           readinessProbe:
             httpGet:
               path: /health

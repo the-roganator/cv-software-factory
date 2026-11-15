@@ -54,8 +54,6 @@ describe('the files a release changes', () => {
       'apps/factory/src/line/bench/fixtures.ts',
       // A move's pins before and after, which take the package's range in package.json from the diff.
       'apps/factory/src/line/moves.ts',
-      // The tests-first gate's rule for a change that moves pins alone, on invented manifests and lockfiles.
-      'apps/factory/test/gates/tests.test.ts',
       // The pin step's guard and the bench's, on invented manifests' dependency ranges.
       'apps/factory/test/github/pin-step.test.ts',
       'apps/factory/test/line/bench.test.ts',

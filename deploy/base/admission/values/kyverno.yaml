@@ -53,7 +53,7 @@ cleanupController:
 # webhook.kyverno.io/managed-by=kyverno`, and its CRDs, which were left too.
 webhooksCleanup:
   image:
-    tag: v1.19.1@sha256:31bb42ce7f5b2e27c1cf633aeff4f0cad1f5bb63761e2cb09f0e25cdd26572bf
+    tag: v1.20.0@sha256:6079a30d75fe7ba868a5a7e5dfa71ee92a3a8bae97adcea1c8cfb1009280ee6c
 
 # The CRDs' storage migration is a Helm hook for upgrades across Kyverno's API versions; Argo CD would run it after every
 # sync. An upgrade that needs it says so in its notes, and runs it then.

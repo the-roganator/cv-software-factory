@@ -15,8 +15,8 @@
 #                                   the step output <name>, for build-push-action's build-contexts: apps/<name>/Dockerfile,
 #                                   or for `browser`, apps/factory/Dockerfile.browser
 #   ci-images.sh sync               copy into GHCR every pinned digest, each pinned tag's current one, and the newest tag
-#                                   of each pin's line, then each image the cluster runs (`cluster`); skopeo must be
-#                                   logged in to ghcr.io (mirror.yml)
+#                                   of each pin's line, then each image the cluster runs (`cluster`), with crane, which
+#                                   must be logged in to ghcr.io (mirror.yml); skopeo reads, with no credentials
 #   ci-images.sh cluster            each third-party image the cluster runs (scripts/cluster-images.ts), its copy, and
 #                                   whether the copy is there and current, copying nothing; it fails only when an image
 #                                   cannot be listed, read or given a copy, not for a copy not made yet
@@ -51,6 +51,19 @@ mirror_of() {
   local name=${1%@*}
   name=${name%%:*}
   if [[ "$name" == "$MCR"* ]]; then echo "${MIRROR}mcr/${name#"$MCR"}@${1##*@}"; else echo "${MIRROR}docker/library/$name@${1##*@}"; fi
+}
+
+# Copies an image (skopeo's name for it, or a bare reference) to a tag, every platform, byte for byte, so the copy's
+# digest is the source's: crane copies an index's manifest as it is, where skopeo will not copy one whose entries carry
+# an artifactType (Kyverno's) without rewriting it. Tried again on a fault, three times, as a registry that limits by
+# address now and then refuses one; crane must be logged in to the copy's registry (mirror.yml).
+crane_copy() {
+  local from=${1#docker://} to=$2 try
+  for try in 1 2 3 4; do
+    crane copy "$from" "$to" && return 0
+    [ "$try" -lt 4 ] && echo "$to: the copy failed, trying again" >&2 && sleep $((try * 10))
+  done
+  return 1
 }
 
 # Whether an image can be pulled with no credentials, as CI's jobs pull it.
@@ -137,9 +150,7 @@ sync() {
       continue
     fi
     echo "$copy: copying from $(upstream_of "$ref")"
-    # Every platform, byte for byte, so the digest is the source's.
-    if ! skopeo copy --all --preserve-digests --retry-times 3 \
-      "$(upstream_of "$ref")" "docker://${copy%@*}:digest-${ref##*:}"; then
+    if ! crane_copy "$(upstream_of "$ref")" "${copy%@*}:digest-${ref##*:}"; then
       failed+=("$copy: the copy failed")
     elif ! pullable "$copy"; then
       # A private package would send every build back to the image's own registry, with only a warning.
@@ -203,9 +214,8 @@ cluster() {
     fi
     if [ "$mode" = check ]; then echo "$target: not copied${have:+ (the copy is at $have)}, from $from"; continue; fi
     echo "$target: copying from $from"
-    # Every platform, byte for byte, so the digest is the source's. A digest's copy is tagged digest-<hex>, as a pin's.
-    if ! skopeo copy --all --preserve-digests --retry-times 3 "$from" \
-      "docker://$([ "$digest" != - ] && echo "$copy:digest-${digest#sha256:}" || echo "$target")"; then
+    # A digest's copy is tagged digest-<hex>, as a pin's.
+    if ! crane_copy "$from" "$([ "$digest" != - ] && echo "$copy:digest-${digest#sha256:}" || echo "$target")"; then
       failed+=("$target: the copy failed")
     elif ! pullable "$target"; then
       failed+=("$target: copied, but it cannot be pulled with no credentials: make $copy public in its settings")

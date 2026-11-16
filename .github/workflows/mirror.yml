@@ -34,15 +34,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The cluster's images are the list's (scripts/cluster-images.ts), its charts rendered: the scan's tools, whose
-      # cache main keeps (toolchain-cache.yml), cosign with them.
+      # The cluster's images are the list's (scripts/cluster-images.ts), its charts rendered; crane makes the copies, as
+      # the runner's skopeo will not copy an index whose entries carry an artifactType without rewriting it, and so
+      # changing its digest. Its cache main keeps (toolchain-cache.yml).
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
-          install_args: node kustomize helm yq cosign
+          install_args: node kustomize helm yq crane
       - env:
           TOKEN: ${{ github.token }}
         run: |
-          skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
+          crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
           scripts/ci-images.sh sync

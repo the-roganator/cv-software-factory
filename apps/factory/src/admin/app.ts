@@ -25,6 +25,8 @@
  * - Needs you (`holds.ts`): `POST /admin/holds/:workItem/approve`, `/reject`, `/answer` and `/replan` (both with his
  *   words), each naming the hold the card showed, with the passkey again to approve a guardrail's, or an improvement's
  *   spec.
+ * - Closing a work item no hold is open on (`close.ts`): `POST /admin/work-items/:workItem/close`, with his reason or
+ *   none, which the line acts on whatever it takes.
  * - The "+" (`improvements.ts`): `POST /admin/improvements` with Martin's words and the request's id, with the passkey
  *   again, which opens a work item of kind improvement with his request.
  * - A red-team attack (`attacks.ts`): `POST /admin/attacks/:attack`, one at a time and with no passkey, which opens a
@@ -52,6 +54,7 @@ import {
 import type { Logger } from '../log.ts';
 import { LAUNCH, launchAttack } from './attacks.ts';
 import { clientAddress, LIMITS, RateLimit } from './client.ts';
+import { CLOSE, CLOSE_REASON_CHARS, closeWorkItem } from './close.ts';
 import type { AdminConfig } from './config.ts';
 import { type FlagStages, MOVE } from './flags.ts';
 import type { FlagsHeld } from './flags-held.ts';
@@ -466,6 +469,15 @@ export function createAdminApp({
     'hold.reject': (context) => answer('rejected', context),
     'hold.answer': (context) => answer('answered', context),
     'hold.replan': (context) => answer('replanned', context),
+
+    'work-item.close': async ({ values, body }) => {
+      const workItem = values.workItem ?? '';
+      const given = CLOSE.safeParse(body);
+      if (!WORK_ITEM.test(workItem) || !given.success) {
+        return refused(400, 'body', `Send your reason, up to ${CLOSE_REASON_CHARS} characters, or nothing.`);
+      }
+      return { status: 200, body: await closeWorkItem(store, workItem, given.data.words) };
+    },
 
     'passkey.revoke': async ({ values, session }) => {
       const live = session as Session;

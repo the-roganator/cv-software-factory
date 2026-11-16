@@ -549,6 +549,7 @@ const WRITES: [string, Body][] = [
   ['/admin/holds/1/reject', { hold: crypto.randomUUID() }],
   ['/admin/holds/1/answer', { hold: crypto.randomUUID(), words: 'Go on' }],
   ['/admin/holds/1/replan', { hold: crypto.randomUUID(), words: 'The spec is wrong' }],
+  ['/admin/work-items/1/close', {}],
   ['/admin/flags/delivery-dates/stage', { from: { stage: 'off' }, to: { stage: 'checks' } }],
   ['/admin/attacks/egress', {}],
 ];
@@ -2914,6 +2915,83 @@ describe('Needs you', () => {
       expect(read.find((e) => e.work_item === workItem && e.payload?.decision)).toBeDefined();
       expect(JSON.stringify(read)).not.toContain('Search should keep them');
     }
+  });
+  describe('Close, on a work item nothing holds for him', () => {
+    /** A work item the line has taken, with no hold: opened by a sense's signal, or a visitor's report. */
+    async function taken({ report = false }: { report?: boolean } = {}): Promise<string> {
+      const { workItem, hold } = await held('question', { report, stage: 'plan' });
+      // Answered, so no hold is open; the line has it.
+      await append(db.admin, [
+        event(workItem, 'hold.answered', 'martin', { decision: 'answered', answer: 'Go on', hold }),
+      ]);
+      await append(db.as.line, [
+        event(workItem, 'wait.started', 'factory', { on: ['1'], files: ['src/a.ts'], reason: 'waits on another' }),
+      ]);
+      return workItem;
+    }
+    const closes = (workItem: string) => db.owner<
+      { appended_by: string; actor: string; summary: string; payload: Body }[]
+    >`
+      select appended_by, actor, summary, payload from events where work_item = ${workItem} and type = 'work-item.closed'`;
+
+    it('closes one the line has as his discard, with his reason, once', async () => {
+      const { browser } = await signedIn();
+      const workItem = await taken();
+      const said = await browser.post(`/admin/work-items/${workItem}/close`, { words: '  Overtaken by #9  ' });
+      expect(said, JSON.stringify(said.body)).toMatchObject({ status: 200, body: { workItem, closed: true } });
+      expect(await closes(workItem)).toEqual([
+        {
+          appended_by: 'factory_admin',
+          actor: 'martin',
+          summary: 'Closed by Martin: Overtaken by #9',
+          payload: { outcome: 'discarded', reason: 'Overtaken by #9' },
+        },
+      ]);
+      expect(await browser.post(`/admin/work-items/${workItem}/close`, {})).toMatchObject({
+        status: 409,
+        body: { refused: 'work-item', message: `#${workItem} is closed already.` },
+      });
+      expect(await closes(workItem)).toHaveLength(1);
+    });
+
+    it('takes no reason on one a visitor’s report opened, and says only that he closed it', async () => {
+      const { browser } = await signedIn();
+      const workItem = await taken({ report: true });
+      expect(
+        await browser.post(`/admin/work-items/${workItem}/close`, { words: 'The visitor was wrong' }),
+      ).toMatchObject({ status: 422, body: { refused: 'words' } });
+      expect(await closes(workItem)).toEqual([]);
+      expect((await browser.post(`/admin/work-items/${workItem}/close`, {})).status).toBe(200);
+      expect(await closes(workItem)).toEqual([
+        expect.objectContaining({
+          summary: 'Closed by Martin',
+          payload: { outcome: 'discarded', reason: 'Martin closed it from the console' },
+        }),
+      ]);
+    });
+
+    it('refuses one held for him, one whose change merged, one not in the store, and a body it does not take', async () => {
+      const { browser } = await signedIn();
+      const { workItem: heldOne } = await held('scope');
+      expect(await browser.post(`/admin/work-items/${heldOne}/close`, {})).toMatchObject({
+        status: 409,
+        body: { refused: 'hold' },
+      });
+      const merged = await taken();
+      await append(db.as.line, [
+        event(merged, 'pull-request.merged', 'factory', { number: 12, commit: 'a'.repeat(40), by: 'martin' }),
+      ]);
+      expect(await browser.post(`/admin/work-items/${merged}/close`, {})).toMatchObject({
+        status: 409,
+        body: { refused: 'merged' },
+      });
+      expect((await browser.post('/admin/work-items/999999/close', {})).status).toBe(404);
+      const open = await taken();
+      expect((await browser.post('/admin/work-items/1a/close', {})).status).toBe(400);
+      expect((await browser.post(`/admin/work-items/${open}/close`, { words: 'x'.repeat(181) })).status).toBe(400);
+      expect((await browser.post(`/admin/work-items/${open}/close`, { reason: 'Wrong field' })).status).toBe(400);
+      for (const workItem of [heldOne, merged, open]) expect(await closes(workItem)).toEqual([]);
+    });
   });
 });
 

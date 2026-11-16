@@ -287,6 +287,18 @@ export class Queue {
     return rows.map((row) => ({ ...item(row), waiting: row.waiting }));
   }
 
+  /**
+   * The work items on the line that have closed and not yet ended, whatever the queue takes, held or not: a close from
+   * outside the line, Martin's, comes while the line takes another, and the line ends it all the same.
+   */
+  async closed(): Promise<QueueItem[]> {
+    const rows = await this.#sql<Row[]>`
+      select ${this.#sql(COLUMNS)} from line l
+      where l.stage <> 'ended' and ${lastEnd(this.#sql, 'l.work_item')} = 'work-item.closed'
+      order by l.taken_at`;
+    return rows.map(item);
+  }
+
   /** The work items on the line that nobody holds, longest on it first: only the one, for a queue of one. */
   async free(): Promise<QueueItem[]> {
     const rows = await this.#sql<Row[]>`

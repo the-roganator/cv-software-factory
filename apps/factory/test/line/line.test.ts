@@ -1135,6 +1135,54 @@ describe('the line', () => {
     expect(it.steps.requests.at(-1)?.agent).toBe('coder');
   });
 
+  it('ends a work item Martin closed while it takes another, closing its pull request and issue', async () => {
+    const broken = await ticket('broken', '/search');
+    const it = line(AGENTS, events);
+    await it.pass(); // the planner
+    await it.pass(); // the coder's pull request
+    expect(await stage(broken)).toBe('gates');
+    const cosmetic = await ticket('cosmetic', '/');
+    const take = { kind: 'just-one', workItem: cosmetic } as const;
+    await controls({ take, change: { control: 'take', before: { kind: 'every' }, after: take } });
+    await it.pass(); // the cosmetic one's planner, and nothing of the broken one's
+    const before = it.github.acts.length;
+    await martin.append(
+      event(broken, 'work-item.closed', { outcome: 'discarded', reason: 'Overtaken by another' }, 'martin'),
+    );
+    await it.pass(); // the broken one ends, and the cosmetic one's coder goes on
+    const closing = it.github.acts
+      .slice(before)
+      .filter((a) => a.action === 'closePullRequest' || a.action === 'closeIssue');
+    expect(closing).toEqual([
+      {
+        action: 'closePullRequest',
+        args: { number: 12, comment: expect.stringContaining('Martin closed it: Overtaken by another.') },
+      },
+      { action: 'closeIssue', args: { number: 41, reason: 'not_planned' } },
+    ]);
+    expect(it.steps.finished).toEqual([broken]);
+    expect(await stage(broken)).toBe('ended');
+    // Nothing more is appended on it: the close was Martin's, and the line only tidied after it.
+    expect((await types(broken)).at(-1)).toBe('work-item.closed');
+    expect(await stage(cosmetic)).toBe('gates');
+  });
+
+  it('stops the step in hand on a work item Martin closes, and ends it once the step has stopped', async () => {
+    const broken = await ticket('broken', '/search');
+    const it = line({ ...AGENTS, coder: () => 'works on' }, events);
+    await it.pass(); // the planner
+    await it.line.tick(); // the coder starts, and works on
+    await vi.waitFor(() => expect(it.steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder']));
+    await martin.append(event(broken, 'work-item.closed', { outcome: 'discarded', reason: 'Not wanted' }, 'martin'));
+    await it.pass(); // the step stops, and nothing of it is recorded
+    expect(await types(broken)).not.toContain('pull-request.pushed');
+    await it.pass(); // ended
+    expect(it.steps.finished).toEqual([broken]);
+    expect(await stage(broken)).toBe('ended');
+    expect(it.github.acts.filter((a) => a.action === 'closePullRequest')).toEqual([]);
+    expect(it.github.acts.at(-1)).toEqual({ action: 'closeIssue', args: { number: 41, reason: 'not_planned' } });
+  });
+
   it('takes no ticket and starts no agent’s step while Martin has agents take no new work, and goes on after', async () => {
     const broken = await ticket('broken', '/search');
     const it = line(AGENTS, events);

@@ -61,13 +61,21 @@ What it takes is Martin's to set in the console's Controls ([admin service](ADMI
 - **The next few** are counted from when he last chose a number, at most 20. They count improvements as they count tickets, and count the work items the line worked on: a ticket that closed on the look as it was taken (ended before its issue opened, with no step started) counts for nothing. The count comes from the `line` table, by when each work item came onto it, so a restart takes none more. Then the line takes no more, and carries those it has to their end.
 - **Just one** makes the line act on that work item alone.
   - It takes that ticket or improvement onto the line at once, whatever else is in Plan or Build.
-  - It starts no step for any other work item, reads nothing for it and appends nothing.
+  - It starts no step for any other work item, reads nothing for it and appends nothing, but ends one Martin closed ([below](#martin-closes-a-work-item)).
   - It says nothing of what the deploy pull request carries, but still records where that pull request stands for this work item ([its state](RELEASE-AND-VERIFY.md#the-deploy-pull-requests-state)).
   - It still watches the app's releases, and records one that carries that work item or none (those go on the line). A release that also carries another work item is left for the whole line. The work item stays held at Release (cause `deploy`, so Needs you lists it) until the line records that release, or finds it live.
 
 `make take-the-line` takes one of `ONLY=<work item>`, `NEXT=<how many>` or `EVERY=1`. It makes the change the console's Controls would, through the same check (`decideChange` in `admin/line.ts`), keeps every other control as it stands, and records it as his, appended by his command line's role (`factory_operator`); like `make start-the-line`, it needs no passkey. A take Martin sets applies from the line's next pass, which his change wakes.
 
-`make close-work-item ONLY=<work item>` (`REASON="…"`, at most 180 characters) closes a work item the line has not taken, by the same role: a discard with his reason (`work-item.closed`), for a ticket a try's invented report opened, or one he is done with before the line takes it. It is refused for a work item that is not open, and for one the line has, which any event of the line's on it since it was last opened or reopened says: that one has an issue, and perhaps a pull request, which only the line's own close closes, so it is closed in the console, with Close on its card, or by letting its step end. It answers no hold. If the take in force is Just one and names the work item closed, the command says so: the line would take nothing until the take changes.
+### Martin closes a work item
+
+Martin closes a work item nothing holds for him from its sheet's Close in the console, or with `make close-work-item ONLY=<work item>` (`REASON="…"`, at most 180 characters) from his command line, by the same rules ([the admin service](ADMIN-SERVICE.md#closing-a-work-item)): a discard, `work-item.closed` appended as his, with his reason or none, taken by the line or not. A ticket a try's invented report opened, one he is done with, or one the take has left on the line with nothing running. It is refused for a work item that is not open, one with a hold open (its card's Close, his rejection, closes it), one whose change has merged (Release and Verify end it), and with a reason on one a visitor's report opened, where his words would be public.
+
+- **The line ends it whatever it takes.** Each pass, before it moves anything else, the line ends every work item on it that has closed, Just one or not: a take that names another would otherwise leave it on the line for as long as the take does, its station working with nothing running.
+- **What it leaves open closes with it.** On Martin's close, the line closes the work item's pull request, unmerged, with a comment giving his reason, as on his rejection, and its issue as not planned, then deletes its volume and ends its row. Each is safe to ask again, and a dry run's numbers, which GitHub never had, are asked nothing on a live line. A pull request or issue that is gone, or that GitHub or the worker's guard refuses, is left as it is.
+- **A step in hand stops.** An agent's step running on the work item is stopped, as stopping the line stops every step, and nothing of it is recorded; the next pass ends the work item.
+
+It answers no hold. If the take in force is Just one and names the work item closed, the command says so: the line would take nothing until the take changes.
 
 ### Agents take new work
 

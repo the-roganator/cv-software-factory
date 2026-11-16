@@ -482,6 +482,23 @@ describe("Martin's commands", () => {
     expect(MARTINS_ROLES.sort()).toEqual(['factory_admin', 'factory_enrol', 'factory_operator']);
   });
 
+  it('close a work item from the admin service only as his discard', async () => {
+    await writer(db.operator).append(opened('3204'));
+    const close = (outcome: string) =>
+      ({
+        ...command('work-item.closed', '3204'),
+        work_item: '3204',
+        payload: { outcome, reason: 'Martin closed it from the console' },
+      }) as NewEvent;
+    for (const outcome of ['verified', 'no-change', 'rolled-back', 'quarantined', 'turned-off', 'refused']) {
+      await expect(writer(db.admin).append(close(outcome)), outcome).rejects.toThrow('row-level security');
+    }
+    await writer(db.admin).append(close('discarded'));
+    expect(
+      await db.owner`select appended_by from events where work_item = '3204' and type = 'work-item.closed'`,
+    ).toEqual([{ appended_by: 'factory_admin' }]);
+  });
+
   it('open an improvement, with its request, and no worker can open one', async () => {
     // The admin service numbers it as triage does, and appends its opening and his request together.
     const [number] = await db.admin<{ next: string }[]>`select nextval('work_items')::text as next`;

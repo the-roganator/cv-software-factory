@@ -7,7 +7,8 @@ import { DiskArtifacts, EventWriter, latestControls, nextWorkItem } from '@softw
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { controlsInForce } from '../../../../policy/line.ts';
-import { CLOSE_REASON_CHARS, closeAsked, run, takeAsked } from '../../src/commands/line.ts';
+import { CLOSE_REASON_CHARS } from '../../src/admin/close.ts';
+import { closeAsked, run, takeAsked } from '../../src/commands/line.ts';
 
 describe('what take asks for', () => {
   it('is every ticket, the next few, or just one work item, and nothing else', () => {
@@ -111,13 +112,13 @@ describe('take and stop, against the store', () => {
     expect((await changes()).map((c) => c.appended_by)).toEqual(Array(3).fill('factory_operator'));
   });
 
-  it('closes a work item the line has not taken as Martin’s discard, once, and refuses the rest', async () => {
+  it('closes a work item as Martin’s discard, once, taken by the line or not, and refuses the rest', async () => {
     const closes = () =>
       database.owner<
         { appended_by: string; actor: string; summary: string; payload: { outcome: string; reason: string } }[]
       >`select appended_by, actor, summary, payload from events where type = 'work-item.closed' order by seq`;
     expect(closeAsked(['#12', '--reason', 'a try made it'])).toEqual({ workItem: '12', reason: 'a try made it' });
-    expect(closeAsked(['12'])?.reason).toBe('Martin closed it from his command line');
+    expect(closeAsked(['12'])).toEqual({ workItem: '12', reason: undefined });
     expect(closeAsked(['12', '--reason', 'x'.repeat(CLOSE_REASON_CHARS)])).toBeDefined();
     for (const args of [[], ['twelve'], ['12', '13'], ['12', '--force'], ['12', '--reason', 'x'.repeat(181)]]) {
       expect(closeAsked(args), JSON.stringify(args)).toBeUndefined();
@@ -129,7 +130,7 @@ describe('take and stop, against the store', () => {
     expect(await run(['take', 'one', workItem])).toBe(0);
     expect(await run(['close', workItem, '--reason', 'An invented report from a try'])).toBe(0);
     expect(said.slice(-2)).toEqual([
-      `#${workItem} is closed: An invented report from a try.`,
+      `#${workItem} is closed: An invented report from a try. The line closes its pull request and issue, if it has them.`,
       `The line still takes just #${workItem}, so it takes nothing: make take-the-line EVERY=1, or another.`,
     ]);
     expect(await closes()).toEqual([
@@ -144,24 +145,39 @@ describe('take and stop, against the store', () => {
     expect(said.at(-1)).toBe(`#${workItem} is closed already.`);
     expect(await closes()).toHaveLength(1);
 
-    // One the line has: its issue goes with it only through the line, so the console's Close is the way.
+    // One the line has: closed all the same, as the console's Close closes it, and the line closes its issue.
+    const line = new EventWriter(database.as.line, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') });
+    const lines = (on: string, type: 'wait.started' | 'hold.started', payload: object) =>
+      line.append([
+        {
+          id: crypto.randomUUID(),
+          ts: new Date().toISOString(),
+          work_item: on,
+          type,
+          version: VERSIONS[type],
+          actor: 'factory',
+          summary: `${type} for the test`,
+          payload,
+          artifacts: [],
+        } as NewEvent,
+      ]);
     const taken = await ticket();
-    await new EventWriter(database.as.line, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }).append([
-      {
-        id: crypto.randomUUID(),
-        ts: new Date().toISOString(),
-        work_item: taken,
-        type: 'wait.started',
-        version: VERSIONS['wait.started'],
-        actor: 'factory',
-        summary: 'waits on another',
-        payload: { on: [workItem], files: ['src/a.ts'], reason: 'waits on another' },
-        artifacts: [],
-      } as NewEvent,
-    ]);
-    expect(await run(['close', taken])).toBe(2);
-    expect(said.at(-1)).toContain(`The line has #${taken}, with an issue of its own: close it in the console`);
-    expect(await closes()).toHaveLength(1);
+    await lines(taken, 'wait.started', { on: [workItem], files: ['src/a.ts'], reason: 'waits on another' });
+    expect(await run(['close', taken])).toBe(0);
+    expect(said.at(-1)).toBe(`#${taken} is closed. The line closes its pull request and issue, if it has them.`);
+    expect((await closes()).at(-1)).toEqual({
+      appended_by: 'factory_operator',
+      actor: 'martin',
+      summary: 'Closed by Martin',
+      payload: { outcome: 'discarded', reason: 'Martin closed it from his command line' },
+    });
+
+    // One held for him closes from its card.
+    const held = await ticket();
+    await lines(held, 'hold.started', { stage: 'plan', kind: 'question', cause: 'question', reason: 'A question' });
+    expect(await run(['close', held])).toBe(2);
+    expect(said.at(-1)).toBe(`#${held} is held for you: close it from its card, which says what closing does there.`);
+    expect(await closes()).toHaveLength(2);
   });
 
   it('records no stop on a new store, whose line has not started, and stops one that has', async () => {

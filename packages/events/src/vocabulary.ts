@@ -577,6 +577,13 @@ export const MARTIN_REASON_CHARS = 200;
 export const MARTIN_ANSWER_CHARS = 300;
 
 /**
+ * The most Martin's reason for closing a work item himself may be, from the console's Close or `make close-work-item`:
+ * the close's summary, `Closed by Martin: ` and the reason, is at most 200 characters. The admin service and the
+ * command line take their limit from here, and the console counts against it.
+ */
+export const MARTIN_CLOSE_CHARS = 180;
+
+/**
  * Who moves a move, as the vulnerability scan works it out (`apps/factory/src/vulnerabilities/moves.ts`, whose `LANES`
  * a test holds to this): the app's line, the GitHub worker, Dependabot, Martin's approval, the cluster's own command,
  * an issue, or nobody (a line no longer built).

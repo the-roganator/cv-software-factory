@@ -24,12 +24,10 @@
  * change the console's Controls would, through the same check (`admin/line.ts`'s `decideChange`), keeping every other
  * control as it stands, and records it as his; from his own command line it needs no passkey. The console's switch for
  * new work stops the line taking tickets and starting agents' steps, as its own. `close` (`make close-work-item`) ends a
- * work item the line has not taken, as his, from the same command line: a ticket a try's invented report opened, or
- * one he is done with before the line takes it. It appends `work-item.closed`, as a discard, with his reason, under
- * the lock every append takes, and refuses one that is not open, or one the line has (any event of the line's on it
- * since it was last opened or reopened): that one has an issue, and perhaps a pull request, which only the line's own
- * close path closes, so it is closed in the console, with Close on its card, or by letting its step end. A take of
- * Just one that names the work item closed is said, since the line would then take nothing.
+ * work item as his, from the same command line, as the console's Close does and by its rules (`admin/close.ts`): a
+ * discard, with his reason or none, refused where a hold is open, once its change has merged, and with a reason on
+ * one a visitor's report opened. Taken by the line or not, the line then closes its pull request and issue, whatever
+ * it takes. A take of Just one that names the work item closed is said, since the line would then take nothing.
  *
  * RELEASE_ROLLOUT, the app's Rollout as `<namespace>/<name>`, has the line watch the app's releases: it reads the
  * Rollout and its AnalysisRuns, and each version's figures from Prometheus at PROMETHEUS_URL (required with it), and
@@ -94,15 +92,8 @@
  */
 import { parseArgs } from 'node:util';
 import { type NewEvent, VERSIONS } from '@software-factory/events';
-import {
-  connect,
-  DiskArtifacts,
-  EventWriter,
-  lastEnd,
-  latestControls,
-  lineState,
-  lockAppends,
-} from '@software-factory/store';
+import { connect, DiskArtifacts, EventWriter, latestControls, lineState, lockAppends } from '@software-factory/store';
+import { CLOSE_REASON_CHARS } from '../admin/close.ts';
 import type { Change } from '../admin/line.ts';
 import { rolloutRefOf } from '../release/rollout-ref.ts';
 
@@ -222,11 +213,8 @@ async function setTake(args: string[]): Promise<number> {
   }
 }
 
-/** The longest reason `close` takes: its summary, `Closed by Martin: ` and the reason, is at most 200 characters. */
-export const CLOSE_REASON_CHARS = 180;
-
-/** The work item `close` names and the reason, or none: an unknown option, or a reason too long, is none too. */
-export function closeAsked(args: string[]): { workItem: string; reason: string } | undefined {
+/** The work item `close` names and the reason, if given, or none: an unknown option, or a reason too long, is none. */
+export function closeAsked(args: string[]): { workItem: string; reason: string | undefined } | undefined {
   let parsed: ReturnType<typeof parseArgs<{ allowPositionals: true; options: { reason: { type: 'string' } } }>>;
   try {
     parsed = parseArgs({ args, allowPositionals: true, options: { reason: { type: 'string' } } });
@@ -235,11 +223,14 @@ export function closeAsked(args: string[]): { workItem: string; reason: string }
   }
   const [given, ...rest] = parsed.positionals;
   if (!given || rest.length || !/^#?\d{1,12}$/.test(given)) return undefined;
-  const reason = parsed.values.reason?.trim() || 'Martin closed it from his command line';
-  return reason.length <= CLOSE_REASON_CHARS ? { workItem: given.replace(/^#/, ''), reason } : undefined;
+  const reason = parsed.values.reason?.trim() || undefined;
+  return (reason?.length ?? 0) <= CLOSE_REASON_CHARS ? { workItem: given.replace(/^#/, ''), reason } : undefined;
 }
 
-/** Closes a work item the line has not taken, as Martin's discard with his reason, or refuses having changed nothing. */
+/**
+ * Closes a work item as Martin's discard, with his reason or none, taken by the line or not, or refuses having changed
+ * nothing: as the console's Close does (`admin/close.ts`), whose rules it shares.
+ */
 async function close(args: string[]): Promise<number> {
   const asked = closeAsked(args);
   if (!asked) {
@@ -249,37 +240,28 @@ async function close(args: string[]): Promise<number> {
     return 2;
   }
   const { workItem, reason } = asked;
-  const { adminEvent, appendMartins } = await import('../admin/store.ts');
+  const { appendMartins, Refused } = await import('../admin/store.ts');
+  const { decideClose } = await import('../admin/close.ts');
   const { controlsInForce } = await import('../../../../policy/line.ts');
   const sql = connect(process.env.DATABASE_URL);
   try {
     const refused = await sql.begin(async (tx) => {
       await lockAppends(tx);
-      // Read from the events alone, which are all the operator reads: whether the work item was opened, how it last
-      // ended, and whether the line has appended anything on it since it was last opened or reopened, which says the
-      // line has it. The line's table, with its lease, is the line's.
-      const [state] = await tx<{ opened: boolean; ended: string | null; on_line: boolean }[]>`
-        select exists(select 1 from events e where e.work_item = w.work_item and e.type = 'work-item.opened') as opened,
-               ${lastEnd(tx, 'w.work_item')} as ended,
-               exists(select 1 from events e where e.work_item = w.work_item and e.appended_by = 'factory_line'
-                      and e.seq > coalesce((select max(r.seq) from events r where r.work_item = w.work_item
-                                            and r.type = 'work-item.reopened'), 0)) as on_line
-        from (select ${workItem}::text as work_item) w`;
-      if (!state?.opened) return `#${workItem} is not a work item in this store.`;
-      if (state.ended === 'work-item.closed') return `#${workItem} is closed already.`;
-      if (state.on_line) {
-        return `The line has #${workItem}, with an issue of its own: close it in the console, with Close on its card, or let its step end. This closes only what the line has not taken.`;
+      try {
+        await appendMartins(sql, tx, [await decideClose(tx, workItem, reason, 'command line')]);
+        return null;
+      } catch (error) {
+        if (error instanceof Refused) return error.message;
+        throw error;
       }
-      await appendMartins(sql, tx, [
-        adminEvent('work-item.closed', `Closed by Martin: ${reason}`, { outcome: 'discarded', reason }, workItem),
-      ]);
-      return null;
     });
     if (refused) {
       console.error(refused);
       return 2;
     }
-    console.log(`#${workItem} is closed: ${reason}.`);
+    console.log(
+      `#${workItem} is closed${reason ? `: ${reason}` : ''}. The line closes its pull request and issue, if it has them.`,
+    );
     const take = controlsInForce(await latestControls(sql)).take;
     if (take.kind === 'just-one' && take.workItem === workItem) {
       console.log(

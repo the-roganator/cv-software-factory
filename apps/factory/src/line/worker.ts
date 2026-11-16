@@ -369,7 +369,13 @@ export class Line {
    */
   readonly #inFlight = new Map<
     string,
-    { stage: 'plan' | 'build' | 'review' | 'verify' | 'recheck'; local?: boolean; done: Promise<void> }
+    {
+      stage: 'plan' | 'build' | 'review' | 'verify' | 'recheck';
+      local?: boolean;
+      done: Promise<void>;
+      /** Stops an agent's step on this work item alone, as Martin's close does: the line's stop stops them all. */
+      stop?: AbortController;
+    }
   >();
   /** When each work item whose last look, at Verify or again, could not tell may be looked at again. */
   readonly #lookAgainAt = new Map<string, number>();
@@ -522,8 +528,11 @@ export class Line {
     // With agents taking no new work, no ticket comes onto the line.
     const taken = this.#newWork ? await this.#queue.admit() : undefined;
     if (taken) this.#o.log.info({ workItem: taken }, 'a work item came onto the line');
+    // Once a pass: a closed work item the pass could not end is tried again on the next.
+    const ending = await this.#endClosed();
     for (const item of await this.#queue.free()) {
-      if (this.#inFlight.has(item.workItem) || this.#dryRunLeft.has(item.workItem)) continue;
+      if (this.#inFlight.has(item.workItem) || this.#dryRunLeft.has(item.workItem) || ending.has(item.workItem))
+        continue;
       await this.#advance(item).catch((error: unknown) =>
         this.#o.log.error({ workItem: item.workItem, err: error }, 'could not move a work item on'),
       );
@@ -559,6 +568,33 @@ export class Line {
     this.#newWork = newWork;
     this.#queue.takes(takes);
     this.#releases.actOn(takes.only);
+  }
+
+  /**
+   * Ends each work item on the line that closed, whatever the line takes: one Martin closed himself, from the console or
+   * his command line, while the line took another, would otherwise keep its row, its pull request and its issue open
+   * for as long as the take leaves it out. An agent's step in hand on it is stopped, and the next pass ends it; one held
+   * by another worker's lease is left to that worker. Says which it looked at.
+   */
+  async #endClosed(): Promise<Set<string>> {
+    const looked = new Set<string>();
+    for (const item of await this.#queue.closed()) {
+      looked.add(item.workItem);
+      const { workItem } = item;
+      const running = this.#inFlight.get(workItem);
+      if (running) {
+        if (running.stop && !running.stop.signal.aborted) {
+          this.#o.log.info({ workItem }, 'stopping the step on a work item Martin closed');
+          running.stop.abort();
+        }
+        continue;
+      }
+      if (this.#dryRunLeft.has(workItem)) continue;
+      await this.#advance(item).catch((error: unknown) =>
+        this.#o.log.error({ workItem, err: error }, 'could not end a closed work item'),
+      );
+    }
+    return looked;
   }
 
   /** Reads the app's releases when they are due: the Rollout alone while the line is stopped. */
@@ -883,6 +919,7 @@ export class Line {
         this.#volumeGone.delete(workItem);
         const state = fold(events);
         const { agent, round } = next;
+        const stop = new AbortController();
         const done = (
           effects
             ? inSpan('step effects', { [A.workItem]: workItem, [A.agent]: agent, [A.job]: effects.job }, () =>
@@ -892,12 +929,12 @@ export class Line {
                 }),
               ).finally(() => this.#release(workItem))
             : inSpan('step', { [A.workItem]: workItem, [A.agent]: agent }, () =>
-                this.#step(claimed, agent, round, state, last, this.#halt.signal),
+                this.#step(claimed, agent, round, state, last, AbortSignal.any([this.#halt.signal, stop.signal])),
               )
         )
           .catch((error: unknown) => this.#o.log.error({ workItem, err: error }, 'a step could not be recorded'))
           .finally(() => this.#inFlight.delete(workItem));
-        this.#inFlight.set(workItem, { stage: STAGE_OF[next.agent], local, done });
+        this.#inFlight.set(workItem, { stage: STAGE_OF[next.agent], local, done, stop });
         return;
       }
       const claimed = await this.#queue.claim(item.workItem, ACTION_LEASE_SECONDS);
@@ -1205,10 +1242,36 @@ export class Line {
         return;
       }
       case 'finish':
+        if (next.discarded !== undefined) await this.#closeDiscarded(item, state, next.discarded);
         await this.#o.steps.finish(workItem);
         this.#o.log.info({ workItem }, 'the work item is over');
         return;
     }
+  }
+
+  /**
+   * What Martin's own close leaves open, closed as the line closes on his rejection: the pull request, unmerged, with
+   * his reason, and the issue. Each is safe to ask again, so a pass after a failure here asks again: closing one already
+   * closed changes nothing, and says nothing again. A dry run's number is one GitHub never had, so a live line asks
+   * nothing of it; one that is gone, or that the GitHub worker's guard or GitHub refused, is left as it is.
+   */
+  async #closeDiscarded(item: QueueItem, state: WorkItemState, reason: string): Promise<void> {
+    const { workItem } = item;
+    const real = (number: number) => this.#o.dryRun || number < DRY_RUN_NUMBERS_FROM;
+    const said = reason.startsWith('Martin closed it') ? reason : `Martin closed it: ${reason}`;
+    if (state.pullRequest && !state.merged && real(state.pullRequest.number)) {
+      await this.#closePullRequest(workItem, state.pullRequest.number, rejectedPullComment(said, workItem));
+    }
+    if (item.issue && real(item.issue)) {
+      await closeIssue(
+        this.#o.github,
+        this.#o.repo,
+        { number: item.issue, reason: 'not_planned' },
+        workItem,
+        this.#o.log,
+      );
+    }
+    this.#o.log.info({ workItem }, 'closed what Martin’s close of the work item left open');
   }
 
   /**
@@ -1919,7 +1982,10 @@ export class Line {
       }
       if (outcome.kind === 'stopped') {
         countStep(agent, provider, 'stopped');
-        this.#o.log.info({ workItem, agent, job: outcome.job }, 'a step stopped with the line; it runs again on start');
+        this.#o.log.info(
+          { workItem, agent, job: outcome.job },
+          'a step stopped, with the line or as Martin closed its work item: nothing of it is recorded',
+        );
         return;
       }
       const effort = await this.#o.settings?.effortOf(outcome.job, agent);

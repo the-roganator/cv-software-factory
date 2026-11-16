@@ -109,7 +109,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # Each base image a Dockerfile pins, from CI's copy of it (scripts/ci-images.sh): the same digest, so the same image.
+      # Each base image a Dockerfile pins, from CI's copy of it (scripts/ci-images.sh, with crane): the same digest, so
+      # the same image.
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: crane
       - id: bases
         run: scripts/ci-images.sh contexts console
       - id: build
@@ -180,7 +186,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # Each base image a Dockerfile pins, from CI's copy of it (scripts/ci-images.sh): the same digest, so the same image.
+      # Each base image a Dockerfile pins, from CI's copy of it (scripts/ci-images.sh, with crane): the same digest, so
+      # the same image.
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: crane
       - id: bases
         env:
           BASES: ${{ matrix.bases }}

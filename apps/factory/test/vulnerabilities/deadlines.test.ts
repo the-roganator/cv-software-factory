@@ -14,12 +14,12 @@ import {
   miseTools,
   newestOnLine,
   npmUrl,
+  registryName,
   rewrite,
   runtimeStage,
   type Sources,
   scannedImages,
   severityOf,
-  skopeoName,
   stateOf,
   toolOf,
   toolUrl,
@@ -1168,10 +1168,10 @@ describe('the parts', () => {
     expect(k3sReleaseOf('https://example.org/v1.37.1%2Bk3s1/k3s-images.txt')).toBeUndefined();
   });
 
-  it('names a repository as skopeo reads it', () => {
-    expect(skopeoName('node')).toBe('docker://docker.io/library/node');
-    expect(skopeoName('rancher/k3s')).toBe('docker://docker.io/rancher/k3s');
-    expect(skopeoName('ghcr.io/open-feature/flagd')).toBe('docker://ghcr.io/open-feature/flagd');
+  it('names a repository by its whole name, as crane reads it', () => {
+    expect(registryName('node')).toBe('docker.io/library/node');
+    expect(registryName('rancher/k3s')).toBe('docker.io/rancher/k3s');
+    expect(registryName('ghcr.io/open-feature/flagd')).toBe('ghcr.io/open-feature/flagd');
   });
 });
 
@@ -1713,7 +1713,7 @@ describe('the images scanned, in moves.json', () => {
     expect(manifestDigests(index).digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(manifestDigests(Buffer.from(JSON.stringify({ schemaVersion: 2, layers: [] }))).platforms).toEqual([]);
     expect(() => manifestDigests(Buffer.from('not json'))).toThrow();
-    // skopeo reads a reference pinned by tag and digest by its digest alone.
+    // A reference pinned by tag and digest is read by its digest alone.
     expect(byDigest(`quay.io/example/exporter:v0.20.1@${PINNED}`)).toBe(`quay.io/example/exporter@${PINNED}`);
     expect(byDigest(`localhost:5000/example:1@${PINNED}`)).toBe(`localhost:5000/example@${PINNED}`);
     expect(byDigest('docker.io/rancher/mirrored-coredns-coredns:1.14.7')).toBe(

@@ -11,7 +11,7 @@ import { clusterImages } from './cluster-images.ts';
  * The platform check's cluster pulls each third-party image it runs from CI's copy in GHCR (deploy/k3d/ci-registries.yaml):
  * scripts/cluster-images.ts lists them, and `scripts/ci-images.sh sync` copies each to the path its registry's rewrite
  * gives, which `ci-images.sh cluster` checks without copying. Here the list is made with stand-ins for Helm and k3s's
- * release, and the check run with stand-ins for the list and skopeo, against this checkout's registries file.
+ * release, and the check run with stand-ins for the list and crane, against this checkout's registries file.
  */
 
 const REGISTRIES = 'deploy/k3d/ci-registries.yaml';
@@ -100,7 +100,7 @@ describe(REGISTRIES, () => {
 });
 
 describe('ci-images.sh cluster', () => {
-  /** The check, with the list and skopeo stood in for: `copied` holds the copies GHCR has, by tag or digest. */
+  /** The check, with the list and crane stood in for: `copied` holds the copies GHCR has, by tag or digest. */
   function check(images: string[], copied: Record<string, string>, upstream: Record<string, string> = {}) {
     const bin = mkdtempSync(join(tmpdir(), 'ci-images-'));
     dirs.push(bin);
@@ -113,12 +113,18 @@ describe('ci-images.sh cluster', () => {
       join(bin, 'node'),
       `#!/usr/bin/env bash\nif [ "$1" = scripts/cluster-images.ts ]; then cat "${bin}/data/images"; else exec "${node}" "$@"; fi\n`,
     );
-    // `skopeo inspect --raw --no-creds docker://<ref>`: the manifest the stand-in registry holds, or a failure.
+    // `crane manifest <ref>`: the manifest the stand-in registry holds, or a failure, the answer a registry gives.
+    // Anonymous, as CI pulls: an empty Docker config of its own, or it fails.
     writeFileSync(
-      join(bin, 'skopeo'),
-      `#!/usr/bin/env bash\nref=\${@: -1}; ref=\${ref#docker://}\njq -er --arg ref "$ref" '.[$ref] // empty' "${bin}/data/manifests"\n`,
+      join(bin, 'crane'),
+      [
+        '#!/usr/bin/env bash',
+        '[ "$1" = manifest ] && [ "$(cat "$DOCKER_CONFIG/config.json")" = "{}" ] || exit 2',
+        `jq -er --arg ref "$2" '.[$ref] // empty' "${bin}/data/manifests" || { echo "Error: MANIFEST_UNKNOWN" >&2; exit 1; }`,
+        '',
+      ].join('\n'),
     );
-    for (const tool of ['node', 'skopeo']) chmodSync(join(bin, tool), 0o755);
+    for (const tool of ['node', 'crane']) chmodSync(join(bin, tool), 0o755);
     return spawnSync(resolve('scripts/ci-images.sh'), ['cluster'], {
       encoding: 'utf-8',
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
@@ -153,11 +159,11 @@ describe('ci-images.sh cluster', () => {
     // A tag that names another digest upstream now is copied again.
     expect(lines[2]).toMatch(
       new RegExp(
-        `^${copy('docker/grafana/loki:3.7.10')}: not copied \\(the copy is at sha256:[0-9a-f]+\\), from docker://docker.io/grafana/loki:3.7.10$`,
+        `^${copy('docker/grafana/loki:3.7.10')}: not copied \\(the copy is at sha256:[0-9a-f]+\\), from docker.io/grafana/loki:3.7.10$`,
       ),
     );
     expect(lines[3]).toBe(
-      `${copy('ecr-public/docker/library/redis:8.6.4-alpine')}: not copied, from docker://ecr-public.aws.com/docker/library/redis:8.6.4-alpine`,
+      `${copy('ecr-public/docker/library/redis:8.6.4-alpine')}: not copied, from ecr-public.aws.com/docker/library/redis:8.6.4-alpine`,
     );
   });
 
@@ -172,11 +178,11 @@ describe('ci-images.sh cluster', () => {
     expect(lines[0]).toMatch(/: not copied \(the copy is at sha256:[0-9a-f]+\), from /);
     // Not the digest of the image before it.
     expect(lines[1]).toBe(
-      `${copy(`docker/library/busybox@${digest}`)}: not copied, from docker://docker.io/library/busybox@${digest}`,
+      `${copy(`docker/library/busybox@${digest}`)}: not copied, from docker.io/library/busybox@${digest}`,
     );
     expect(lines).toContain('::error::index.docker.io/otel/collector: could not read its digest');
     expect(lines).toContain(
-      `${copy('docker/library/busybox:latest')}: not copied, from docker://docker.io/library/busybox:latest`,
+      `${copy('docker/library/busybox:latest')}: not copied, from docker.io/library/busybox:latest`,
     );
   });
 

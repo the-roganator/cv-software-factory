@@ -214,14 +214,14 @@ jobs:
           else
             echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
           fi
-      # kustomize and yq for the list, helm to render its charts, cosign to verify the SBOMs of ours: each at the
-      # version this repository's mise.lock holds.
+      # kustomize and yq for the list, helm to render its charts, cosign to verify the SBOMs of ours, crane to read the
+      # registries' tags and manifests: each at the version this repository's mise.lock holds.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
-          install_args: node kustomize helm yq cosign
+          install_args: node kustomize helm yq cosign crane
       # What the scan derived, kept between runs, never what its verdicts depend on (the advisory databases, the alerts,
       # the exceptions). Trivy's analysis of each layer (scan.ts --cache), which Trivy keys by the layer's digest and its
       # own analysers: this key names Trivy's pin, so a new Trivy starts afresh, and the day, so the day's first run on
@@ -263,7 +263,7 @@ jobs:
       # What fixes each finding and since when, ended into each result's message before the upload, each deadline, and the
       # moves (deadlines.ts, moves.ts). It reads the state the last run kept, with the job's token and the key, for each
       # finding's days (code scanning's alerts, where there is none it can open), and seals the next. It reads npm's registry, Node's release index, k3s's releases, the charts' repositories, the tools'
-      # releases, and the newer images on each line with a fixed finding (skopeo for the tags and the index digests,
+      # releases, and the newer images on each line with a fixed finding (crane for the tags and the index digests,
       # Trivy on the scan's database). It fails, and nothing is uploaded, on a source it cannot read.
       - name: Deadlines and moves
         if: ${{ steps.scan.outputs.sarif == 'true' }}
@@ -419,7 +419,7 @@ jobs:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
-          install_args: node kustomize helm yq cosign
+          install_args: node kustomize helm yq cosign crane
       # As the scan keeps them: restored, never saved.
       - name: The day
         id: day

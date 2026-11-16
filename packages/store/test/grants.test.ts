@@ -544,6 +544,13 @@ describe("Martin's commands", () => {
         order by seq`
       ).map((row) => row.appended_by),
     ).toEqual(['factory_admin', 'factory_operator']);
+    // His close of an attack's work item is refused: it ends as its attack does.
+    const discard = {
+      ...command('work-item.closed', workItem),
+      work_item: workItem,
+      payload: { outcome: 'discarded', reason: 'Not wanted' },
+    } as NewEvent;
+    await expect(writer(db.admin).append(discard)).rejects.toThrow('row-level security');
   });
 
   it('carry the role that appended them, which the store sets and no client may', async () => {

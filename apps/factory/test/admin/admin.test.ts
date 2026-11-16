@@ -3013,6 +3013,22 @@ describe('Needs you', () => {
         }),
       ]);
       expect((await browser.post(`/admin/work-items/${queued}/close`, {})).status).toBe(200);
+      // A push after the enqueue replaces the queued head: no longer waiting, it closes.
+      const pushed = await taken();
+      const file = { path: 'src/a.ts', added: 1, removed: 0 };
+      await append(db.as.line, [
+        event(pushed, 'pull-request.enqueued', 'factory', enqueued),
+        event(pushed, 'pull-request.pushed', 'factory', {
+          number: 12,
+          title: 'fix: the search',
+          branch: 'factory/fix',
+          attempt: 2,
+          testsFirst: false,
+          files: [file],
+          whole: [file],
+        }),
+      ]);
+      expect((await browser.post(`/admin/work-items/${pushed}/close`, {})).status).toBe(200);
 
       const attack = await nextWorkItem(db.as.triage);
       await append(db.operator, [

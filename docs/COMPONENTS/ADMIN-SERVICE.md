@@ -231,7 +231,7 @@ Martin closes a work item nothing holds for him from its sheet's Close (`admin/c
 - **Not twice** (409, `work-item`), and not a work item the store does not have (404, `work-item`).
 - **No reason on a visitor's report** (422, `words`): on a work item a visitor's report opened, his reason would be public, in the close's public view and the comment on its pull request, and words about a report pass any redactor, so the close takes none there and says only that he closed it.
 - **Nothing else from the request** (400): a reason too long, or anything but `words`.
-- **His alone.** The store lets the admin service's role append a close only as a discard (`closes_as_martin` in `0053_martin-closes.sql`), never as verified or any other end the factory's own work reaches. Closes are taken one at a time, under the lock every append takes.
+- **His alone.** The store lets the admin service's role append a close only as a discard (`closes_as_martin` in `0053_martin-closes.sql`), never as verified or any other end the factory's own work reaches, and never on an attack's work item. Closes are taken one at a time, under the lock every append takes.
 
 ## What it records
 

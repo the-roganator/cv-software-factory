@@ -11,6 +11,16 @@ const START = Date.parse('2026-10-03T09:00:00Z');
 const T = START + 60 * 60_000;
 const held = { stage: 'plan', kind: 'question', cause: 'question', reason: 'Which page?' } as const;
 const merged = { number: 7, commit: 'a'.repeat(40), by: 'martin' } as const;
+const file = { path: 'src/a.ts', added: 1, removed: 0 };
+const pushed = {
+  number: 7,
+  title: 'fix: the search',
+  branch: 'factory/fix',
+  attempt: 1,
+  testsFirst: false,
+  files: [file],
+  whole: [file],
+};
 
 describe('the sheet’s Close', () => {
   it('is offered on an open work item nothing holds for Martin, before its change merges', () => {
@@ -38,13 +48,17 @@ describe('the sheet’s Close', () => {
     expect(projectSheet(project(report.events, T), '2103')?.close).toEqual({ aboutReport: true });
   });
 
-  it('is not offered on one held for him, merged, or closed', () => {
+  it('is not offered on one held for him, in the merge queue, merged, or closed', () => {
     const holding = work('2104', START).open().add(2, 'hold.started', 'planner', held);
+    const queued = work('2107', START)
+      .open()
+      .add(1, 'pull-request.pushed', 'factory', pushed)
+      .add(2, 'pull-request.enqueued', 'factory', { number: 7, commit: 'a'.repeat(40), rule: 'low-risk' });
     const shipped = work('2105', START).open().add(2, 'pull-request.merged', 'martin', merged);
     const closed = work('2106', START)
       .open()
       .add(2, 'work-item.closed', 'martin', { outcome: 'discarded', reason: 'Not wanted' });
-    const view = project([...holding.events, ...shipped.events, ...closed.events], T);
-    for (const item of ['2104', '2105', '2106']) expect(projectSheet(view, item)?.close, item).toBeUndefined();
+    const view = project([...holding.events, ...queued.events, ...shipped.events, ...closed.events], T);
+    for (const item of ['2104', '2107', '2105', '2106']) expect(projectSheet(view, item)?.close, item).toBeUndefined();
   });
 });

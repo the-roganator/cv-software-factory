@@ -188,8 +188,8 @@ export interface Sheet {
   /** For an improvement Martin asked for: his request, in his words as everyone may read them, and when. */
   request: ItemState['request'];
   /**
-   * Whether Martin may close it from the sheet: open, with no hold (a held one closes from its card), and not yet merged
-   * (Release and Verify end it). `aboutReport` when a visitor's report opened it: the close then takes no reason.
+   * Whether Martin may close it from the sheet: open, with no hold (a held one closes from its card), not in the merge
+   * queue, not yet merged (Release and Verify end it), and not an attack's. `aboutReport` when a visitor's report opened it: the close then takes no reason.
    */
   close: { aboutReport: boolean } | undefined;
   story: string;
@@ -1117,6 +1117,7 @@ export function sheet(
     close:
       item.closedAt === undefined &&
       !item.hold &&
+      !item.inQueue &&
       item.kind !== 'red-team' &&
       item.stage !== 'release' &&
       item.stage !== 'verify'

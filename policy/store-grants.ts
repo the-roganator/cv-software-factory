@@ -181,7 +181,7 @@ export const STORE_GRANTS = {
         // Martin's commands, his improvement's and attack's openings, and his close of a work item, as a discard alone.
         insert:
           'admin_event(type) OR opens_improvement(type, payload) OR opens_attack(type, payload) OR ' +
-          'closes_as_martin(type, payload)',
+          'closes_as_martin(type, payload, work_item)',
       },
     },
   },

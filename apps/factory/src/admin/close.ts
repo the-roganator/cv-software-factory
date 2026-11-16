@@ -49,8 +49,8 @@ export async function decideClose(
             order by e.seq limit 1) as kind,
            ${lastEnd(tx, 'w.work_item')} as ended,
            (select e.type from events e where e.work_item = w.work_item
-              and e.type in ('pull-request.enqueued', 'pull-request.dequeued', 'pull-request.merged', 'work.returned',
-                             'work-item.reopened')
+              and e.type in ('pull-request.enqueued', 'pull-request.dequeued', 'pull-request.pushed',
+                             'pull-request.merged', 'work.returned', 'work-item.reopened')
             order by e.seq desc limit 1) as queue
     from (select ${workItem}::text as work_item) w`;
   if (!state?.opened) throw new Refused('work-item', 404, `#${workItem} is not a work item in this store.`);

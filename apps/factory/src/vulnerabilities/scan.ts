@@ -828,7 +828,7 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
 
 /**
  * Whether an error is a registry's or a server's answer that trying again cannot change: no such image or tag
- * (`MANIFEST_UNKNOWN`, `NAME_UNKNOWN`, as Trivy and skopeo print them), or a 404. A fault (a dropped connection, a
+ * (`MANIFEST_UNKNOWN`, `NAME_UNKNOWN`, as Trivy and crane print them), or a 404. A fault (a dropped connection, a
  * timeout, a 429, a 5xx, a denial a sign-in may still clear) is not one.
  */
 export function isAnswer(error: unknown) {

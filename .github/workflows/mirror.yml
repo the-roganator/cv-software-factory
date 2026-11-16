@@ -34,9 +34,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The cluster's images are the list's (scripts/cluster-images.ts), its charts rendered; crane makes the copies, as
-      # the runner's skopeo will not copy an index whose entries carry an artifactType without rewriting it, and so
-      # changing its digest. Its cache main keeps (toolchain-cache.yml).
+      # The cluster's images are the list's (scripts/cluster-images.ts), its charts rendered; crane reads each image and
+      # makes the copies, byte for byte, an index whose entries carry an artifactType among them, so each copy's digest
+      # is its source's. Its cache main keeps (toolchain-cache.yml).
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17

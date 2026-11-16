@@ -16,7 +16,7 @@
 #                                   or for `browser`, apps/factory/Dockerfile.browser
 #   ci-images.sh sync               copy into GHCR every pinned digest, each pinned tag's current one, and the newest tag
 #                                   of each pin's line, then each image the cluster runs (`cluster`), with crane, which
-#                                   must be logged in to ghcr.io (mirror.yml); skopeo reads, with no credentials
+#                                   must be logged in to ghcr.io (mirror.yml); every read is crane's, with no credentials
 #   ci-images.sh cluster            each third-party image the cluster runs (scripts/cluster-images.ts), its copy, and
 #                                   whether the copy is there and current, copying nothing; it fails only when an image
 #                                   cannot be listed, read or given a copy, not for a copy not made yet
@@ -43,8 +43,14 @@ PIN='(^FROM|image:) +([a-z0-9._-]+|mcr\.microsoft\.com/playwright)(:[A-Za-z0-9._
 # The pins in grep's matches.
 pins() { awk '{print $NF}'; }
 
-# Where a pin's name comes from, as skopeo names it: Docker Hub's official images under docker.io/library/.
-upstream_of() { if [[ "$1" == "$MCR"* ]]; then echo "docker://$1"; else echo "docker://docker.io/library/$1"; fi; }
+# crane with no credentials, as CI's jobs pull: a Docker config of its own with nothing in it, so no login, credential
+# helper or Podman's auth file is read (go-containerregistry's default keychain reads the first it finds).
+ANONYMOUS=$(mktemp -d) && echo '{}' > "$ANONYMOUS/config.json" || exit 1
+trap 'rm -rf "$ANONYMOUS"' EXIT
+anonymous() { env -u DOCKER_AUTH_CONFIG DOCKER_CONFIG="$ANONYMOUS" crane "$@"; }
+
+# Where a pin's name comes from, by its whole name: Docker Hub's official images under docker.io/library/.
+upstream_of() { if [[ "$1" == "$MCR"* ]]; then echo "$1"; else echo "docker.io/library/$1"; fi; }
 
 # The copy of a pin, by digest.
 mirror_of() {
@@ -53,12 +59,12 @@ mirror_of() {
   if [[ "$name" == "$MCR"* ]]; then echo "${MIRROR}mcr/${name#"$MCR"}@${1##*@}"; else echo "${MIRROR}docker/library/$name@${1##*@}"; fi
 }
 
-# Copies an image (skopeo's name for it, or a bare reference) to a tag, every platform, byte for byte, so the copy's
-# digest is the source's: crane copies an index's manifest as it is, where skopeo will not copy one whose entries carry
-# an artifactType (Kyverno's) without rewriting it. Tried again on a fault, three times, as a registry that limits by
-# address now and then refuses one; crane must be logged in to the copy's registry (mirror.yml).
+# Copies an image to a tag, every platform, byte for byte, so the copy's digest is the source's: crane copies an index's
+# manifest as it is, an index whose entries carry an artifactType (Kyverno's) among them. Tried again on a fault, three
+# times, as a registry that limits by address now and then refuses one; crane must be logged in to the copy's registry
+# (mirror.yml).
 crane_copy() {
-  local from=${1#docker://} to=$2 try
+  local from=$1 to=$2 try
   for try in 1 2 3 4; do
     crane copy "$from" "$to" && return 0
     [ "$try" -lt 4 ] && echo "$to: the copy failed, trying again" >&2 && sleep $((try * 10))
@@ -67,7 +73,7 @@ crane_copy() {
 }
 
 # Whether an image can be pulled with no credentials, as CI's jobs pull it.
-pullable() { skopeo inspect --raw --no-creds "docker://$1" > /dev/null 2>&1; }
+pullable() { anonymous manifest "$1" > /dev/null 2>&1; }
 
 resolve() {
   local ref=$1 copy
@@ -114,12 +120,13 @@ newest() {
   [[ "$prefix" =~ ^v?$ && "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 0
   suffix=${tag#"$prefix$version"}
   pattern="^$prefix${version%%.*}$(sed -E 's/[0-9]+/[0-9]+/g; s/\./\\./g' <<< "${version#"${version%%.*}"}")$(sed 's/\./\\./g' <<< "$suffix")\$"
-  tags=$(skopeo list-tags --no-creds "$(upstream_of "$name")" | jq -r '.Tags[]') || return 1
+  tags=$(anonymous ls "$(upstream_of "$name")") || return 1
   { grep -E "$pattern" <<< "$tags" || true; } | sort -V | tail -n 1
 }
 
-# The digest a tag names on its own registry now.
-current() { skopeo inspect --raw --no-creds "$(upstream_of "$1")" | sha256sum | sed 's/^/sha256:/; s/ .*//'; }
+# The digest a tag names on its own registry now: the SHA-256 of its raw manifest, piped as it is (a command
+# substitution would drop its last newline, and so change its digest); pipefail fails the function when crane does.
+current() { anonymous manifest "$(upstream_of "$1")" | sha256sum | sed 's/^/sha256:/; s/ .*//'; }
 
 sync() {
   local failed=() wanted=() pins ref name tag latest digest copy
@@ -181,11 +188,23 @@ parse() {
   echo "$registry $ref $tag $digest"
 }
 
-# The digest a reference names now, with no credentials, as containerd would resolve it; tried again on a fault, as a
-# registry that limits by address now and then refuses one.
-# The manifest is piped as it is (a command substitution would drop its last newline, and so change its digest), and
-# pipefail fails the function when skopeo does.
-digest_of() { skopeo inspect --raw --no-creds --retry-times 3 "$1" | sha256sum | sed 's/^/sha256:/; s/ .*//'; }
+# The digest a reference names now, with no credentials, as containerd would resolve it: the SHA-256 of its raw
+# manifest, kept in a file as it is (a command substitution would drop its last newline, and so change its digest).
+# Tried again on a fault, three times, as a registry that limits by address now and then refuses one; not on the
+# registry's answer that there is no such image, or none to read without a login.
+digest_of() {
+  local try manifest=$ANONYMOUS/manifest error=$ANONYMOUS/error
+  for try in 1 2 3 4; do
+    if anonymous manifest "$1" > "$manifest" 2> "$error"; then
+      sha256sum < "$manifest" | sed 's/^/sha256:/; s/ .*//'
+      return 0
+    fi
+    grep -qE 'MANIFEST_UNKNOWN|NAME_UNKNOWN|DENIED|UNAUTHORIZED' "$error" && break
+    [ "$try" -lt 4 ] && sleep $((try * 5))
+  done
+  cat "$error" >&2
+  return 1
+}
 
 # Each image the cluster runs, against its copy: `check` says whether each is there and current, `sync` copies each
 # that is not.
@@ -202,14 +221,14 @@ cluster() {
     fi
     copy=ghcr.io/${rewrite//\$1/$path}
     if [ "$digest" != - ]; then
-      from=docker://$registry/$path@$digest
+      from=$registry/$path@$digest
       target=$copy@$digest
       if pullable "$target"; then echo "$target: copied already"; continue; fi
     else
-      from=docker://$registry/$path:$tag
+      from=$registry/$path:$tag
       target=$copy:$tag
       if ! want=$(digest_of "$from"); then failed+=("$ref: could not read its digest"); continue; fi
-      have=$(digest_of "docker://$target" 2> /dev/null) || have=
+      have=$(digest_of "$target" 2> /dev/null) || have=
       if [ "$want" = "$have" ]; then echo "$target: copied already, at $want"; continue; fi
     fi
     if [ "$mode" = check ]; then echo "$target: not copied${have:+ (the copy is at $have)}, from $from"; continue; fi

@@ -1283,13 +1283,26 @@ async function pool(tasks: (() => Promise<void>)[], size = 8) {
 /** A package's document in npm's registry: its whole name encoded, the scope's `@` kept, as the registry writes it. */
 export const npmUrl = (name: string) => `https://registry.npmjs.org/${encodeURIComponent(name).replace(/^%40/, '@')}`;
 
-/** A repository as skopeo names it: Docker Hub's official images under docker.io/library/. */
-export function skopeoName(repository: string) {
-  if (hasRegistry(repository)) return `docker://${repository}`;
-  return `docker://docker.io/${repository.includes('/') ? '' : 'library/'}${repository}`;
+/** A repository by its whole name, as crane reads it: Docker Hub's official images under docker.io/library/. */
+export function registryName(repository: string) {
+  if (hasRegistry(repository)) return repository;
+  return `docker.io/${repository.includes('/') ? '' : 'library/'}${repository}`;
 }
 
-/** The sources as the workflow has them: npm, Node's index, skopeo, Trivy on the scan's database, the API. */
+/**
+ * crane's environment for a read with no credentials, as CI's jobs pull: a Docker config of its own with nothing in it,
+ * so no login, credential helper or Podman's auth file is read (go-containerregistry's default keychain reads the first
+ * it finds).
+ */
+export function anonymousEnv(work: string): NodeJS.ProcessEnv {
+  const config = join(work, 'anonymous');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'config.json'), '{}\n');
+  const { DOCKER_AUTH_CONFIG: _, ...env } = process.env;
+  return { ...env, DOCKER_CONFIG: config };
+}
+
+/** The sources as the workflow has them: npm, Node's index, crane, Trivy on the scan's database, the API. */
 /** What a run that keeps a state reads the last one with: the key, its own run, and the default branch. */
 interface Keeps {
   key: Buffer;
@@ -1306,6 +1319,7 @@ function realSources(
   keeps?: Keeps,
 ): Sources {
   const tools = realTools(trivyImage, handoff.cache, work);
+  const anonymous = anonymousEnv(work);
   // Read once, outside any retry: a record that cannot be read fails the run with its own cause.
   const apiVersions = apiVersionsOf(checkout);
   const times = new Map<string, Promise<Record<string, string>>>();
@@ -1356,13 +1370,11 @@ function realSources(
       return body as { version: string; date: string }[];
     },
     async tags(repository) {
+      // Every tag, a line each, every page of them read.
       const { stdout } = await tools.retry(() =>
-        run('skopeo', ['list-tags', skopeoName(repository)], { maxBuffer: 64 * 1024 * 1024, timeout: 5 * 60 * 1000 }),
+        run('crane', ['ls', registryName(repository)], { maxBuffer: 64 * 1024 * 1024, timeout: 5 * 60 * 1000 }),
       );
-      const listed = (JSON.parse(stdout) as { Tags?: unknown }).Tags;
-      if (!Array.isArray(listed) || !listed.every((tag) => typeof tag === 'string'))
-        throw new Error(`skopeo gave no list of tags for ${repository}`);
-      return listed as string[];
+      return stdout.split('\n').filter(Boolean);
     },
     async k3s(release) {
       const tag = encodeURIComponent(release);
@@ -1395,9 +1407,11 @@ function realSources(
     image: (reference) =>
       tools.retry(() => tools.trivy(['image', '--scanners', 'vuln', '--image-src', 'remote', '--', reference])),
     async digest(reference) {
-      // The tag's index, as scripts/ci-images.sh's `current` reads it: the SHA-256 of the raw manifest skopeo gives.
+      // The tag's index, as scripts/ci-images.sh's `current` reads it: the SHA-256 of the raw manifest crane gives, with
+      // no credentials.
       const { stdout } = await tools.retry(() =>
-        run('skopeo', ['inspect', '--raw', '--no-creds', skopeoName(reference)], {
+        run('crane', ['manifest', registryName(reference)], {
+          env: anonymous,
           encoding: 'buffer',
           maxBuffer: 16 * 1024 * 1024,
           timeout: 5 * 60 * 1000,
@@ -1409,7 +1423,7 @@ function realSources(
       // The raw manifest, as the registry gives it to a pull: an index lists each platform's manifest by digest. With the
       // job's registry credentials, so an image of ours in GHCR is read as it is pulled.
       const { stdout } = await tools.retry(() =>
-        run('skopeo', ['inspect', '--raw', skopeoName(byDigest(reference))], {
+        run('crane', ['manifest', registryName(byDigest(reference))], {
           encoding: 'buffer',
           maxBuffer: 16 * 1024 * 1024,
           timeout: 5 * 60 * 1000,
@@ -1553,7 +1567,7 @@ function realSources(
   };
 }
 
-/** A reference skopeo reads: one pinned by tag and digest is read by its digest alone, which skopeo requires. */
+/** A reference as it is read: one pinned by tag and digest by its digest alone, which is what the pin holds. */
 export function byDigest(reference: string) {
   const { repository, digest } = splitReference(reference);
   return digest ? `${repository}@${digest}` : reference;
@@ -1769,7 +1783,7 @@ export async function main(args: string[]): Promise<number> {
     try {
       if (!run) throw new StateError('GITHUB_RUN_ID names no run to keep the state on');
       keeps = { key: readKey(process.env[STATE_KEY] ?? ''), run, branch };
-      // Read once: nothing this starts (Trivy, skopeo, Helm) inherits it.
+      // Read once: nothing this starts (Trivy, crane, Helm) inherits it.
       delete process.env[STATE_KEY];
     } catch (error) {
       console.error(`::error::The state cannot be kept: ${firstLine(error)}. The run fails, and nothing is uploaded.`);

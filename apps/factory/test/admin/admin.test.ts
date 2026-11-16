@@ -2992,6 +2992,43 @@ describe('Needs you', () => {
       expect((await browser.post(`/admin/work-items/${open}/close`, { reason: 'Wrong field' })).status).toBe(400);
       for (const workItem of [heldOne, merged, open]) expect(await closes(workItem)).toEqual([]);
     });
+
+    it('refuses one whose pull request waits in the merge queue, and an attack’s, which ends as its attack does', async () => {
+      const { browser } = await signedIn();
+      const queued = await taken();
+      const enqueued = { number: 12, commit: 'a'.repeat(40), rule: 'low-risk' };
+      await append(db.as.line, [event(queued, 'pull-request.enqueued', 'factory', enqueued)]);
+      expect(await browser.post(`/admin/work-items/${queued}/close`, {})).toMatchObject({
+        status: 409,
+        body: { refused: 'queued' },
+      });
+      // Taken out of the queue, it closes.
+      await append(db.as.line, [
+        event(queued, 'pull-request.dequeued', 'factory', {
+          number: 12,
+          commit: 'a'.repeat(40),
+          reason: 'dequeued',
+          by: 'mrogan',
+          failed: [],
+        }),
+      ]);
+      expect((await browser.post(`/admin/work-items/${queued}/close`, {})).status).toBe(200);
+
+      const attack = await nextWorkItem(db.as.triage);
+      await append(db.operator, [
+        event(attack, 'work-item.opened', 'martin', {
+          kind: 'red-team',
+          category: 'red-team',
+          title: 'Red-team attack by Martin',
+          sample: false,
+        }),
+      ]);
+      expect(await browser.post(`/admin/work-items/${attack}/close`, {})).toMatchObject({
+        status: 409,
+        body: { refused: 'attack' },
+      });
+      expect(await closes(attack)).toEqual([]);
+    });
   });
 });
 

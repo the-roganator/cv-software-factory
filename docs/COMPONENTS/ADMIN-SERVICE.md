@@ -226,6 +226,8 @@ Martin closes a work item nothing holds for him from its sheet's Close (`admin/c
 
 - **Not where a hold is open** (409, `hold`): a held work item closes from its card, by Close, his rejection, which says what closing does there. The open hold is read as Needs you reads it.
 - **Not once its change has merged** (409, `merged`), since the work item last went back to Plan or reopened: the release carries it, and Release and Verify end it.
+- **Not while its pull request waits in the merge queue** (409, `queued`): it may merge before the line could close it, and his close, recorded first, could not then stop the change shipping. Taken out of the queue on GitHub, it closes.
+- **Not an attack's** (409, `attack`): a red-team attack's work item ends as its attack does, which the harness records.
 - **Not twice** (409, `work-item`), and not a work item the store does not have (404, `work-item`).
 - **No reason on a visitor's report** (422, `words`): on a work item a visitor's report opened, his reason would be public, in the close's public view and the comment on its pull request, and words about a report pass any redactor, so the close takes none there and says only that he closed it.
 - **Nothing else from the request** (400): a reason too long, or anything but `words`.

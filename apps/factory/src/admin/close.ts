@@ -7,8 +7,10 @@
  *
  * - **Not where a hold is open.** A held work item closes from its card, by Close (his rejection), whose answer the
  *   line or triage acts on as the hold's cause says; this is refused there, as the card says what closing does.
- * - **Not once its change has merged.** The release carries it then, and Release and Verify end it; a pull request
- *   cannot be closed unmerged after its merge.
+ * - **Not once its change has merged, or while it waits in the merge queue.** The release carries a merged change, and
+ *   Release and Verify end it; one in the queue may merge before the line could close its pull request, which his
+ *   close, recorded first, could then not stop.
+ * - **Not an attack's.** A red-team attack's work item ends as its attack does, which the harness records.
  * - **His words, but not about a visitor's report.** The reason is public, in the close's public view and the comment
  *   on its pull request. On a work item a visitor's report opened, words about it would pass any redactor, so a reason
  *   is refused there and the close says only that he closed it, as his answers keep his words his there.
@@ -41,12 +43,28 @@ export async function decideClose(
   words: string | undefined,
   from: ClosedFrom,
 ): Promise<ReturnType<typeof adminEvent>> {
-  const [state] = await tx<{ opened: boolean; ended: string | null }[]>`
+  const [state] = await tx<{ opened: boolean; kind: string | null; ended: string | null; queue: string | null }[]>`
     select exists(select 1 from events e where e.work_item = w.work_item and e.type = 'work-item.opened') as opened,
-           ${lastEnd(tx, 'w.work_item')} as ended
+           (select e.payload->>'kind' from events e where e.work_item = w.work_item and e.type = 'work-item.opened'
+            order by e.seq limit 1) as kind,
+           ${lastEnd(tx, 'w.work_item')} as ended,
+           (select e.type from events e where e.work_item = w.work_item
+              and e.type in ('pull-request.enqueued', 'pull-request.dequeued', 'pull-request.merged', 'work.returned',
+                             'work-item.reopened')
+            order by e.seq desc limit 1) as queue
     from (select ${workItem}::text as work_item) w`;
   if (!state?.opened) throw new Refused('work-item', 404, `#${workItem} is not a work item in this store.`);
   if (state.ended === 'work-item.closed') throw new Refused('work-item', 409, `#${workItem} is closed already.`);
+  if (state.kind === 'red-team') {
+    throw new Refused('attack', 409, `#${workItem} is an attack’s: it ends as its attack does.`);
+  }
+  if (state.queue === 'pull-request.enqueued') {
+    throw new Refused(
+      'queued',
+      409,
+      `#${workItem}’s pull request is in the merge queue: take it out on GitHub first, or let it merge.`,
+    );
+  }
   const { open, merged } = await openHold(tx, workItem);
   if (open) {
     throw new Refused(

@@ -919,7 +919,8 @@ export class Line {
         this.#volumeGone.delete(workItem);
         const state = fold(events);
         const { agent, round } = next;
-        const stop = new AbortController();
+        // Only an agent's step can be stopped: a kept handback's effects run to their end.
+        const stop = effects ? undefined : new AbortController();
         const done = (
           effects
             ? inSpan('step effects', { [A.workItem]: workItem, [A.agent]: agent, [A.job]: effects.job }, () =>
@@ -929,12 +930,19 @@ export class Line {
                 }),
               ).finally(() => this.#release(workItem))
             : inSpan('step', { [A.workItem]: workItem, [A.agent]: agent }, () =>
-                this.#step(claimed, agent, round, state, last, AbortSignal.any([this.#halt.signal, stop.signal])),
+                this.#step(
+                  claimed,
+                  agent,
+                  round,
+                  state,
+                  last,
+                  stop ? AbortSignal.any([this.#halt.signal, stop.signal]) : this.#halt.signal,
+                ),
               )
         )
           .catch((error: unknown) => this.#o.log.error({ workItem, err: error }, 'a step could not be recorded'))
           .finally(() => this.#inFlight.delete(workItem));
-        this.#inFlight.set(workItem, { stage: STAGE_OF[next.agent], local, done, stop });
+        this.#inFlight.set(workItem, { stage: STAGE_OF[next.agent], local, done, ...(stop && { stop }) });
         return;
       }
       const claimed = await this.#queue.claim(item.workItem, ACTION_LEASE_SECONDS);
@@ -1159,35 +1167,11 @@ export class Line {
       case 'close': {
         // Its pull request first, unless it merged: nothing of the work item is left open for nobody to merge, and the
         // pull request says why. A dry run's number is one GitHub never had, so a live line asks nothing of it.
-        const pull =
-          !next.merged && state.pullRequest && (this.#o.dryRun || state.pullRequest.number < DRY_RUN_NUMBERS_FROM)
-            ? state.pullRequest.number
-            : undefined;
-        let left: string | undefined;
-        if (pull !== undefined) {
-          // Closing one already closed or merged changes nothing, and says nothing again. One that is gone, or that the
-          // GitHub worker's guard or GitHub refused (a refusal the line records), is left as it is, and the close says
-          // so. Any other failure, here or below, is thrown before the work item closes, and the next pass tries again:
-          // it is still Martin's answer to act on, which the gates' read leaves to this.
-          left = await this.#closePullRequest(workItem, pull, rejectedPullComment(next.reason, workItem));
-          // Read after the close, so a merge before it, or while it was asked, is seen: nothing more is closed, and
-          // the gates' read records the merge, which the work item goes on from.
-          if (left === undefined) {
-            const pr = await this.#o.github.read('pullRequest', this.#o.repo, { number: pull });
-            if (pr.merged) return false;
-          }
-        }
-        // The issue goes with it; closing one already closed changes nothing, and one that is gone, or that the App may
-        // not change, has nothing to close.
-        if (item.issue) {
-          await closeIssue(
-            this.#o.github,
-            this.#o.repo,
-            { number: item.issue, reason: 'not_planned' },
-            workItem,
-            this.#o.log,
-          );
-        }
+        // A merge before the close, or while it was asked, is seen: nothing more is closed, and the gates' read records
+        // the merge, which the work item goes on from. Any other failure is thrown before the work item closes, and
+        // the next pass tries again: it is still Martin's answer to act on, which the gates' read leaves to this.
+        const { pull, left, merged } = await this.#closeOnGitHub(item, state, next.merged, next.reason);
+        if (merged) return false;
         await this.#append(workItem, [
           {
             type: 'work-item.closed',
@@ -1250,19 +1234,51 @@ export class Line {
   }
 
   /**
-   * What Martin's own close leaves open, closed as the line closes on his rejection: the pull request, unmerged, with
-   * his reason, and the issue. Each is safe to ask again, so a pass after a failure here asks again: closing one already
-   * closed changes nothing, and says nothing again. A dry run's number is one GitHub never had, so a live line asks
-   * nothing of it; one that is gone, or that the GitHub worker's guard or GitHub refused, is left as it is.
+   * What Martin's own close leaves open, closed as the line closes on his rejection (`#closeOnGitHub`), with his reason.
+   * His close is recorded already, so a merge GitHub made before it, which the admin service could not see, cannot stop
+   * it: the work item stays closed, and the line says so, as nothing will release or verify that change.
    */
   async #closeDiscarded(item: QueueItem, state: WorkItemState, reason: string): Promise<void> {
     const { workItem } = item;
-    const real = (number: number) => this.#o.dryRun || number < DRY_RUN_NUMBERS_FROM;
     const said = reason.startsWith('Martin closed it') ? reason : `Martin closed it: ${reason}`;
-    if (state.pullRequest && !state.merged && real(state.pullRequest.number)) {
-      await this.#closePullRequest(workItem, state.pullRequest.number, rejectedPullComment(said, workItem));
+    const { pull, merged } = await this.#closeOnGitHub(item, state, false, said);
+    if (merged) {
+      this.#o.log.error(
+        { workItem, pull },
+        'Martin closed a work item whose pull request had merged: its change ships with nothing to verify it',
+      );
     }
-    if (item.issue && real(item.issue)) {
+    this.#o.log.info({ workItem }, 'closed what Martin’s close of the work item left open');
+  }
+
+  /**
+   * Closes on GitHub what a work item closing with no change leaves open: its pull request, unless it merged, with a
+   * comment giving `reason`, and its issue, as not planned. Each is safe to ask again: closing one already closed or
+   * merged changes nothing, and says nothing again. A dry run's number is one GitHub never had, so a live line asks
+   * nothing of it. A pull request or issue that is gone, or that the GitHub worker's guard or GitHub refused (a refusal
+   * the line records), is left as it is (`left` says why, for the pull request). The pull request is read after its
+   * close, so a merge before it, or while it was asked, is seen (`merged`), and then the issue is left open. Any other
+   * failure is thrown.
+   */
+  async #closeOnGitHub(
+    item: QueueItem,
+    state: WorkItemState,
+    mergedAlready: boolean,
+    reason: string,
+  ): Promise<{ pull: number | undefined; left: string | undefined; merged: boolean }> {
+    const { workItem } = item;
+    const real = (number: number) => this.#o.dryRun || number < DRY_RUN_NUMBERS_FROM;
+    const pull =
+      !mergedAlready && state.pullRequest && real(state.pullRequest.number) ? state.pullRequest.number : undefined;
+    let left: string | undefined;
+    if (pull !== undefined) {
+      left = await this.#closePullRequest(workItem, pull, rejectedPullComment(reason, workItem));
+      if (left === undefined) {
+        const pr = await this.#o.github.read('pullRequest', this.#o.repo, { number: pull });
+        if (pr.merged) return { pull, left, merged: true };
+      }
+    }
+    if (item.issue) {
       await closeIssue(
         this.#o.github,
         this.#o.repo,
@@ -1271,7 +1287,7 @@ export class Line {
         this.#o.log,
       );
     }
-    this.#o.log.info({ workItem }, 'closed what Martin’s close of the work item left open');
+    return { pull, left, merged: false };
   }
 
   /**

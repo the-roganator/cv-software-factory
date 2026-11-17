@@ -4,6 +4,7 @@
  *     factory line stop [--reason <why>]
  *     factory line start [--reason <why>]
  *     factory line take (every | next <how many> | one <work item>)
+ *     factory line new-work (on | off)
  *     factory line close <work item> [--reason <why>]
  *     factory line serve
  *     factory line bench [<agent> [<fixture>]] [--commit <sha>]
@@ -30,6 +31,11 @@
  * since it was last opened or reopened): that one has an issue, and perhaps a pull request, which only the line's own
  * close path closes, so it is closed in the console, with Close on its card, or by letting its step end. A take of
  * Just one that names the work item closed is said, since the line would then take nothing.
+ *
+ * `new-work` (`make new-work`) is the console's switch for new work, from the same command line, through the same check:
+ * off, the line takes no ticket onto it and starts no agent's step, while the senses and triage go on opening tickets,
+ * which wait in Plan. `make real-store` turns it off on the store it empties, so Martin's first Start starts the line
+ * paused, its tickets queued for him to take one, or a few, before he turns it on again.
  *
  * RELEASE_ROLLOUT, the app's Rollout as `<namespace>/<name>`, has the line watch the app's releases: it reads the
  * Rollout and its AnalysisRuns, and each version's figures from Prometheus at PROMETHEUS_URL (required with it), and
@@ -109,6 +115,7 @@ import { rolloutRefOf } from '../release/rollout-ref.ts';
 export const USAGE = `  factory line stop [--reason <why>]
   factory line start [--reason <why>]
   factory line take (every | next <how many> | one <work item>)
+  factory line new-work (on | off)
   factory line close <work item> [--reason <why>]
   factory line serve
   factory line bench [<agent> [<fixture>]] [--commit <sha>]
@@ -118,6 +125,7 @@ export async function run(args: string[]): Promise<number> {
   if (args[0] === 'bench') return bench(args.slice(1));
   if (args[0] === 'soak-check') return soakCheck(args.slice(1));
   if (args[0] === 'take') return setTake(args.slice(1));
+  if (args[0] === 'new-work') return setNewWork(args.slice(1));
   if (args[0] === 'close') return close(args.slice(1));
   const { values, positionals } = parseArgs({
     args,
@@ -203,6 +211,33 @@ async function setTake(args: string[]): Promise<number> {
     console.log(`Usage:\n  factory line take (every | next <how many> | one <work item>)`);
     return 2;
   }
+  return changeControl(asked, 'The line takes that already: nothing changed.');
+}
+
+/** What `new-work` asks for, as the console's switch sends it. */
+export function newWorkAsked(args: string[]): Extract<Change, { newWork: unknown }> | undefined {
+  const [value, ...rest] = args;
+  if (rest.length || (value !== 'on' && value !== 'off')) return undefined;
+  return { newWork: value === 'on' };
+}
+
+/** Turns the switch for new work on or off, as Martin's change of the line's controls, keeping every other control. */
+async function setNewWork(args: string[]): Promise<number> {
+  const asked = newWorkAsked(args);
+  if (!asked) {
+    console.log(`Usage:\n  factory line new-work (on | off)`);
+    return 2;
+  }
+  return changeControl(
+    asked,
+    asked.newWork
+      ? 'Agents take new work already: nothing changed.'
+      : 'Agents take no new work already: nothing changed.',
+  );
+}
+
+/** Makes one change of the line's controls as Martin's, through the console's check, or says it was so already. */
+async function changeControl(asked: Change, already: string): Promise<number> {
   const { changedEvent, changeSummary, decideChange } = await import('../admin/line.ts');
   const { appendMartins, Refused } = await import('../admin/store.ts');
   const sql = connect(process.env.DATABASE_URL);
@@ -212,7 +247,7 @@ async function setTake(args: string[]): Promise<number> {
       if (decided.change) await appendMartins(sql, tx, [changedEvent(decided.controls, decided.change)]);
       return decided;
     });
-    console.log(change ? `${changeSummary(change)}.` : 'The line takes that already: nothing changed.');
+    console.log(change ? `${changeSummary(change)}.` : already);
     return 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);

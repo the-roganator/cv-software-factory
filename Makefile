@@ -94,7 +94,7 @@ define cluster-held
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key scan-state-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store bench-down stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
+.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key scan-state-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store bench-down stop-the-line start-the-line take-the-line new-work close-work-item enrol guardrails drill-vulnerability
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -437,7 +437,7 @@ samples: node_modules ## Load the sample work items into the cluster's store, wi
 bench-down: ## Take the bench down: stop its host gateway (:8180) and remove its throwaway Postgres containers (sf-bench-*), saying what each cost
 	@.claude/skills/try-the-line/bin/bench-down.sh
 
-real-store: node_modules ## Replace the cluster's store with an empty one for real events (FORCE=1 if it holds some, or another session holds the cluster)
+real-store: node_modules ## Replace the cluster's store with an empty one for real events, its line to start paused (FORCE=1 if it holds some, or another session holds the cluster)
 	$(cluster-held)
 	@# As the database's owner, through a port-forward: only the owner may drop the schema.
 	@$(KUBECTL) -n factory port-forward svc/postgres 15432:5432 >/dev/null 2>&1 & forward=$$!; \
@@ -451,8 +451,12 @@ real-store: node_modules ## Replace the cluster's store with an empty one for re
 	@$(KUBECTL) -n factory wait pod/artifacts-copier --for=condition=Ready --timeout=2m >/dev/null
 	@$(KUBECTL) -n factory exec artifacts-copier -- find /var/lib/factory/artifacts -mindepth 1 -delete
 	@$(KUBECTL) -n factory delete pod artifacts-copier --wait=false >/dev/null
+	@# New work off, as Martin's: his first Start starts the line paused, the senses and triage queueing tickets for him
+	@# to take (make take-the-line, then make new-work ON=1) instead of the line taking every one.
+	@$(call as-operator,node apps/factory/src/cli.ts line new-work off)
 	@$(KUBECTL) -n factory rollout restart deployment/console >/dev/null
 	@echo "  Console  https://console.localhost:8443"
+	@echo "  The store holds no passkey: make enrol. Then make start-the-line; the line takes nothing until make new-work ON=1."
 
 stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing new, a canary in flight aborts if its stable version has a pod (REASON="...")
 	@# Both halves run whichever fails: a canary is aborted even if the store cannot be reached, and the other way round.
@@ -470,6 +474,12 @@ take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<
 	if [ "$$#" -eq 0 ] || { [ "$$1" = every ] && [ "$$#" -ne 1 ]; } || { [ "$$1" != every ] && [ "$$#" -ne 2 ]; }; then \
 		echo "Give one of ONLY=<work item>, NEXT=<how many> or EVERY=1." >&2; exit 2; fi; \
 	$(call as-operator,node apps/factory/src/cli.ts line take "$$@")
+
+# The console's switch for new work, from Martin's command line, through the same check, keeping every other control:
+# off, the line takes no ticket and starts no step, while triage goes on queueing tickets. It needs no passkey.
+new-work: node_modules ## Let agents take new work, or stop them: ON=1 or OFF=1
+	@case "$(ON)$(OFF)" in 1) ;; *) echo "Give one of ON=1 or OFF=1." >&2; exit 2;; esac
+	@$(call as-operator,node apps/factory/src/cli.ts line new-work $(if $(ON),on,off))
 
 # A work item the line has not taken, closed as Martin's, from his command line, with the same role: a try's invented
 # report, or one he is done with. A discard with his reason; refused if it is not open, or the line has it (its issue

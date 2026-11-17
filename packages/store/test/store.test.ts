@@ -124,6 +124,7 @@ describe('migrations', () => {
       { version: 50, name: 'patching' },
       { version: 51, name: 'patching-sends' },
       { version: 52, name: 'issue-opened-the-lines' },
+      { version: 53, name: 'martin-closes' },
     ]);
   });
 });

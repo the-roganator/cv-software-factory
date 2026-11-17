@@ -204,6 +204,14 @@ export const ACCESS = {
     true,
   ),
 
+  // A work item nothing holds for him, closed as his discard: the line closes its pull request and issue whatever it
+  // takes. It tightens, so it never asks again, as rejecting a hold does not.
+  'work-item.close': {
+    ...admin('Close a work item no hold is open on, before its change merges, taken by the line or not'),
+    server: 'admin',
+    routes: ['POST /admin/work-items/:workItem/close'],
+  },
+
   // The line. Stopping aborts the canary in flight too; `make stop-the-line` does the same without the console.
   'line.stop': { ...admin('Stop the line'), server: 'admin', routes: ['POST /admin/line/stop'] },
   'line.start': { ...admin('Start the line', true), server: 'admin', routes: ['POST /admin/line/start'] },

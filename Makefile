@@ -481,11 +481,11 @@ new-work: node_modules ## Let agents take new work, or stop them: ON=1 or OFF=1
 	@case "$(ON)$(OFF)" in 1) ;; *) echo "Give one of ON=1 or OFF=1." >&2; exit 2;; esac
 	@$(call as-operator,node apps/factory/src/cli.ts line new-work $(if $(ON),on,off))
 
-# A work item the line has not taken, closed as Martin's, from his command line, with the same role: a try's invented
-# report, or one he is done with. A discard with his reason; refused if it is not open, or the line has it (its issue
-# goes with it only through the line: close that one in the console). The values are quoted whole, `$`, quotes and all,
-# and the number checked, before they reach a shell that holds Martin's role.
-close-work-item: node_modules ## Close a work item the line has not taken, as Martin's: ONLY=<work item> (REASON="...")
+# A work item nothing holds for him, closed as Martin's, from his command line, with the same role, as the console's
+# Close does: a try's invented report, one he is done with, or one a take left on the line. A discard with his reason,
+# whose pull request and issue the line closes whatever it takes; refused if it is not open, held, or merged. The values
+# are quoted whole, `$`, quotes and all, and the number checked, before they reach a shell that holds Martin's role.
+close-work-item: node_modules ## Close a work item nothing holds for him, as Martin's: ONLY=<work item> (REASON="...")
 	@only='$(subst ','\'',$(value ONLY))'; case "$$only" in ''|*[!0-9]*) echo "Give ONLY=<work item>, its number." >&2; exit 2;; esac; \
 	$(call as-operator,node apps/factory/src/cli.ts line close "$$only" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
 

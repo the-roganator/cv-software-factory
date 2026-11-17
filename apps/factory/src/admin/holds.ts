@@ -90,10 +90,14 @@ interface OpenHold {
   cause: HoldCause;
 }
 
-/** The open hold, if any, and the `spec` holds a later spec ended, which Martin may still be looking at. */
+/**
+ * The open hold, if any, the `spec` holds a later spec ended, which Martin may still be looking at, and whether the
+ * change has merged since the work item last went back to Plan or reopened.
+ */
 interface Holds {
   open: OpenHold | undefined;
   respecified: Set<string>;
+  merged: boolean;
 }
 
 /**
@@ -104,7 +108,7 @@ interface Holds {
  * the line reads them: a spec written while a `spec` hold is open ends that hold, since what Martin read is not what
  * the line would build, and the new spec is held afresh.
  */
-async function openHold(tx: TransactionSql, workItem: string): Promise<Holds> {
+export async function openHold(tx: TransactionSql, workItem: string): Promise<Holds> {
   const rows = await tx<(RawEvent & { id: string })[]>`
     select e.id, e.seq, e.type, e.version, e.payload from events e
     where e.work_item = ${workItem} and ${fromMartin(tx, 'e')}
@@ -204,7 +208,7 @@ async function openHold(tx: TransactionSql, workItem: string): Promise<Holds> {
         break;
     }
   }
-  return { open, respecified };
+  return { open, respecified, merged };
 }
 
 /**
@@ -218,7 +222,7 @@ async function isImprovement(tx: TransactionSql, workItem: string): Promise<bool
 }
 
 /** Whether a visitor's report opened the work item: its first signal is a report. */
-async function openedByReport(tx: TransactionSql, workItem: string): Promise<boolean> {
+export async function openedByReport(tx: TransactionSql, workItem: string): Promise<boolean> {
   const [first] = await tx<{ sense: string }[]>`
     select payload->>'sense' as sense from events
     where work_item = ${workItem} and type = 'signal.received' order by seq limit 1`;

@@ -331,6 +331,11 @@ export interface WorkItemState {
   /** How many of `persisted` came before the last reopening: `LIMITS.persists` bounds those since, a fix's own. */
   persistedBefore: number;
   closed: boolean;
+  /**
+   * Martin's reason, when he closed the work item himself, as a discard (`admin/close.ts`): the line then closes its
+   * pull request and issue as it finishes, whatever it takes. Only his roles discard a work item the line has.
+   */
+  discarded: string | undefined;
   /** The sense of the ticket's first signal, which looks again at a held or waiting work item. */
   firstSense: SignalSource | undefined;
   /** The versions of the app the ticket's signals were seen on: triage records each sense's first in each version. */
@@ -395,6 +400,7 @@ const initial = (): WorkItemState => ({
   reopened: [],
   persistedBefore: 0,
   closed: false,
+  discarded: undefined,
   firstSense: undefined,
   seenOn: [],
   lastSpec: undefined,
@@ -740,12 +746,13 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         break;
       case 'work-item.closed':
         state.closed = true;
+        state.discarded = event.payload.outcome === 'discarded' ? event.payload.reason : undefined;
         break;
       // The same defect came back after it was verified: a fresh pass, as after a return to Plan. Nothing that held
       // or answered the closed pass carries over to it.
       case 'work-item.reopened':
         startAgain(state);
-        Object.assign(state, { hold: undefined, answer: undefined, closed: false });
+        Object.assign(state, { hold: undefined, answer: undefined, closed: false, discarded: undefined });
         // A ticket a dry run verified comes back with nothing shipped: a first plan again, not a replan of the dry
         // run's spec, whose flag no one moved.
         if (event.payload.dryRun) Object.assign(state, { lastSpec: undefined, shipped: false, replan: undefined });
@@ -947,8 +954,11 @@ export type Next =
     }
   /** Close the work item, as Martin answered: before its merge, or after it, at Release or Verify. */
   | { do: 'close'; reason: string; merged: boolean }
-  /** The work item is over: it closed. */
-  | { do: 'finish' };
+  /**
+   * The work item is over: it closed. Closed by Martin himself (`discarded`), its pull request, unmerged, and its issue
+   * close with it, with his reason.
+   */
+  | { do: 'finish'; discarded?: string };
 
 /** What the line knows of a work item beside its events: its issue, and how often its step in hand has failed. */
 export interface Facts {
@@ -1008,7 +1018,9 @@ export const STAGE_OF: Record<LineAgent, 'plan' | 'build' | 'review'> = {
 
 export function decide(events: readonly LineEvent[], facts: Facts): Decision {
   const s = fold(events);
-  if (s.closed) return { stage: 'ended', next: { do: 'finish' } };
+  if (s.closed) {
+    return { stage: 'ended', next: { do: 'finish', ...(s.discarded !== undefined && { discarded: s.discarded }) } };
+  }
   // A merge held for Martin is decided again on what GitHub says now: the gate may have judged its head again.
   if (s.hold?.cause === 'merge' && facts.merge && !s.merged) {
     const merging = mergeDecision(s, facts.merge);

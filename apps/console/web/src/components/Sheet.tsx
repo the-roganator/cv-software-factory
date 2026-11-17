@@ -9,8 +9,8 @@
  * first view loads none of them.
  */
 
-import { MODEL_AGENTS, type Sense } from '@software-factory/events';
-import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { MARTIN_CLOSE_CHARS, MODEL_AGENTS, type Sense } from '@software-factory/events';
+import { type CSSProperties, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { STAGE_NAME } from '../../../../../docs/design/system/station.ts';
 import type { Admin } from '../admin.ts';
 import {
@@ -56,6 +56,8 @@ import { WaitsOnMartin } from './NeedsYou.tsx';
 import { keyed, OpensShots, Picture, Shot, useMeasured } from './Pictures.tsx';
 import { SheetFrame } from './SheetFrame.tsx';
 import { ShippedSection } from './Shipped.tsx';
+import { ReasonField, Refusal } from './Words.tsx';
+import { useWrite } from './Write.tsx';
 import '../styles/sheet.css';
 
 const SOURCE: Record<PictureData['type'], string> = {
@@ -518,6 +520,14 @@ function Raised({ sheet, index, count, motion, rise, onStep, onClose, app, admin
             <Fact name="Model spend">{card.calls ? spendWords(card) : 'none'}</Fact>
             <Fact name="Code written by humans">{plural(sheet.facts.humanLines, 'line')}</Fact>
           </dl>
+          {sheet.close && admin.kind === 'martin' && (
+            <CloseCard
+              key={card.number}
+              workItem={card.number}
+              aboutReport={sheet.close.aboutReport}
+              token={admin.session.token}
+            />
+          )}
           {sheet.seenBy && <SeenBy rows={sheet.seenBy} />}
           <div className="side-card raised">
             <h3>Agents and models</h3>
@@ -632,6 +642,89 @@ function Raised({ sheet, index, count, motion, rise, onStep, onClose, app, admin
         </aside>
       </div>
     </SheetFrame>
+  );
+}
+
+/**
+ * Martin's Close for a work item nothing holds for him (`POST /admin/work-items/:workItem/close`): it ends with no
+ * change, and the line closes its issue and pull request, and stops a step on it, whatever it takes. Two steps, as a
+ * close cannot be undone: Close opens what it does and the reason, and the second Close sends it. On a work item a
+ * visitor's report opened, it takes no reason, as his words there would be public.
+ */
+function CloseCard({ workItem, aboutReport, token }: { workItem: string; aboutReport: boolean; token: string }) {
+  const id = useId();
+  const writes = useWrite(token);
+  const { busy } = writes;
+  const [open, setOpen] = useState(false);
+  const [words, setWords] = useState('');
+  const field = useRef<HTMLTextAreaElement>(null);
+  // The field takes focus as it opens, so he can write at once.
+  useEffect(() => {
+    if (open) field.current?.focus();
+  }, [open]);
+
+  const send = () =>
+    writes.send(`/admin/work-items/${workItem}/close`, words.trim() ? { words: words.trim() } : {}, {
+      // Closed: the card goes as the close's event arrives.
+      done: () => {
+        setOpen(false);
+        setWords('');
+        return undefined;
+      },
+    });
+
+  return (
+    <div className="side-card raised close-card" aria-busy={busy || undefined}>
+      <h3>Close</h3>
+      <p className="help">
+        Ends #{workItem} with no change. The line closes its issue and pull request, and stops any step on it, whatever
+        it is taking.
+      </p>
+      {!open ? (
+        <button
+          type="button"
+          className="btn small"
+          aria-expanded={false}
+          aria-controls={`${id}-form`}
+          onClick={() => setOpen(true)}
+        >
+          Close #{workItem}…
+        </button>
+      ) : (
+        <form
+          className="words-form"
+          id={`${id}-form`}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!busy) void send();
+          }}
+        >
+          {aboutReport ? (
+            <p className="help">A visitor’s report opened this, so the close says only that you closed it.</p>
+          ) : (
+            <ReasonField
+              id={`${id}-reason`}
+              label={`Why you close #${workItem}`}
+              limit={MARTIN_CLOSE_CHARS}
+              value={words}
+              onChange={setWords}
+              placeholder="Optional: overtaken by another work item, say"
+              help="Visitors see your words, with anything shaped like a secret left out."
+              field={field}
+            />
+          )}
+          <div className="close-actions">
+            <button type="submit" className="btn primary small" aria-disabled={busy || undefined}>
+              Close #{workItem}
+            </button>
+            <button type="button" className="btn small" onClick={() => setOpen(false)}>
+              Keep it
+            </button>
+          </div>
+        </form>
+      )}
+      <Refusal text={writes.refusal} />
+    </div>
   );
 }
 

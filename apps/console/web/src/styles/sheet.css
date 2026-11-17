@@ -1117,3 +1117,13 @@ table.scope th {
   font: 11px / 1.3 var(--font-mono);
   color: var(--text-muted);
 }
+
+.close-card .help {
+  margin: 0 0 12px;
+}
+
+.close-card .close-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}

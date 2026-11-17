@@ -187,6 +187,11 @@ export interface Sheet {
   report: { page: string; quarantined: boolean; by: 'visitor' | 'planner'; times: number; texts: string[] } | undefined;
   /** For an improvement Martin asked for: his request, in his words as everyone may read them, and when. */
   request: ItemState['request'];
+  /**
+   * Whether Martin may close it from the sheet: open, with no hold (a held one closes from its card), not in the merge
+   * queue, not yet merged (Release and Verify end it), and not an attack's. `aboutReport` when a visitor's report opened it: the close then takes no reason.
+   */
+  close: { aboutReport: boolean } | undefined;
   story: string;
   chapters: Chapter[];
   /** Screenshots taken at the signal, on the canary and at rollout, for the evidence. */
@@ -1106,8 +1111,18 @@ export function sheet(
     if (event.type === 'release.started') latest = event.payload.release;
     if (event.type === 'verification.finished' && latest) checked.set(latest, verified(item, event));
   }
+  const opener = item.events.find((event) => event.type === 'signal.received');
   return {
     card: card(item, versions, t),
+    close:
+      item.closedAt === undefined &&
+      !item.hold &&
+      !item.inQueue &&
+      item.kind !== 'red-team' &&
+      item.stage !== 'release' &&
+      item.stage !== 'verify'
+        ? { aboutReport: opener?.type === 'signal.received' && opener.payload.sense === 'report' }
+        : undefined,
     report:
       report?.type === 'signal.received' && report.payload.report
         ? {

@@ -1,6 +1,7 @@
 /**
  * `factory line` from Martin's own command line: `take` (`make take-the-line`), what the line takes, set as the console's
- * Controls set it, through the same check, keeping every other control as it stands; and `stop` on a new store.
+ * Controls set it, through the same check, keeping every other control as it stands; `new-work` (`make new-work`), the
+ * switch for new work, the same way; and `stop` on a new store.
  */
 import { type NewEvent, VERSIONS } from '@software-factory/events';
 import { DiskArtifacts, EventWriter, latestControls, nextWorkItem } from '@software-factory/store';
@@ -8,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, inject, it, vi } from 'vitest'
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { controlsInForce } from '../../../../policy/line.ts';
 import { CLOSE_REASON_CHARS } from '../../src/admin/close.ts';
-import { closeAsked, run, takeAsked } from '../../src/commands/line.ts';
+import { closeAsked, newWorkAsked, run, takeAsked } from '../../src/commands/line.ts';
 
 describe('what take asks for', () => {
   it('is every ticket, the next few, or just one work item, and nothing else', () => {
@@ -27,6 +28,16 @@ describe('what take asks for', () => {
       ['one', '1', '2'],
     ]) {
       expect(takeAsked(args), JSON.stringify(args)).toBeUndefined();
+    }
+  });
+});
+
+describe('what new-work asks for', () => {
+  it('is on or off, and nothing else', () => {
+    expect(newWorkAsked(['on'])).toEqual({ newWork: true });
+    expect(newWorkAsked(['off'])).toEqual({ newWork: false });
+    for (const args of [[], ['true'], ['ON'], ['on', 'off']]) {
+      expect(newWorkAsked(args), JSON.stringify(args)).toBeUndefined();
     }
   });
 });
@@ -110,6 +121,28 @@ describe('take and stop, against the store', () => {
     expect(await run(['take', 'every'])).toBe(0);
     expect(said.at(-1)).toBe('Martin widened what the line takes to every ticket.');
     expect((await changes()).map((c) => c.appended_by)).toEqual(Array(3).fill('factory_operator'));
+  });
+
+  it('switches new work as Martin’s, keeping every other control, and says when it is so already', async () => {
+    expect(await run(['new-work', 'on'])).toBe(0);
+    expect(said.at(-1)).toBe('Agents take new work already: nothing changed.');
+    expect(await run(['new-work', 'off'])).toBe(0);
+    expect(said.at(-1)).toBe('Martin stopped agents taking new work.');
+    expect(await run(['new-work', 'off'])).toBe(0);
+    expect(said.at(-1)).toBe('Agents take no new work already: nothing changed.');
+    expect(await run(['take', 'next', '2'])).toBe(0);
+    expect(controlsInForce(await latestControls(database.as.line))).toMatchObject({
+      newWork: false,
+      take: { kind: 'next-few', count: 2 },
+    });
+    expect(await run(['new-work', 'on'])).toBe(0);
+    expect(said.at(-1)).toBe('Martin let agents take new work again.');
+    expect(controlsInForce(await latestControls(database.as.line))).toMatchObject({
+      newWork: true,
+      take: { kind: 'next-few', count: 2 },
+    });
+    expect((await changes()).map((c) => c.appended_by)).toEqual(Array(3).fill('factory_operator'));
+    expect(await run(['new-work', 'maybe'])).toBe(2);
   });
 
   it('closes a work item as Martin’s discard, once, taken by the line or not, and refuses the rest', async () => {

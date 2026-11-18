@@ -478,6 +478,12 @@ describe("the review gate's workflows", () => {
     // echo with no token at all.
     expect(requested).toMatch(/^permissions: \{\}$/m);
     expect(requested).not.toMatch(/secrets\.|: write\b/);
+    // The title, a required check, runs on every event and is never skipped: a skipped job passes a required check,
+    // and would stand over a title that failed at the same head.
+    const title = requested.slice(requested.indexOf('\n  title:\n'), requested.indexOf('\n  requested:\n'));
+    expect(title).toMatch(/^ {4}name: title$/m);
+    expect(title).not.toMatch(/^ {4}if:/m);
+    expect(title).not.toMatch(/^ {6}- (?:name: .*\n {8})?if:/m);
     const asks = requested.slice(requested.indexOf('\n  requested:\n'));
     expect(asks).toMatch(/^ {4}permissions: \{\}$/m);
     expect(asks).not.toMatch(/uses:/);

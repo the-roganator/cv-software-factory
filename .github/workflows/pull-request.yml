@@ -1,0 +1,90 @@
+# What a pull request's own events start, apart from its code's checks (check.yml, platform.yml): its title checked,
+# and main's review gate (review.yml) asked to judge it.
+#
+# - title: pull requests are squash-merged, so the title becomes the commit on main: it must be a Conventional Commit.
+#   A required check, so it runs on every event this workflow runs on, a review's included, and is never skipped: a
+#   skipped job passes a required check, and would stand over a title that failed at the same head.
+# - review requested: asks main's review gate to judge a pull request, into any branch: when it opens, its head moves,
+#   it is reopened, made ready or edited (its base changed, as when the pull request below it in a stack merges), when
+#   a label is removed from it (a risk label removed by anyone but Martin holds it), when someone reviews it, and when
+#   the merge queue tests it, whose commit needs the `review` check too. A stacked pull request, into the branch of the
+#   one below it, is held to main's required checks, `review` among them, so it asks too. It does nothing but finish:
+#   this workflow's run is what starts review.yml, from main, through `workflow_run`.
+#
+# It runs as the pull request or the queue's commit has it, so it holds no token that can write and no secret. A copy
+# changed by a pull request, or another workflow given its name, can only make the honest gate look again, or leave the
+# check missing, which holds the pull request as a failing check does.
+#
+# Shared: cv-worlds-worst-website calls this workflow at a pinned commit, so both repositories keep one title rule, out
+# of reach of anything that can write to the app's repository, and ask their gates alike.
+name: pull request
+# A run on the merge queue's commit is named by the commit the queue made, whose message is the pull request's title and
+# number; on a pull request, an empty name leaves GitHub's own, the pull request's title. A caller's run (workflow_call)
+# is named by the caller.
+run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_commit.message) || '' }}
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+  merge_group:
+    types: [checks_requested]
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  title:
+    name: title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This workflow's own repository and commit, which is not the caller's when it is called from elsewhere.
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            scripts/commit-msg.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: node
+      # Dependabot writes its own titles, and a long image tag takes them past the length (commit-msg.ts); the rest of
+      # the rule still holds for them. It goes by who opened the pull request, so a title edited by hand on one of
+      # Dependabot's is let run long too. In the merge queue, the title is read again from the pull request the queue's
+      # branch names.
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            [[ "$QUEUE_BRANCH" =~ ^(refs/heads/)?gh-readonly-queue/main/pr-([0-9]+)-[0-9a-f]{7,40}$ ]] \
+              || { echo "::error::$QUEUE_BRANCH is not a merge queue branch of main"; exit 1; }
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${BASH_REMATCH[2]}")
+            TITLE=$(jq -r .title <<< "$pr")
+            AUTHOR=$(jq -r '.user.login // ""' <<< "$pr")
+          fi
+          any_length=()
+          if [ "$AUTHOR" = 'dependabot[bot]' ]; then any_length=(--any-length); fi
+          node scripts/commit-msg.ts --title "$TITLE" "${any_length[@]}"
+
+  requested:
+    name: review requested
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - run: echo "review.yml on main judges this $GITHUB_EVENT_NAME next."

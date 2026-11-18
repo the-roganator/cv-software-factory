@@ -10,7 +10,7 @@ const SCRIPT = fileURLToPath(new URL('./commit-msg.ts', import.meta.url));
 const LONG =
   'chore(deps): Bump nginxinc/nginx-unprivileged from 1.30.5-alpine-slim to 1.31.6-alpine-slim in /deploy/base/telemetry';
 
-/** The script as pr-title.yml runs it, with its exit status. */
+/** The script as pull-request.yml's title job runs it, with its exit status. */
 const run = (args: string[]) =>
   promisify(execFile)(process.execPath, [SCRIPT, ...args]).then(
     ({ stderr }) => ({ code: 0, err: stderr }),
@@ -70,7 +70,7 @@ describe('commit messages', () => {
   });
 });
 
-describe('the title check, as pr-title.yml runs it', () => {
+describe('the title check, as pull-request.yml runs it', () => {
   it('fails a long title', async () => {
     const { code, err } = await run(['--title', LONG]);
     expect(code).toBe(1);

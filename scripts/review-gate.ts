@@ -12,8 +12,8 @@
  *     node scripts/review-gate.ts --print <owner/name> <number>   # by hand, posting nothing
  *
  * It reads the event GitHub hands the workflow, and the pull request and its reviews through the API, and never the
- * pull request's code. It runs on `workflow_run`, after `review-requested.yml` ran, which runs as the pull request or
- * the queue's commit has it and so holds nothing:
+ * pull request's code. It runs on `workflow_run`, after `pull-request.yml` ran, which runs as the pull request or
+ * the queue's commit has it and so holds nothing that can write:
  *
  * - for a pull request opened, pushed to, reopened, made ready or edited, and for a review of one: the check goes on the
  *   pull request's head as it is now, judged on every open pull request here whose head that commit is, since a check
@@ -32,7 +32,7 @@
  * unless the review App's pass on the commit, which checked the same pins, stands: then that is its verdict, and the
  * log says so.
  *
- * Anyone who can push a branch can make a run of a workflow named "review requested", so a `workflow_run` says only
+ * Anyone who can push a branch can make a run of a workflow named "pull request", so a `workflow_run` says only
  * which pull request to look at again. The verdict is always read afresh from GitHub, so a forged request reruns the
  * honest gate.
  *
@@ -85,7 +85,7 @@ export const CHECK = 'review';
 
 /**
  * The branch the merge queue makes for a pull request: `gh-readonly-queue/<base>/pr-<number>-<base commit>`, the number
- * its second group. pr-title.yml matches the same in bash, so it is written as a POSIX extended expression too, and a
+ * its second group. pull-request.yml's title matches the same in bash, so it is written as a POSIX extended expression too, and a
  * test holds the two the same.
  */
 export const QUEUE_BRANCH = /^(refs\/heads\/)?gh-readonly-queue\/main\/pr-([0-9]+)-[0-9a-f]{7,40}$/;

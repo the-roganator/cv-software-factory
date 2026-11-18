@@ -1,0 +1,151 @@
+# What CI reads from main rather than making afresh in each run: the third-party images it pulls, copied into this
+# repository's GHCR, and the toolchain's cache. On main alone: no branch can publish a package, and a cache saved
+# elsewhere could be read by its own branch alone.
+#
+# - images: copies the third-party images the repository pins into its GHCR, where CI pulls them
+#   (scripts/ci-images.sh): Docker's official images, since hosted runners share addresses and Docker Hub limits
+#   anonymous pulls by address, and Playwright's from Microsoft's registry, which is now and then slow. Then every
+#   third-party image the cluster runs, for the platform check's cluster (deploy/k3d/ci-registries.yaml), whose
+#   registries limit by address too: ECR Public refused Argo CD's Redis once, and the check failed. Every day, so that
+#   a new version of Docker's images is copied before Dependabot, which waits three days, proposes it (Playwright's
+#   image has no wait, so its pull request may come first, and take it from Microsoft's registry until the next copy);
+#   after each merge, for any pin it brings; and by hand. A pin it has not copied yet still works: CI pulls it from its
+#   own registry, with a warning.
+# - toolchain: main's cache of the toolchain, for each set of tools a workflow installs. A run reads only its own
+#   branch's caches and main's, and check.yml and pull-request.yml run on pull requests and the merge queue alone, so
+#   every use of mise saves its cache on main only: a copy saved on one of their branches, about 100 MB a set, would
+#   serve nobody else, and one for each pull request and queued merge after a move of the toolchain would crowd the
+#   repository's 10 GB. mise-action keys its cache by the tools it is asked for and the files that pin them
+#   (scripts/toolchain.test.ts holds this list to every workflow's), so it runs when those move (`which`, below), by
+#   hand, and daily: the key changes every 30 days (mise-action's cache_max_age_days) and only main saves one, so a day
+#   is the longest check.yml goes without a cache after it does, or after one is evicted.
+name: caches
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  images:
+    name: images
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # Playwright's image is two gigabytes for each platform, and each new release is copied whole; the cluster's images
+    # are copied whole once, and after that only those whose tag or pin moved.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The cluster's images are the list's (scripts/cluster-images.ts), its charts rendered; crane reads each image and
+      # makes the copies, byte for byte, an index whose entries carry an artifactType among them, so each copy's digest
+      # is its source's. Its cache main keeps (the toolchain job below).
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: node kustomize helm yq crane
+      - env:
+          TOKEN: ${{ github.token }}
+        run: |
+          crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
+          scripts/ci-images.sh sync
+
+  # Whether the toolchain's cache is due: on the schedule and by hand, always; on a push, when it moved what the toolchain
+  # or a pull request's workflow installs.
+  which:
+    name: which caches are due
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    outputs:
+      toolchain: ${{ steps.which.outputs.toolchain }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+      - id: which
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          toolchain=true
+          if [ "$GITHUB_EVENT_NAME" = push ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null &&
+            git diff --quiet "$BEFORE" "$GITHUB_SHA" -- mise.toml mise.lock .github/workflows/check.yml \
+              .github/workflows/platform.yml .github/workflows/caches.yml; then
+            toolchain=false
+          fi
+          echo "toolchain: $toolchain"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
+  toolchain:
+    name: toolchain
+    needs: which
+    if: github.ref == 'refs/heads/main' && needs.which.outputs.toolchain == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # One save of each set at a time.
+    concurrency:
+      group: toolchain-${{ matrix.job }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [static, tests, zap, node, crane, review, moves, scan, graph, platform]
+        include:
+          - job: static
+            tools: node pnpm kustomize
+          - job: tests
+            tools: node pnpm kustomize step promtool yq crane
+          - job: zap
+            tools: node pnpm
+          # Node alone, for the workflows that run one script: pull-request.yml, drift-check.yml and the rest.
+          - job: node
+            tools: node
+          # crane alone, for the jobs that read whether CI's copies of the images can be pulled (scripts/ci-images.sh):
+          # check.yml's and build.yml's.
+          - job: crane
+            tools: crane
+          # Node and cosign, for review.yml, which checks an exact pin's signatures.
+          - job: review
+            tools: node cosign
+          # review.yml's pin move job: the list, the charts rendered, and policy-hash.ts's one dependency.
+          - job: moves
+            tools: node pnpm kustomize yq helm
+          # The daily scan (vulnerabilities.yml): the list, its charts rendered, the SBOMs of ours verified, and the
+          # registries' tags and manifests read.
+          - job: scan
+            tools: node kustomize helm yq cosign crane
+          # The copies in GHCR (the images job above): the cluster's list and its charts, and crane, which makes the copies.
+          - job: mirror
+            tools: node kustomize helm yq crane
+          # The dependency graph (vulnerabilities.yml's graph jobs): the list and each lockfile read.
+          - job: graph
+            tools: node yq
+          # The platform check (platform.yml): `make up`'s tools, a cluster made, its records and API versions taken (argocd).
+          - job: platform
+            tools: node pnpm kubectl k3d helm kustomize cosign step yq argocd
+    steps:
+      # The whole checkout, as check.yml's jobs have it, so the cache's key hashes the same files: mise.toml and mise.lock,
+      # which the other workflows' sparse checkouts hold too.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: ${{ matrix.tools }}

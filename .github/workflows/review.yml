@@ -50,38 +50,38 @@
 # its code: the diff, the files an exact pin changes and CODEOWNERS come through the API, the images' signatures from
 # GHCR through cosign. The pin move job, which holds no secret, fetches the pull request's two commits as data, and
 # runs none of them. A pull request opened, pushed to, edited or unlabelled, a review, and the merge queue each run
-# review-requested.yml, which runs on `pull_request`, `pull_request_review` or `merge_group` as the change has it and
-# holds nothing; its run starts this one, here, from main. Nothing here runs on `pull_request_target`, which GitHub's
+# pull-request.yml, which runs on `pull_request`, `pull_request_review` or `merge_group` as the change has it and
+# holds nothing that can write; its run starts this one, here, from main. Nothing here runs on `pull_request_target`, which GitHub's
 # default event policy blocks in public repositories.
 #
 # The review App is the-roganator's, App ID 5470762, installed on every repository there. Until its key is in the
 # `review` environment, as the secret REVIEW_APP_PRIVATE_KEY, the gate says its verdict and posts nothing.
 #
 # Shared: cv-worlds-worst-website calls this workflow at a pinned commit from its own review.yml, with a `review`
-# environment of its own, so both repositories keep one rule. A caller pinned here does as this repository does: its
-# review-requested.yml, a copy of this one's, runs on `pull_request`, `pull_request_review` and `merge_group` and holds
-# nothing, and its review.yml runs on `workflow_run` after it alone, with `workflow_call` to this file. This copy judges
+# environment of its own, so both repositories keep one rule. A caller pinned here does as this repository does: a
+# workflow of its own that calls pull-request.yml runs on `pull_request`, `pull_request_review` and `merge_group` and
+# holds nothing that can write, and its review.yml runs on `workflow_run` after it, with `workflow_call` to this file. This copy judges
 # only a `workflow_run`, so a caller moves its pin and its triggers in the same change: pinned here and still started by
 # `pull_request_target`, it would judge nothing. The app is such a caller: its pin carries the gate's judging of a
-# stacked pull request and of a queued stack down to `main`, and its review-requested.yml has no base filter, so its
+# stacked pull request and of a queued stack down to `main`, and its workflow that asks has no base filter, so its
 # stacks are judged as this repository's are. A caller passes REVIEW_APP_PRIVATE_KEY by name, or with
 # `secrets: inherit`: GitHub's docs say a called job with `environment:` uses the caller's environment of that name, but
 # resolves a secret to empty unless the caller passes it, and a secret held only in the environment may be passed by
 # name. Unpassed, the gate says its verdict and posts nothing, as before the key exists. A caller grants the job
 # `checks: read` too, for test integrity's run, and `actions: read`, which the pin move job asks for even where it does
-# not run, as GitHub refuses a called job more than its caller grants; and it lists its gates' workflow beside review
-# requested in its `workflow_run`, so the gate judges again when they finish: low-risk waits for test integrity's run at
+# not run, as GitHub refuses a called job more than its caller grants; and it lists its gates' workflow beside the one
+# that asks in its `workflow_run`, so the gate judges again when they finish: low-risk waits for test integrity's run at
 # the head.
 #
 # When the check is missing, the pull request waits, as it does for a failing one: the queue takes it only once every
 # required check has passed. That is how each of these ends:
 #
 # - A review by Copilot that leaves comments, which GitHub treats as an outside contributor's: its run of
-#   review-requested.yml is held for a maintainer's approval, and when its pull request closes, the run that one starts
+#   pull-request.yml is held for a maintainer's approval, and when its pull request closes, the run that one starts
 #   here. GitHub holds them before it reads any job, so no condition here can stop them. Only Martin's reviews count,
 #   so neither has anything to judge, and nothing waits on them; a re-run keeps Copilot as the actor, so its run here is
 #   held in turn. copilot-held-runs.yml deletes both every half hour, so neither leaves a red cross for long.
-# - A pull request from an outside contributor's fork: its runs of review-requested.yml are held for approval, and
+# - A pull request from an outside contributor's fork: its runs of pull-request.yml are held for approval, and
 #   the run each starts here may be held too, as Copilot's is. It has no `review` check until Martin approves them, and
 #   his approval of the pull request reaches the gate once he approves that review's runs too, or re-runs this
 #   workflow's last run for the pull request, which reads his reviews afresh.
@@ -92,15 +92,15 @@
 # - A pull request with a merge conflict: GitHub runs no `pull_request` workflow on it until the conflict is resolved,
 #   which is a push, and that run asks the gate.
 name: review
-# Named by the run that asked: its title (a pull request's, or the queue's branch) and its workflow. A caller's run is
-# named by the caller.
-run-name: ${{ format('review · {0} · after {1}', github.event.workflow_run.display_title, github.event.workflow_run.name) }}
+# Named by the run that asked: its title (a pull request's, or the queue's commit's) and its workflow's name, which the
+# event's `workflow` holds (the run's own `name` is its title). A caller's run is named by the caller.
+run-name: ${{ format('review · {0} · after {1}', github.event.workflow_run.display_title, github.event.workflow.name) }}
 
 on:
   workflow_run:
     # check.yml and platform.yml too, so a pin move held only because the job that runs its pin had not finished is
     # judged again. Only the factory's App opens a pin move, so a platform run of anyone else's asks for nothing.
-    workflows: [review requested, check, platform]
+    workflows: [pull request, check, platform]
     types: [completed]
   workflow_call:
     secrets:
@@ -149,7 +149,7 @@ jobs:
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
-          # Its own set of tools, so its own cache key, which toolchain-cache.yml warms on main: never the gate's.
+          # Its own set of tools, so its own cache key, which caches.yml warms on main: never the gate's.
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           # kustomize and yq for the list, helm for the charts, pnpm for policy-hash.ts's one dependency; Trivy runs in
           # its pinned image through Docker.
@@ -188,7 +188,7 @@ jobs:
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
-          # The ZAP job's set of tools, so its cache, which toolchain-cache.yml warms on main: never the gate's.
+          # The ZAP job's set of tools, so its cache, which caches.yml warms on main: never the gate's.
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           # pnpm, at the version mise.lock holds, is the runner image's: the one the pin step writes a lockfile with, and
           # the gate writes one with on the base for a package's move. Trivy runs in its pinned image through Docker.

@@ -21,8 +21,9 @@ permissions:
   contents: read
 
 jobs:
+  # Named for what it reads, shorter than CodeQL's language: `codeql / typescript`, `codeql / actions`.
   analyze:
-    name: codeql
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -31,7 +32,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [javascript-typescript, actions]
+        include:
+          - language: javascript-typescript
+            name: typescript
+          - language: actions
+            name: actions
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

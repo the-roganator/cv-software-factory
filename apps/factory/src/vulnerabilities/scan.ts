@@ -463,7 +463,7 @@ async function readImage(tools: Tools, target: Target): Promise<Read> {
         const report = await scan(target.ci);
         return { target, reports: [report], node: nodeOf(report) };
       } catch {
-        // Not copied yet (mirror.yml copies the factory's pins, daily): from its own registry instead.
+        // Not copied yet (caches.yml copies the factory's pins, daily): from its own registry instead.
       }
     }
     const report = await tools.retry(() => scan(image));

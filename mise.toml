@@ -36,7 +36,7 @@ promtool = "3.15"
 # GitHub's CLI, for the skills' scripts (.claude/skills/*/bin) and some workflows' steps.
 gh = "2"
 # What reads images' tags and manifests, for scripts/ci-images.sh and the vulnerability scan's deadlines, and what
-# mirror.yml copies images into GHCR with, every platform byte for byte, an index whose entries carry an artifactType
+# caches.yml copies images into GHCR with, every platform byte for byte, an index whose entries carry an artifactType
 # (Kyverno's) among them.
 crane = "0"
 # YAML read as JSON, by the vulnerability scan's scripts (apps/factory/src/vulnerabilities), which run with no

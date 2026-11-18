@@ -850,11 +850,11 @@ describe('the queue’s cluster, made once already', () => {
         { number: 7, state: 'open', closed_at: null },
       ] as unknown,
       [`repos/${REPO}/commits/${head}/pulls?per_page=100`]: [{ number: 7, head: { sha: head } }] as unknown,
-      [`repos/${REPO}/commits/${head}/check-runs?check_name=platform&filter=all&per_page=100`]: {
+      [`repos/${REPO}/commits/${head}/check-runs?check_name=cluster%20from%20the%20change&filter=all&per_page=100`]: {
         check_runs: [
           {
             id: 101,
-            name: 'platform',
+            name: 'cluster from the change',
             head_sha: head,
             status: 'completed',
             conclusion: 'success',
@@ -885,7 +885,7 @@ describe('the queue’s cluster, made once already', () => {
         jobs: [
           {
             id: 101,
-            name: 'platform',
+            name: 'cluster from the change',
             conclusion: 'success',
             steps: [
               { name: 'Refuse a privileged context', conclusion: 'success' },
@@ -945,7 +945,9 @@ describe('the queue’s cluster, made once already', () => {
   const headOf = (a: GitHub) => (a[`repos/${REPO}/pulls/7`] as { head: { sha: string } }).head.sha;
   const pull = (a: GitHub) => a[`repos/${REPO}/pulls/7`] as Row;
   const checksOf = (a: GitHub) =>
-    a[`repos/${REPO}/commits/${headOf(a)}/check-runs?check_name=platform&filter=all&per_page=100`] as {
+    a[
+      `repos/${REPO}/commits/${headOf(a)}/check-runs?check_name=cluster%20from%20the%20change&filter=all&per_page=100`
+    ] as {
       check_runs: Row[];
     };
   const check = (a: GitHub) => checksOf(a).check_runs[0] as Row;
@@ -1115,7 +1117,7 @@ describe('the queue’s cluster, made once already', () => {
   });
 
   it.each<[string, (a: GitHub) => void, string]>([
-    ['no earlier pass', (a) => Object.assign(checksOf(a), { check_runs: [] }), 'has a platform job at'],
+    ['no earlier pass', (a) => Object.assign(checksOf(a), { check_runs: [] }), 'has a cluster from the change job at'],
     ['an earlier failure', (a) => Object.assign(check(a), { conclusion: 'failure' }), 'is completed, failure'],
     [
       'a run not finished',
@@ -1153,13 +1155,29 @@ describe('the queue’s cluster, made once already', () => {
     [
       'a pass by another workflow',
       (a) => Object.assign(run(a), { path: '.github/workflows/check.yml' }),
-      'platform job at',
+      'cluster from the change job at',
     ],
-    ['a pass by another app', (a) => Object.assign(check(a), { app: { slug: 'some-app' } }), 'platform job at'],
-    ['a check run of another name', (a) => Object.assign(check(a), { name: 'platform-ish' }), 'platform job at'],
-    ['a run of another event', (a) => Object.assign(run(a), { event: 'merge_group' }), 'platform job at'],
-    ['a run in another repository', (a) => Object.assign(run(a), { repository: fork }), 'platform job at'],
-    ['a run from a fork', (a) => Object.assign(run(a), { head_repository: fork }), 'platform job at'],
+    [
+      'a pass by another app',
+      (a) => Object.assign(check(a), { app: { slug: 'some-app' } }),
+      'cluster from the change job at',
+    ],
+    [
+      'a check run of another name',
+      (a) => Object.assign(check(a), { name: 'platform-ish' }),
+      'cluster from the change job at',
+    ],
+    [
+      'a run of another event',
+      (a) => Object.assign(run(a), { event: 'merge_group' }),
+      'cluster from the change job at',
+    ],
+    [
+      'a run in another repository',
+      (a) => Object.assign(run(a), { repository: fork }),
+      'cluster from the change job at',
+    ],
+    ['a run from a fork', (a) => Object.assign(run(a), { head_repository: fork }), 'cluster from the change job at'],
     ['a head in a fork', (a) => Object.assign(pull(a).head as Row, { repo: fork }), 'head is in someone/fork'],
     // An empty field, split on tabs, would shift every field after it, and the reason with them.
     [
@@ -1167,23 +1185,31 @@ describe('the queue’s cluster, made once already', () => {
       (a) => Object.assign(pull(a).head as Row, { repo: null }),
       'head is in no repository',
     ],
-    ['a run from another branch', (a) => Object.assign(run(a), { head_branch: 'other' }), 'platform job at'],
-    ['a run made before the pull request', (a) => Object.assign(run(a), { created_at: ago(40) }), 'platform job at'],
+    [
+      'a run from another branch',
+      (a) => Object.assign(run(a), { head_branch: 'other' }),
+      'cluster from the change job at',
+    ],
+    [
+      'a run made before the pull request',
+      (a) => Object.assign(run(a), { created_at: ago(40) }),
+      'cluster from the change job at',
+    ],
     [
       'a run for another pull request',
       (a) => Object.assign(run(a), { pull_requests: [{ number: 8, base: { ref: 'main' } }] }),
-      'platform job at',
+      'cluster from the change job at',
     ],
     [
       'a run into another base',
       (a) => Object.assign(run(a), { pull_requests: [{ number: 7, base: { ref: 'next' } }] }),
-      'platform job at',
+      'cluster from the change job at',
     ],
     ['a pass older than a day', (a) => Object.assign(check(a), { completed_at: ago(25) }), 'more than 24 hours ago'],
     [
       'a pass at no time GitHub names',
       (a) => Object.assign(check(a), { completed_at: null }),
-      'named no time platform',
+      'named no time cluster from the change',
     ],
     ['a pull request closed', (a) => Object.assign(pull(a), { state: 'closed' }), '#7 is closed'],
     ['a pull request into another base', (a) => Object.assign(pull(a), { base: { ref: 'next' } }), 'into next'],

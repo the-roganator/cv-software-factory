@@ -5,7 +5,7 @@
  *     node scripts/copilot-held-runs.ts --dry-run   # says what it would delete, and deletes nothing
  *
  * GitHub treats Copilot as an outside contributor, so a review of Copilot's that leaves comments starts a run of
- * `review requested` (review-requested.yml) that is held for a maintainer's approval before any job starts, and fails
+ * `pull request` (pull-request.yml) that is held for a maintainer's approval before any job starts, and fails
  * when its pull request closes. That failure starts `review` (review.yml) on main's head commit, as Copilot, held too.
  * Only Martin's reviews count, so neither has anything to judge, and a re-run is no fix: it keeps Copilot as the actor,
  * so the `review` run it starts is held in turn. Deleting a held run removes it and its check suite, and runs nothing.
@@ -13,7 +13,7 @@
  * A run is deleted only when all of these hold, read from the run's id, workflow file, actors, status and conclusion,
  * and its count of jobs; nothing else of the run is read, its branch and title least of all:
  *
- * - it is a run of review-requested.yml or review.yml, by its workflow file;
+ * - it is a run of pull-request.yml or review.yml, by its workflow file;
  * - Copilot, by its account's id, login and type, both started it and triggered this attempt of it, so a run Martin
  *   re-ran is his to keep;
  * - it is completed, and was held (`action_required`) or failed (`failure`);
@@ -31,7 +31,7 @@
 export const COPILOT = { id: 175_728_472, login: 'Copilot', type: 'Bot' } as const;
 
 /** The review gate's workflows (ADR 0014), whose runs GitHub holds for Copilot. */
-export const WORKFLOWS = ['review-requested.yml', 'review.yml'] as const;
+export const WORKFLOWS = ['pull-request.yml', 'review.yml'] as const;
 
 /** The conclusions of a run GitHub held: waiting for approval, or failed once its pull request closed. */
 export const CONCLUSIONS = ['action_required', 'failure'] as const;

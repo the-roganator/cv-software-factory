@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Where the platform check's time goes (.github/workflows/platform.yml): when each Application Argo CD deploys was made,
-# first synced and last turned Healthy, each sync and health change Argo CD recorded with the resource it names, when each pod was made, scheduled and ready, and each image the node pulled,
+# first synced and last turned Healthy, when each pod was made, scheduled and ready, and each image the node pulled,
 # how long it took, with and without the time it waited for the kubelet to start it, and its size.
 # Every time is minutes and seconds after kube-system was made, which is when k3s started.
 #
@@ -37,17 +37,6 @@ tables() { # namespace.json applications.json pods.json events.json
     ($apps[0].items | sort_by(.status.history[0].deployedAt // "~")[] |
       [.metadata.name, (.metadata.creationTimestamp | at), (.status.history[0].deployedAt | at),
        (.status.health.lastTransitionTime | at), (.status.health.status // "-")] | row),
-    "",
-    "### What Argo CD said",
-    "",
-    "Each sync and health change of an Application, as Argo CD recorded it, with the resource that caused it.",
-    "",
-    "| At | Application | Said |",
-    "| --- | --- | --- |",
-    ([$events[0].items[] | select(.involvedObject.kind == "Application" and
-        (.reason | IN("OperationStarted", "OperationCompleted", "ResourceUpdated")))] |
-      sort_by(.firstTimestamp // .eventTime)[] |
-      [((.firstTimestamp // .eventTime) | at), .involvedObject.name, (.message | gsub("\\|"; "/") | .[0:200])] | row),
     "",
     "### Pods",
     "",

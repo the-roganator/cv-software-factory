@@ -1,12 +1,16 @@
-# The daily scan (docs/COMPONENTS/SECURITY-SCANNING.md): every item on the scanned repository's list
+# The daily scan (docs/COMPONENTS/SECURITY-SCANNING.md), and the dependency graph
+# (docs/COMPONENTS/SECURITY-SCANNING.md#the-dependency-graph), both read from the scanned repository's list.
+#
+# The scan: every item on the scanned repository's list
 # (apps/factory/src/vulnerabilities/inventory.ts) read with Trivy against the day's advisories, each finding an alert in
 # that repository's code scanning, at the line that pins it, in one of the categories `vulnerabilities/01` to
 # `vulnerabilities/20`: the file has a run for each, no run over the 5,000 results code scanning keeps of one.
 #
-# Shared: cv-worlds-worst-website calls this workflow at a pinned commit, grants `actions: read`, `contents: read`,
-# `packages: read` and `security-events: write`, and passes SCAN_STATE_KEY by name; its results reach its own code
-# scanning, since the upload names the calling repository. The scripts (the lockfile gate's reading of a lockfile
-# among them, which the scan shares) and Trivy's pin come from this repository at the workflow's own commit, and the
+# Shared: cv-worlds-worst-website calls this workflow at a pinned commit, grants `actions: read`, `contents: write`,
+# `packages: read` and `security-events: write`, and passes SCAN_STATE_KEY by name; each job takes only what it names
+# below of that. Its results reach its own code scanning and its snapshot its own graph, since the upload and the
+# submission name the calling repository. The scripts (the lockfile gate's reading of a lockfile
+# among them, which the scan shares) and Trivy's and Syft's pins come from this repository at the workflow's own commit, and the
 # exceptions (policy/vulnerabilities.ts) from its main alone; the scanned repository's checkout is data, and nothing in
 # it runs.
 #
@@ -24,7 +28,7 @@
 #   alert dismissed as won't fix, and any dismissed with no exception in force reopened (alerts.ts). Then the run
 #   fails on a new High or Critical with a fix, one due within a day, or one past its deadline, its last lines naming
 #   the moves that hold them. One scan at a time uploads, so no two uploads' alerts interleave.
-# - scan (proving): on a pull request that changes the scan itself, the same scan of the base's checkout, with no
+# - scan proof: on a pull request that changes the scan or the graph, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
 #   not showing CVE-2026-111497, and its log carries the counts, the deadlines' and the moves' too, read against the
 #   repository's alerts, as a scan with no state reads them (it holds no key), and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job
@@ -32,6 +36,17 @@
 #   nothing, and runs on a pull request alone, from a branch of this repository: its first step refuses a fork's, whose
 #   token would read the alerts, which are not public. A fork supplies its own copy of this file, so the step binds a
 #   fork that keeps it; the repository's approval of fork runs, which no fork can change, binds one that does not.
+# - graph: on a push to the default branch alone, with `contents: write` and nothing else: every package each lockfile
+#   on the list resolves, indirect ones included, submitted to GitHub's dependency submission API, so the graph and
+#   Dependabot's alerts hold the whole lockfile and not only what a manifest names. Each lockfile is copied alone into
+#   an empty directory, which Syft's image reads, read-only and with no network (apps/factory/src/vulnerabilities/graph.ts).
+#   Each snapshot names the commit, the ref and the graph's correlator, so it replaces the one before it.
+# - graph proof: on a pull request that changes the scan or the graph, with `contents: read` alone. It makes the same
+#   snapshot of the base's checkout and submits nothing, then installs each lockfile as coverage does, and fails if the
+#   snapshot lacks a package `pnpm list --depth Infinity` names, calls one direct or indirect where pnpm lists it the
+#   other way, or names no indirect package. Its log carries the counts.
+#
+# Neither graph job names the scan's key or its environment, or shares its concurrency group.
 #
 # Kept between runs, by the default branch's runs alone (a pull request's restores): Trivy's analysis of each layer,
 # keyed by Trivy's pin, and the day's lookups of registries and releases (memo.ts). Neither is what a verdict depends
@@ -60,7 +75,10 @@ on:
       - apps/factory/src/repositories.ts
       - apps/factory/src/vulnerabilities/**
       - apps/factory/src/gates/**
+      - deploy/images/syft/**
       - deploy/images/trivy/**
+      - mise.toml
+      - mise.lock
       - policy/repositories.ts
 
 permissions: {}
@@ -349,7 +367,7 @@ jobs:
   # The same scan, of the pull request's base, with no permission to write anything: a pull request proves a change to
   # the scan by its own run, and nothing it does reaches code scanning.
   prove:
-    name: scan (proving)
+    name: scan proof
     needs: coverage
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -466,3 +484,122 @@ jobs:
           name: moves
           path: ${{ runner.temp }}/scan/moves.json
           if-no-files-found: error
+
+  # The graph: on a push alone. The scan's other events (the schedule, a run by hand) submit nothing new.
+  graph:
+    name: graph
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # One submission at a time, the newest waiting: GitHub keeps the last snapshot of a correlator it is sent, so an
+    # older run finishing last would hold the graph at its commit.
+    concurrency:
+      group: graph-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # the dependency submission API, with the job's token
+    steps:
+      - name: Refuse a privileged context
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != push ] || [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::The graph is submitted only on a push to the default branch, not $GITHUB_EVENT_NAME to $GITHUB_REF."
+            exit 1
+          fi
+      # The submitted repository, as data.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: scanned
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/repositories.ts
+            apps/factory/src/vulnerabilities/
+            deploy/images/syft/Dockerfile
+            policy/repositories.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # Node to run the script, and yq for the list and the lockfile: each at the version this repository's mise.lock holds.
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node yq
+      - name: Make the snapshot
+        env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
+        run: |
+          node factory/apps/factory/src/vulnerabilities/graph.ts scanned \
+            --syft-pin factory/deploy/images/syft/Dockerfile --out "$RUNNER_TEMP/graph" \
+            --sha "$GITHUB_SHA" --ref "$GITHUB_REF" --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Submit it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" \
+            --input "$RUNNER_TEMP/graph/snapshot.json" --jq '"Snapshot \(.id): \(.result), \(.message)"'
+
+  # The same snapshot, of the pull request's base, with no permission to write anything: a pull request proves a change
+  # to the graph by its own run, and nothing it does reaches the graph.
+  graph-proof:
+    name: graph proof
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse a privileged context
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "::error::The proving run runs only on a pull request, not $GITHUB_EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: scanned
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/repositories.ts
+            apps/factory/src/vulnerabilities/
+            deploy/images/syft/Dockerfile
+            policy/repositories.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node yq
+      # The pnpm the checkout's mise pins, read as data, installed by this repository's mise, as the scan's coverage does.
+      - name: Make the snapshot and compare it with pnpm's list
+        env:
+          FACTORY_REPOSITORY: ${{ vars.FACTORY_REPOSITORY }}
+          APP_REPOSITORY: ${{ vars.APP_REPOSITORY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          version=$(node factory/apps/factory/src/vulnerabilities/coverage.ts --pnpm-version scanned)
+          cd factory
+          mise exec "pnpm@$version" -- node "$GITHUB_WORKSPACE/factory/apps/factory/src/vulnerabilities/graph.ts" \
+            "$GITHUB_WORKSPACE/scanned" --syft-pin "$GITHUB_WORKSPACE/factory/deploy/images/syft/Dockerfile" \
+            --out "$RUNNER_TEMP/graph" --sha "$BASE_SHA" --ref "refs/heads/$BASE_REF" \
+            --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --prove

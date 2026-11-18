@@ -79,7 +79,7 @@ export interface Item {
   signer?: string | undefined;
   /**
    * CI's copy of a third-party image, by digest, as `scripts/ci-images.sh` names it: what the scan asks `ci-images.sh
-   * resolve` for, which falls back to the image's own registry when the copy is not there (mirror.yml copies the
+   * resolve` for, which falls back to the image's own registry when the copy is not there (caches.yml copies the
    * factory's pins alone).
    */
   ci?: string | undefined;

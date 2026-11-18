@@ -177,7 +177,7 @@ jobs:
           ref: ${{ env.BASE_SHA }}
           path: base
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -237,7 +237,7 @@ jobs:
           path: base
           persist-credentials: false
       # The app's own toolchain, as its base pins it.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -288,7 +288,7 @@ jobs:
             policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -378,7 +378,7 @@ jobs:
           ref: ${{ env.BASE_SHA }}
           path: base
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -481,7 +481,7 @@ jobs:
           sparse-checkout: pnpm-lock*.yaml
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}

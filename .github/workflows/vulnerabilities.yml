@@ -120,7 +120,7 @@ jobs:
             policy/repositories.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -216,7 +216,7 @@ jobs:
           fi
       # kustomize and yq for the list, helm to render its charts, cosign to verify the SBOMs of ours, crane to read the
       # registries' tags and manifests: each at the version this repository's mise.lock holds.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -414,7 +414,7 @@ jobs:
           else
             echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
           fi
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}

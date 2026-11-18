@@ -37,7 +37,7 @@ jobs:
       # The cluster's images are the list's (scripts/cluster-images.ts), its charts rendered; crane reads each image and
       # makes the copies, byte for byte, an index whose entries carry an artifactType among them, so each copy's digest
       # is its source's. Its cache main keeps (toolchain-cache.yml).
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}

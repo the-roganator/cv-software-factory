@@ -396,6 +396,9 @@ describe("the review gate's workflows", () => {
     expect(triggers(gate)).toEqual(['workflow_call', 'workflow_run']);
     // And after check.yml and platform.yml, so a pin move that waited for the job running its pin is judged again.
     expect(gate).toMatch(/workflow_run:\n(?: {4}# [^\n]*\n)+ {4}workflows: \[pull request, check, platform\]\n/);
+    // Which workflow asked is the event's `workflow`: `workflow_run.name` is that run's title, which run-name sets.
+    expect(gate).not.toMatch(/workflow_run\.name/);
+    expect(gate.match(/github\.event\.workflow\.name != 'platform'/g)).toHaveLength(2);
     // The pin move job reads, and holds no secret: which workflow made a check run is an Actions read.
     expect(gate).toMatch(
       /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n(?: {6}# [^\n]*\n)? {6}actions: read\n {4}outputs:/m,

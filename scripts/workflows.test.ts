@@ -297,7 +297,7 @@ describe('every workflow', () => {
     expect(review.needs).toEqual(ANSWER_JOBS);
     // A platform run asks for a verdict only when the App's: its pin moves alone wait for it.
     const onlyApp =
-      "(github.event.workflow_run.name != 'platform' || github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]')";
+      "(github.event.workflow.name != 'platform' || github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]')";
     expect(review.if).toBe(expression(`!cancelled() && ${onlyApp}`));
     expect(job.if).toBe(expression(`github.repository != ${APP_EXPRESSION} && ${onlyApp}`));
     const judge = (review.steps ?? []).find((s) => s.run === 'node scripts/review-gate.ts') as Step & {

@@ -21,7 +21,7 @@ name: pull request
 # A run on the merge queue's commit is named by the commit the queue made, whose message is the pull request's title and
 # number; on a pull request, an empty name leaves GitHub's own, the pull request's title. A caller's run (workflow_call)
 # is named by the caller.
-run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_commit.message) || github.event_name == 'pull_request' && format('probe · {0}', github.event.pull_request.body) || '' }}
+run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_commit.message) || '' }}
 
 on:
   pull_request:

@@ -128,7 +128,7 @@ jobs:
     name: pin move
     # The app's line moves its own pins: its pull requests are never pin moves.
     if: >-
-      ${{ github.repository != (vars.APP_REPOSITORY || 'the-roganator/cv-worlds-worst-website') && (github.event.workflow_run.name != 'platform' ||
+      ${{ github.repository != (vars.APP_REPOSITORY || 'the-roganator/cv-worlds-worst-website') && (github.event.workflow.name != 'platform' ||
       github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -209,7 +209,7 @@ jobs:
     # Whatever the pin move job did: the gate always gives a verdict, and holds a pin move it has no answer for. A
     # platform run judges again only for the App, whose pin moves alone wait for it.
     if: >-
-      ${{ !cancelled() && (github.event.workflow_run.name != 'platform' ||
+      ${{ !cancelled() && (github.event.workflow.name != 'platform' ||
       github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

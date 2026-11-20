@@ -11,15 +11,15 @@
   },
   "dependencies": {
     "@opentelemetry/api": "^1.10.0",
-    "@opentelemetry/instrumentation": "^0.301.0",
-    "@opentelemetry/instrumentation-http": "^0.301.0",
+    "@opentelemetry/instrumentation": "^0.301.2",
+    "@opentelemetry/instrumentation-http": "^0.301.2",
     "@opentelemetry/instrumentation-pino": "^0.71.0",
     "@opentelemetry/instrumentation-runtime-node": "^0.38.0",
-    "@opentelemetry/sdk-node": "^0.301.0",
+    "@opentelemetry/sdk-node": "^0.301.2",
     "@software-factory/events": "workspace:*",
     "@software-factory/store": "workspace:*",
     "pino": "^10.4.0",
-    "postgres": "^4.1.0"
+    "postgres": "^4.1.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

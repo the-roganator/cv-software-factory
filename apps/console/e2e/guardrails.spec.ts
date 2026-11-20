@@ -213,6 +213,45 @@ test('the address opens the sheet at a guardrail: opened, scrolled to and focuse
   await expect(rowButton(page, 9)).toBeInViewport();
 });
 
+test('the row the address opens at is lined up again when Martin’s session is known after the sheet has settled', async ({
+  page,
+}) => {
+  let release = () => {};
+  const held = new Promise<void>((done) => {
+    release = done;
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await adminService(page, 'martin', [], 'attacks');
+  // Martin's session answers late: until it does, the row has no line on the attack he has in flight.
+  await page.route('**/admin/session', async (route) => {
+    await held;
+    await route.fallback();
+  });
+  await attacksAvailable(page);
+  await page.goto(`${attacksUrl()}&open=3`);
+  await expect(rowButton(page, 3)).toBeFocused();
+  const scroller = sheet(page).locator('.sheet-scroll');
+  // Settled as `bringIntoSheet` waits for it: its fonts in, and two frames on.
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  });
+  const before = await scroller.evaluate((el) => el.scrollHeight);
+  release();
+  await expect(panel(page).locator('.more .gr-busy')).toBeVisible();
+  expect(await scroller.evaluate((el) => el.scrollHeight)).toBeGreaterThan(before);
+  // Just under the sheet's head, or as near as the sheet scrolls.
+  await expect
+    .poll(() =>
+      rowButton(page, 3).evaluate((row) => {
+        const el = row.closest('.sheet-scroll') as HTMLElement;
+        const under = row.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        return Math.abs(under - 24) < 1 || el.scrollTop >= el.scrollHeight - el.clientHeight - 1;
+      }),
+    )
+    .toBe(true);
+});
+
 test('a visitor reads the checklist: how many hold, one row open at a time, and why one did not hold', async ({
   page,
 }) => {

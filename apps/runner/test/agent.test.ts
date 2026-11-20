@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { PLUGIN, readResult, runAgent } from '../src/agent.ts';
 import { RESULT_BYTES, stepFrom } from '../src/step.ts';
 import { ANSWERING_MODEL, type ScriptedModel, scriptedModel, type Turn } from './model.ts';
@@ -65,6 +65,14 @@ async function run(
 const bash = (command: string): Turn => ({ tool: 'Bash', input: { command, description: command } });
 
 describe('a runner’s agent', () => {
+  // macOS checks an executable it has not run before, so the first start of the Claude Code binary a fresh install
+  // holds takes seconds, more under load: it is started once here, with time for that, and no test's five pay it.
+  beforeAll(async () => {
+    await run([{ text: 'Ready.' }]);
+    model?.close();
+    model = undefined;
+  }, 60_000);
+
   it('edits one file, and hands back its patch, its note and its session', async () => {
     const handback = await run([
       bash("sed -i.bak 's/ - 1;/;/' src/count.ts && rm src/count.ts.bak"),

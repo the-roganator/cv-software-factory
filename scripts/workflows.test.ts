@@ -704,7 +704,7 @@ describe('the dependency graph, in vulnerabilities.yml', () => {
     // Neither needs the scan's jobs, nor shares the scan's concurrency group.
     for (const id of GRAPH) expect((jobs[id] as { needs?: unknown } | undefined)?.needs, id).toBeUndefined();
     expect((jobs.graph as { concurrency?: unknown } | undefined)?.concurrency).toEqual({
-      group: `graph-${expression('github.repository')}`,
+      group: `dependency-graph-${expression('github.repository')}`,
       'cancel-in-progress': false,
     });
     // Only the submission submits, and every checkout keeps no credentials.

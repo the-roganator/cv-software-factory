@@ -494,7 +494,7 @@ jobs:
     # One submission at a time, the newest waiting: GitHub keeps the last snapshot of a correlator it is sent, so an
     # older run finishing last would hold the graph at its commit.
     concurrency:
-      group: graph-${{ github.repository }}
+      group: dependency-graph-${{ github.repository }}
       cancel-in-progress: false
     permissions:
       contents: write # the dependency submission API, with the job's token

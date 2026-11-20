@@ -19,11 +19,15 @@
 #   (scripts/toolchain.test.ts holds this list to every workflow's), so it runs when those move (`which`, below), by
 #   hand, and daily: the key changes every 30 days (mise-action's cache_max_age_days) and only main saves one, so a day
 #   is the longest check.yml goes without a cache after it does, or after one is evicted.
+#
+# Each has a time of its own each day, so the toolchain's sets are not saved while the images job and the daily scan
+# (vulnerabilities.yml, at 04:17 too) install and save some of the same.
 name: caches
 
 on:
   schedule:
-    - cron: '17 4 * * *'
+    - cron: '17 4 * * *' # images
+    - cron: '41 4 * * *' # toolchain
   push:
     branches: [main]
   workflow_dispatch:
@@ -33,7 +37,7 @@ permissions: {}
 jobs:
   images:
     name: images
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event.schedule != '41 4 * * *'
     runs-on: ubuntu-24.04
     # Playwright's image is two gigabytes for each platform, and each new release is copied whole; the cluster's images
     # are copied whole once, and after that only those whose tag or pin moved.
@@ -59,11 +63,11 @@ jobs:
           crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
           scripts/ci-images.sh sync
 
-  # Whether the toolchain's cache is due: on the schedule and by hand, always; on a push, when it moved what the toolchain
-  # or a pull request's workflow installs.
+  # Whether the toolchain's cache is due: on its own schedule and by hand, always; on a push, when it moved what the
+  # toolchain or a pull request's workflow installs, read from the commit before the push and the one after alone.
   which:
     name: which caches are due
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event.schedule != '17 4 * * *'
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
@@ -74,14 +78,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-          filter: blob:none
       - id: which
         env:
           BEFORE: ${{ github.event.before }}
         run: |
           toolchain=true
-          if [ "$GITHUB_EVENT_NAME" = push ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null &&
+          if [ "$GITHUB_EVENT_NAME" = push ] && git fetch --quiet --no-tags --depth=1 origin "$BEFORE" &&
             git diff --quiet "$BEFORE" "$GITHUB_SHA" -- mise.toml mise.lock .github/workflows/check.yml \
               .github/workflows/platform.yml .github/workflows/caches.yml; then
             toolchain=false

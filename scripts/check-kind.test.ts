@@ -206,9 +206,12 @@ describe('a deploy', () => {
     expect(kind(repository(change, modes), app).kind).toBe('manifests');
   });
 
-  it.each(notPins)('is not a change of %s, in the merge queue', (_, change, modes) => {
-    expect(kind(repository(change, modes), queued).kind).toBe('code');
-  });
+  it.each(notPins)(
+    'is not a change of %s, in the merge queue: a change of deploy/ only there too',
+    (_, change, modes) => {
+      expect(kind(repository(change, modes), queued).kind).toBe('manifests');
+    },
+  );
 
   it('is not a digest moved beside it in another file, a new pin file too', () => {
     const other = 'deploy/overlays/local/image/kustomization.yaml';
@@ -218,7 +221,7 @@ describe('a deploy', () => {
       { [CONSOLE]: moved(CONSOLE), [other]: BASE[CONSOLE] ?? '' },
       { [CONSOLE]: null, 'deploy/overlays/local/console-image/kustomization.yml': moved(CONSOLE) },
     ]) {
-      expect(kind(repository(change), queued).kind).toBe('code');
+      expect(kind(repository(change), queued).kind).not.toBe('deploy');
       expect(kind(repository(change), app).kind).not.toBe('deploy');
     }
   });
@@ -226,7 +229,7 @@ describe('a deploy', () => {
   it('is not a file whose name holds both pin files', () => {
     const both = `${CONSOLE} ${FACTORY}`;
     const repo = () => repository({ [both]: moved(CONSOLE) }, {}, { [both]: BASE[CONSOLE] ?? '' });
-    expect(kind(repo(), queued).kind).toBe('code');
+    expect(kind(repo(), queued).kind).toBe('manifests');
     expect(kind(repo(), app).kind).toBe('manifests');
   });
 
@@ -235,19 +238,20 @@ describe('a deploy', () => {
     expect(kind(pins(), { ...app, author: 'mrogan' }).kind).toBe('manifests');
     expect(kind(pins(), { ...app, author: 'dependabot[bot]' }).kind).toBe('manifests');
     expect(kind(pins(), { ...app, base: 'deploy/other' }).kind).toBe('manifests');
-    expect(kind(pins(), { ...queued, pull: { login: 'mrogan', base: 'main' } }).kind).toBe('code');
-    expect(kind(pins(), { ...queued, pull: { login: APP, base: 'feat/below' } }).kind).toBe('code');
+    expect(kind(pins(), { ...queued, pull: { login: 'mrogan', base: 'main' } }).kind).toBe('manifests');
+    expect(kind(pins(), { ...queued, pull: { login: APP, base: 'feat/below' } }).kind).toBe('manifests');
   });
 
-  it('is code in the queue when the pull request cannot be found', () => {
+  it('is no deploy in the queue when the pull request cannot be found, only a change of manifests', () => {
     const pins = () => repository({ [CONSOLE]: moved(CONSOLE) });
     const failed = kind(pins(), { ...queued, pull: 'fail' });
-    expect(failed.kind).toBe('code');
+    // Manifests goes by the files alone, whoever's the pull request is.
+    expect(failed.kind).toBe('manifests');
     expect(failed.asked).toHaveLength(1);
     // A branch that is not the queue's for main names no pull request, so nothing is asked.
     for (const branch of ['', 'refs/heads/deploy/local', 'refs/heads/gh-readonly-queue/other/pr-699-abcdef0']) {
       const { kind: found, asked } = kind(pins(), { ...queued, branch });
-      expect(found).toBe('code');
+      expect(found).toBe('manifests');
       expect(asked).toEqual([]);
     }
   });
@@ -291,9 +295,15 @@ describe('a change of manifests', () => {
     expect(kind(repository(into), { ...app, author: 'mrogan' }).kind).toBe('code');
   });
 
-  it('runs everything in the merge queue', () => {
+  it('is told in the merge queue too, by the files alone, with the same exceptions', () => {
     const manifest = { 'deploy/base/console/deployment.yaml': 'kind: Deployment\n# moved\n' };
-    expect(kind(repository(manifest), queued).kind).toBe('code');
+    expect(kind(repository(manifest), queued).kind).toBe('manifests');
+    expect(kind(repository(manifest), { ...queued, pull: { login: 'mrogan', base: 'main' } }).kind).toBe('manifests');
+    const postgres = { ...manifest, 'deploy/base/postgres/statefulset.yaml': 'kind: StatefulSet\n# moved\n' };
+    expect(kind(repository(postgres), queued).kind).toBe('code');
+    const into = { 'apps/console/src/main.ts': null, 'deploy/base/console/main.ts': 'export {};\n' };
+    expect(kind(repository(into), queued).kind).toBe('code');
+    expect(kind(repository({}), queued).kind).toBe('code');
   });
 });
 

@@ -220,8 +220,10 @@ export const CODE_SCANNING = {
  * at most about forty, so a group whose checks say nothing within the hour is taken out of the queue. Up to five are
  * tested at once, each on main with the ones ahead of it, and a pull request merges as soon as its checks pass, with
  * no wait for others to group with: there are seldom more than a few, and each run is a full one but the factory's
- * App's deploy's. That run's tests stand on the run of the entry ahead of it, or of main (check.yml's `kind` job), which
- * holds because each entry is one pull request's squashed change on the one ahead, and each must pass its own checks.
+ * App's deploy's and a change of manifests alone's. A deploy's tests, and a change of manifests' browser tests, stand on
+ * the run of the entry ahead of it, or of main (check.yml's `kind` job), which holds because each entry is one pull
+ * request's squashed change on the one ahead, and each must pass its own checks: ALLGREEN. A grouping that merged on
+ * the last entry's run alone would let a deploy or a change of manifests carry an entry ahead whose own run failed.
  */
 export const MERGE_QUEUE = {
   merge_method: 'SQUASH',

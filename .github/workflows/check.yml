@@ -8,9 +8,9 @@ run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', githu
 # Some are lighter (the `kind` job): the App's release and deploy pull requests, and anyone's that changes only
 # manifests, run no browser tests, and a deploy or manifests pull request's images are checked rather than built. They
 # also run on the merge queue's commit for a pull request, which holds the change on main as it will merge, and is the
-# very commit main moves to. Everything runs there but for the App's deploy, which is told apart there as on its pull
-# request and runs as light, its tests standing on the queue's run of the commit it is made on; a release or manifests
-# pull request runs everything there. That run is main's test, so nothing runs again on main after a merge. The
+# very commit main moves to. Everything runs there but for the App's deploy and a change of manifests alone, each told
+# apart there as on its pull request: a deploy runs as light, its tests standing on the queue's run of the commit it is
+# made on, and a change of manifests runs its tests and skips the browser tests; a release runs everything there. That run is main's test, so nothing runs again on main after a merge. The
 # README's badge reports the queue's latest run, which may be of a pull request the queue turned away rather than of
 # main.
 on:
@@ -38,10 +38,12 @@ jobs:
   # - `manifests`: anyone's, changing only files under deploy/. No image copies anything from there
   #   (scripts/dockerfiles.test.ts), and nothing the browser tests run reads it (scripts/browser-tests.test.ts), but
   #   for the Postgres the console's run beside: a change to its pin is `code`.
-  # In the merge queue, whose event names no pull request, only `deploy` is told, by the same test on the change from
-  # the commit the queue's entry is made on, with the author and base of the pull request its branch names, read from
-  # the API. Anything else, or this job failing, is `code` and runs everything: the job writes the kind last, once it
-  # has it, so a job that fails has none.
+  # In the merge queue, whose event names no pull request, `deploy` and `manifests` are told, by the same tests on the
+  # change from the commit the queue's entry is made on: a deploy with the author and base of the pull request its
+  # branch names, read from the API, and manifests by the files alone. A release there, anything else, or this job
+  # failing, is `code` and runs everything: the job writes the kind last, once it has it, so a job that fails has none.
+  # A manifests entry made on one ahead skips the browser tests that entry runs for itself, which stands because the
+  # queue merges a group only once every entry's run has passed (ALLGREEN, scripts/github-settings.ts).
   kind:
     name: which checks apply
     runs-on: ubuntu-24.04

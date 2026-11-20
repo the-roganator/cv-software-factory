@@ -8,8 +8,11 @@
 #              the version line of package.json. On a pull request only: the queue runs a release as `code`.
 #   deploy     a change by the factory's App into main whose every changed line is the digest of an image the two pin
 #              files of the local profile pin, on a pull request or in the queue.
-#   manifests  a pull request, anyone's, that changes only files under deploy/, but for the Postgres the console's
-#              browser tests run beside. On a pull request only.
+#   manifests  a change, anyone's, that changes only files under deploy/, but for the Postgres the console's browser
+#              tests run beside, on a pull request or in the queue. It goes by the files alone, so the queue tells it
+#              without asking GitHub whose the pull request is. In the queue it stands on the merge queue's ALLGREEN
+#              grouping (scripts/github-settings.ts): an entry made on one ahead skips the browser tests that entry runs
+#              for itself, so a group merges only once every entry's own run has passed.
 #   code       anything else: every check runs. A pin move of the App's (scripts/pin-move.ts) is this kind: the review
 #              gate passes one only once the job that runs its pin (ZAP scan, image builds, tests) succeeded at its
 #              head, so none of them may be skipped for it. One under deploy/ that only a cluster runs is `manifests`,
@@ -339,6 +342,10 @@ case "${GITHUB_EVENT_NAME:-}" in
   merge_group)
     if pull=$(queued) && [ "$pull" = "$APP main" ] && moves_only_pins; then
       kind=deploy
+    fi
+    # By the files alone, as on a pull request: whoever's the pull request is, and whether or not GitHub answered.
+    if [ "$kind" = code ] && manifests_only; then
+      kind=manifests
     fi
     ;;
 esac

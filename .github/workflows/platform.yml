@@ -18,9 +18,10 @@
 # request's head and passed there, within a day: check-kind.sh says how it tells, from git and GitHub's check runs alone.
 # The repository variable PLATFORM_SKIP set to `off` makes a cluster in the queue every time.
 name: platform
-# A run on the merge queue's commit is named by the commit the queue made, whose message is the pull request's title and
-# number; on a pull request, an empty name leaves GitHub's own, the pull request's title.
-run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_commit.message) || '' }}
+# A run on the merge queue's commit is named by the queue's branch, which names its pull request; on a pull request,
+# an empty name leaves GitHub's own, the pull request's title. Not by the queue's commit message: GitHub adds a
+# Co-authored-by line to it for each author, and an expression cannot cut it to its title.
+run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_ref) || '' }}
 
 on:
   pull_request:

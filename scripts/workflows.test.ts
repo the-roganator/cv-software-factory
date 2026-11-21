@@ -297,7 +297,7 @@ describe('every workflow', () => {
     expect(review.needs).toEqual(ANSWER_JOBS);
     // A platform run asks for a verdict only when the App's: its pin moves alone wait for it.
     const onlyApp =
-      "(github.event.workflow_run.name != 'platform' || github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]')";
+      "(github.event.workflow.name != 'platform' || github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]')";
     expect(review.if).toBe(expression(`!cancelled() && ${onlyApp}`));
     expect(job.if).toBe(expression(`github.repository != ${APP_EXPRESSION} && ${onlyApp}`));
     const judge = (review.steps ?? []).find((s) => s.run === 'node scripts/review-gate.ts') as Step & {
@@ -639,14 +639,17 @@ describe('vulnerabilities.yml', () => {
     expect(proving.at(-1)?.with?.name).toBe('moves');
   });
 
-  it('proves itself only on a change to the scan, against the base, as data', () => {
+  it('proves itself only on a change to the scan or the graph, against the base, as data', () => {
     const on = workflow.on as Record<string, { paths?: string[] } | null>;
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/vulnerabilities.yml',
       'apps/factory/src/repositories.ts',
       'apps/factory/src/vulnerabilities/**',
       'apps/factory/src/gates/**',
+      'deploy/images/syft/**',
       'deploy/images/trivy/**',
+      'mise.toml',
+      'mise.lock',
       'policy/repositories.ts',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
@@ -668,13 +671,14 @@ describe('vulnerabilities.yml', () => {
 });
 
 /**
- * The dependency graph (dependency-graph.yml): the job that submits holds `contents: write` and nothing else, and refuses
- * any event but a push to the default branch; the proving run, on a pull request, can write nothing. It runs Syft's
- * image by digest from its one pin, whose version build.yml's sign job reads to attest SBOMs with.
+ * The dependency graph (vulnerabilities.yml's `graph` and `graph-proof`): the job that submits holds `contents: write`
+ * and nothing else, and refuses any event but a push to the default branch; the proof, on a pull request, can write
+ * nothing. It runs Syft's image by digest from its one pin, whose version build.yml's sign job reads to attest SBOMs with.
  */
-describe('dependency-graph.yml', () => {
-  const workflow = read('dependency-graph.yml');
+describe('the dependency graph, in vulnerabilities.yml', () => {
+  const workflow = read('vulnerabilities.yml');
   const jobs = workflow.jobs;
+  const GRAPH = ['graph', 'graph-proof'];
   const SYFT_PIN = 'deploy/images/syft/Dockerfile';
 
   function refuses(job: string, event: string, ref: string, defaultBranch = 'main') {
@@ -691,48 +695,42 @@ describe('dependency-graph.yml', () => {
     }
   }
 
-  it('gives the submission contents: write alone, and the proving run read alone', () => {
+  it('gives the submission contents: write alone, and the proof read alone', () => {
     expect(workflow.permissions).toEqual({});
-    expect(Object.keys(jobs).sort()).toEqual(['prove', 'submit']);
-    expect(jobs.submit?.permissions).toEqual({ contents: 'write' });
-    expect(jobs.prove?.permissions).toEqual({ contents: 'read' });
-    expect(jobs.submit?.if).toBe(expression("github.event_name != 'pull_request'"));
-    expect(jobs.prove?.if).toBe(expression("github.event_name == 'pull_request'"));
-    expect(triggers(workflow).sort()).toEqual(['pull_request', 'push', 'workflow_call']);
+    expect(jobs.graph?.permissions).toEqual({ contents: 'write' });
+    expect(jobs['graph-proof']?.permissions).toEqual({ contents: 'read' });
+    expect(jobs.graph?.if).toBe(expression("github.event_name == 'push'"));
+    expect(jobs['graph-proof']?.if).toBe(expression("github.event_name == 'pull_request'"));
+    // Neither needs the scan's jobs, nor shares the scan's concurrency group.
+    for (const id of GRAPH) expect((jobs[id] as { needs?: unknown } | undefined)?.needs, id).toBeUndefined();
+    expect((jobs.graph as { concurrency?: unknown } | undefined)?.concurrency).toEqual({
+      group: `dependency-graph-${expression('github.repository')}`,
+      'cancel-in-progress': false,
+    });
     // Only the submission submits, and every checkout keeps no credentials.
     for (const [id, job] of Object.entries(jobs)) {
       const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
-      expect(runs.includes('dependency-graph/snapshots'), id).toBe(id === 'submit');
+      expect(runs.includes('dependency-graph/snapshots'), id).toBe(id === 'graph');
       for (const step of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@')))
         expect(step.with?.['persist-credentials'], id).toBe(false);
     }
   });
 
   it('submits on a push to the default branch alone, and proves on a pull request alone', () => {
-    expect(refuses('submit', 'push', 'refs/heads/main')).toBe(false);
-    expect(refuses('submit', 'push', 'refs/heads/feat/x')).toBe(true);
-    expect(refuses('submit', 'push', 'refs/heads/main', '')).toBe(true);
+    expect(refuses('graph', 'push', 'refs/heads/main')).toBe(false);
+    expect(refuses('graph', 'push', 'refs/heads/feat/x')).toBe(true);
+    expect(refuses('graph', 'push', 'refs/heads/main', '')).toBe(true);
     for (const event of ['schedule', 'workflow_dispatch', 'pull_request', 'pull_request_target', 'merge_group'])
-      expect(refuses('submit', event, 'refs/heads/main'), event).toBe(true);
-    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge')).toBe(false);
+      expect(refuses('graph', event, 'refs/heads/main'), event).toBe(true);
+    expect(refuses('graph-proof', 'pull_request', 'refs/pull/1/merge')).toBe(false);
     for (const event of ['push', 'schedule', 'workflow_dispatch', 'merge_group'])
-      expect(refuses('prove', event, 'refs/heads/main'), event).toBe(true);
+      expect(refuses('graph-proof', event, 'refs/heads/main'), event).toBe(true);
   });
 
-  it('proves itself only on a change to the graph, against the base, as data', () => {
-    const on = workflow.on as Record<string, { paths?: string[] } | null>;
-    expect(on.pull_request?.paths).toEqual([
-      '.github/workflows/dependency-graph.yml',
-      'apps/factory/src/repositories.ts',
-      'apps/factory/src/vulnerabilities/**',
-      'deploy/images/syft/**',
-      'mise.toml',
-      'mise.lock',
-      'policy/repositories.ts',
-    ]);
-    const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
+  it('proves itself against the base, as data', () => {
+    const scanned = jobs['graph-proof']?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
-    expect(jobs.prove?.steps?.some((step) => (step.run ?? '').includes('--prove'))).toBe(true);
+    expect(jobs['graph-proof']?.steps?.some((step) => (step.run ?? '').includes('--prove'))).toBe(true);
   });
 
   it('runs Syft by digest from its one pin, at the version build.yml attests with, and reads it from its own commit', () => {
@@ -781,10 +779,11 @@ describe('dependency-graph.yml', () => {
         expect(withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES), file).not.toMatch(
           /anchore\/syft|download-syft/,
         );
-    for (const [id, job] of Object.entries(jobs)) {
-      const own = (job.steps ?? []).find((step) => step.with?.ref === expression('job.workflow_sha'));
+    for (const id of GRAPH) {
+      const job = jobs[id];
+      const own = (job?.steps ?? []).find((step) => step.with?.ref === expression('job.workflow_sha'));
       expect(String(own?.with?.['sparse-checkout']), id).toContain(SYFT_PIN);
-      const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
+      const runs = (job?.steps ?? []).map((step) => step.run ?? '').join('\n');
       expect(runs, id).toContain(`factory/${SYFT_PIN}`);
     }
   });
@@ -888,7 +887,7 @@ describe('platform.yml', () => {
   it('runs the cluster as check-kind.sh says, and makes it with make up at the commit it checks', () => {
     const decide = (jobs.which?.steps ?? []).map((step) => step.run ?? '').join('\n');
     expect(decide).toContain('scripts/check-kind.sh platform');
-    expect(jobs.platform?.name).toBe('platform');
+    expect(jobs.platform?.name).toBe('cluster from the change');
     // Skipped on `none` and `matched` alone: the job deciding failing, or saying anything else, makes the cluster.
     expect(jobs.platform?.if).toBe(
       expression(

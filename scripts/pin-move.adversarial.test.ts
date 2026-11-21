@@ -148,14 +148,14 @@ describe('the platform rule, where the reads of #1057 aimed', () => {
     ])
       expect(
         await reasonOf(sidecarIO({ runs: async () => tied([check(1, conclusion, 1)], [workflowRun(1)]) })),
-      ).toMatch(/^platform at ccccccc is .*, not a success/);
+      ).toMatch(/^cluster from the change at ccccccc is .*, not a success/);
     expect(
       await reasonOf(
         sidecarIO({ runs: async () => tied([check(1, null, 1, { status: 'in_progress' })], [workflowRun(1)]) }),
       ),
-    ).toBe('platform has not finished at ccccccc');
+    ).toBe('cluster from the change has not finished at ccccccc');
     expect(await reasonOf(sidecarIO({ runs: async () => tied([check(1, 'skipped', 1)], [workflowRun(1)]) }))).toBe(
-      'platform at ccccccc is skipped, not a success: it made no cluster from the change',
+      'cluster from the change at ccccccc is skipped, not a success: it made no cluster from the change',
     );
   });
 
@@ -163,7 +163,7 @@ describe('the platform rule, where the reads of #1057 aimed', () => {
     for (const app of [{ slug: 'mrogan-software-factory' }, { slug: 'dependabot' }, null])
       expect(
         await reasonOf(sidecarIO({ runs: async () => tied([check(1, 'success', 1, { app })], [workflowRun(1)]) })),
-      ).toBe('platform has not run at ccccccc');
+      ).toBe('cluster from the change has not run at ccccccc');
   });
 
   it('holds a run of another workflow, a fork, another event, head, repository, suite or pull request', async () => {
@@ -188,19 +188,19 @@ describe('the platform rule, where the reads of #1057 aimed', () => {
       expect(
         await reasonOf(sidecarIO({ runs: async () => tied([check(1, 'success', 1)], [workflowRun(1, other)]) })),
       ).toBe(
-        'platform at ccccccc ran in no run of .github/workflows/platform.yml for this pull request that the gate could read',
+        'cluster from the change at ccccccc ran in no run of .github/workflows/platform.yml for this pull request that the gate could read',
       );
     expect(
       await reasonOf(
         sidecarIO({ runs: async () => tied([check(1, 'success', 1, { head_sha: 'd'.repeat(40) })], [workflowRun(1)]) }),
       ),
-    ).toBe('platform has not run at ccccccc');
+    ).toBe('cluster from the change has not run at ccccccc');
     // An earlier success of the same suite does not outlive its later failure.
     expect(
       await reasonOf(
         sidecarIO({ runs: async () => tied([check(1, 'success', 1), check(2, 'failure', 1)], [workflowRun(1)]) }),
       ),
-    ).toBe('platform at ccccccc is failure, not a success: something must run it');
+    ).toBe('cluster from the change at ccccccc is failure, not a success: something must run it');
   });
 
   it('holds a pin only a hook or a Job runs, though platform succeeded', async () => {
@@ -287,7 +287,7 @@ describe('the platform rule, where the reads of #1057 aimed', () => {
       { scan: async () => ({ read: true, findings: [] }) },
       'the scans show no finding with a fix gone: the move fixes nothing',
     ],
-    ['runs', { runs: async () => [] }, 'platform has not run at ccccccc'],
+    ['runs', { runs: async () => [] }, 'cluster from the change has not run at ccccccc'],
     [
       'digest',
       { digest: async () => '' },

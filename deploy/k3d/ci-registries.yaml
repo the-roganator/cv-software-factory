@@ -4,7 +4,7 @@
 # from each image's own registry.
 #
 # For each registry the cluster pulls from, where its copies are: the image's path on that registry, under a prefix of
-# its own in this repository's GHCR. scripts/ci-images.sh sync, from mirror.yml, copies each image the cluster runs
+# its own in this repository's GHCR. scripts/ci-images.sh sync, from caches.yml, copies each image the cluster runs
 # (scripts/cluster-images.ts) to the path its rewrite gives, and fails on an image from a registry not named here.
 # containerd tries the copy first, and the image's own registry, without the rewrite, when the copy is not there (not
 # copied yet, or private), so a missing copy costs a request, never the pull. Docker Hub's official images are under

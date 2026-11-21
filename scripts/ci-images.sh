@@ -6,7 +6,7 @@
 # the repository pins fail now and then; Microsoft's registry is now and then slow, a few minutes for Playwright's
 # image. Every pin names its own registry, as `node:<tag>@<digest>` or `mcr.microsoft.com/playwright:<tag>@<digest>`,
 # which the cluster pulls and Dependabot reads. CI pulls the same digest from this repository's GHCR instead, when it is
-# there, and from its own registry when it is not yet. Only mirror.yml writes to GHCR, copying once a day: a handful of
+# there, and from its own registry when it is not yet. Only caches.yml writes to GHCR, copying once a day: a handful of
 # requests.
 #
 #   ci-images.sh resolve <ref>      the copy of <ref>, by digest, if it can be pulled with no credentials; else <ref>
@@ -16,7 +16,7 @@
 #                                   or for `browser`, apps/factory/Dockerfile.browser
 #   ci-images.sh sync               copy into GHCR every pinned digest, each pinned tag's current one, and the newest tag
 #                                   of each pin's line, then each image the cluster runs (`cluster`), with crane, which
-#                                   must be logged in to ghcr.io (mirror.yml); every read is crane's, with no credentials
+#                                   must be logged in to ghcr.io (caches.yml); every read is crane's, with no credentials
 #   ci-images.sh cluster            each third-party image the cluster runs (scripts/cluster-images.ts), its copy, and
 #                                   whether the copy is there and current, copying nothing; it fails only when an image
 #                                   cannot be listed, read or given a copy, not for a copy not made yet
@@ -62,7 +62,7 @@ mirror_of() {
 # Copies an image to a tag, every platform, byte for byte, so the copy's digest is the source's: crane copies an index's
 # manifest as it is, an index whose entries carry an artifactType (Kyverno's) among them. Tried again on a fault, three
 # times, as a registry that limits by address now and then refuses one; crane must be logged in to the copy's registry
-# (mirror.yml).
+# (caches.yml).
 crane_copy() {
   local from=$1 to=$2 try
   for try in 1 2 3 4; do
@@ -81,7 +81,7 @@ resolve() {
   if pullable "$copy"; then
     echo "$copy"
   else
-    echo "::warning::$ref is not in GHCR yet, so it comes from its own registry (mirror.yml copies it daily)" >&2
+    echo "::warning::$ref is not in GHCR yet, so it comes from its own registry (caches.yml copies it daily)" >&2
     echo "$ref"
   fi
 }

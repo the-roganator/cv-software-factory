@@ -59,7 +59,7 @@ export const ZAP_CHECK = 'ZAP scan';
 export const IMAGE_CHECK = 'image builds';
 export const TEST_SHARDS = ['tests (1/3)', 'tests (2/3)', 'tests (3/3)'];
 /** platform.yml's job that makes a cluster from the change and passes once everything on it runs. */
-export const PLATFORM_CHECK = 'platform';
+export const PLATFORM_CHECK = 'cluster from the change';
 
 export const CHECK_WORKFLOW = '.github/workflows/check.yml';
 export const PLATFORM_WORKFLOW = '.github/workflows/platform.yml';

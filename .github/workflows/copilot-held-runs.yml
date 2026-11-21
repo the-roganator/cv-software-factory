@@ -2,7 +2,7 @@
 # half hour and by hand, so none leaves a red cross on a pull request's commit or on main.
 #
 # GitHub treats Copilot as an outside contributor, so a review of Copilot's that leaves comments starts a run of
-# `review requested` that is held for approval before any job starts, and fails when its pull request closes; that run
+# `pull request` that is held for approval before any job starts, and fails when its pull request closes; that run
 # starts `review` on main's head as Copilot, held too. Neither has anything to judge, as only Martin's reviews count,
 # and no condition in a workflow can stop them. The script deletes a run only of those two workflows, by their files,
 # started and triggered by Copilot's account, held or failed, with no job: a fork's held run waits for Martin's approval

@@ -385,7 +385,7 @@ describe("the check's summary", () => {
 
 describe("the review gate's workflows", () => {
   const gate = readFileSync('.github/workflows/review.yml', 'utf-8');
-  const requested = readFileSync('.github/workflows/review-requested.yml', 'utf-8');
+  const requested = readFileSync('.github/workflows/pull-request.yml', 'utf-8');
   /** A workflow's triggers, the keys under `on:`. */
   const triggers = (workflow: string) =>
     [...(workflow.match(/^on:\n((?: {2}.*\n|\n)*)/m)?.[1] ?? '').matchAll(/^ {2}([\w-]+):/gm)].map((m) => m[1]).sort();
@@ -395,12 +395,15 @@ describe("the review gate's workflows", () => {
     // policy blocks pull_request_target in public repositories.
     expect(triggers(gate)).toEqual(['workflow_call', 'workflow_run']);
     // And after check.yml and platform.yml, so a pin move that waited for the job running its pin is judged again.
-    expect(gate).toMatch(/workflow_run:\n(?: {4}# [^\n]*\n)+ {4}workflows: \[review requested, check, platform\]\n/);
+    expect(gate).toMatch(/workflow_run:\n(?: {4}# [^\n]*\n)+ {4}workflows: \[pull request, check, platform\]\n/);
+    // Which workflow asked is the event's `workflow`: `workflow_run.name` is that run's title, which run-name sets.
+    expect(gate).not.toMatch(/workflow_run\.name/);
+    expect(gate.match(/github\.event\.workflow\.name != 'platform'/g)).toHaveLength(2);
     // The pin move job reads, and holds no secret: which workflow made a check run is an Actions read.
     expect(gate).toMatch(
       /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n(?: {6}# [^\n]*\n)? {6}actions: read\n {4}outputs:/m,
     );
-    expect(requested).toMatch(/^name: review requested$/m);
+    expect(requested).toMatch(/^name: pull request$/m);
     // The key is in an environment only main may use: a pull request into another branch runs that branch's copy.
     expect(gate).toMatch(/^ {4}environment: review$/m);
     // The review App's Client ID, and its key from that environment or a caller; nothing posts without the key.
@@ -460,22 +463,33 @@ describe("the review gate's workflows", () => {
     );
   });
 
-  it('read the merge queue’s branch as pr-title.yml does', () => {
-    // pr-title.yml matches the branch in bash: the one expression, with the slashes JavaScript escapes left bare.
-    const title = readFileSync('.github/workflows/pr-title.yml', 'utf-8');
+  it('read the merge queue’s branch as pull-request.yml’s title does', () => {
+    // pull-request.yml matches the branch in bash: the one expression, with the slashes JavaScript escapes left bare.
+    const title = requested;
     expect(title).toContain(`[[ "$QUEUE_BRANCH" =~ ${QUEUE_BRANCH.source.replaceAll('\\/', '/')} ]]`);
     expect(title).toContain('BASH_REMATCH[2]');
   });
 
   it('ask for it when a pull request into any branch opens or moves, on a review and in the merge queue, holding nothing and running nothing', () => {
-    expect(triggers(requested)).toEqual(['merge_group', 'pull_request', 'pull_request_review']);
+    expect(triggers(requested)).toEqual(['merge_group', 'pull_request', 'pull_request_review', 'workflow_call']);
     // No base filter: a stacked pull request, into the branch below it, needs the check too; `edited` covers its
     // retargeting when the one below merges.
     expect(requested).toMatch(
       /pull_request:\n {4}types: \[opened, reopened, synchronize, ready_for_review, edited, unlabeled\]\n/,
     );
+    // No secret, and no permission to write: the title's job reads the pull request, and the job that asks runs one
+    // echo with no token at all.
     expect(requested).toMatch(/^permissions: \{\}$/m);
-    expect(requested).not.toMatch(/uses:|secrets\./);
+    expect(requested).not.toMatch(/secrets\.|: write\b/);
+    // The title, a required check, runs on every event and is never skipped: a skipped job passes a required check,
+    // and would stand over a title that failed at the same head.
+    const title = requested.slice(requested.indexOf('\n  title:\n'), requested.indexOf('\n  requested:\n'));
+    expect(title).toMatch(/^ {4}name: title$/m);
+    expect(title).not.toMatch(/^ {4}if:/m);
+    expect(title).not.toMatch(/^ {6}- (?:name: .*\n {8})?if:/m);
+    const asks = requested.slice(requested.indexOf('\n  requested:\n'));
+    expect(asks).toMatch(/^ {4}permissions: \{\}$/m);
+    expect(asks).not.toMatch(/uses:/);
   });
 });
 

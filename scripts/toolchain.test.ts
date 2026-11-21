@@ -149,7 +149,7 @@ describe('every use of mise in CI', () => {
   });
 
   it("is cached on main for each set of tools any workflow installs, since a run reads only its own and main's", () => {
-    const cache = read('.github/workflows/toolchain-cache.yml');
+    const cache = read('.github/workflows/caches.yml');
     // Each set as the matrix's include gives it, beside the job it is named for.
     // The tools in the order mise-action keys them by, so `pnpm node` is the same set as `node pnpm`.
     const set = (tools = '') => tools.split(' ').filter(Boolean).sort().join(' ');
@@ -158,12 +158,14 @@ describe('every use of mise in CI', () => {
     const matrix = '${{ matrix.tools }}';
     // app-gates.yml runs in the app's repository alone (it refuses anything but its pull requests and merge queue),
     // whose caches are its own: this repository's main cannot serve it.
-    const here = uses.filter(({ file }) => file !== 'toolchain-cache.yml' && file !== 'app-gates.yml');
+    const warming = ({ file, tools }: { file: string; tools?: string | undefined }) =>
+      file === 'caches.yml' && tools === matrix;
+    const here = uses.filter((use) => !warming(use) && use.file !== 'app-gates.yml');
     expect(here.every(({ tools }) => tools)).toBe(true);
     const installed = new Set(here.map(({ tools }) => set(tools)));
     expect(installed.has('node')).toBe(true);
     expect(warmed.sort()).toEqual([...installed].sort());
-    expect(uses.filter(({ file }) => file === 'toolchain-cache.yml').map(({ tools }) => tools)).toEqual([matrix]);
+    expect(uses.filter(warming)).toHaveLength(1);
   });
 
   it('saves its cache on main alone, where every other run can read it', () => {

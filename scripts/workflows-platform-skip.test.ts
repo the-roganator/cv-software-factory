@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { PLATFORM_CHECK } from './pin-move-ran.ts';
 
 /*
  * platform.yml in the merge queue makes no cluster when one made from the same inputs passed at the pull request's head
@@ -56,6 +57,8 @@ describe('the queue’s cluster, made once already', () => {
     expect((platform?.steps ?? []).map((each) => each.name)).toContain(step);
     expect(/^PLATFORM_WORKFLOW=(.+)$/m.exec(script)?.[1]).toBe('.github/workflows/platform.yml');
     // The job the check run is: its name, which check-kind.sh reads the check runs and jobs by.
-    expect((workflow.jobs.platform as { name?: string }).name).toBe('platform');
+    const check = /^PLATFORM_CHECK='([^']+)'$/m.exec(script)?.[1];
+    expect(check).toBe(PLATFORM_CHECK);
+    expect((workflow.jobs.platform as { name?: string }).name).toBe(check);
   });
 });

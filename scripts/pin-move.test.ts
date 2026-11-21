@@ -256,22 +256,22 @@ describe('a pin move, replayed as the App would make it', () => {
   it("passes a sidecar's value once platform made a cluster from the change at its head (#995)", async () => {
     const result = await judged(SIDECAR);
     expect(result).toMatchObject({ ran: [PLATFORM_CHECK], fixed: 1 });
-    expect('move' in result && moveTitle(result)).toMatch(/, platform ran it$/);
+    expect('move' in result && moveTitle(result)).toMatch(/, cluster from the change ran it$/);
   });
 
   it("holds a sidecar's value while platform has not made a cluster from the change at its head", async () => {
     const at = (runs: Run[]) => reasonOf({ ...SIDECAR, io: { runs: async () => runs } });
     const others = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
-    expect(await at(others)).toBe('platform has not run at ccccccc');
+    expect(await at(others)).toBe('cluster from the change has not run at ccccccc');
     expect(await at([...others, run(PLATFORM_CHECK, null, { status: 'in_progress' })])).toBe(
-      'platform has not finished at ccccccc',
+      'cluster from the change has not finished at ccccccc',
     );
     expect(await at([...others, run(PLATFORM_CHECK, 'skipped')])).toBe(
-      'platform at ccccccc is skipped, not a success: it made no cluster from the change',
+      'cluster from the change at ccccccc is skipped, not a success: it made no cluster from the change',
     );
     for (const conclusion of ['failure', 'cancelled', 'timed_out', 'neutral'])
       expect(await at([...others, run(PLATFORM_CHECK, conclusion)])).toBe(
-        `platform at ccccccc is ${conclusion}, not a success: something must run it`,
+        `cluster from the change at ccccccc is ${conclusion}, not a success: something must run it`,
       );
     // Its latest attempt counts: a success re-run into a failure holds, a failure re-run into a success passes.
     const failedLast = [run(PLATFORM_CHECK, 'success', { id: 1 }), run(PLATFORM_CHECK, 'failure', { id: 2 })];
@@ -286,16 +286,16 @@ describe('a pin move, replayed as the App would make it', () => {
     );
     // Another head's success, another app's, or a job named `platform` in any workflow but platform.yml proves nothing.
     expect(await at([...others, run(PLATFORM_CHECK, 'success', { head_sha: 'd'.repeat(40) })])).toBe(
-      'platform has not run at ccccccc',
+      'cluster from the change has not run at ccccccc',
     );
     expect(await at([...others, run(PLATFORM_CHECK, 'success', { app: { slug: 'mrogan-software-factory' } })])).toBe(
-      'platform has not run at ccccccc',
+      'cluster from the change has not run at ccccccc',
     );
     expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: CHECK_WORKFLOW })])).toMatch(
-      /^platform at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
+      /^cluster from the change at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
     );
     expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: null })])).toMatch(
-      /^platform at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
+      /^cluster from the change at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
     );
     // A later forged success beside a failed real one does not hide the failure.
     const forged = [
@@ -308,7 +308,7 @@ describe('a pin move, replayed as the App would make it', () => {
   it('holds Postgres until both tests and platform ran it, and a third-party image or a chart in deploy/ on platform', async () => {
     const noPlatform = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
     expect(await reasonOf({ ...POSTGRES, io: { runs: async () => noPlatform } })).toBe(
-      'platform has not run at ccccccc',
+      'cluster from the change has not run at ccccccc',
     );
     const noTests = ALL_RAN().filter((r) => !r.name.startsWith('tests'));
     expect(await reasonOf({ ...POSTGRES, io: { runs: async () => noTests } })).toBe(
@@ -375,7 +375,7 @@ describe('a pin move, replayed as the App would make it', () => {
         io: { runs: async () => [...others, run(PLATFORM_CHECK, 'success', { workflow: null })] },
       }),
     ).toBe(
-      'platform at ccccccc ran in no run of .github/workflows/platform.yml for this pull request that the gate could read',
+      'cluster from the change at ccccccc ran in no run of .github/workflows/platform.yml for this pull request that the gate could read',
     );
   });
 
@@ -1189,10 +1189,10 @@ describe('the platform rule holds where an adversarial read aimed at it', () => 
       FOR,
     );
     expect(ranIt(runs, HEAD, [PLATFORM_CHECK])).toBe(
-      'platform at ccccccc is failure, not a success: something must run it',
+      'cluster from the change at ccccccc is failure, not a success: something must run it',
     );
     expect(await pinMove(sidecarIO({ runs: async () => runs }), HEAD)).toEqual({
-      reason: 'platform at ccccccc is failure, not a success: something must run it',
+      reason: 'cluster from the change at ccccccc is failure, not a success: something must run it',
     });
   });
 

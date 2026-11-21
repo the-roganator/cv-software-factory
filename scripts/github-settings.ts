@@ -41,9 +41,9 @@ export const REPOSITORIES: Record<string, string[]> = {
     'browser tests',
     'image builds',
     'lockfile scan',
-    'pull request title',
+    'title',
     // A change to what the cluster runs, made into a cluster in CI (platform.yml); skipped, and so passed, for any other.
-    'platform',
+    'cluster from the change',
   ],
   // The app's gates come from this repository (app-gates.yml); tests first is a signal, not a requirement.
   [APP_REPOSITORY]: [
@@ -220,8 +220,10 @@ export const CODE_SCANNING = {
  * at most about forty, so a group whose checks say nothing within the hour is taken out of the queue. Up to five are
  * tested at once, each on main with the ones ahead of it, and a pull request merges as soon as its checks pass, with
  * no wait for others to group with: there are seldom more than a few, and each run is a full one but the factory's
- * App's deploy's. That run's tests stand on the run of the entry ahead of it, or of main (check.yml's `kind` job), which
- * holds because each entry is one pull request's squashed change on the one ahead, and each must pass its own checks.
+ * App's deploy's and a change of manifests alone's. A deploy's tests, and a change of manifests' browser tests, stand on
+ * the run of the entry ahead of it, or of main (check.yml's `kind` job), which holds because each entry is one pull
+ * request's squashed change on the one ahead, and each must pass its own checks: ALLGREEN. A grouping that merged on
+ * the last entry's run alone would let a deploy or a change of manifests carry an entry ahead whose own run failed.
  */
 export const MERGE_QUEUE = {
   merge_method: 'SQUASH',
@@ -545,7 +547,9 @@ function apply(name: string, requiredChecks: string[]): void {
   repo = name;
   console.log(`Applying settings to ${repo}`);
 
-  step('squash merges only, titled from the pull request; branches deleted after merge', () =>
+  // The squashed commit is the pull request's title and number alone, which the merge queue's runs are named by (their
+  // run-name reads the queue's commit message, whole); the description stays on the pull request.
+  step('squash merges only, titled from the pull request, with no body; branches deleted after merge', () =>
     gh('PATCH', '', {
       has_wiki: false,
       has_projects: false,
@@ -553,7 +557,7 @@ function apply(name: string, requiredChecks: string[]): void {
       allow_merge_commit: false,
       allow_rebase_merge: false,
       squash_merge_commit_title: 'PR_TITLE',
-      squash_merge_commit_message: 'PR_BODY',
+      squash_merge_commit_message: 'BLANK',
       delete_branch_on_merge: true,
       allow_auto_merge: true,
       allow_update_branch: true,

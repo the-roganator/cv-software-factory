@@ -10,7 +10,7 @@ The list of what is scanned is worked out from each repository, never kept by ha
 
 - **Each repository's lockfile,** development dependencies included, since they run in CI beside its tokens and on Martin's Mac.
 - **Each image of ours that `main` pins,** from the SBOMs `build.yml` attests, so nothing large is pulled.
-- **Each third-party image the manifests pin by digest:** Postgres, its exporter, the proxy's nginx, and flagd once it is deployed, from CI's copy in GHCR where `mirror.yml` keeps one, since Docker Hub limits anonymous pulls by address.
+- **Each third-party image the manifests pin by digest:** Postgres, its exporter, the proxy's nginx, and flagd once it is deployed, from CI's copy in GHCR where `caches.yml` keeps one, since Docker Hub limits anonymous pulls by address.
 - **The platform:**
   - each image the platform's charts run at the versions `deploy/` pins, rendered with our values: Argo CD, Argo Rollouts, Kyverno, Prometheus and Alertmanager, Grafana, Loki, Tempo and the collector;
   - the k3s node image `deploy/k3d/cluster.yaml` pins, and the images that k3s release starts (Traefik and CoreDNS among them), from the release's own list of images, and the load balancer and tools images k3d starts beside it, at the version `mise.toml` pins.

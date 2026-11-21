@@ -8,12 +8,15 @@
 #              the version line of package.json. On a pull request only: the queue runs a release as `code`.
 #   deploy     a change by the factory's App into main whose every changed line is the digest of an image the two pin
 #              files of the local profile pin, on a pull request or in the queue.
-#   manifests  a pull request, anyone's, that changes only files under deploy/, but for the Postgres the console's
-#              browser tests run beside. On a pull request only.
+#   manifests  a change, anyone's, that changes only files under deploy/, but for the Postgres the console's browser
+#              tests run beside, on a pull request or in the queue. It goes by the files alone, so the queue tells it
+#              without asking GitHub whose the pull request is. In the queue it stands on the merge queue's ALLGREEN
+#              grouping (scripts/github-settings.ts): an entry made on one ahead skips the browser tests that entry runs
+#              for itself, so a group merges only once every entry's own run has passed.
 #   code       anything else: every check runs. A pin move of the App's (scripts/pin-move.ts) is this kind: the review
 #              gate passes one only once the job that runs its pin (ZAP scan, image builds, tests) succeeded at its
 #              head, so none of them may be skipped for it. One under deploy/ that only a cluster runs is `manifests`,
-#              and the gate passes it once `platform`, which every change to deploy/ runs, succeeded at its head.
+#              and the gate passes it once `cluster from the change`, which every change to deploy/ runs, succeeded at its head.
 #
 # `scripts/check-kind.sh platform` says instead whether platform.yml's cluster runs, `cluster` or `none`: `cluster` when
 # HEAD changes from HEAD^1 any input, which is any path outside the classes a cluster is not made from (is_input, below:
@@ -153,6 +156,8 @@ changes_platform() {
 PASS_HOURS=24
 # The workflow, its job and the step that make the cluster, which the pass must have run.
 PLATFORM_WORKFLOW=.github/workflows/platform.yml
+# platform.yml's job that makes the cluster, and the check run it posts.
+PLATFORM_CHECK='cluster from the change'
 CLUSTER_STEP='Make the cluster'
 
 # The inputs at a commit, a line each, `<mode> <type> <object><tab><path>`: a pin file's object is its unpinned text's.
@@ -211,9 +216,9 @@ why() {
   reason=$1
 }
 
-# Whether `platform` made a cluster from the queue's inputs at the head of the pull request the queue's branch names,
+# Whether `cluster from the change` made a cluster from the queue's inputs at the head of the pull request the queue's branch names,
 # and passed there, within PASS_HOURS. It reads the head's inputs from git, and the pass from GitHub's check runs at
-# that head alone: the check run `platform` of the GitHub Actions app, the latest of its check suite, whose suite is a
+# that head alone: the check run `cluster from the change` of the GitHub Actions app, the latest of its check suite, whose suite is a
 # run of this workflow, on that pull request into main, from its branch in this repository, made since it was opened,
 # and whose job ran the step that makes the cluster, every such run a success. Anything it cannot tell is a cluster.
 # Takes the inputs' hash at the queue's commit, and sets `matched` to what it found.
@@ -271,16 +276,16 @@ passed_at_head() {
   # As files, never arguments: the lists outgrow what one argument may hold on Linux (128 KiB).
   checks=$(mktemp) || { why 'no room to read the check runs in'; return 1; }
   runs=$(mktemp) || { rm -f "$checks"; why 'no room to read the check runs in'; return 1; }
-  gh api --paginate "repos/$repo/commits/$head/check-runs?check_name=platform&filter=all&per_page=100" |
+  gh api --paginate "repos/$repo/commits/$head/check-runs?check_name=$(jq -rn --arg c "$PLATFORM_CHECK" '$c | @uri')&filter=all&per_page=100" |
     jq '.check_runs[]' > "$checks" || { rm -f "$checks" "$runs"; why "GitHub did not list the check runs at ${head:0:7}"; return 1; }
   gh api --paginate "repos/$repo/actions/runs?head_sha=$head&event=pull_request&per_page=100" |
     jq '.workflow_runs[]' > "$runs" || { rm -f "$checks" "$runs"; why "GitHub did not list the workflow runs at ${head:0:7}"; return 1; }
   latest=$(jq -rn --slurpfile checks "$checks" --slurpfile runs "$runs" --arg head "$head" --arg repo "$repo" \
-    --arg ref "$ref" --arg created "$created" --argjson n "$number" --arg workflow "$PLATFORM_WORKFLOW" '
+    --arg ref "$ref" --arg created "$created" --argjson n "$number" --arg workflow "$PLATFORM_WORKFLOW" --arg check "$PLATFORM_CHECK" '
     [$runs[] | select(.path == $workflow and .event == "pull_request" and .head_sha == $head
       and .repository.full_name == $repo and .head_repository.full_name == $repo and .head_branch == $ref
       and .created_at >= $created and any(.pull_requests[]?; .number == $n and .base.ref == "main"))] as $ours
-    | [$checks[] | select(.name == "platform" and .head_sha == $head and .app.slug == "github-actions")
+    | [$checks[] | select(.name == $check and .head_sha == $head and .app.slug == "github-actions")
         | . as $check | ([$ours[] | select(.check_suite_id == $check.check_suite.id)] | first) as $run
         | select($run != null)
         | {id, status, conclusion, completed_at, suite: .check_suite.id, run: $run.id, attempt: $run.run_attempt}]
@@ -289,21 +294,21 @@ passed_at_head() {
   read_ok=$?
   rm -f "$checks" "$runs"
   [ "$read_ok" = 0 ] || { why "the check runs at ${head:0:7} could not be read"; return 1; }
-  [ -n "$latest" ] || { why "no run of $PLATFORM_WORKFLOW for #$number has a platform job at ${head:0:7}"; return 1; }
+  [ -n "$latest" ] || { why "no run of $PLATFORM_WORKFLOW for #$number has a $PLATFORM_CHECK job at ${head:0:7}"; return 1; }
   while IFS=$'\x1f' read -r id status conclusion completed run attempt; do
     [ "$status" = completed ] && [ "$conclusion" = success ] ||
-      { why "platform at ${head:0:7}, in run $run, is $status, $conclusion"; return 1; }
+      { why "$PLATFORM_CHECK at ${head:0:7}, in run $run, is $status, $conclusion"; return 1; }
     ran=$(gh api "repos/$repo/actions/runs/$run/attempts/$attempt/jobs?per_page=100" |
-      jq -r --argjson id "$id" --arg step "$CLUSTER_STEP" '[.jobs[] | select(.id == $id and .name == "platform"
+      jq -r --argjson id "$id" --arg step "$CLUSTER_STEP" --arg check "$PLATFORM_CHECK" '[.jobs[] | select(.id == $id and .name == $check
         and .conclusion == "success" and any(.steps[]?; .name == $step and .conclusion == "success"))] | length') ||
       { why "GitHub did not list run $run's jobs"; return 1; }
-    [ "$ran" = 1 ] || { why "platform at ${head:0:7}, in run $run, did not make a cluster"; return 1; }
+    [ "$ran" = 1 ] || { why "$PLATFORM_CHECK at ${head:0:7}, in run $run, did not make a cluster"; return 1; }
   done <<< "$latest"
   # The newest pass, the first row.
   IFS=$'\x1f' read -r id status conclusion completed run attempt <<< "$latest"
   fresh=$(jq -rn --arg t "$completed" --argjson hours "$PASS_HOURS" '($t | fromdateiso8601) > (now - $hours * 3600)') ||
-    { why "GitHub named no time platform ended at ${head:0:7}"; return 1; }
-  [ "$fresh" = true ] || { why "platform passed at ${head:0:7} at $completed, more than $PASS_HOURS hours ago"; return 1; }
+    { why "GitHub named no time $PLATFORM_CHECK ended at ${head:0:7}"; return 1; }
+  [ "$fresh" = true ] || { why "$PLATFORM_CHECK passed at ${head:0:7} at $completed, more than $PASS_HOURS hours ago"; return 1; }
   matched="#$number's head ${head:0:7}, where run $run made a cluster and passed at $completed (inputs $at_queue)"
 }
 
@@ -337,6 +342,10 @@ case "${GITHUB_EVENT_NAME:-}" in
   merge_group)
     if pull=$(queued) && [ "$pull" = "$APP main" ] && moves_only_pins; then
       kind=deploy
+    fi
+    # By the files alone, as on a pull request: whoever's the pull request is, and whether or not GitHub answered.
+    if [ "$kind" = code ] && manifests_only; then
+      kind=manifests
     fi
     ;;
 esac

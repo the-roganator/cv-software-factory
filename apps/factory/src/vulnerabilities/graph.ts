@@ -1,5 +1,5 @@
 /**
- * The dependency graph's snapshot (`dependency-graph.yml`): every package each lockfile on the scanned repository's
+ * The dependency graph's snapshot (vulnerabilities.yml's `graph` job): every package each lockfile on the scanned repository's
  * list resolves, indirect ones included, for GitHub's dependency submission API, so the graph and Dependabot's alerts
  * hold what the lockfile holds and not only what a manifest names.
  *
@@ -12,7 +12,7 @@
  * package's relationship, scope and dependencies from the lockfile: direct when an importer names it, at runtime when an
  * importer's dependencies or optional dependencies reach it, development when only development dependencies do, and
  * depending on what its entry in the lockfile's snapshots names. It writes `<dir>/snapshot.json`, with the commit, the
- * ref and a correlator naming the workflow, so the next snapshot replaces it; the workflow submits it.
+ * ref and the graph's correlator, so the next snapshot replaces it; the workflow submits it.
  *
  * With `--prove` it submits nothing and installs each lockfile as the scan's coverage does (`coverage.ts`), and fails
  * unless every package `pnpm list --depth Infinity` names is in the snapshot, each direct or indirect as pnpm lists it.
@@ -29,7 +29,10 @@ import { DIGEST_PATTERN } from './reference.ts';
 
 const run = promisify(execFile);
 
-/** The snapshot's correlator: the workflow's, so each submission replaces the one before it. */
+/**
+ * The snapshot's correlator, which every snapshot of the graph carries, so each submission replaces the one before it.
+ * GitHub keeps the last snapshot of every correlator it was sent, so another would leave this one's in the graph for good.
+ */
 export const CORRELATOR = 'dependency-graph.yml';
 
 const SYFT = new RegExp(String.raw`^FROM (ghcr\.io/anchore/syft:v(\d+\.\d+\.\d+)@${DIGEST_PATTERN})$`, 'm');

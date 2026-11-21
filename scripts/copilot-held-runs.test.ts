@@ -8,7 +8,7 @@ import { COPILOT, type GitHub, heldForCopilot, PAGES, type Run, sweep, toDelete 
 const copilot = { id: 175_728_472, login: 'Copilot', type: 'Bot' };
 const martin = { id: 6_206_459, login: 'mrogan', type: 'User' };
 
-/** review.yml, started by Copilot's held run of review-requested.yml when its pull request closed: held on main. */
+/** review.yml, started by Copilot's held run of pull-request.yml when its pull request closed: held on main. */
 const HELD_GATE = {
   id: 41_116_905_548,
   name: 'review',
@@ -23,11 +23,11 @@ const HELD_GATE = {
   triggering_actor: copilot,
 };
 
-/** review-requested.yml, held for Copilot's commented review, failed once its pull request closed: no job. */
+/** pull-request.yml, held for Copilot's commented review, failed once its pull request closed: no job. */
 const HELD_REQUEST = {
   id: 41_149_250_778,
-  name: 'review requested',
-  path: '.github/workflows/review-requested.yml',
+  name: 'pull request',
+  path: '.github/workflows/pull-request.yml',
   event: 'pull_request_review',
   status: 'completed',
   conclusion: 'failure',
@@ -38,11 +38,11 @@ const HELD_REQUEST = {
   triggering_actor: copilot,
 };
 
-/** Copilot's held run of review-requested.yml, re-run by Martin: it passed, with his name on the attempt. */
+/** Copilot's held run of pull-request.yml, re-run by Martin: it passed, with his name on the attempt. */
 const RERUN = {
   id: 41_185_642_899,
-  name: 'review requested',
-  path: '.github/workflows/review-requested.yml',
+  name: 'pull request',
+  path: '.github/workflows/pull-request.yml',
   event: 'pull_request_review',
   status: 'completed',
   conclusion: 'success',
@@ -160,7 +160,7 @@ describe('a pass', () => {
     expect(removed).toEqual([HELD_REQUEST.id, HELD_GATE.id]);
     expect(outcome).toEqual({ deleted: removed, gone: [], kept: [2], failed: [] });
     expect(lines).toContain(`Deleted ${HELD_GATE.id} (review.yml, action_required).`);
-    expect(lines).toContain('Kept 2 (review-requested.yml, failure): it has 1 job.');
+    expect(lines).toContain('Kept 2 (pull-request.yml, failure): it has 1 job.');
     // The run's branch and title are never written out.
     expect(lines.join('\n')).not.toMatch(/designs-c-guardrails|curl|rm -rf/);
   });
@@ -171,7 +171,7 @@ describe('a pass', () => {
     const outcome = await sweep(fake, true, (line) => lines.push(line));
     expect(removed).toEqual([]);
     expect(outcome.deleted.sort()).toEqual([HELD_GATE.id, HELD_REQUEST.id].sort());
-    expect(lines).toContain(`Would delete ${HELD_REQUEST.id} (review-requested.yml, failure).`);
+    expect(lines).toContain(`Would delete ${HELD_REQUEST.id} (pull-request.yml, failure).`);
   });
 
   it('pages through every run, the oldest held runs too, before deleting any', async () => {
@@ -184,7 +184,7 @@ describe('a pass', () => {
       'review.yml action_required 2',
       'review.yml action_required 3',
     ]);
-    expect(asked).toContain('review-requested.yml failure 1');
+    expect(asked).toContain('pull-request.yml failure 1');
   });
 
   it('stops after its last page, and warns that the rest wait', async () => {
@@ -201,15 +201,15 @@ describe('a pass', () => {
     const failing: GitHub = {
       ...fake,
       runs: async (file, conclusion, page) => {
-        if (file === 'review-requested.yml') throw new Error('GET runs: 502 Bad Gateway');
+        if (file === 'pull-request.yml') throw new Error('GET runs: 502 Bad Gateway');
         return fake.runs(file, conclusion, page);
       },
     };
     const outcome = await sweep(failing, false, () => {});
     expect(removed).toEqual([HELD_GATE.id]);
     expect(outcome.failed).toEqual([
-      { list: 'review-requested.yml action_required', error: 'GET runs: 502 Bad Gateway' },
-      { list: 'review-requested.yml failure', error: 'GET runs: 502 Bad Gateway' },
+      { list: 'pull-request.yml action_required', error: 'GET runs: 502 Bad Gateway' },
+      { list: 'pull-request.yml failure', error: 'GET runs: 502 Bad Gateway' },
     ]);
   });
 

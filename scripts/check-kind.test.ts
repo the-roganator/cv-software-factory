@@ -206,9 +206,12 @@ describe('a deploy', () => {
     expect(kind(repository(change, modes), app).kind).toBe('manifests');
   });
 
-  it.each(notPins)('is not a change of %s, in the merge queue', (_, change, modes) => {
-    expect(kind(repository(change, modes), queued).kind).toBe('code');
-  });
+  it.each(notPins)(
+    'is not a change of %s, in the merge queue: a change of deploy/ only there too',
+    (_, change, modes) => {
+      expect(kind(repository(change, modes), queued).kind).toBe('manifests');
+    },
+  );
 
   it('is not a digest moved beside it in another file, a new pin file too', () => {
     const other = 'deploy/overlays/local/image/kustomization.yaml';
@@ -218,7 +221,7 @@ describe('a deploy', () => {
       { [CONSOLE]: moved(CONSOLE), [other]: BASE[CONSOLE] ?? '' },
       { [CONSOLE]: null, 'deploy/overlays/local/console-image/kustomization.yml': moved(CONSOLE) },
     ]) {
-      expect(kind(repository(change), queued).kind).toBe('code');
+      expect(kind(repository(change), queued).kind).not.toBe('deploy');
       expect(kind(repository(change), app).kind).not.toBe('deploy');
     }
   });
@@ -226,7 +229,7 @@ describe('a deploy', () => {
   it('is not a file whose name holds both pin files', () => {
     const both = `${CONSOLE} ${FACTORY}`;
     const repo = () => repository({ [both]: moved(CONSOLE) }, {}, { [both]: BASE[CONSOLE] ?? '' });
-    expect(kind(repo(), queued).kind).toBe('code');
+    expect(kind(repo(), queued).kind).toBe('manifests');
     expect(kind(repo(), app).kind).toBe('manifests');
   });
 
@@ -235,19 +238,20 @@ describe('a deploy', () => {
     expect(kind(pins(), { ...app, author: 'mrogan' }).kind).toBe('manifests');
     expect(kind(pins(), { ...app, author: 'dependabot[bot]' }).kind).toBe('manifests');
     expect(kind(pins(), { ...app, base: 'deploy/other' }).kind).toBe('manifests');
-    expect(kind(pins(), { ...queued, pull: { login: 'mrogan', base: 'main' } }).kind).toBe('code');
-    expect(kind(pins(), { ...queued, pull: { login: APP, base: 'feat/below' } }).kind).toBe('code');
+    expect(kind(pins(), { ...queued, pull: { login: 'mrogan', base: 'main' } }).kind).toBe('manifests');
+    expect(kind(pins(), { ...queued, pull: { login: APP, base: 'feat/below' } }).kind).toBe('manifests');
   });
 
-  it('is code in the queue when the pull request cannot be found', () => {
+  it('is no deploy in the queue when the pull request cannot be found, only a change of manifests', () => {
     const pins = () => repository({ [CONSOLE]: moved(CONSOLE) });
     const failed = kind(pins(), { ...queued, pull: 'fail' });
-    expect(failed.kind).toBe('code');
+    // Manifests goes by the files alone, whoever's the pull request is.
+    expect(failed.kind).toBe('manifests');
     expect(failed.asked).toHaveLength(1);
     // A branch that is not the queue's for main names no pull request, so nothing is asked.
     for (const branch of ['', 'refs/heads/deploy/local', 'refs/heads/gh-readonly-queue/other/pr-699-abcdef0']) {
       const { kind: found, asked } = kind(pins(), { ...queued, branch });
-      expect(found).toBe('code');
+      expect(found).toBe('manifests');
       expect(asked).toEqual([]);
     }
   });
@@ -291,9 +295,15 @@ describe('a change of manifests', () => {
     expect(kind(repository(into), { ...app, author: 'mrogan' }).kind).toBe('code');
   });
 
-  it('runs everything in the merge queue', () => {
+  it('is told in the merge queue too, by the files alone, with the same exceptions', () => {
     const manifest = { 'deploy/base/console/deployment.yaml': 'kind: Deployment\n# moved\n' };
-    expect(kind(repository(manifest), queued).kind).toBe('code');
+    expect(kind(repository(manifest), queued).kind).toBe('manifests');
+    expect(kind(repository(manifest), { ...queued, pull: { login: 'mrogan', base: 'main' } }).kind).toBe('manifests');
+    const postgres = { ...manifest, 'deploy/base/postgres/statefulset.yaml': 'kind: StatefulSet\n# moved\n' };
+    expect(kind(repository(postgres), queued).kind).toBe('code');
+    const into = { 'apps/console/src/main.ts': null, 'deploy/base/console/main.ts': 'export {};\n' };
+    expect(kind(repository(into), queued).kind).toBe('code');
+    expect(kind(repository({}), queued).kind).toBe('code');
   });
 });
 
@@ -850,11 +860,11 @@ describe('the queue’s cluster, made once already', () => {
         { number: 7, state: 'open', closed_at: null },
       ] as unknown,
       [`repos/${REPO}/commits/${head}/pulls?per_page=100`]: [{ number: 7, head: { sha: head } }] as unknown,
-      [`repos/${REPO}/commits/${head}/check-runs?check_name=platform&filter=all&per_page=100`]: {
+      [`repos/${REPO}/commits/${head}/check-runs?check_name=cluster%20from%20the%20change&filter=all&per_page=100`]: {
         check_runs: [
           {
             id: 101,
-            name: 'platform',
+            name: 'cluster from the change',
             head_sha: head,
             status: 'completed',
             conclusion: 'success',
@@ -885,7 +895,7 @@ describe('the queue’s cluster, made once already', () => {
         jobs: [
           {
             id: 101,
-            name: 'platform',
+            name: 'cluster from the change',
             conclusion: 'success',
             steps: [
               { name: 'Refuse a privileged context', conclusion: 'success' },
@@ -945,7 +955,9 @@ describe('the queue’s cluster, made once already', () => {
   const headOf = (a: GitHub) => (a[`repos/${REPO}/pulls/7`] as { head: { sha: string } }).head.sha;
   const pull = (a: GitHub) => a[`repos/${REPO}/pulls/7`] as Row;
   const checksOf = (a: GitHub) =>
-    a[`repos/${REPO}/commits/${headOf(a)}/check-runs?check_name=platform&filter=all&per_page=100`] as {
+    a[
+      `repos/${REPO}/commits/${headOf(a)}/check-runs?check_name=cluster%20from%20the%20change&filter=all&per_page=100`
+    ] as {
       check_runs: Row[];
     };
   const check = (a: GitHub) => checksOf(a).check_runs[0] as Row;
@@ -1115,7 +1127,7 @@ describe('the queue’s cluster, made once already', () => {
   });
 
   it.each<[string, (a: GitHub) => void, string]>([
-    ['no earlier pass', (a) => Object.assign(checksOf(a), { check_runs: [] }), 'has a platform job at'],
+    ['no earlier pass', (a) => Object.assign(checksOf(a), { check_runs: [] }), 'has a cluster from the change job at'],
     ['an earlier failure', (a) => Object.assign(check(a), { conclusion: 'failure' }), 'is completed, failure'],
     [
       'a run not finished',
@@ -1153,13 +1165,29 @@ describe('the queue’s cluster, made once already', () => {
     [
       'a pass by another workflow',
       (a) => Object.assign(run(a), { path: '.github/workflows/check.yml' }),
-      'platform job at',
+      'cluster from the change job at',
     ],
-    ['a pass by another app', (a) => Object.assign(check(a), { app: { slug: 'some-app' } }), 'platform job at'],
-    ['a check run of another name', (a) => Object.assign(check(a), { name: 'platform-ish' }), 'platform job at'],
-    ['a run of another event', (a) => Object.assign(run(a), { event: 'merge_group' }), 'platform job at'],
-    ['a run in another repository', (a) => Object.assign(run(a), { repository: fork }), 'platform job at'],
-    ['a run from a fork', (a) => Object.assign(run(a), { head_repository: fork }), 'platform job at'],
+    [
+      'a pass by another app',
+      (a) => Object.assign(check(a), { app: { slug: 'some-app' } }),
+      'cluster from the change job at',
+    ],
+    [
+      'a check run of another name',
+      (a) => Object.assign(check(a), { name: 'platform-ish' }),
+      'cluster from the change job at',
+    ],
+    [
+      'a run of another event',
+      (a) => Object.assign(run(a), { event: 'merge_group' }),
+      'cluster from the change job at',
+    ],
+    [
+      'a run in another repository',
+      (a) => Object.assign(run(a), { repository: fork }),
+      'cluster from the change job at',
+    ],
+    ['a run from a fork', (a) => Object.assign(run(a), { head_repository: fork }), 'cluster from the change job at'],
     ['a head in a fork', (a) => Object.assign(pull(a).head as Row, { repo: fork }), 'head is in someone/fork'],
     // An empty field, split on tabs, would shift every field after it, and the reason with them.
     [
@@ -1167,23 +1195,31 @@ describe('the queue’s cluster, made once already', () => {
       (a) => Object.assign(pull(a).head as Row, { repo: null }),
       'head is in no repository',
     ],
-    ['a run from another branch', (a) => Object.assign(run(a), { head_branch: 'other' }), 'platform job at'],
-    ['a run made before the pull request', (a) => Object.assign(run(a), { created_at: ago(40) }), 'platform job at'],
+    [
+      'a run from another branch',
+      (a) => Object.assign(run(a), { head_branch: 'other' }),
+      'cluster from the change job at',
+    ],
+    [
+      'a run made before the pull request',
+      (a) => Object.assign(run(a), { created_at: ago(40) }),
+      'cluster from the change job at',
+    ],
     [
       'a run for another pull request',
       (a) => Object.assign(run(a), { pull_requests: [{ number: 8, base: { ref: 'main' } }] }),
-      'platform job at',
+      'cluster from the change job at',
     ],
     [
       'a run into another base',
       (a) => Object.assign(run(a), { pull_requests: [{ number: 7, base: { ref: 'next' } }] }),
-      'platform job at',
+      'cluster from the change job at',
     ],
     ['a pass older than a day', (a) => Object.assign(check(a), { completed_at: ago(25) }), 'more than 24 hours ago'],
     [
       'a pass at no time GitHub names',
       (a) => Object.assign(check(a), { completed_at: null }),
-      'named no time platform',
+      'named no time cluster from the change',
     ],
     ['a pull request closed', (a) => Object.assign(pull(a), { state: 'closed' }), '#7 is closed'],
     ['a pull request into another base', (a) => Object.assign(pull(a), { base: { ref: 'next' } }), 'into next'],

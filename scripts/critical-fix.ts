@@ -135,7 +135,7 @@ export const PIN_FILES: readonly string[] = [LOCKFILE, MANIFEST, DOCKERFILE, MIS
 export const APP_GATES: Readonly<Record<string, string>> = {
   'lint, types, tests': '.github/workflows/check.yml',
   'image builds': '.github/workflows/check.yml',
-  'title / pull request title': '.github/workflows/pr-title.yml',
+  'pull request / title': '.github/workflows/pull-request.yml',
   'gates / journeys': '.github/workflows/gates.yml',
   'gates / test integrity': '.github/workflows/gates.yml',
   'gates / dependency review': '.github/workflows/gates.yml',

@@ -49,7 +49,7 @@ export const REPOSITORIES: Record<string, string[]> = {
   [APP_REPOSITORY]: [
     'lint, types, tests',
     'image builds',
-    'title / pull request title',
+    'pull request / title',
     'gates / journeys',
     'gates / test integrity',
     'gates / dependency review',

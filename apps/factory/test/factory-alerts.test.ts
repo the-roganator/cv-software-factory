@@ -82,6 +82,12 @@ interface Case {
   alert_rule_test: { eval_time: string; alertname: string; exp_alerts: unknown[] }[];
 }
 
+/**
+ * promtool is a program of its own, started for each test: on a busy CI runner one test's run of it has taken over five
+ * seconds, vitest's default for a test, so each here has longer.
+ */
+const PROMTOOL = { timeout: 30_000 };
+
 /** Runs promtool over the committed rules with these cases, and gives back what it says when any fails. */
 function promtool(tests: Case[], group = 'factory'): { ok: boolean; output: string } {
   const folder = mkdtempSync(join(tmpdir(), 'factory-alerts-'));
@@ -109,7 +115,7 @@ const CONSOLE = { target: 'console', address: 'http://console' };
 const checks = (target: { target: string; address: string }, outcome: string) =>
   `target="${target.target}", address="${target.address}", outcome="${outcome}"`;
 
-describe('the alerts on the factory’s health, releases and spend', () => {
+describe('the alerts on the factory’s health, releases and spend', PROMTOOL, () => {
   it('are the rules file’s, generated from the policy, in a group of their own', () => {
     expect(committed().flatMap((group) => group.rules.map((rule) => rule.alert))).toEqual(
       factoryRules().map((rule) => rule.alert),
@@ -599,7 +605,7 @@ describe('the alerts on the factory’s health, releases and spend', () => {
   });
 });
 
-describe('the alert that a guardrail’s proof did not hold', () => {
+describe('the alert that a guardrail’s proof did not hold', PROMTOOL, () => {
   const rule = martinRules().find((r) => r.alert === 'SecurityEvent' && r.labels.kind === 'guardrail-not-held');
   const fires = { exp_labels: rule?.labels, exp_annotations: rule?.annotations };
   const counted = (kind: string, values: string, pod = 'line-1') => ({
@@ -661,7 +667,7 @@ describe('the alert that a guardrail’s proof did not hold', () => {
   });
 });
 
-describe('the alerts that a red-team attack was not refused as it should be, or did not finish', () => {
+describe('the alerts that a red-team attack was not refused as it should be, or did not finish', PROMTOOL, () => {
   const counted = (kind: string, values: string, pod = 'line-1') => ({
     series: line('line_security_events_total', `kind="${kind}", pod="${pod}"`),
     values,
@@ -706,7 +712,7 @@ describe('the alerts that a red-team attack was not refused as it should be, or 
   }
 });
 
-describe('the alert that alerts do not reach the phone', () => {
+describe('the alert that alerts do not reach the phone', PROMTOOL, () => {
   const rule = martinRules().find((r) => r.alert === PHONE_OFF);
   const fires = { exp_labels: {}, exp_annotations: rule?.annotations };
   const adminSays = (values: string, pod = 'admin-1') => ({
@@ -769,7 +775,7 @@ describe('the alert that alerts do not reach the phone', () => {
   });
 });
 
-describe('the alert that a change the admin service makes is named by no event', () => {
+describe('the alert that a change the admin service makes is named by no event', PROMTOOL, () => {
   // The line's comparisons, by the action their series name; auto-rollback's is Prometheus's own, below.
   const rules = martinRules().filter((r) => r.alert === ADMIN_UNCOUNTED && r.labels.action === undefined);
   const uncounted = (action: string) => line('line_admin_actions_uncounted', `action="${action}"`);
@@ -889,7 +895,7 @@ describe('the alert that a change the admin service makes is named by no event',
   });
 });
 
-describe('the alert that the admin service’s word on auto-rollback differs from Martin’s switch', () => {
+describe('the alert that the admin service’s word on auto-rollback differs from Martin’s switch', PROMTOOL, () => {
   const rule = martinRules().find((r) => r.alert === ADMIN_UNCOUNTED && r.labels.action === 'auto-rollback');
   const adminSays = (values: string) => ({ series: admin('admin_auto_rollback', 'pod="admin-1"'), values });
   const lineSays = (values: string) => ({ series: line('line_auto_rollback', 'pod="line-1"'), values });

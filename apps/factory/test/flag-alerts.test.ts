@@ -52,6 +52,12 @@ interface Case {
   alert_rule_test: { eval_time: string; alertname: string; exp_alerts: unknown[] }[];
 }
 
+/**
+ * promtool is a program of its own, started for each test: on a busy CI runner one test's run of it has taken over five
+ * seconds, vitest's default for a test, so each here has longer.
+ */
+const PROMTOOL = { timeout: 30_000 };
+
 /** Runs promtool over the committed rules with these cases, and gives back what it says when any fails. */
 function promtool(tests: Case[]): { ok: boolean; output: string } {
   const folder = mkdtempSync(join(tmpdir(), 'flag-alerts-'));
@@ -77,7 +83,7 @@ const each = (...values: (number | '_')[]) => values.join(' ');
 /** How long the app has differed, a sample a minute, from 0 to past the five minutes. */
 const DIFFERING_UP = each(0, 0, 60, 120, 180, 240, 300, 360, 420);
 
-describe('the alerts on the flags the app holds', () => {
+describe('the alerts on the flags the app holds', PROMTOOL, () => {
   it('are the rules file’s, generated from the policy, in a group of their own', () => {
     expect(committed().flatMap((group) => group.rules.map((rule) => rule.alert))).toEqual(
       flagRules().map((rule) => rule.alert),

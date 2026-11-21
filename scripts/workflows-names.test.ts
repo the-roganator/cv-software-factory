@@ -14,11 +14,12 @@ const read = (file: string) => parse(readFileSync(`.github/workflows/${file}`, '
 const expression = (inside: string) => `\${{ ${inside} }}`;
 
 describe('run names', () => {
-  it("name a run on the merge queue's commit by the commit the queue made, and a pull request's by its title", () => {
-    // The queue's commit is the pull request squashed: its message is the title and `(#<number>)`. GitHub's own name
-    // there is the workflow's alone. An empty name leaves GitHub's, the pull request's title.
+  it("name a run on the merge queue's commit by the queue's branch, and a pull request's by its title", () => {
+    // The branch is gh-readonly-queue/main/pr-<number>-<base>, which names the pull request. The queue's commit message
+    // would name it by its title, but GitHub adds a Co-authored-by line for each author, which no expression can cut.
+    // An empty name leaves GitHub's, the pull request's title.
     const named = expression(
-      "github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_commit.message) || ''",
+      "github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_ref) || ''",
     );
     for (const file of ['check.yml', 'platform.yml', 'pull-request.yml']) {
       const workflow = read(file);

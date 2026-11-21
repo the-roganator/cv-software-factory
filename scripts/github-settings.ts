@@ -49,7 +49,7 @@ export const REPOSITORIES: Record<string, string[]> = {
   [APP_REPOSITORY]: [
     'lint, types, tests',
     'image builds',
-    'title / pull request title',
+    'pull request / title',
     'gates / journeys',
     'gates / test integrity',
     'gates / dependency review',
@@ -547,9 +547,7 @@ function apply(name: string, requiredChecks: string[]): void {
   repo = name;
   console.log(`Applying settings to ${repo}`);
 
-  // The squashed commit is the pull request's title and number alone, which the merge queue's runs are named by (their
-  // run-name reads the queue's commit message, whole); the description stays on the pull request.
-  step('squash merges only, titled from the pull request, with no body; branches deleted after merge', () =>
+  step('squash merges only, titled from the pull request; branches deleted after merge', () =>
     gh('PATCH', '', {
       has_wiki: false,
       has_projects: false,
@@ -557,7 +555,7 @@ function apply(name: string, requiredChecks: string[]): void {
       allow_merge_commit: false,
       allow_rebase_merge: false,
       squash_merge_commit_title: 'PR_TITLE',
-      squash_merge_commit_message: 'BLANK',
+      squash_merge_commit_message: 'PR_BODY',
       delete_branch_on_merge: true,
       allow_auto_merge: true,
       allow_update_branch: true,

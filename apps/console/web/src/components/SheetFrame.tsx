@@ -139,9 +139,9 @@ export function SheetFrame({
 
 /**
  * Brings a row a panel's sheet opened at into view, just under the sheet's head, and gives it focus, as an address or a
- * card in Needs you asks: the sheet moves, not the page under it. What is above the row can still change as the sheet
- * settles (a stylesheet or a font arriving), so it is lined up again then, unless the viewer has scrolled meanwhile;
- * the function it returns stops that.
+ * card in Needs you asks: the sheet moves, not the page under it. What the sheet holds can still change as it settles
+ * (a stylesheet, a font or an answer arriving), so the row is lined up again then, unless the viewer has scrolled
+ * meanwhile; the function it returns stops that.
  */
 export function bringIntoSheet(row: HTMLElement | null | undefined): () => void {
   const scroller = row?.closest('.sheet-scroll');
@@ -159,9 +159,14 @@ export function bringIntoSheet(row: HTMLElement | null | undefined): () => void 
     frame = requestAnimationFrame(align);
   });
   void document.fonts?.ready.then(align);
+  // What the sheet holds can grow after that, as something it waits for answers (Martin's session, say), and only
+  // then scroll far enough: it is lined up again each time it changes size.
+  const resized = 'ResizeObserver' in window ? new ResizeObserver(align) : undefined;
+  for (const child of scroller.children) resized?.observe(child);
   // Called as the sheet closes, or as what it holds changes: nothing more is lined up.
   return () => {
     done = true;
     cancelAnimationFrame(frame);
+    resized?.disconnect();
   };
 }

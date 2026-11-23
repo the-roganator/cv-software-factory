@@ -87,6 +87,19 @@ describe('Markdown outside code', () => {
     );
   });
 
+  it('ends a comment’s HTML block only at a line with `-->`, so a backtick after `--!>` hides no mention', () => {
+    // A browser ends a comment at `--!>` too, and GitHub then shows and mentions what follows it, backticks and all; but
+    // the HTML block, whose every line is read as live, goes on to the line with `-->`, as in CommonMark. Ending the
+    // block at `--!>` would read the lines between as Markdown, where `@a` is inline code and goes unseen.
+    expect(outsideCode(lines('<!-- a note --!>', '`@a`', '-->', '`@b`'))).toBe(
+      lines('<!-- a note --!>', '`@a`', '-->', '    '),
+    );
+    expect(outsideCode(lines('<!--', 'a note --!>', '`@a`', '-->'))).toBe(lines('<!--', 'a note --!>', '`@a`', '-->'));
+    expect(outsideCode(lines('> <!-- a note --!>', '> `@a`', '> -->'))).toBe(
+      lines('> <!-- a note --!>', '> `@a`', '> -->'),
+    );
+  });
+
   it('starts no HTML block in a paragraph at a tag no block has, nor in code', () => {
     expect(outsideCode(lines('text', '<span>', '`a`'))).toBe(lines('text', '<span>', '   '));
     expect(outsideCode(lines('<span>', '`a`'))).toBe(lines('<span>', '`a`'));

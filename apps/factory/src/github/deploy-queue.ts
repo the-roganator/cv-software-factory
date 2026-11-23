@@ -80,7 +80,7 @@ import { failedChecks, type MergeQueue, REVIEW_CHECK, type ReviewVerdict } from 
 import { guardPinBranch } from './pin-guard.ts';
 import { PIN_LABEL, PIN_REPOS, type PinScope } from './pins.ts';
 import type { Watch } from './poller.ts';
-import { type CheckRun, outcomeOf, type Reads } from './reads.ts';
+import { type CheckRun, finished, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import { refusalOf } from './server.ts';
 
@@ -241,7 +241,10 @@ export function checksWait(runs: readonly CheckRun[], required: readonly string[
   const failed = latest.filter(failedRun).map((run) => run.name);
   if (failed.length) return { waits: 'failed', why: `failed: ${failed.join(', ')}` };
   const names = required.filter((name) => name !== REVIEW_CHECK);
-  const running = names.filter((name) => latest.find((run) => run.name === name)?.status !== 'completed');
+  const running = names.filter((name) => {
+    const run = latest.find((each) => each.name === name);
+    return !run || !finished(run);
+  });
   if (running.length) return { waits: 'checks', why: `waiting for ${running.join(', ')}` };
   return undefined;
 }
@@ -253,7 +256,7 @@ function latestRequired(runs: readonly CheckRun[], required: readonly string[]):
   return required.flatMap((name) => (name === REVIEW_CHECK ? [] : (latest.get(name) ?? [])));
 }
 
-const failedRun = (run: CheckRun): boolean => run.status === 'completed' && outcomeOf(run.conclusion) === 'failure';
+const failedRun = (run: CheckRun): boolean => finished(run) && outcomeOf(run.conclusion) === 'failure';
 
 /** How often a head is tried after a failure that may pass, before it is left for Martin. */
 export const MAX_TRIES = 5;
@@ -267,9 +270,7 @@ export const QUEUE_TRIES = 3;
 
 /** The checks that failed on the queue's commit, by name. */
 const failedOnQueue = (queue: Pick<MergeQueue, 'checks'>): string[] =>
-  queue.checks
-    .filter((run) => run.status === 'completed' && outcomeOf(run.conclusion) === 'failure')
-    .map((run) => run.name);
+  queue.checks.filter((run) => finished(run) && outcomeOf(run.conclusion) === 'failure').map((run) => run.name);
 
 /**
  * What the worker, or the line for its own pull request, says on a pull request whose head the queue took out
@@ -353,7 +354,7 @@ async function writeAgain(
   const failed = latest.filter(failedRun);
   if (!actions.commitAgain || !heads.set || attempt.ranOut || failed.some((run) => run.app !== ACTIONS_APP))
     return state.wait(number, head, wait);
-  const going = latest.filter((run) => run.status !== 'completed').map((run) => run.name);
+  const going = latest.filter((run) => !finished(run)).map((run) => run.name);
   if (going.length)
     return state.wait(number, head, { waits: 'checks', why: `${wait.why}; waiting for ${going.join(', ')}` });
   const names = failed.map((run) => run.name);

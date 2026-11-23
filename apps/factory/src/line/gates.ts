@@ -32,7 +32,7 @@ import {
 } from '@software-factory/events';
 import { ACTIONS_APP, countsOfCheck, scanOfCheck } from '../gates/counts.ts';
 import { APP_LOGIN } from '../github/actions.ts';
-import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
+import { type CheckRun, finished, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { whatClearedOnLook } from './verify.ts';
 
 /** The App, as GitHub names the app behind a check run: the factory's own runs (the reviewer's) are not gates. */
@@ -203,7 +203,7 @@ function gateRun(
     });
   }
   for (const run of latest.values()) {
-    if (run.status !== 'completed' || record.finished.has(`${commit} ${cutAt(run.name, 80)}`)) continue;
+    if (!finished(run) || record.finished.has(`${commit} ${cutAt(run.name, 80)}`)) continue;
     const conclusion = outcome(run.conclusion);
     const title = run.title?.trim();
     const summary = title === undefined ? undefined : cutTo(title, 200);
@@ -273,17 +273,22 @@ export function latestRuns(runs: readonly CheckRun[]): Map<string, CheckRun> {
 export function judge(latest: ReadonlyMap<string, CheckRun>, everyRequired: readonly string[], merged = false) {
   const required = gatesIn(everyRequired);
   const all = [...latest.values()];
-  const finished = all.filter((run) => run.status === 'completed');
+  const ended = all.filter(finished);
   // At a merge nothing waits: no read comes after it, so a round left open then would stay open for good.
   const waiting =
-    !merged && (required.some((name) => latest.get(name)?.status !== 'completed') || finished.length < all.length);
+    !merged &&
+    (required.some((name) => {
+      const run = latest.get(name);
+      return !run || !finished(run);
+    }) ||
+      ended.length < all.length);
   const judged = (required.length ? all.filter((run) => required.includes(run.name)) : all).filter((run) =>
-    finished.includes(run),
+    ended.includes(run),
   );
   const relevant = required.length ? required : all.map((run) => run.name);
   const unfinished = relevant.filter((name) => !judged.some((run) => run.name === name));
   const failed = judged.filter((run) => outcome(run.conclusion) === 'failure').map((run) => cutAt(run.name, 80));
-  const passed = finished.filter((run) => outcome(run.conclusion) === 'success').length;
+  const passed = ended.filter((run) => outcome(run.conclusion) === 'success').length;
   return { waiting, judged, unfinished, failed, passed };
 }
 

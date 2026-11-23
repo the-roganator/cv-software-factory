@@ -10,18 +10,21 @@
  * rules, which read what the servers answer and send nothing of their own) then runs in its pinned image, every request
  * carrying the session (`hooks.py`).
  *
+ * Its image's pull and ZAP's start are each bounded and tried again (`start.ts`).
+ *
  * Every finding fails the scan unless `rules.tsv` keeps an exception for it, with its reason beside it. The report is
  * written to `apps/console/zap-report/`. The console must be built first (`pnpm --filter @software-factory/console
  * build`).
  */
 import { spawn } from 'node:child_process';
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { BROWSER_LAUNCH } from '@software-factory/factory/capture';
 import { enrolThroughTheDoor, startHarness, virtualPasskey } from '../e2e/admin.ts';
+import { NEVER_STARTED, pullImage, runStarted } from './start.ts';
 
 /**
  * ZAP 2.17.0, by digest, moved by hand. It caps the rules but does not fix them: zap-baseline.py, started without
@@ -66,6 +69,12 @@ function unreached(file: string): string[] {
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPORT = fileURLToPath(new URL('../zap-report/', import.meta.url));
 
+// Before the harness, so a pull that takes its tries costs no session.
+if (!pullImage(ZAP_IMAGE)) {
+  console.error(`ZAP's image did not pull: ZAP failed the scan (${NEVER_STARTED}).`);
+  process.exit(NEVER_STARTED);
+}
+
 const harness = await startHarness(PORT, 'zap');
 let status = 1;
 try {
@@ -89,51 +98,63 @@ try {
   // here so that Java takes its IPv4 address.
   const linux = process.platform === 'linux';
   const target = linux ? harness.origin : harness.origin.replace('localhost', 'console.host');
+  // `hooks.py` writes it in the working folder once ZAP answers zap-baseline.py.
+  const answered = join(work, 'answered');
   // Not spawnSync: the proxy and the admin service answer ZAP from this process, so it must keep running.
-  const zap = spawn(
-    'docker',
-    [
-      'run',
-      '--rm',
-      ...(linux ? ['--network', 'host'] : ['--add-host', 'console.host:host-gateway']),
-      '--volume',
-      `${work}:/zap/wrk:rw`,
-      // The values come from this process's environment, so they are never on a command line.
-      ...['SF_SESSION_COOKIE', 'SF_CSRF_TOKEN', 'SF_TARGET', 'SF_ORIGIN'].flatMap((name) => ['--env', name]),
-      // Nothing left behind that ZAP's user owns and this one could not remove.
-      ...['--env', 'PYTHONDONTWRITEBYTECODE=1'],
-      ZAP_IMAGE,
-      'zap-baseline.py',
-      ...['-t', `${target}/`, '-P', String(ZAP_PORT), '-c', 'rules.tsv', '--hook', '/zap/wrk/hooks.py'],
-      ...['-r', 'report.html', '-J', 'report.json', '-w', 'report.md'],
-      // Anything more is the baseline's own: `-d` to see what it does.
-      ...process.argv.slice(2),
-    ],
-    {
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        SF_SESSION_COOKIE: `${cookie.name}=${cookie.value}`,
-        SF_CSRF_TOKEN: session.token,
-        SF_TARGET: target,
-        SF_ORIGIN: harness.origin,
+  const start = (attempt: number) => {
+    const name = `zap-${process.pid}-${attempt}`;
+    const zap = spawn(
+      'docker',
+      [
+        'run',
+        '--rm',
+        '--name',
+        name,
+        ...(linux ? ['--network', 'host'] : ['--add-host', 'console.host:host-gateway']),
+        '--volume',
+        `${work}:/zap/wrk:rw`,
+        // The values come from this process's environment, so they are never on a command line.
+        ...['SF_SESSION_COOKIE', 'SF_CSRF_TOKEN', 'SF_TARGET', 'SF_ORIGIN'].flatMap((name) => ['--env', name]),
+        // Nothing left behind that ZAP's user owns and this one could not remove.
+        ...['--env', 'PYTHONDONTWRITEBYTECODE=1'],
+        ZAP_IMAGE,
+        'zap-baseline.py',
+        ...['-t', `${target}/`, '-P', String(ZAP_PORT), '-c', 'rules.tsv', '--hook', '/zap/wrk/hooks.py'],
+        ...['-r', 'report.html', '-J', 'report.json', '-w', 'report.md'],
+        // Anything more is the baseline's own: `-d` to see what it does.
+        ...process.argv.slice(2),
+      ],
+      {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          SF_SESSION_COOKIE: `${cookie.name}=${cookie.value}`,
+          SF_CSRF_TOKEN: session.token,
+          SF_TARGET: target,
+          SF_ORIGIN: harness.origin,
+        },
       },
-    },
-  );
-  const exit = await new Promise<number | null>((resolve) => zap.on('close', resolve));
+    );
+    return {
+      exit: new Promise<number | null>((resolve) => zap.on('close', resolve)),
+      // The container, not the client: stopping `docker run` alone would leave ZAP running.
+      stop: () => void spawn('docker', ['rm', '--force', name], { stdio: 'ignore' }),
+    };
+  };
+  const exit = await runStarted(start, () => existsSync(answered));
   rmSync(REPORT, { recursive: true, force: true });
   mkdirSync(REPORT, { recursive: true });
-  cpSync(work, REPORT, { recursive: true, filter: (path) => !/\.(py|tsv)$/.test(path) });
+  cpSync(work, REPORT, { recursive: true, filter: (path) => !/(\.(py|tsv)|\/answered)$/.test(path) });
   // On Linux what ZAP wrote is its user's; the temporary folder goes with the runner if it cannot go now.
   try {
     rmSync(work, { recursive: true, force: true });
   } catch {}
   // 0: nothing found; 1: a rule set to FAIL; 2: a warning, which is any finding `rules.tsv` keeps no exception for; 3:
-  // zap-baseline.py failed; 4: ZAP stopped before it answered (`hooks.py`).
+  // zap-baseline.py failed; 4: ZAP stopped before it answered (`hooks.py`); 5: ZAP never answered (`start.ts`).
   status = exit ?? 1;
   // A scan that reached nothing would find nothing, and pass: it must have read the page, and Martin's session. When ZAP
-  // stopped before it answered, that it reached nothing says no more than ZAP's log above.
-  const missed = status === ZAP_STOPPED ? [] : unreached(join(REPORT, 'reached.json'));
+  // stopped or never answered, that it reached nothing says no more than ZAP's log above.
+  const missed = status === ZAP_STOPPED || status === NEVER_STARTED ? [] : unreached(join(REPORT, 'reached.json'));
   if (missed.length) {
     console.error(`ZAP did not reach, as it should have:\n${missed.map((line) => `  ${line}`).join('\n')}`);
     status = status || 1;

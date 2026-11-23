@@ -7,7 +7,7 @@
 # runtime image takes the output of both, then the server's code, and keeps the repository's layout, so the server
 # finds its files where it does in development. The migration Job runs this image too.
 
-FROM node:24.22.2-alpine3.24@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 AS base
+FROM node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS base
 WORKDIR /repo
 # pnpm at the version (and hash) pinned in package.json's packageManager field.
 RUN corepack enable
@@ -51,7 +51,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-fa
 
 # The server: TypeScript that Node runs as it is, over its dependencies, with the browser code beside it. Each copy is
 # a layer of its own, with the same modes as the dependencies'.
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:088a01637f22908632ba09018be2e0b516f2fa6f7869c191d29491139db43c78 AS runtime
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:39b0407357c9fadf1a9708d22088f02de21f0e1e8a688474eea2d8701e7d5693 AS runtime
 COPY --from=deps /repo /repo
 WORKDIR /repo
 COPY --chmod=a+rX,go-w apps/console/src apps/console/src

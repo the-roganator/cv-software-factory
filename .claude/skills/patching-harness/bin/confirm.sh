@@ -77,7 +77,7 @@ watches() {
 # A failed cluster's reason, which a dead runner still delivers as a step's name.
 why() {
   echo "--- platform steps named Why:"
-  for id in $(gh api "repos/$R/actions/workflows/419399571/runs?per_page=60" -q '.workflow_runs[]|select(.conclusion!="success")|.id'); do
+  for id in $(gh api "repos/$R/actions/workflows/platform.yml/runs?per_page=60" -q '.workflow_runs[]|select(.conclusion!="success")|.id'); do
     gh api "repos/$R/actions/runs/$id/jobs" -q '.jobs[].steps[]?|select((.name|startswith("Why:")) and (.name|length>6))|.name'
   done | head -5
 }
@@ -137,7 +137,7 @@ queued_base() {
   for _ in $(seq 1 60); do
     [ "$(gh pr view "$n" -R "$R" --json state -q .state)" = MERGED ] && { echo "queued base: #$n merged $(date -u +%H:%MZ)"; return 0; }
     # The ruleset wants every review thread resolved; Copilot's on this harness commit are resolved unread.
-    gh api graphql -F n="$n" -f query='query($n: Int!) { repository(owner: "the-roganator", name: "cv-software-factory-scratch") {
+    gh api graphql -F n="$n" -f owner="${R%%/*}" -f name="${R#*/}" -f query='query($n: Int!, $owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
       pullRequest(number: $n) { reviewThreads(first: 20) { nodes { id isResolved comments(first: 1) { nodes { author { login } } } } } } } }' \
       -q '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not) | select(.comments.nodes[0].author.login == "copilot-pull-request-reviewer") | .id' |
       while read -r thread; do
@@ -161,7 +161,7 @@ case "$deploy" in
 esac
 gh pr list -R "$R" --state all -L 12 --json number,title,state,createdAt,mergedAt \
   -q ".[]|select(.createdAt>\"$since\")|\"#\(.number) \(.state) merged=\(.mergedAt) \(.title)\""
-echo "queue: $(gh api graphql -f query='{repository(owner:"the-roganator",name:"cv-software-factory-scratch"){mergeQueue(branch:"main"){entries(first:20){nodes{pullRequest{number}}}}}}' -q '.data.repository.mergeQueue.entries.nodes|map(.pullRequest.number)|join(",")')"
+echo "queue: $(gh api graphql -f owner="${R%%/*}" -f name="${R#*/}" -f query='query($owner: String!, $name: String!) {repository(owner:$owner,name:$name){mergeQueue(branch:"main"){entries(first:20){nodes{pullRequest{number}}}}}}' -q '.data.repository.mergeQueue.entries.nodes|map(.pullRequest.number)|join(",")')"
 k -n factory logs deploy/github --since-time="$since" | grep -o '"why":"[^"]*"' | sort | uniq -c | sort -rn | head -6
 (cd "$H" && ./level.sh guarded | grep '|')
 fi

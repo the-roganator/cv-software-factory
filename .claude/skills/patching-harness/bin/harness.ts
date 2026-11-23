@@ -171,7 +171,16 @@ function make(args: string[]): string {
   if (!/^CLUSTER := software-factory-scratch$/m.test(readFileSync(join(WORK, 'Makefile'), 'utf8')))
     throw new Error('work/factory does not name the scratch cluster');
   const env = { ...process.env };
-  for (const key of ['GITHUB_APP_PRIVATE_KEY', 'PUSHOVER_TOKEN', 'PUSHOVER_USER', 'PRIVATE_DIR', 'KUBECONFIG'])
+  // As copies.sh's in_copy: nothing that names the real App's key, Pushover, a private checkout or other repositories.
+  for (const key of [
+    'GITHUB_APP_PRIVATE_KEY',
+    'PUSHOVER_APP_TOKEN',
+    'PUSHOVER_USER_KEY',
+    'PRIVATE_DIR',
+    'KUBECONFIG',
+    'FACTORY_REPOSITORY',
+    'APP_REPOSITORY',
+  ])
     delete env[key];
   return execFileSync('make', args, {
     cwd: WORK,

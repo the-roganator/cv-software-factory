@@ -143,7 +143,7 @@ jobs:
             policy/repositories.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -242,7 +242,7 @@ jobs:
           fi
       # kustomize and yq for the list, helm to render its charts, cosign to verify the SBOMs of ours, crane to read the
       # registries' tags and manifests: each at the version this repository's mise.lock holds.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -423,7 +423,7 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: factory
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -523,7 +523,7 @@ jobs:
           else
             echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
           fi
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -618,7 +618,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # Node to run the script, and yq for the list and the lockfile: each at the version this repository's mise.lock holds.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -674,7 +674,7 @@ jobs:
             policy/repositories.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}

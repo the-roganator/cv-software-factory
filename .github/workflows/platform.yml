@@ -118,7 +118,7 @@ jobs:
           nproc; free -m
       # The toolchain the change pins, k3d's among them, from main's cache (caches.yml): saved on main alone,
       # where this never runs, so no run here saves one.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}

@@ -136,7 +136,7 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           # The ZAP job's set of tools, so its cache, which caches.yml warms on main: never the gate's.
@@ -185,7 +185,7 @@ jobs:
             policy/review-verdict.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -194,7 +194,7 @@ jobs:
       # A token for checks alone: with it, the gate can post a check run and do nothing else.
       - id: app
         if: env.HAS_KEY == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           # The review App's Client ID, which is not a secret.
           client-id: Iv23liFNqAvApddT27zU

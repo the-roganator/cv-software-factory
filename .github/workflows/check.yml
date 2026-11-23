@@ -66,7 +66,7 @@ jobs:
           # base, so the diff between them is what would merge.
           fetch-depth: 2
       # crane, which reads whether CI's copies can be pulled (scripts/ci-images.sh).
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -106,7 +106,7 @@ jobs:
       # only its own branch's caches and main's, so a copy saved anywhere else would serve that branch's later runs and
       # nobody else's, at about 100 MB each (caches.yml). A pull request that moves the toolchain installs it
       # afresh on each run for that.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -129,7 +129,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -273,7 +273,7 @@ jobs:
           else
             echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
           fi
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -356,7 +356,7 @@ jobs:
           BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: scripts/queue-branch-gone.sh watch
       # Node and pnpm as mise.lock holds them, in place of the Node Playwright's image carries, as everywhere else.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -399,7 +399,7 @@ jobs:
           BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: scripts/queue-branch-gone.sh watch
       # Node and pnpm as mise.lock holds them, in place of the Node Playwright's image carries, as everywhere else.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -432,7 +432,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -661,7 +661,7 @@ jobs:
       - if: env.BUILD == 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Each base image a Dockerfile pins, from CI's copy of it (scripts/ci-images.sh, with crane).
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         if: env.BUILD == 'true'
         with:
           version: 2026.10.17

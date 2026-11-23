@@ -960,10 +960,12 @@ describe('platform.yml', () => {
     expect(stopped?.name).toBe('Why it was stopped');
     // Its own time limit fails `Make the cluster` with no fault said, as a cancel does.
     expect(stopped?.if).toBe(
-      expression("(cancelled() || steps.make.outcome == 'failure') && env.PLATFORM_FAULT == ''"),
+      expression(
+        "(cancelled() || steps.node.outcome == 'failure' || steps.make.outcome == 'failure') && env.PLATFORM_FAULT == ''",
+      ),
     );
     expect((stopped as { env?: Record<string, string> } | undefined)?.env?.WHY).toBe(
-      expression("steps.make.outcome == 'failure' && 'timed out' || 'cancelled'"),
+      expression("(steps.node.outcome == 'failure' || steps.make.outcome == 'failure') && 'timed out' || 'cancelled'"),
     );
     expect(stopped?.run).toContain('[ ! -e "$RUNNER_TEMP/queue-gone" ] || exit 0');
     // Said before the figures, so a step that runs out its own limit still skips the upload.
@@ -982,6 +984,17 @@ describe('platform.yml', () => {
     expect(limited?.['timeout-minutes']).toBe(15);
     expect(steps[making]?.run).toContain('SYNC_TIMEOUT=12m TIMEOUT=720');
     expect((jobs.platform as { 'timeout-minutes'?: number } | undefined)?.['timeout-minutes']).toBe(20);
+    // Just before it, the node, and Argo CD's images pulled into it, within a limit of five minutes of their own: a pull
+    // that hangs ends there, not at the cluster's fifteen (scripts/platform-pull-first.test.ts). A failure of its own
+    // says why, as the cluster's does.
+    const node = steps[making - 1] as Step & { 'timeout-minutes'?: number };
+    expect(node.id).toBe('node');
+    expect(node['timeout-minutes']).toBe(5);
+    expect(node.run).toContain(
+      'make cluster-node K3D_REGISTRIES=deploy/k3d/ci-registries.yaml && scripts/platform-pull-first.sh',
+    );
+    expect(node.run).toContain('scripts/platform-fault.sh "node $status" "$RUNNER_TEMP/measure"');
+    expect(node.run).toContain('echo "PLATFORM_FAULT=$line" >> "$GITHUB_ENV"');
     expect(steps[making]?.run).toContain('fault "make $status"');
     expect(steps[making]?.run).toContain('scripts/platform-fault.sh "$1" "$RUNNER_TEMP/measure"');
     expect(runs).not.toMatch(/get secrets?\b/);

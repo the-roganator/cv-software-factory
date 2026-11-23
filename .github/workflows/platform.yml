@@ -127,6 +127,25 @@ jobs:
       # does not record, or a .pnpmfile.cjs, would run here, before the cluster, with $GITHUB_PATH in reach. The job needs
       # no install script (lefthook's prepare included), and allows no dependency's build.
       - run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+      # The cluster's node, and Argo CD's images pulled into it before the install (scripts/platform-pull-first.sh): the
+      # hang seen on hosted runners waited on the install's hook pod, whose image never started to download, until the
+      # step's limit. Each pull is ended inside the node and tried again, and this step's own limit, which the runner
+      # keeps, ends one that hangs anyway in five minutes rather than fifteen. A healthy one takes under a minute. On a
+      # failure of its own it says why, as `Make the cluster` does, for the step after to carry.
+      - name: Make the node, and pull Argo CD's images first
+        id: node
+        timeout-minutes: 5
+        run: |
+          {
+            make cluster-node K3D_REGISTRIES=deploy/k3d/ci-registries.yaml && scripts/platform-pull-first.sh
+          } > >(tee "$RUNNER_TEMP/measure/make.log") 2>&1 || {
+            status=$?
+            line=$(scripts/platform-fault.sh "node $status" "$RUNNER_TEMP/measure")
+            echo "$line"
+            echo "PLATFORM_FAULT=$line" >> "$GITHUB_ENV"
+            printf '## Why the cluster did not come up\n\n%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          }
       # `make up`, at the change's commit, pulling each third-party image from CI's copy in GHCR where there is one
       # (deploy/k3d/ci-registries.yaml), with none of the keys it would take from the Keychain, which the runner has
       # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
@@ -171,15 +190,15 @@ jobs:
       # CD install's five minutes run out with its hook's pod never started), and a dead runner keeps no log, annotation,
       # step summary or artifact not yet uploaded; GitHub keeps each step's name, state and times, which the runner sends
       # as the step starts. A runner that lives says it in the log, the summary and the `cluster` artifact as well.
-      # A stop while the cluster hangs (the step's own time limit, the job's, or a cancel) gives `Make the cluster`
-      # seconds, too few for the figures, so the step after it takes them, unless the merge queue let the entry go. After
-      # the step's own limit it says so first, for the `cluster` artifact to be skipped.
+      # A stop while the cluster hangs (either step's own time limit, the job's, or a cancel) gives the step seconds, too
+      # few for the figures, so the step after `Make the cluster` takes them, unless the merge queue let the entry go.
+      # After a step's own limit it says so first, for the `cluster` artifact to be skipped.
       - name: Why it was stopped
-        if: ${{ (cancelled() || steps.make.outcome == 'failure') && env.PLATFORM_FAULT == '' }}
+        if: ${{ (cancelled() || steps.node.outcome == 'failure' || steps.make.outcome == 'failure') && env.PLATFORM_FAULT == '' }}
         timeout-minutes: 2
         env:
-          # A failure that said no fault is the step's time limit: every other way it fails says one.
-          WHY: ${{ steps.make.outcome == 'failure' && 'timed out' || 'cancelled' }}
+          # A failure that said no fault is a step's time limit: every other way either fails says one.
+          WHY: ${{ (steps.node.outcome == 'failure' || steps.make.outcome == 'failure') && 'timed out' || 'cancelled' }}
         run: |
           [ ! -e "$RUNNER_TEMP/queue-gone" ] || exit 0
           [ "$WHY" != 'timed out' ] || echo "PLATFORM_TIMED_OUT=true" >> "$GITHUB_ENV"

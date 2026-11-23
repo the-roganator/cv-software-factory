@@ -837,6 +837,46 @@ function observe(state: State, tests: Test[], final = false) {
 
 // ── Whether the cluster is clean ────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * What the GitHub worker's pin queue last said each pull request waits for, by `<number> <head>`, from its log since
+ * the run restarted it: `level` (a rule the autonomy level does not queue), `verdict` (a rule no level queues, or no
+ * verdict yet), `checks`, `failed` and the rest (deploy-queue.ts's `QueueWait`). It says each once a head.
+ */
+function workerWaits(state: State): Map<string, string> {
+  const waits = new Map<string, string>();
+  const since = state.kickedAt ?? state.resetAt;
+  if (!since) return waits;
+  const text = kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${since}`], 300_000);
+  for (const line of text.split('\n')) {
+    if (!line.includes('pull request waits to be queued')) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.number && entry.head && entry.waits) waits.set(`${entry.number} ${entry.head}`, entry.waits);
+    } catch {}
+  }
+  return waits;
+}
+
+/**
+ * Whether a test that must not merge (a refusal, a forgery, or a major the level holds) is decided before the limit:
+ * its verdict passes and nothing left can change it. Each of its pull requests is unmerged and never queued, with
+ * every required check and the gate's verdict at its head in. A forgery's is then final: no watch owns its branch and
+ * nothing but a person queues it. Any other's needs its checks green too, so no recovery writes its head again for
+ * the gate to judge anew, and the worker to have said, at that head, that it waits for the level or the verdict, which
+ * nothing in the run changes. With no pull request yet one may still open: not decided.
+ */
+function decidedHeld(state: State, test: Test, waits: Map<string, string>): boolean {
+  const pulls = state.seen[test.id]?.pulls ?? [];
+  if (!pulls.length || !verdict(state, test).pass) return false;
+  return pulls.every((p) => {
+    if (p.mergedAt || p.queuedBy || p.pending.length || p.gatePending) return false;
+    if (test.pr.by === 'forged') return true;
+    return (
+      !p.red.length && p.rule !== undefined && ['level', 'verdict'].includes(waits.get(`${p.number} ${p.head}`) ?? '')
+    );
+  });
+}
+
 const podRestarts = () => Object.fromEntries(cluster().pods.map((pod) => [pod.name, pod.restarts]));
 function clean(state: State): NonNullable<State['clean']> {
   const since = state.scan1?.createdAt ?? state.resetAt ?? new Date().toISOString();
@@ -1467,12 +1507,14 @@ function run(state: State) {
     const lines = tests.map((t) => `${t.id}:${verdict(state, t).why.slice(0, 60)}`);
     say(state, `watching (${clock(state, new Date().toISOString())})\n    ${lines.join('\n    ')}`);
     const refused = tests.every((t) => t.mustNot && verdict(state, t).pass);
-    // A move that must not merge, or a major the level holds, is watched an hour from the scan (Martin's first
-    // limit), and then counts as settled while it is still refused: a batch of them beside moves that deployed
-    // ends then, not at a longer limit set for the slow ones.
+    // A move that must not merge, or a major the level holds, counts as settled once it is decided (`decidedHeld`),
+    // or, while it is still refused, an hour from the scan (Martin's first limit): a batch of them beside moves that
+    // deployed ends then, not at a longer limit set for the slow ones.
     const hour = Date.now() >= Date.parse(state.scan1.createdAt) + 60 * 60_000;
+    const mustHold = (t: Test) => t.mustNot || (t.major && !state.flags.includes('--lights-out'));
+    const waits = tests.some((t) => mustHold(t) && t.pr.by !== 'forged') ? workerWaits(state) : new Map();
     const holds = (t: Test) =>
-      (t.mustNot || (t.major && !state.flags.includes('--lights-out'))) && hour && verdict(state, t).pass;
+      Boolean(mustHold(t)) && ((hour && verdict(state, t).pass) || decidedHeld(state, t, waits));
     const all = refused || tests.every((t) => done(t) || holds(t));
     const stopped =
       Boolean(

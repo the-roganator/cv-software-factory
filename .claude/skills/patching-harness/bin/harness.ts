@@ -83,8 +83,40 @@ function graphql<T = any>(repo: string, query: string, vars: Record<string, numb
  * What a run stands on, checked after its reset and before its scan, so a set-up fault stops the run in its first
  * minutes and is never read as a verdict on the code.
  */
+/** The moves the scratch pin watch must take for these tests (a forgery copies postgres's). */
+function pinWatchNames(tests: Test[]): string[] {
+  return [
+    ...new Set(
+      tests.flatMap((t) =>
+        t.pr.by === 'forged'
+          ? ['postgres']
+          : t.pr.by === 'pin' || t.pr.by === 'lockfile'
+            ? [...t.moves, ...(t.alsoTakes ?? [])]
+            : [],
+      ),
+    ),
+  ];
+}
+
 function preflight(state: State) {
   const wrong: string[] = [];
+  // The moves the scratch GitHub worker takes, which a reset writes to the ConfigMap `scratch-pin-watch` from
+  // batch.env (copies.sh's pin_watch) and the worker reads as it starts: every move a small run's tests stand on.
+  if (state.campaign === 'factory' && state.only) {
+    const needed = pinWatchNames(TESTS.filter((t) => inRun(state, t) && t.campaign === 'factory'));
+    let told = '';
+    try {
+      told = kubectl(['-n', 'factory', 'get', 'configmap', 'scratch-pin-watch', '-o', 'jsonpath={.data.only}']).trim();
+    } catch {}
+    const names = told.split(',').map((name) => name.trim());
+    const missing = needed.filter((name) => told !== '*' && !names.includes(name));
+    if (!told) wrong.push('the pin watch is told no move (no ConfigMap scratch-pin-watch): ./copies.sh reset factory');
+    else if (missing.length)
+      wrong.push(
+        `the pin watch takes ${told}, not ${missing.join(', ')}: put \`node harness.ts only\`'s line in batch.env`,
+      );
+    else say(state, `pre-flight: the pin watch takes ${told}`);
+  }
   // A test's own set-up beyond the shared baseline (`staged/<side>-<name>/`, a Test's `staged`): on the baseline exactly
   // when one of the run's tests asks for it, as it changes what the others do. Read from what `build` committed.
   const asked = new Set(
@@ -1616,17 +1648,7 @@ if (command === 'factory' || command === 'app') {
   const tests = TESTS.filter((t) => ids.includes(t.id));
   if (!ids.length || tests.length !== ids.length)
     throw new Error("only <tests>: comma-separated tests of the catalogue's");
-  const names = [
-    ...new Set(
-      tests.flatMap((t) =>
-        t.pr.by === 'forged'
-          ? ['postgres']
-          : t.pr.by === 'pin' || t.pr.by === 'lockfile'
-            ? [...t.moves, ...(t.alsoTakes ?? [])]
-            : [],
-      ),
-    ),
-  ];
+  const names = pinWatchNames(tests);
   const none = tests.filter((t) => t.campaign !== 'factory' || t.pr.by === 'dependabot').map((t) => t.id);
   if (none.length)
     console.error(
@@ -1634,9 +1656,7 @@ if (command === 'factory' || command === 'app') {
     );
   if (!names.length) throw new Error('only: none of those tests stands on a move of the pin watch');
   console.log(`PIN_WATCH_ONLY='${names.join(',')}'`);
-  console.log(
-    `then: ./copies.sh build, check, reset, pin-images; and: node harness.ts factory --only ${ids.join(',')}`,
-  );
+  console.log(`in batch.env; then: node harness.ts factory --only ${ids.join(',')}, whose reset gives it the worker`);
 } else if (command === 'variables') {
   // The repository variables these tests need, `<repo>\t<name>\t<value>` a line, for confirm.sh to set and clear.
   const ids = (rest[0] ?? '')

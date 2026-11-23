@@ -2,8 +2,9 @@
 # The confirming pass: every test on one code baseline, in batches of a few, with the two level checks.
 #   ./confirm.sh <a directory for its baseline logs>
 #   STEPS="C D" ./confirm.sh <dir> runs some of its steps (A B C D apps W; all by default).
-# About twelve hours. It prints one section a step, and `harness.ts summary` at the end. Each factory batch is a
-# baseline of its own, as PIN_WATCH_ONLY is part of one; the code staged is the same throughout. A batch's
+# It prints one section a step, and `harness.ts summary` at the end. One baseline (every staged set-up, no
+# STAGED_EXTRA) serves A, B, C, D, the apps and W: a batch differs only in the moves the pin watch takes, which the
+# harness's reset of the factory copy gives the scratch worker. X2 and X4 each build a baseline of their own. A batch's
 # PIN_WATCH_ONLY and STAGED_EXTRA are written to the state folder's batch.env (copies.sh), never to a tracked file.
 H="$(cd "$(dirname "$0")" && pwd)"
 STATE="${PATCHING_HARNESS_STATE:-$(dirname "$(git -C "$H" rev-parse --path-format=absolute --git-common-dir)")/scratch/patching-harness}"
@@ -34,18 +35,24 @@ red_off() {
 }
 trap red_off EXIT
 
-baseline() { # <tests> <log>
+# A batch: the moves the scratch pin watch takes, in batch.env. No baseline is built for it: the harness's own reset of
+# the factory copy writes them where the worker reads them as it starts (copies.sh's pin_watch).
+batch() { # <tests>
   local line
   line="$(cd "$H" && mise exec -- node harness.ts only "$1" | grep '^PIN_WATCH_ONLY')" || return 1
   LINE="$line" perl -0pi -e 's/^PIN_WATCH_ONLY=.*\n//mg; $_ .= "$ENV{LINE}\n"' "$BATCH"
+  echo "the pin watch takes: ${line#PIN_WATCH_ONLY=}"
+}
+# A baseline, with batch.env's STAGED_EXTRA: built, checked, reset and pinned, then root Synced and Healthy.
+baseline() { # <log>
   echo "real repo queued: $(gh run list -R the-roganator/cv-software-factory --status queued -L 100 --json databaseId -q length)"
   # SKIP_CHECK=1 leaves out `make check` in the copies, for a baseline one of the copy's own tests fails by design (X4).
   for step in build check reset pin-images; do
     [ -n "${SKIP_CHECK:-}" ] && [ "$step" = check ] && { echo "== check skipped $(date -u +%H:%MZ)"; continue; }
     echo "== $step $(date -u +%H:%MZ)"
-    (cd "$H" && ./copies.sh "$step") >>"$2" 2>&1 || {
+    (cd "$H" && ./copies.sh "$step") >>"$1" 2>&1 || {
       echo "FAILED at $step"
-      grep -n "FAIL \|AssertionError\|copies.sh:\|error:" "$2" | tail -8 | cut -c1-300
+      grep -n "FAIL \|AssertionError\|copies.sh:\|error:" "$1" | tail -8 | cut -c1-300
       return 1
     }
   done
@@ -82,34 +89,47 @@ why() {
   done | head -5
 }
 
-if want A; then
+# One baseline for every step but X and X4: every staged set-up, no STAGED_EXTRA. A batch differs from another only in
+# the moves the pin watch takes (batch). KEEP_BASELINE=1 runs on the baseline as built. A step whose baseline failed
+# runs nothing.
+based=yes
+if want A || want B || want C || want D || want apps || want W; then
+  if [ -z "${KEEP_BASELINE:-}" ]; then
+    echo "##### the baseline $(date -u +%H:%MZ)"
+    perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
+    baseline "$LOGS/confirm-baseline.log" || based=
+  fi
+fi
+
+if want A && [ -n "$based" ]; then
 echo "##### A: 1,2,3,5,14a and the forgeries, Guarded $(date -u +%H:%MZ)"
 (cd "$H" && ./level.sh guarded >/dev/null)
-baseline 1,2,3,5,14a "$LOGS/confirm-a.log" && campaign --only 1,2,3,5,14a,N3a,N3b,N4,N5
+batch 1,2,3,5,14a && campaign --only 1,2,3,5,14a,N3a,N3b,N4,N5
 watches
 why
 fi
 
-if want B; then
+if want B && [ -n "$based" ]; then
 echo "##### B: 4a,4b,6,7a,7b,9,14b, Guarded $(date -u +%H:%MZ)"
-baseline 4a,4b,6,7a,7b,9,14b "$LOGS/confirm-b.log" && campaign --only 4a,4b,6,7a,7b,9,14b --no-forge
+batch 4a,4b,6,7a,7b,9,14b && campaign --only 4a,4b,6,7a,7b,9,14b --no-forge
 watches
 why
 fi
 
-if want C; then
+if want C && [ -n "$based" ]; then
 echo "##### C: 4a,4b at Lights-out $(date -u +%H:%MZ)"
-baseline 2,4a,4b "$LOGS/confirm-c.log" && {
+batch 2,4a,4b && {
   (cd "$H" && ./level.sh lights-out | grep '|')
   campaign --only 2,4a,4b --no-forge --lights-out
 }
 fi
 
-if want D; then
+if want D && [ -n "$based" ]; then
 echo "##### D: Supervised, no move queued $(date -u +%H:%MZ)"
 (cd "$H" && ./level.sh supervised | grep '|')
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# On the baseline step C left; a build that failed part way leaves `work/` dirty and the reset refuses.
+# C's moves, on the shared baseline; a build that failed part way leaves `work/` dirty and the reset refuses.
+batch 2,4a,4b
 # The worker stays stopped from the reset until that base has merged: started on the pushed baseline it opens the deploy
 # pull request at once, red, runs its checks again three times and is out of runs before the base is there.
 (cd "$H" && KEEP_WORKER_DOWN=1 ./copies.sh reset factory) >"$LOGS/confirm-d.log" 2>&1 || echo "the reset FAILED: see $LOGS/confirm-d.log; what follows is no verdict"
@@ -166,20 +186,20 @@ k -n factory logs deploy/github --since-time="$since" | grep -o '"why":"[^"]*"' 
 (cd "$H" && ./level.sh guarded | grep '|')
 fi
 
-if want apps; then
+if want apps && [ -n "$based" ]; then
 for test in 8a 10 11 12 13 N1; do
   echo "##### app $test $(date -u +%H:%MZ)"
   (cd "$H" && mise exec -- node harness.ts app "$test" --limit "${LIMIT:-60}" 2>&1 | tail -9 | cut -c1-700)
 done
 fi
 
-# The recovery tests, W1 to W4. W1's baseline first (prometheus and the otel-collector alone), so the step stands on its own whatever baseline came before: the staged `15-…` patches are in
-# it. Then the app's three, which take any baseline, then W1's campaign, which resets the factory copy itself. Guarded.
-if want W; then
-echo "##### W: the baseline for W1 to W4 $(date -u +%H:%MZ)"
+# The recovery tests, W1 to W4, on the shared baseline, whose staged `15-…` patches have the check they turn red: the
+# app's three, then W1's campaign (prometheus and the otel-collector alone), which resets the factory copy itself.
+# Guarded.
+if want W && [ -n "$based" ]; then
+echo "##### W: W1 to W4 $(date -u +%H:%MZ)"
 (cd "$H" && ./level.sh guarded >/dev/null)
-# KEEP_BASELINE=1 runs on the baseline as built, when it is already W1's.
-if [ -n "${KEEP_BASELINE:-}" ] || baseline W1a,W1b "$LOGS/confirm-w.log"; then
+if batch W1a,W1b; then
 for test in ${W_APPS:-W2 W3 W4}; do  # W_APPS='W2 W4' W1=no runs some of them again
   echo "##### app $test $(date -u +%H:%MZ)"
   red_on "$test"
@@ -213,7 +233,7 @@ if [ -n "${X_BESIDE:-}" ]; then x1=("$X_BESIDE" --with X1a,X1b); else x1=(X1a --
 if [ "${X2:-yes}" != no ]; then
   echo "##### X2: a major that clears a Trivy Critical, Guarded $(date -u +%H:%MZ)"
   perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg; $_ .= "STAGED_EXTRA=x2\n"' "$BATCH"
-  baseline X2 "$LOGS/confirm-x2.log" && campaign --only X2 --no-forge
+  batch X2 && baseline "$LOGS/confirm-x2.log" && campaign --only X2 --no-forge
   perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
   watches
 fi
@@ -225,7 +245,7 @@ if want X4; then
 echo "##### X4: a half-made Node move, finished by the line $(date -u +%H:%MZ)"
 (cd "$H" && ./level.sh guarded >/dev/null)
 perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg; $_ .= "STAGED_EXTRA=x4\n"' "$BATCH"
-SKIP_CHECK=1 baseline W1a,W1b "$LOGS/confirm-x4.log" &&
+batch W1a,W1b && SKIP_CHECK=1 baseline "$LOGS/confirm-x4.log" &&
   (cd "$H" && mise exec -- node harness.ts app X4 --limit "${LIMIT:-60}" 2>&1 | tail -12 | cut -c1-700)
 perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
 fi

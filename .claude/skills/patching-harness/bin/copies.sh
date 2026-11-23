@@ -154,13 +154,22 @@ commit() { # <dir> <message>
 
 # A small run: the scratch pin watch takes only the moves batch.env names (PIN_WATCH_ONLY, the worker's own setting,
 # comma-separated names as moves.json gives them; unset or `*`, every move), so a reset opens a few pull requests and
-# not twenty. `node harness.ts only <tests>` prints the line for a set of tests.
-only_moves() { # <dir>
-  local only=${PIN_WATCH_ONLY:-*} file="$1/deploy/base/factory/github.yaml"
-  [[ $only == '*' ]] && return 0
-  ONLY=$only perl -0pi -e 's{(- name: PIN_WATCH_ONLY\n\s+value: )"\*"}{$1 . "\x27" . ($ENV{ONLY} =~ s/\x27/\x27\x27/gr) . "\x27"}e' "$file"
-  grep -qF -- "$only" "$file" || die "PIN_WATCH_ONLY was not written to $file"
-  say "the pin watch takes only: $only"
+# not twenty. `node harness.ts only <tests>` prints the line for a set of tests. The value is no part of the baseline:
+# the copy's worker reads it from the ConfigMap `scratch-pin-watch` on the scratch cluster, which no commit holds and
+# Argo CD does not track, so one baseline serves every batch. `build` points the copy's manifest at it
+# (pin_watch_from_cluster), and `worker 1` writes it from batch.env before the worker starts (pin_watch). Without the
+# ConfigMap the variable is unset, and the worker takes no move.
+pin_watch_from_cluster() { # <dir>
+  local file="$1/deploy/base/factory/github.yaml"
+  perl -0pi -e 's{^( +)- name: PIN_WATCH_ONLY\n +value: "\*"\n}{$1- name: PIN_WATCH_ONLY\n$1  valueFrom:\n$1    configMapKeyRef:\n$1      name: scratch-pin-watch\n$1      key: only\n$1      optional: true\n}m' "$file"
+  grep -qx ' *name: scratch-pin-watch' "$file" || die "PIN_WATCH_ONLY in $file is not read from scratch-pin-watch"
+}
+
+pin_watch() {
+  local only=${PIN_WATCH_ONLY:-*}
+  kubectl --context "$SCRATCH_CONTEXT" -n factory create configmap scratch-pin-watch --from-literal=only="$only" \
+    --dry-run=client -o yaml | kubectl --context "$SCRATCH_CONTEXT" apply -f - >/dev/null
+  echo "  the scratch pin watch takes: $only"
 }
 
 build() {
@@ -170,7 +179,7 @@ build() {
   revert_all "$WORK/factory" $FACTORY_REVERTS
   apply_staged factory "$WORK/factory"
   (cd "$WORK/factory" && rename && real_mirror && second_cluster && tidy)
-  only_moves "$WORK/factory"
+  pin_watch_from_cluster "$WORK/factory"
   # The last pins, so main never names an image the copy has not built; pin-images moves them to this baseline's own.
   [[ -f "$STATE/images.env" ]] && pin_overlays factory
   commit "$WORK/factory" "chore(scratch): $FACTORY_COPY, the baseline"
@@ -659,7 +668,8 @@ store_restore() {
   say "the scratch store is back at its clean point ($STORE_DUMP)"
 }
 
-# The scratch cluster's GitHub worker, at <replicas>, if there is a scratch cluster (never the real one's).
+# The scratch cluster's GitHub worker, at <replicas>, if there is a scratch cluster (never the real one's). It starts
+# reading the pin watch's moves as batch.env has them now (pin_watch).
 # Argo CD self-heals root, so root's automated sync is off while the worker is stopped, and back as main sets it after.
 worker() {
   kubectl config get-contexts -o name | grep -qx "$SCRATCH_CONTEXT" || return 0
@@ -669,6 +679,7 @@ worker() {
     $k -n factory scale deploy/github --replicas=0 >/dev/null
     $k -n factory wait pod -l app.kubernetes.io/name=github --for=delete --timeout=2m >/dev/null
   else
+    pin_watch
     $k -n factory scale deploy/github --replicas=1 >/dev/null
     $k -n argocd patch application root --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' >/dev/null
   fi

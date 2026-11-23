@@ -128,7 +128,7 @@ The line reads through it too, `POST /v1/reads/<read>` (`github/reads.ts`):
   - `imageRevision`: the commit an image of a repository's deploy was built from, by its OCI revision label in GHCR;
   - `imageSigned`: whether that image carries its repository's signature;
   - `deployProposal`: the open deploy pull request for a deploy branch of one pin file, as the deploy watch last saw it;
-  - `deployBuild`: the newest build main has for that deploy beyond the commit it pins, as the deploy watch last found it, and whether its pipeline signed it: still signing, signed, unsigned past the grace, or refused (signatures, none its check accepts as its pipeline's), with the image checked, what the check said, and the build workflow's job on that commit that did not succeed ([below](#deploy-pull-requests)). None when main has no newer build.
+  - `deployBuild`: the newest build main has for that deploy beyond the commit it pins, as the deploy watch last found it, and whether its pipeline signed it: still signing, signed, unsigned past the grace, or refused (signatures, none its check accepts as its pipeline's), with the image checked, what the check said, and the build workflow's job on that commit that did not succeed ([below](#deploys)). None when main has no newer build.
 
   An image that is not one of that repository's deploys is refused.
 - **To merge** ([below](#to-merge)): `reviewVerdict`, `mergeQueue` and `mergeability`.

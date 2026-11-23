@@ -28,7 +28,7 @@ Read with Zod:
 The squash commit takes the description as its message, so the schema refuses:
 
 - a closing keyword before an issue, which would close the ticket's issue on merge rather than once the fix is verified, or an improvement's, which stays open while Martin turns its flag on;
-- an @mention outside code;
+- an @mention outside code, naming each it found. A scoped package's name, such as `@grpc/grpc-js`, is how GitHub mentions a team, and a move names its packages: before the rule reads the description, the line puts each such name outside code in inline code itself, so only a user's `@name` is refused;
 - a `factory:contradicts` marker, since the line writes the section test integrity reads;
 - a folded section that would not render, read line by line (`line/agents/folds.ts`): GitHub shows the Markdown in a `<details>` as text unless a blank line ends the HTML before it.
 

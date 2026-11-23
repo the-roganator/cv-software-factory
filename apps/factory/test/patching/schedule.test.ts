@@ -89,7 +89,9 @@ describe("the sense's day", () => {
   });
 
   it('runs one pass at a time, however long a pass takes, and waits only after it ends', async () => {
-    vi.useFakeTimers();
+    // At noon, hours from the day's read: started within three hours before it, a wait is cut short to meet it, and
+    // the passes counted below depend on the time of day the test runs at.
+    vi.useFakeTimers({ now: t('2026-11-11T12:00:00Z') });
     try {
       const abort = new AbortController();
       let running = 0;

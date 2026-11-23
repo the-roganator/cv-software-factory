@@ -35,18 +35,17 @@
  */
 
 /**
- * The rules the gate decides by, the first that holds; `held` when none does. `pin-move` is this repository's alone: a
- * pull request of the factory's App that moves one pin of the scan's list forward, proved from the pull request
- * (scripts/pin-move.ts, ADR 0019). `critical-fix` is the app's alone: a pull request of the factory's App that moves one
- * dependency to fix a finding the gate's own scanner rates Critical, proved from the pull request
- * (scripts/critical-fix.ts, ADR 0020).
+ * The rules the gate decides by, the first that holds; `held` when none does. `move` and `major`, in both repositories
+ * and whoever opened it: a pull request that is exactly the moves the scan of main asked for, which the gate makes
+ * itself on main and compares with it (scripts/move.ts); `major` when one of them crosses a major and clears no
+ * Critical, as the scan says. The gate names which, and reads no level: `ENQUEUES` (policy/line.ts) says who queues it.
  */
 export const RULES = [
   'martin-opened',
   'martin-approved-head',
   'exact-pin',
-  'pin-move',
-  'critical-fix',
+  'move',
+  'major',
   'low-risk',
   'lights-out',
   'held',

@@ -1,6 +1,6 @@
 /**
  * A repository behind the fake GitHub, for the pin watch's tests: commits as whole trees of files, branches, the App's
- * pull requests and issues, and Dependabot's pull requests, answered as GitHub answers the calls the watch and its
+ * pull requests and issues, and Dependabot's pull requests, which the watch leaves alone, answered as GitHub answers the calls the watch and its
  * guard make. `createCommitOnBranch` makes a commit as GitHub would, on the branch's head alone.
  *
  * The fixture day (`factoryDay`) is invented: each name is the kind of thing the factory pins, under `example`, and
@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { APP_LOGIN } from '../../src/github/actions.ts';
 import { DEPENDABOT } from '../../src/github/dependabot.ts';
 import { APP_USER } from '../../src/github/issues.ts';
+import { branchOf } from '../../src/github/pins.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import type { Route, Sent } from './fake.ts';
 
@@ -33,6 +34,8 @@ export interface FakePull {
   head: string;
   /** A fork's pull request comes from another repository. */
   from?: string;
+  /** What the App said on it, once it has said anything. */
+  comments?: string[];
   labels: string[];
   mergeable: boolean | null;
   /** Who closed it: the App when it closed it through the API; a test closes it as Martin by setting `state`. */
@@ -59,6 +62,10 @@ export class FakeRepo {
   readonly refs = new Map<string, string>();
   readonly pulls: FakePull[] = [];
   readonly issues: FakeIssue[] = [];
+  /** Each commit's parents, and who GitHub names as its author and committer: the App's are made by `createCommitOnBranch`. */
+  readonly made = new Map<string, { parents: string[]; author: string; committer: string }>();
+  /** Each commit's message, where it was given one: the App's, as `createCommitOnBranch` was asked for it. */
+  readonly messages = new Map<string, string>();
   #next = 100;
   #commits = 0;
 
@@ -66,12 +73,13 @@ export class FakeRepo {
     const tree = new Map<string, FakeFile>();
     for (const [path, file] of Object.entries(files))
       tree.set(path, typeof file === 'string' ? { mode: '100644', text: file } : file);
-    this.refs.set('main', this.#commit(tree));
+    this.refs.set('main', this.#commit(tree, []));
   }
 
-  #commit(tree: Map<string, FakeFile>): string {
+  #commit(tree: Map<string, FakeFile>, parents: string[], author = 'mrogan', committer = author): string {
     const sha = sha1(`commit ${++this.#commits}`);
     this.commits.set(sha, tree);
+    this.made.set(sha, { parents, author, committer });
     return sha;
   }
 
@@ -83,9 +91,38 @@ export class FakeRepo {
   push(files: Record<string, string>): string {
     const tree = new Map(this.commits.get(this.main));
     for (const [path, text] of Object.entries(files)) tree.set(path, { mode: '100644', text });
-    const sha = this.#commit(tree);
+    const sha = this.#commit(tree, [this.main]);
     this.refs.set('main', sha);
     return sha;
+  }
+
+  /**
+   * A commit on another, changing files, by whoever is named: a commit pushed to a branch from a checkout, or (author
+   * the App, committer `web-flow`) one as the App's API commit is. Moves no branch.
+   */
+  commitOn(parent: string, files: Record<string, string>, author = 'mrogan', committer = author): string {
+    const tree = new Map(this.commits.get(this.refs.get(parent) ?? parent));
+    for (const [path, text] of Object.entries(files)) tree.set(path, { mode: '100644', text });
+    return this.#commit(tree, [this.refs.get(parent) ?? parent], author, committer);
+  }
+
+  /** A tree's name, as git's is: the same files in the same modes are the same tree. */
+  treeOf(sha: string): string {
+    const tree = [...(this.commits.get(sha) ?? [])].sort(([a], [b]) => (a < b ? -1 : 1));
+    return sha1(`tree ${JSON.stringify(tree)}`);
+  }
+
+  /** The commits reachable from one, itself first. */
+  #ancestors(sha: string): string[] {
+    const out: string[] = [];
+    const queue = [sha];
+    while (queue.length) {
+      const next = queue.shift() as string;
+      if (out.includes(next)) continue;
+      out.push(next);
+      queue.push(...(this.made.get(next)?.parents ?? []));
+    }
+    return out;
   }
 
   /** A file as a commit or a branch has it. */
@@ -194,6 +231,74 @@ export class FakeRepo {
         },
       },
       {
+        // `base...head`, as GitHub compares: from their merge base, the commits head has, newest last, and what changed.
+        method: 'GET',
+        path: new RegExp(`^${at}/compare/[0-9a-f]{40}\\.\\.\\.[0-9a-f]{40}$`),
+        answer: ({ path }) => {
+          const [base = '', head = ''] = path.slice(`${at}/compare/`.length).split('...');
+          if (!this.made.has(base) || !this.made.has(head)) return notFound;
+          const behind = new Set(this.#ancestors(base));
+          const ahead = this.#ancestors(head).filter((sha) => !behind.has(sha));
+          const mergeBase = this.#ancestors(head).find((sha) => behind.has(sha)) ?? '';
+          const [from, to] = [this.commits.get(mergeBase), this.commits.get(head)];
+          const files = [...new Set([...(from?.keys() ?? []), ...(to?.keys() ?? [])])]
+            .filter((p) => from?.get(p)?.text !== to?.get(p)?.text || from?.get(p)?.mode !== to?.get(p)?.mode)
+            .map((p) => ({ filename: p, status: !from?.has(p) ? 'added' : !to?.has(p) ? 'removed' : 'modified' }));
+          return {
+            body: {
+              ahead_by: ahead.length,
+              merge_base_commit: { sha: mergeBase },
+              commits: ahead.reverse().map((sha) => {
+                const made = this.made.get(sha);
+                return {
+                  sha,
+                  parents: (made?.parents ?? []).map((p) => ({ sha: p })),
+                  author: { login: made?.author ?? '' },
+                  committer: { login: made?.committer ?? '' },
+                  commit: { verification: { verified: true } },
+                };
+              }),
+              files,
+            },
+          };
+        },
+      },
+      {
+        // One commit, as the REST API gives it: its parents, message and tree, and the files it changes from its parent.
+        method: 'GET',
+        path: new RegExp(`^${at}/commits/[0-9a-f]{40}$`),
+        answer: ({ path }) => {
+          const sha = path.split('/').at(-1) ?? '';
+          const made = this.made.get(sha);
+          if (!made) return notFound;
+          const [from, to] = [this.commits.get(made.parents[0] ?? ''), this.commits.get(sha)];
+          const files = [...new Set([...(from?.keys() ?? []), ...(to?.keys() ?? [])])]
+            .filter((p) => from?.get(p)?.text !== to?.get(p)?.text || from?.get(p)?.mode !== to?.get(p)?.mode)
+            .map((p) => ({
+              filename: p,
+              status: !from?.has(p) ? 'added' : !to?.has(p) ? 'removed' : 'modified',
+              sha: sha1(`blob ${(to?.get(p) ?? from?.get(p))?.text}`),
+            }));
+          return {
+            body: {
+              sha,
+              parents: made.parents.map((p) => ({ sha: p })),
+              commit: { message: this.messages.get(sha) ?? '', tree: { sha: this.treeOf(sha) } },
+              files,
+            },
+          };
+        },
+      },
+      {
+        method: 'GET',
+        path: new RegExp(`^${at}/git/commits/[0-9a-f]{40}$`),
+        answer: ({ path }) => {
+          const sha = path.split('/').at(-1) ?? '';
+          if (!this.made.has(sha)) return notFound;
+          return { body: { sha, message: this.messages.get(sha) ?? '', tree: { sha: this.treeOf(sha) } } };
+        },
+      },
+      {
         method: 'GET',
         path: new RegExp(`^${at}/git/trees/[0-9a-f]{40}\\?recursive=1$`),
         answer: ({ path }) => {
@@ -248,6 +353,7 @@ export class FakeRepo {
             input: {
               branch: { branchName: string };
               expectedHeadOid: string;
+              message: { headline: string; body?: string };
               fileChanges: { additions: { path: string; contents: string }[] };
             };
           };
@@ -261,7 +367,9 @@ export class FakeRepo {
             const was = tree.get(a.path);
             tree.set(a.path, { mode: was?.mode ?? '100644', text: Buffer.from(a.contents, 'base64').toString() });
           }
-          const sha = this.#commit(tree);
+          const sha = this.#commit(tree, [input.expectedHeadOid], APP_LOGIN, 'web-flow');
+          const { headline, body: more } = input.message;
+          this.messages.set(sha, more ? `${headline}\n\n${more}` : headline);
           this.refs.set(branch, sha);
           return { body: { data: { createCommitOnBranch: { commit: { oid: sha } } } } };
         },
@@ -372,6 +480,9 @@ export class FakeRepo {
         answer: ({ path }) => {
           const made = byNumber(/issues\/(\d+)/.exec(path)?.[1] ?? '');
           if (path.includes('/events')) return { body: [] };
+          // A pull request's comments are the App's, said through the actions: GitHub names who made each.
+          if (made && 'head' in made)
+            return { body: (made.comments ?? []).map((body) => ({ body, user: { login: APP_LOGIN } })) };
           return { body: (made && 'comments' in made ? made.comments : []).map((body) => ({ body })) };
         },
       },
@@ -380,7 +491,8 @@ export class FakeRepo {
         path: new RegExp(`^${at}/issues/\\d+/comments$`),
         answer: ({ path, body }) => {
           const made = byNumber(/issues\/(\d+)/.exec(path)?.[1] ?? '');
-          if (made && 'comments' in made) made.comments.push((body as { body: string }).body);
+          if (made && 'head' in made) made.comments = [...(made.comments ?? []), (body as { body: string }).body];
+          else if (made && 'comments' in made) made.comments.push((body as { body: string }).body);
           return { status: 201, body: {} };
         },
       },
@@ -433,6 +545,19 @@ const counts = (critical: number, high: number, medium = 0, low = 0) => ({
 });
 const NONE = counts(0, 0);
 
+/** A finding Trivy rated Critical, at a pin, as the state gives it: what lets a major merge as a move. */
+export const trivyCritical = (pin: { file: string; line: number }): ReadMove['findings'][number] => ({
+  advisory: 'CVE-2026-0001',
+  severity: 'CRITICAL',
+  type: 'debian',
+  package: 'libexample',
+  installed: '1.0.0',
+  ...pin,
+  fixed: '1.0.1',
+  fix: 'version 1.0.1',
+  firstSeen: '2026-11-10T06:00:00Z',
+});
+
 /** A move as the moves read gives it. */
 export function move(over: Partial<ReadMove> & Pick<ReadMove, 'name' | 'pins' | 'from' | 'to' | 'lane'>): ReadMove {
   return {
@@ -469,7 +594,7 @@ export function day(scanned: string, moves: ReadMove[], run = 42_000_000_101): M
       totals: {
         fixed: 0,
         moves: moves.length,
-        lanes: { line: 0, worker: 0, dependabot: 0, approval: 0, cluster: 0, issue: 0, none: 0 },
+        lanes: { line: 0, worker: 0, cluster: 0, issue: 0, none: 0 },
         noFix: 0,
         excepted: 0,
         overdue: 0,
@@ -573,7 +698,8 @@ export function factoryMoves(): ReadMove[] {
       to: 'chart example-logs 21.1.1 (a major)',
       major: true,
       clears: counts(1, 21, 30, 4),
-      lane: 'approval',
+      findings: [trivyCritical({ file: 'deploy/base/telemetry/logs.yaml', line: 4 })],
+      lane: 'worker',
     }),
     move({
       name: 'k3s',
@@ -621,6 +747,7 @@ export function factoryMoves(): ReadMove[] {
         {
           advisory: 'GHSA-xxxx-xxxx-xxxx',
           severity: 'MEDIUM',
+          type: 'pnpm',
           package: '@example/tokens',
           installed: '3.0.1',
           file: 'pnpm-lock.yaml',
@@ -630,14 +757,14 @@ export function factoryMoves(): ReadMove[] {
         },
       ],
     }),
-    move({
-      name: 'ghcr.io/example/sbom-tool',
-      pins: [{ file: 'deploy/images/sbom-tool/Dockerfile', line: 2 }],
-      from: 'v1.54.0',
-      to: `image v1.55.1@${digest('sbom-tool/new')}`,
-      lane: 'dependabot',
-    }),
   ];
+}
+
+/** The branch of the pull request that carries the fixture day's move of this name: its files' (`branchOf`). */
+export function pinBranchOf(name: string): string {
+  const found = factoryMoves().find((each) => each.name === name);
+  if (!found) throw new Error(`The fixture day has no move ${name}`);
+  return branchOf(found);
 }
 
 /** Dependabot's group pull request moving the SBOM tool, as #984's shape: its branch names a group, not a pin. */

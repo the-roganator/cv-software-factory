@@ -1,5 +1,7 @@
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
+import type { Moves } from '../../src/github/scanning.ts';
+
 import { commitTitle } from '../../src/line/agents/agent.ts';
 import { MOVED_UNCHANGED, MOVED_UNTESTED } from '../../src/line/agents/coder.ts';
 import {
@@ -7,11 +9,14 @@ import {
   database,
   event,
   events,
+  failures,
   handback,
+  justOne,
   line,
   PATCH,
   payloads,
   SPEC,
+  stage,
   types,
   withLineStore,
 } from './harness.ts';
@@ -152,6 +157,61 @@ describe('a dependency’s move on the line', () => {
     });
   });
 
+  it('gives the pin step the newest scan’s time and the answers its pins job sealed, and the commit says nothing of them (S2-M1)', async () => {
+    await moveTicket();
+    const nonroot = { image: 'gcr.io/distroless/static', tag: 'nonroot', digest: `sha256:${'5'.repeat(64)}` };
+    const node = { image: 'node', tag: '24.22.2-alpine3.24', digest: `sha256:${'3'.repeat(64)}` };
+    const group = (asked: (typeof node)[]) => ({
+      files: ['Dockerfile'],
+      major: false,
+      moves: [1],
+      refused: [],
+      changed: [],
+      steps: [],
+      asked,
+    });
+    const { pass, steps, github } = line({
+      planner,
+      coder: () => ({ kind: 'handed-back', handback: handback(CODED, PATCH), pins: PINS }),
+    });
+    // The run the gate reads too: its time, and each tag once, the first group's answer where two asked it.
+    github.moves = {
+      repository: 'the-roganator/cv-worlds-worst-website',
+      run: { id: 42, event: 'schedule', conclusion: 'success', headSha: 'c'.repeat(40), updatedAt: '', url: '' },
+      file: { judged: '2026-11-20T05:00:00Z' } as Moves['file'],
+      moves: [],
+      made: {
+        version: 1,
+        repository: 'the-roganator/cv-worlds-worst-website',
+        run: '42',
+        commit: 'c'.repeat(40),
+        groups: [group([nonroot]), group([{ ...nonroot, digest: `sha256:${'6'.repeat(64)}` }, node])],
+      },
+    };
+    await pass();
+    await pass();
+    expect(steps.requests[1]).toMatchObject({
+      move: MOVE,
+      made: { at: '2026-11-20T05:00:00Z', asked: [nonroot, node] },
+    });
+    const { message } = (github.acts.find((a) => a.action === 'applyPatch')?.args ?? { message: '' }) as {
+      message: string;
+    };
+    expect(message).not.toMatch(/Pins-/);
+  });
+
+  it('makes the move as of now where the scan’s moves cannot be read (S2-M1)', async () => {
+    await moveTicket();
+    const { pass, steps } = line({
+      planner,
+      coder: () => ({ kind: 'handed-back', handback: handback(CODED, PATCH), pins: PINS }),
+    });
+    await pass();
+    await pass();
+    expect(steps.requests[1]).toMatchObject({ move: MOVE });
+    expect(steps.requests[1]).not.toHaveProperty('made');
+  });
+
   it('holds the work item for Martin when the pins need his file, telling him which and why, and pushes nothing', async () => {
     const workItem = await moveTicket();
     const reason =
@@ -243,6 +303,41 @@ describe('a dependency’s move on the line', () => {
     // No model was called for Build: the planner's call is the only one recorded.
     expect((await types(workItem)).filter((t) => t === 'model.called')).toHaveLength(1);
     expect(await payloads(workItem, 'hold.started')).toEqual([]);
+  });
+
+  it('closes a move main already has as done, not failed, with no coder, and its issue as completed', async () => {
+    // The second of two moves that overlap, once the first merged: Node's move brought the runtime image's.
+    for (const [opened, spec] of [
+      [grpcTicket, gatesOnly],
+      [moveTicket, planner],
+    ] as const) {
+      const workItem = await opened();
+      const { pass, github } = line({ planner: spec, coder: () => ({ kind: 'pinned', pins: '' }) });
+      await justOne(workItem);
+      await pass(); // the issue, and the planner
+      await pass(); // Build: the pin step writes nothing
+      expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
+      expect((await failures(workItem))?.failures ?? 0).toBe(0);
+      expect(await payloads(workItem, 'hold.started')).toEqual([]);
+      const [closed] = await payloads(workItem, 'work-item.closed');
+      expect(closed).toEqual({
+        outcome: 'no-change',
+        reason: expect.stringMatching(/^Main already has its move, at /),
+      });
+      const closing = github.acts.filter((a) => a.action === 'closeIssue');
+      expect(closing).toEqual([
+        {
+          action: 'closeIssue',
+          args: expect.objectContaining({
+            reason: 'completed',
+            comment: expect.stringMatching(/^Main already has this move, at [0-9a-f]{7}: .+ Another change made it\./),
+          }),
+        },
+      ]);
+      await pass();
+      expect(await stage(workItem)).toBe('ended');
+      github.acts.length = 0;
+    }
   });
 
   it('runs the coder on a move whose gates fail, told what failed', async () => {

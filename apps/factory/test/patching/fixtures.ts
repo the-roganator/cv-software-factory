@@ -3,7 +3,6 @@
  * invented content: no package or advisory of a finding open today. Typed against the reads' own types, so a change to
  * the contract below fails here first.
  */
-import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { Moves } from '../../src/github/scanning.ts';
 import type { ScannedImage } from '../../src/patching/compare.ts';
 
@@ -95,7 +94,7 @@ export function factoryMoves(scanned: ScannedImage[] = FACTORY_SCANNED): Moves {
       totals: {
         fixed: 3,
         moves: 2,
-        lanes: { line: 0, worker: 1, dependabot: 1, approval: 0, cluster: 0, issue: 0, none: 0 },
+        lanes: { line: 0, worker: 2, cluster: 0, issue: 0, none: 0 },
         ...FACTORY_COUNTS,
       },
       scanned,
@@ -129,7 +128,7 @@ export function factoryMoves(scanned: ScannedImage[] = FACTORY_SCANNED): Moves {
         leaves: zero,
         deadline: '2027-02-09T04:57:00Z',
         newToday: 1,
-        lane: 'dependabot',
+        lane: 'worker',
         lockfile: true,
         withheld: {
           package: 'example-parser',
@@ -155,7 +154,7 @@ export function appMoves(scanned: ScannedImage[] = APP_SCANNED): Moves {
       totals: {
         fixed: 0,
         moves: 0,
-        lanes: { line: 0, worker: 0, dependabot: 0, approval: 0, cluster: 0, issue: 0, none: 0 },
+        lanes: { line: 0, worker: 0, cluster: 0, issue: 0, none: 0 },
         ...APP_COUNTS,
       },
       scanned,
@@ -163,20 +162,6 @@ export function appMoves(scanned: ScannedImage[] = APP_SCANNED): Moves {
     moves: [],
   };
 }
-
-/** Dependabot's pull request moving the lockfile's package, as its branch names it. */
-export const PULL: DependencyPull = {
-  number: 77,
-  head: { ref: 'dependabot/npm_and_yarn/example-parser-1.0.1', sha: 'b'.repeat(40) },
-  draft: false,
-  createdAt: '2026-11-11T05:00:00Z',
-  ecosystem: 'npm',
-  directory: '/',
-  dependency: 'example-parser',
-  version: '1.0.1',
-  changed: [],
-  unread: [],
-};
 
 /** A pod as the API lists it: a container by its spec's image, and the digest its runtime resolved. */
 export function pod(

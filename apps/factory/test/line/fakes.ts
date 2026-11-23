@@ -31,7 +31,7 @@ import type { StepOutcome, StepRequest } from '../../src/runners/steps.ts';
 export const MAIN = 'a'.repeat(40);
 
 /** A step's whole outcome but its job: the pin step's patches beside a handback, or pins that wait for Martin. */
-export type Outcome = DistributiveOmit<Extract<StepOutcome, { kind: 'handed-back' | 'held' }>, 'job'>;
+export type Outcome = DistributiveOmit<Extract<StepOutcome, { kind: 'handed-back' | 'held' | 'pinned' }>, 'job'>;
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 /** What an agent does with a step: hands something back, fails, or works until the line stops it. */
@@ -64,7 +64,7 @@ export class FakeSteps implements Steps {
     const answer = await agent(request);
     // As the runners do for a move that asks for nothing but its pins: the prepare pod's pins, and no agent, no call.
     if (request.pinsOnly) {
-      if (typeof answer === 'object' && 'kind' in answer && answer.kind === 'held') return { ...answer, job };
+      if (typeof answer === 'object' && 'kind' in answer && answer.kind !== 'handed-back') return { ...answer, job };
       const pins = typeof answer === 'object' && 'kind' in answer && answer.kind === 'handed-back' ? answer.pins : '';
       return { kind: 'pinned', job, pins: pins ?? '' };
     }
@@ -176,7 +176,9 @@ export class FakeGitHub implements GitHubPort {
   conflicts: boolean | null = false;
   /** The pull requests in the merge queue, and the last taken out of it, with why. */
   readonly queued = new Set<number>();
-  readonly dequeued = new Map<number, { reason: string; failed: string[]; at: string }>();
+  readonly dequeued = new Map<number, { reason: string; failed: string[]; at: string; failures: number }>();
+  /** How often the queue took each pull request out for failed checks, at the head it was then at. */
+  readonly #queueFailures = new Map<number, { head: string; failures: number }>();
   /** The number GitHub gives each issue the line opens: a dry run's are `DRY_RUN_NUMBERS_FROM` up. */
   issueNumber = 41;
   #commits = 0;
@@ -184,7 +186,11 @@ export class FakeGitHub implements GitHubPort {
   /** The merge queue taking a pull request out without merging it, with GitHub's reason and the checks that failed. */
   dequeue(number: number, reason: string, failed: string[] = []): void {
     this.queued.delete(number);
-    this.dequeued.set(number, { reason, failed, at: new Date().toISOString() });
+    const head = String(this.pulls.get(number)?.head.sha);
+    const before = this.#queueFailures.get(number);
+    const failures = (before?.head === head ? before.failures : 0) + (reason.toLowerCase() === 'failed_checks' ? 1 : 0);
+    this.#queueFailures.set(number, { head, failures });
+    this.dequeued.set(number, { reason, failed, at: new Date().toISOString(), failures });
   }
 
   async act<K extends ActionName>(
@@ -401,7 +407,15 @@ export class FakeGitHub implements GitHubPort {
           state: pr.merged ? 'merged' : pr.state,
           queued: queued ? { position: 1, state: 'AWAITING_CHECKS', enqueuedAt: '', commit: null } : null,
           added: queued || out ? { at: new Date().toISOString(), by: 'mrogan-software-factory[bot]' } : null,
-          removed: out ? { at: out.at, by: 'github-merge-queue', reason: out.reason, commit: 'd'.repeat(40) } : null,
+          removed: out
+            ? {
+                at: out.at,
+                by: 'github-merge-queue',
+                reason: out.reason,
+                commit: 'd'.repeat(40),
+                failures: out.failures,
+              }
+            : null,
           checks: (out?.failed ?? []).map((name, i) => ({
             id: 800 + i,
             name,

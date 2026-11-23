@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { ENQUEUES } from '../../../../policy/line.ts';
 import { RULES, type Rule } from '../../../../policy/review-verdict.ts';
 import { STUCK } from '../../../../policy/stuck.ts';
+import { QUEUE_TRIES } from '../../src/github/deploy-queue.ts';
 import { atMerge, decide, type Facts, fold, type LineEvent } from '../../src/line/machine.ts';
 import type { MergeFacts } from '../../src/line/merging.ts';
 
@@ -134,15 +135,16 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     }
   });
 
-  it('merges by Guarded’s rules at Guarded and Lights-out, Lights-out’s at Lights-out alone, and never Martin’s own', () => {
+  it('merges by Guarded’s rules at Guarded and Lights-out, Lights-out’s (a major among them) at Lights-out alone, and never Martin’s own', () => {
     const rules = (autonomy: Autonomy) =>
       RULES.filter((rule) => decide(ready, facts(merge({ autonomy, rule }))).next.do === 'enqueue');
     expect(rules('supervised')).toEqual([]);
-    expect(rules('guarded')).toEqual(['martin-approved-head', 'exact-pin', 'critical-fix', 'low-risk']);
+    expect(rules('guarded')).toEqual(['martin-approved-head', 'exact-pin', 'move', 'low-risk']);
     expect(rules('lights-out')).toEqual([
       'martin-approved-head',
       'exact-pin',
-      'critical-fix',
+      'move',
+      'major',
       'low-risk',
       'lights-out',
     ]);
@@ -377,7 +379,7 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
       expect(conflict.merge).toEqual({ pullRequest: 12, head: HEAD, why: 'conflict', approving: false });
       const out: LineEvent = {
         type: 'pull-request.dequeued',
-        payload: { number: 12, commit: HEAD, reason: 'failed_checks', by: 'github-merge-queue', failed: ['test'] },
+        payload: { number: 12, commit: HEAD, reason: 'dequeued', by: 'mrogan', failed: [] },
       };
       const dequeued = [...ready, enqueued(), out];
       expect(holdOf(dequeued, { ...tagged, conflicts: false }).merge).toEqual({
@@ -385,7 +387,7 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
         head: HEAD,
         why: 'queue',
         approving: false,
-        queue: { reason: 'failed_checks', failed: ['test'] },
+        queue: { reason: 'dequeued', failed: [] },
       });
       // The verdict resolving does not make the same conflict's or queue's hold again.
       const conflicted = [...ready, { type: 'hold.started', payload: conflict } as LineEvent];
@@ -429,14 +431,14 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     expect(atMerge(fold(queued), queued, facts())).toBe(false);
     const out: LineEvent = {
       type: 'pull-request.dequeued',
-      payload: { number: 12, commit: HEAD, reason: 'failed_checks', by: 'github-merge-queue', failed: ['test'] },
+      payload: { number: 12, commit: HEAD, reason: 'merge_conflict', by: 'github-merge-queue', failed: [] },
     };
     const dequeued = [...queued, out];
     expect(atMerge(fold(dequeued), dequeued, facts())).toBe(true);
     const hold = holdOf(dequeued, merge());
     expect(hold).toMatchObject({
-      reason: expect.stringContaining('The merge queue took #12 out (failed_checks): test failed'),
-      merge: { why: 'queue', queue: { reason: 'failed_checks', failed: ['test'] } },
+      reason: expect.stringContaining('The merge queue took #12 out (merge_conflict). It waits for Martin'),
+      merge: { why: 'queue', queue: { reason: 'merge_conflict', failed: [] } },
     });
     // The line does not add that head again.
     const holding = [...dequeued, { type: 'hold.started', payload: hold } as LineEvent];
@@ -444,6 +446,32 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     // A queue's word on another head says nothing of this one.
     const other: LineEvent = { ...out, payload: { ...out.payload, commit: PUSHED } } as LineEvent;
     expect(fold([...queued, other]).enqueued).toBeDefined();
+  });
+
+  it('adds a head the queue took out for failed checks again, QUEUE_TRIES times in all, then holds it', () => {
+    const out = (commit = HEAD): LineEvent => ({
+      type: 'pull-request.dequeued',
+      payload: { number: 12, commit, reason: 'failed_checks', by: 'github-merge-queue', failed: ['test'] },
+    });
+    let events = [...ready];
+    for (let i = 1; i < QUEUE_TRIES; i++) {
+      events = [...events, enqueued(), out()];
+      expect(decide(events, facts(merge())).next).toEqual({ do: 'enqueue', number: 12, head: HEAD, rule: 'low-risk' });
+    }
+    events = [...events, enqueued(), out()];
+    const hold = holdOf(events, merge());
+    expect(hold).toMatchObject({
+      reason: `The merge queue took #12 out ${QUEUE_TRIES} times at ${HEAD.slice(0, 7)} (failed_checks): test failed on the queue’s commit. It waits for Martin`,
+      merge: { why: 'queue', queue: { reason: 'failed_checks', failed: ['test'] } },
+    });
+    const holding = [...events, { type: 'hold.started', payload: hold } as LineEvent];
+    expect(decide(holding, facts(merge())).next).toEqual({ do: 'wait', for: 'martin' });
+    // Added again, it is still the line's only as any change is: not at a level that does not let it.
+    const once = [...ready, enqueued(), out()];
+    expect(holdOf(once, merge({ autoMerge: false })).merge).toMatchObject({ why: 'auto-merge' });
+    // A new push starts the count again.
+    const repushed = [...events, pushed(), ...gates(), reviewed()];
+    expect(fold(repushed).queueFailures).toEqual([]);
   });
 
   it('ends the hold for the merge when the line queues it, and goes on to Release once it merges', () => {

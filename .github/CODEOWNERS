@@ -7,16 +7,22 @@
 /scripts/github-settings.ts  @mrogan
 /scripts/review-gate.ts      @mrogan
 /scripts/review-routing.ts   @mrogan
-# The pin move's proof, in a file for each job, the job that runs it, and their tests: every file a split makes
-/scripts/pin-move*.ts        @mrogan
-# A Critical fix's proof, its readers, the job that runs it and its tests
-/scripts/critical-fix*.ts    @mrogan
-# What that proof runs beyond its own files: the pin step that writes the lockfile it compares, with its git and the pnpm
-# it installs, and the daily scan's code that chooses the move's target and reads the scans
+# The move rule, the job that reads the scan's moves for it, and their tests
+/scripts/move.ts             @mrogan
+/scripts/move.test.ts        @mrogan
+/scripts/moves.ts            @mrogan
+/scripts/derive.ts           @mrogan
+/scripts/pins.ts             @mrogan
+# What the gate's proofs run beyond their own files: the pin step, with its git, the pnpm it installs and its reading
+# of an image's registry, the daily scan's code that chooses each move's target, the grammar a target is read by, and
+# the archive its moves are read from
 /apps/runner/src/pins.ts                        @mrogan
 /apps/runner/src/git.ts                         @mrogan
 /apps/runner/scripts/install-pnpm.ts            @mrogan
+/apps/factory/src/vulnerabilities/registry.ts   @mrogan
 /apps/factory/src/vulnerabilities/deadlines.ts  @mrogan
+/apps/factory/src/vulnerabilities/fixes.ts      @mrogan
+/apps/factory/src/vulnerabilities/zip.ts        @mrogan
 /apps/factory/src/vulnerabilities/moves.ts      @mrogan
 /apps/factory/src/vulnerabilities/scan.ts       @mrogan
 /apps/factory/src/vulnerabilities/node.ts       @mrogan

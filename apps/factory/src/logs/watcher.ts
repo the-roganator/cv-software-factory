@@ -101,6 +101,14 @@ export class Watcher {
   private patterns = new PatternMemory();
   private errorsFrom: Date;
   /**
+   * Since a check of errors failed, as one does while Loki restarts: where the check that failed would have read
+   * from, and when the last one failed. A record written while Loki was away reaches it late, when the collector's
+   * retry gets through, with the time it was written, and a check that had moved past that time would never read it.
+   * So each check reads again from there, until it reads to `reportLateMs` after the last failure, the horizon reports
+   * are read back over for the same reason. A record read twice is no new pattern the second time.
+   */
+  private errorsAgain: { from: Date; failedAt: number } | undefined;
+  /**
    * Before it, every report has been read: `reportLateMs` before the last check, or, before the first, where the
    * watcher was told to start. A check reads from here, or from `reportLateMs` before itself if that is earlier.
    */
@@ -152,18 +160,28 @@ export class Watcher {
 
   /**
    * Signals each error pattern new to the log among the records written up to `settleMs` ago: every one of them, read
-   * a page at a time, however long the window since the last check.
+   * a page at a time, however long the window since the last check, and read again from where one failed while
+   * records of then may still arrive (`errorsAgain`).
    */
   async checkErrors(now: Date): Promise<number> {
-    const { loki, tempo, outbox, objectives, log } = this.backends;
     const until = new Date(now.getTime() - this.timing.settleMs);
     if (until <= this.errorsFrom) return 0;
+    try {
+      return await this.errorsUntil(until, this.errorsAgain?.from ?? this.errorsFrom);
+    } catch (error) {
+      this.errorsAgain = { from: this.errorsAgain?.from ?? this.errorsFrom, failedAt: now.getTime() };
+      throw error;
+    }
+  }
+
+  private async errorsUntil(until: Date, from: Date): Promise<number> {
+    const { loki, tempo, outbox, objectives, log } = this.backends;
     // Every record, a page at a time, remembered in a copy of the memory that becomes it only once every signal has
     // been sent: a send that failed leaves the patterns new, and the window is read again next time.
     const memory = this.patterns.copy();
     const found = new Map<string, NewPattern>();
     let errors = 0;
-    for await (const page of loki.pages(errorLogs(objectives), this.errorsFrom, until, Number.POSITIVE_INFINITY)) {
+    for await (const page of loki.pages(errorLogs(objectives), from, until, Number.POSITIVE_INFINITY)) {
       freshInPage(memory, found, errorRecords(page), MAX_LINES);
       errors += page.length;
     }
@@ -179,6 +197,9 @@ export class Watcher {
     }
     this.patterns = memory;
     this.errorsFrom = until;
+    if (this.errorsAgain && until.getTime() - this.errorsAgain.failedAt >= this.timing.reportLateMs) {
+      this.errorsAgain = undefined;
+    }
     log.info({ errors, signals: sent }, 'error patterns checked');
     return sent;
   }

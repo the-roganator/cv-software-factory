@@ -135,29 +135,27 @@ describe('learning the day’s patterns when the watcher starts', () => {
 
 /** A Loki that holds these records and answers a range as it does: from `start` on, before `end`, `limit` at most. */
 function lokiOf(held: [bigint, string, Record<string, string>][], seen: URL[] = []) {
-  return new Loki(
-    'http://loki',
-    fakeFetch(
-      [
-        {
-          path: '/loki/api/v1/query_range',
-          answer: (url) => {
-            const start = BigInt(url.searchParams.get('start') ?? '0');
-            const end = BigInt(url.searchParams.get('end') ?? '0');
-            const limit = Number(url.searchParams.get('limit'));
-            const range = held.filter(([ns]) => ns >= start && ns < end).slice(0, limit);
-            return streams(
-              ...range.map(([ns, line, fields]): [string, string, Record<string, string>] => [
-                String(ns),
-                line,
-                fields,
-              ]),
-            );
-          },
+  return new Loki('http://loki', heldBy(held, seen));
+}
+
+/** The `fetch` of a Loki that holds these records, as `lokiOf` says. */
+function heldBy(held: [bigint, string, Record<string, string>][], seen: URL[] = []) {
+  return fakeFetch(
+    [
+      {
+        path: '/loki/api/v1/query_range',
+        answer: (url) => {
+          const start = BigInt(url.searchParams.get('start') ?? '0');
+          const end = BigInt(url.searchParams.get('end') ?? '0');
+          const limit = Number(url.searchParams.get('limit'));
+          const range = held.filter(([ns]) => ns >= start && ns < end).slice(0, limit);
+          return streams(
+            ...range.map(([ns, line, fields]): [string, string, Record<string, string>] => [String(ns), line, fields]),
+          );
         },
-      ],
-      seen,
-    ),
+      },
+    ],
+    seen,
   );
 }
 
@@ -246,5 +244,52 @@ describe('checking a window of errors bigger than a read used to hold', () => {
     fail = false;
     expect(await check.checkErrors(now)).toBe(2);
     expect(sent).toHaveLength(2);
+  });
+});
+
+describe('checking errors after a check that could not reach Loki', () => {
+  const from = new Date('2026-10-17T08:00:00Z');
+  const minute = (m: number) => new Date(from.getTime() + m * 60_000);
+  const fields = { route: '/search', service_version: 'v1.4.2' };
+
+  it('reads again from where it failed, so a record the collector delivers late is not missed', async () => {
+    const held: [bigint, string, Record<string, string>][] = [];
+    const seen: URL[] = [];
+    const up = heldBy(held, seen);
+    let away = true;
+    const loki = new Loki('http://loki', async (input, init) => {
+      if (!away) return up(input, init);
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }) });
+    });
+    const sent: InboxSignal[] = [];
+    const check = new Watcher(
+      {
+        objectives,
+        loki,
+        tempo: { spans: async () => undefined } as unknown as Tempo,
+        outbox: { send: async (signal: InboxSignal) => void sent.push(signal) },
+        log: pino({ level: 'silent' }),
+      } as never,
+      { errors: from, reports: from },
+      { settleMs: 60_000, agreementWindowMs: 300_000, agreementLagMs: 0, reportLateMs: 10 * 60_000 },
+    );
+    const startOf = () => new Date(Number(BigInt(seen.at(-1)?.searchParams.get('start') ?? '0') / 1_000_000n));
+
+    // Loki restarts: the check at 08:02 cannot reach it.
+    await expect(check.checkErrors(minute(2))).rejects.toThrow('fetch failed');
+    // Back at 08:03, before the collector's retry has delivered what the app wrote while it was away.
+    away = false;
+    expect(await check.checkErrors(minute(3))).toBe(0);
+    held.push([BigInt(minute(1.5).getTime()) * 1_000_000n, 'GET /search failed', fields]);
+    // The next check reads from 08:00 again, not from 08:02, and finds it.
+    expect(await check.checkErrors(minute(4))).toBe(1);
+    expect(startOf()).toEqual(from);
+    expect(sent.map((signal) => signal.route)).toEqual(['/search']);
+    // Read again, it is no new pattern.
+    expect(await check.checkErrors(minute(5))).toBe(0);
+    // Once it has read to ten minutes after the failure, the check reads from where the last one ended.
+    expect(await check.checkErrors(minute(13))).toBe(0);
+    expect(await check.checkErrors(minute(14))).toBe(0);
+    expect(startOf()).toEqual(minute(12));
   });
 });

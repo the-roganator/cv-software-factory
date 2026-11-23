@@ -6,10 +6,11 @@
  * and Martin's branches above all, is refused before GitHub is asked, as a patch to a protected path is: the rulesets
  * guard `main` too, and this does not lean on them.
  *
- * The pin watch's branches (`factory/pin/<move>`, and `factory/pin-next/<move>` where each commit is made before its
+ * The pin watch's branches (`factory/pin/<files>`, and `factory/pin-next/<files>` where each commit is made before its
  * branch moves to it) are written by one action alone, `commitPins`, whose guard lets a commit replace the version or
- * digest at each pin and nothing else (`pin-guard.ts`): every other action that moves, deletes or commits to a branch
- * refuses them, so no patch, commit or branch move asked of the worker can put anything else on one.
+ * digest at each pin, and write what a move writes in the files the scan's pin step made, and nothing else
+ * (`pin-guard.ts`): every other action that moves, deletes or commits to a branch refuses them, so no patch, commit or
+ * branch move asked of the worker can put anything else on one.
  */
 import { DEPLOYS } from './deploys.ts';
 
@@ -56,7 +57,8 @@ export const plainBranch = (branch: string): boolean =>
  * The commit each of the worker's own watches last wrote to a branch of its own, by repository and branch: what that
  * watch's queue may add to the merge queue, and nothing else. A branch at any other commit, however it got there, is
  * not the watch's work; the watch puts its own back on its next pass. Kept in memory: a worker that starts again knows
- * none, and each watch writes its commit again before its queue adds anything.
+ * none, and its queues add nothing until each watch has looked. Each watch then records a head that is already the
+ * commit it would write (`own-commit.ts`), and writes its own over any other.
  */
 export class WatchedHeads {
   readonly #heads = new Map<string, string>();

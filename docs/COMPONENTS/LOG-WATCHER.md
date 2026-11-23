@@ -4,6 +4,8 @@ The app's logs, read for what a query cannot say (`factory logs`). Part of the [
 
 - **v1:** three checks, each with its own cursor, reading Loki. Signals count as `factory_signals_total{sense}`.
 
+A check that fails is tried again at its next turn. Patching Loki, Prometheus or Tempo restarts it, and a turn that cannot reach it (no answer within ten seconds, a connection refused or cut, a 5xx from the read-only proxy or the backend) is a warning while it has been away under two minutes, and the turn that reaches it again says how long it was away. A backend away for longer, and any other failure, is an error at every turn. What a turn that failed would have read is read by the next turn that passes: each check's cursor moves only when it passes, and errors are read again from where the failure began until ten minutes after the last one, for the records the collector delivers late once Loki is back. Agreement loses the window it could not count, and judges the next window with the one after it: a disagreement that holds is found in that pair.
+
 ## New error patterns
 
 Error records are reduced to a pattern:

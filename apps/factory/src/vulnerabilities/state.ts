@@ -95,13 +95,44 @@ export function readKey(text: string) {
 /** What a seal binds besides its bytes: the repository and the run it is on. */
 const bound = (repository: string, run: string) => Buffer.from(`scan state ${STATE_VERSION}\n${repository}\n${run}`);
 
-/** A state sealed for its repository and run. */
-export function seal(state: State, key: Buffer): Buffer {
+/**
+ * JSON sealed with the key, bound to what `aad` names: a state, or another of the scan's sealed files (the moves it
+ * made, github/made.ts), each bound to its own kind, repository and run, so none opens as another.
+ */
+export function sealJson(json: unknown, key: Buffer, aad: Buffer): Buffer {
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
-  cipher.setAAD(bound(state.repository, state.run));
-  const sealed = Buffer.concat([cipher.update(gzipSync(JSON.stringify(state))), cipher.final()]);
+  cipher.setAAD(aad);
+  const sealed = Buffer.concat([cipher.update(gzipSync(JSON.stringify(json))), cipher.final()]);
   return Buffer.concat([MAGIC, iv, cipher.getAuthTag(), sealed]);
+}
+
+/** Sealed JSON opened with the key, for what it is bound to, or a `StateError` naming `what` and `where`. */
+export function openJson(bytes: Buffer, key: Buffer, aad: Buffer, what: string, where: string): unknown {
+  if (bytes.length > MAX_SEALED_BYTES) throw new StateError(`the ${what} is too large`);
+  const head = MAGIC.length + IV_BYTES + TAG_BYTES;
+  if (bytes.length < head || !bytes.subarray(0, MAGIC.length).equals(MAGIC))
+    throw new StateError(`the file is not a sealed ${what}`);
+  let json: string;
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(MAGIC.length, MAGIC.length + IV_BYTES));
+    decipher.setAAD(aad);
+    decipher.setAuthTag(bytes.subarray(MAGIC.length + IV_BYTES, head));
+    const zipped = Buffer.concat([decipher.update(bytes.subarray(head)), decipher.final()]);
+    json = gunzipSync(zipped, { maxOutputLength: MAX_STATE_BYTES }).toString('utf-8');
+  } catch {
+    throw new StateError(`the ${what} does not open with this key for ${where}`);
+  }
+  try {
+    return JSON.parse(json);
+  } catch {
+    throw new StateError(`the ${what} is not JSON`);
+  }
+}
+
+/** A state sealed for its repository and run. */
+export function seal(state: State, key: Buffer): Buffer {
+  return sealJson(state, key, bound(state.repository, state.run));
 }
 
 /**
@@ -109,26 +140,7 @@ export function seal(state: State, key: Buffer): Buffer {
  * `StateError`, and nothing of it is returned.
  */
 export function open(bytes: Buffer, key: Buffer, repository: string, run: string): State {
-  if (bytes.length > MAX_SEALED_BYTES) throw new StateError('the state is too large');
-  const head = MAGIC.length + IV_BYTES + TAG_BYTES;
-  if (bytes.length < head || !bytes.subarray(0, MAGIC.length).equals(MAGIC))
-    throw new StateError('the file is not a sealed state');
-  let json: string;
-  try {
-    const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(MAGIC.length, MAGIC.length + IV_BYTES));
-    decipher.setAAD(bound(repository, run));
-    decipher.setAuthTag(bytes.subarray(MAGIC.length + IV_BYTES, head));
-    const zipped = Buffer.concat([decipher.update(bytes.subarray(head)), decipher.final()]);
-    json = gunzipSync(zipped, { maxOutputLength: MAX_STATE_BYTES }).toString('utf-8');
-  } catch {
-    throw new StateError(`the state does not open with this key for run ${run} of ${repository}`);
-  }
-  let state: unknown;
-  try {
-    state = JSON.parse(json);
-  } catch {
-    throw new StateError('the state is not JSON');
-  }
+  const state = openJson(bytes, key, bound(repository, run), 'state', `run ${run} of ${repository}`);
   const problem = problemOf(state, repository, run);
   if (problem) throw new StateError(`the state ${problem}`);
   return state as State;
@@ -215,13 +227,15 @@ export interface Kept {
  * The newest state a run of the scan kept, sealed still: from the scan's own workflow's runs on the default branch,
  * by schedule, push or hand and from the repository itself, finished, before the run given (its own), newest first. Each event's
  * runs are asked for by that event, so no pull request's run, a fork's from a branch of the same name among them,
- * takes a place among those looked through. Undefined when none of them kept one that is still there.
+ * takes a place among those looked through. Undefined when none of them kept one that is still there. Another of the
+ * scan's artifacts is found the same way, by its name: the review gate reads `moves` so (scripts/moves.ts).
  */
 export async function latest(
   api: StateApi,
   repository: string,
   branch: string,
   before?: string,
+  artifactName = STATE_ARTIFACT,
 ): Promise<Kept | undefined> {
   const lists = await Promise.all(
     SCAN_EVENTS.map(async (event) => {
@@ -244,18 +258,33 @@ export async function latest(
     )
     .sort((a, b) => b.id - a.id);
   for (const run of runs) {
-    const listed = (await api.json(
-      `/repos/${repository}/actions/runs/${run.id}/artifacts?name=${STATE_ARTIFACT}&per_page=10`,
-    )) as Artifacts | null;
-    const artifact = listOf(listed?.artifacts, 'artifacts').find(
-      (each) => typeof each === 'object' && each !== null && each.name === STATE_ARTIFACT && !each.expired,
-    );
-    if (typeof artifact?.id !== 'number') continue;
-    if ((artifact.size_in_bytes ?? 0) > MAX_SEALED_BYTES) throw new StateError(`run ${run.id}'s state is too large`);
-    const archive = await api.bytes(`/repos/${repository}/actions/artifacts/${artifact.id}/zip`);
-    if (archive) return { run: String(run.id), archive };
+    const kept = await keptBy(api, repository, String(run.id), artifactName);
+    if (kept) return kept;
   }
   return undefined;
+}
+
+/**
+ * One run's artifact of that name, sealed still, or undefined where the run kept none that is still there: the review
+ * gate reads the `pins` of the run whose moves it read so (scripts/moves.ts).
+ */
+export async function keptBy(
+  api: StateApi,
+  repository: string,
+  run: string,
+  artifactName: string,
+): Promise<Kept | undefined> {
+  const listed = (await api.json(
+    `/repos/${repository}/actions/runs/${run}/artifacts?name=${artifactName}&per_page=10`,
+  )) as Artifacts | null;
+  const artifact = listOf(listed?.artifacts, 'artifacts').find(
+    (each) => typeof each === 'object' && each !== null && each.name === artifactName && !each.expired,
+  );
+  if (typeof artifact?.id !== 'number') return undefined;
+  if ((artifact.size_in_bytes ?? 0) > MAX_SEALED_BYTES)
+    throw new StateError(`run ${run}'s ${artifactName} is too large`);
+  const archive = await api.bytes(`/repos/${repository}/actions/artifacts/${artifact.id}/zip`);
+  return archive ? { run, archive } : undefined;
 }
 
 /** A list GitHub answered with, or an error that says it gave none: its answers are held to their shape here. */

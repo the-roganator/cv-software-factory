@@ -15,8 +15,8 @@
  * from, and whether its pipeline signed it; and the open deploy pull request, as the deploy watch last saw it.
  *
  * For patching, the factory learns of vulnerabilities only through the worker: the scan's moves, from its `moves`
- * artifact and the state it kept, checked one against the other (`scanning.ts`), and the open Dependabot pull
- * requests, each with the pin its branch names (`dependabot.ts`).
+ * artifact and the state it kept, checked one against the other (`scanning.ts`); and the open Dependabot pull
+ * requests, each with the pin its branch names (`dependabot.ts`), which a line's move names as the one it replaces.
  *
  * Every read is a conditional request (an artifact, which never changes, is downloaded once), so asking again about
  * something that has not changed costs nothing against the rate limit, and every answer is read through a Zod schema.
@@ -31,6 +31,7 @@ import { type DependencyPull, dependencyPulls } from './dependabot.ts';
 import { type DeployBuild, type DeployProposal, type DeployProposals, deployedImage } from './deploys.ts';
 import {
   conflictsOf,
+  failedChecks,
   heldFor,
   listedReviews,
   type Mergeability,
@@ -227,13 +228,15 @@ const CHECK_RUNS = z.object({
 
 /**
  * A pull request's place in the merge queue, and the last twenty times it went in or came out, oldest first. GitHub's
- * `beforeCommit` on a removal is the queue's commit it was tested on.
+ * `beforeCommit` on a removal is the queue's commit it was tested on. When its head was committed says which removals
+ * were of that head: a head is committed before it is ever queued.
  */
 const QUEUE = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       headRefOid
       state
+      commits(last: 1) { nodes { commit { committedDate } } }
       mergeQueueEntry { position state enqueuedAt headCommit { oid } }
       timelineItems(last: 20, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
         nodes {
@@ -252,6 +255,7 @@ const QUEUE_ANSWER = z.object({
       .object({
         headRefOid: SHA,
         state: z.enum(['OPEN', 'CLOSED', 'MERGED']),
+        commits: z.object({ nodes: z.array(z.object({ commit: z.object({ committedDate: z.string() }) })) }).optional(),
         mergeQueueEntry: z
           .object({
             position: z.number().int(),
@@ -479,12 +483,21 @@ export class LiveReads implements Reads {
     const entry = pull.mergeQueueEntry;
     // Out of the queue since it last went in: the last of its events is a removal.
     const out = !entry && lastRemoved !== undefined && events.at(-1) === lastRemoved;
+    // Without the head's time, or a removal's, every failure read counts: the count errs towards Martin.
+    const headAt = Date.parse(pull.commits?.nodes.at(-1)?.commit.committedDate ?? '');
+    const failures = events.filter(
+      (e) =>
+        e.__typename === 'RemovedFromMergeQueueEvent' &&
+        failedChecks(e.reason ?? null) &&
+        !(Date.parse(e.createdAt ?? '') < headAt),
+    ).length;
     const removed = out
       ? {
           at: lastRemoved.createdAt ?? '',
           by: lastRemoved.actor?.login ?? null,
           reason: lastRemoved.reason ?? null,
           commit: lastRemoved.beforeCommit?.oid ?? null,
+          failures,
         }
       : null;
     const queued = entry

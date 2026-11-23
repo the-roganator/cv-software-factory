@@ -538,7 +538,7 @@ const runsIn = { namespace: kubeName, pod: kubeName, container: kubeName };
  * A move as the dependency sense reads it from the scan (`apps/factory/src/vulnerabilities/moves.ts`): what moves, every
  * pin it writes, from and to, what it clears and leaves, its deadline and its lane. A lockfile's move is named by its
  * file alone, as the scan's log names it; the package, its versions and its lines, which the alerts give, are `package`,
- * which the public view leaves out until a pull request moving it is open.
+ * which the public view leaves out.
  */
 const patchingMove = z
   .strictObject({
@@ -564,8 +564,6 @@ const patchingMove = z
         pins: z.array(filePin).max(MOST_PINS),
       })
       .optional(),
-    /** The pull request open at its pin, as Dependabot's branch names it, and the version it moves to. */
-    pullRequest: z.strictObject({ number: pullRequest, version: z.string().min(1).max(100) }).optional(),
   })
   .refine((m) => !m.package || m.lockfile, "only a lockfile's move has its package apart");
 

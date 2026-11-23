@@ -135,6 +135,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(call password,factory,postgres-redteam)
 	@# The dependency sense's role, which is no member of the workers' either; the migrate Job sets it.
 	@$(call password,factory,postgres-patching)
+	@# The GitHub worker's role, which reads the autonomy level and nothing else; the migrate Job sets it.
+	@$(call password,factory,postgres-github)
 	@$(MAKE) --no-print-directory worker-secrets
 	@$(MAKE) --no-print-directory gateway-key
 	@$(MAKE) --no-print-directory github-key

@@ -192,106 +192,71 @@ describe('approval routing: the rule, the first that holds', () => {
     }
   });
 
-  it('passes a pin move here, tried after the exact pin, and holds one it could not prove with both reasons', () => {
-    const here = facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), tags: [tag('code-owned')] });
-    const pin = { reason: 'apps/console/zap/scan.ts is not a pin file under deploy/' };
-    const title = 'A pin move of ghcr.io/zaproxy/zaproxy to 2.17.0, forward on its line';
-    expect(route({ ...here, pin, pinMove: { title } })).toMatchObject({ pass: true, rule: 'pin-move', title });
-    const held = route({ ...here, pin, pinMove: { reason: 'a move backwards, from 2.17.0 to 2.16.0' } });
-    expect(held).toMatchObject({ pass: false, rule: 'held' });
-    expect(held.title).toBe(
-      'Not an exact pin (apps/console/zap/scan.ts is not a pin file under deploy/), nor a pin move: a move backwards, from 2.17.0 to 2.16.0, and here only a pin passes without Martin: waits for Martin to approve aaaaaaa',
-    );
-    // An exact pin decides first; one whose check could not be made waits, and no pin move passes it.
-    expect(route({ ...here, pin: { unchecked: 'ghcr.io did not answer' }, pinMove: { title } })).toMatchObject({
-      pass: false,
-      pending: 'the gate could not check its exact pin: ghcr.io did not answer',
-    });
-    // Martin's say comes first, and someone else's pull request is never a pin move.
-    expect(route({ ...here, reviews: [approved()], pinMove: { reason: 'x' } })).toMatchObject({
-      rule: 'martin-approved-head',
-    });
-    expect(route({ ...here, pr: pr(42, FACTORY_REPO), pinMove: { title } })).toMatchObject({
-      pass: false,
-      rule: 'held',
-    });
-    // One whose base was ever changed: a check may have run for that other base.
-    expect(route({ ...here, pin, retargeted: true, pinMove: { title } })).toMatchObject({ pass: false, rule: 'held' });
-    // A removed risk label, and a read that failed, hold it whatever the move.
-    expect(route({ ...here, labelsRemoved: ['code-owned'], pinMove: { title } })).toMatchObject({ pass: false });
-    expect(route({ ...here, unread: 'GET /files: 502', pinMove: { title } })).toMatchObject({ pass: false });
-  });
+  describe('a move, in either repository and whoever opened it', () => {
+    const title = 'The scan’s move of prometheus to 29.47.2, made by the gate on main and the same as the pull request';
+    const pin = { reason: 'deploy/base/telemetry/prometheus.yaml changes no digest' };
+    const here = facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), tags: [tag('code-owned')], pin });
 
-  it('never passes a pin move in the app’s repository, whose line moves its own pins', () => {
-    const there = facts({ tags: [tag('dependency-change')], pinMove: { title: 'A pin move of x' } });
-    expect(route(there)).toMatchObject({ pass: false, rule: 'held' });
-    // Nor in any repository but this one, whatever calls the gate.
-    const other = 'someone/else';
-    const elsewhere = facts({ repo: other, pr: pr(FACTORY_APP, other), pinMove: { title: 'A pin move of x' } });
-    expect(route(elsewhere)).toMatchObject({ pass: false, rule: 'held' });
-  });
-
-  describe('a Critical vulnerability’s fix, in the app’s repository', () => {
-    const title = "A Critical vulnerability's fix: protobufjs's CVE-1 gone from pnpm-lock.yaml";
-    const pin = { reason: 'pnpm-lock.yaml is not a pin file under deploy/' };
-    const fixing = (over: Partial<Facts> = {}) =>
-      facts({ tags: [tag('dependency-change', 'pnpm-lock.yaml')], pin, criticalFix: { title }, ...over });
-
-    it('passes it whatever AUTONOMY says, as low-risk: the line queues it only at Guarded or above', () => {
-      for (const autonomy of ['', 'guarded', 'lights-out', 'Lights-out'])
-        expect(route(fixing({ autonomy }))).toMatchObject({ pass: true, rule: 'critical-fix', title });
+    it('passes `move` and `major` as the answer names them, whatever its tags and AUTONOMY', () => {
+      expect(route({ ...here, move: { rule: 'move', title } })).toMatchObject({ pass: true, rule: 'move', title });
+      expect(route({ ...here, move: { rule: 'major', title } })).toMatchObject({ pass: true, rule: 'major' });
+      const app = facts({ tags: [tag('dependency-change'), tag('code-owned', 'Dockerfile (/Dockerfile)')], pin });
+      for (const autonomy of ['', 'guarded', 'lights-out'])
+        expect(route({ ...app, autonomy, move: { rule: 'move', title } })).toMatchObject({ pass: true, rule: 'move' });
     });
 
-    it('passes code-owned on its pins’ files alone, and holds every other tag', () => {
-      const node = [
-        tag('dependency-change', 'package.json'),
-        tag('code-owned', 'Dockerfile (/Dockerfile)', 'mise.toml (/mise.toml)', 'mise.lock (/mise.lock)'),
-      ];
-      expect(route(fixing({ tags: node }))).toMatchObject({ pass: true, rule: 'critical-fix' });
-      for (const [tags, why] of [
-        [[tag('code-owned', 'pnpm-workspace.yaml (/pnpm-workspace.yaml)')], 'it is code-owned beyond its pins'],
-        [[tag('code-owned', '.github/workflows/check.yml (/.github/)')], 'it is code-owned beyond its pins'],
-        [[tag('code-owned', 'more files than GitHub lists: the rest are unread')], 'it is code-owned beyond its pins'],
-        [[{ ...tag('code-owned', 'Dockerfile (/Dockerfile)'), more: 3 }], 'it is code-owned beyond its pins'],
-        [[tag('dependency-change'), tag('test-loosening')], 'it carries test-loosening'],
-        [[tag('dependency-change'), tag('security-headers')], 'it carries security-headers'],
-        [[tag('dependency-change'), tag('improvement')], 'it carries improvement'],
-        [[tag('release')], 'it carries release'],
-      ] as const) {
-        const said = route(fixing({ tags: [...tags] }));
-        expect(said, why).toMatchObject({ pass: false, rule: 'held' });
-        expect(said.title).toContain(`not a critical fix: ${why}`);
-      }
+    it('passes anyone’s from a branch here, and never a fork’s', () => {
+      const dependabot = { ...here, pr: pr(49699333, FACTORY_REPO), move: { rule: 'move' as const, title } };
+      expect(route(dependabot)).toMatchObject({ pass: true, rule: 'move' });
+      const fork = pr(42, 'someone/fork', { base: { ref: 'main', repo: { full_name: FACTORY_REPO } } });
+      expect(route({ ...here, pr: fork, move: { rule: 'move', title } })).toMatchObject({ pass: false, rule: 'held' });
     });
 
-    it('holds one it could not prove for Martin, keeping its tag and naming the first condition it failed', () => {
+    it('holds a refused one saying what differs, for the App’s and for anyone’s', () => {
       const reason =
-        'the scans show no Critical fixed: the worst it fixes is x’s CVE-2, which the gate’s scanner rates HIGH';
-      const said = route(fixing({ criticalFix: { reason } }));
-      expect(said).toMatchObject({ pass: false, rule: 'held', tags: [{ tag: 'dependency-change' }] });
-      expect(said.title).toBe(
-        `Held for its risk tags (dependency-change); not a critical fix: ${reason}: waits for Martin to approve aaaaaaa`,
+        "deploy/base/telemetry/prometheus.yaml:6 is `targetRevision: 29.30.0` where the scan's moves make `targetRevision: 29.47.2`";
+      expect(route({ ...here, move: { reason } }).title).toBe(
+        `Not an exact pin (deploy/base/telemetry/prometheus.yaml changes no digest), nor a move: ${reason}, and here only a pin or a move passes without Martin: waits for Martin to approve aaaaaaa`,
       );
-      // At Lights-out, the level passes a dependency's change as it always has.
-      expect(route(fixing({ criticalFix: { reason }, autonomy: 'lights-out' }))).toMatchObject({ rule: 'lights-out' });
+      expect(route({ ...here, pr: pr(42, FACTORY_REPO), move: { reason } }).title).toBe(
+        `Not a move: ${reason}: waits for Martin to approve aaaaaaa`,
+      );
+      // A change that touches no move says so only for the App's, whose pull requests are meant to be one.
+      const none = 'src/app.ts:1 is no pin of a move the scan of main asked for';
+      expect(route({ ...here, pr: pr(42, FACTORY_REPO), move: { none } }).title).toBe(
+        'Waits for Martin to approve aaaaaaa',
+      );
+      expect(route({ ...here, move: { none } }).title).toContain(`nor a move: ${none}`);
+      const app = route(facts({ tags: [tag('dependency-change')], move: { reason } }));
+      expect(app.title).toContain(`Held for its risk tags (dependency-change); not a move: ${reason}`);
     });
 
-    it('never passes one whose base was changed, nor one that is not the App’s, nor here', () => {
-      expect(route(fixing({ retargeted: true })).title).toContain('not a critical fix: its base was changed');
-      expect(route(fixing({ pr: pr(42) }))).toMatchObject({ pass: false, rule: 'held' });
-      expect(
-        route(
-          fixing({ pr: pr(FACTORY_APP, 'someone/fork', { base: { ref: 'main', repo: { full_name: APP_REPO } } }) }),
-        ),
-      ).toMatchObject({
+    it('waits, for anyone’s, on a head the move job did not judge, which a later run judges', () => {
+      const pending = 'the move job did not judge #7 at aaaaaaa, which the run its push started judges';
+      for (const pull of [here, { ...here, pr: pr(42, FACTORY_REPO) }])
+        expect(route({ ...pull, move: { pending } })).toMatchObject({ pass: false, rule: 'held', pending });
+      // Martin's say still passes it.
+      expect(route({ ...here, reviews: [approved()], move: { pending } })).toMatchObject({ pass: true });
+    });
+
+    it('comes after Martin’s say, a read that failed and an exact pin, and waits while the exact pin is unchecked', () => {
+      const move = { rule: 'move' as const, title };
+      expect(route({ ...here, reviews: [approved()], move })).toMatchObject({ rule: 'martin-approved-head' });
+      expect(route({ ...here, unread: 'GET /files: 502', move })).toMatchObject({ pass: false });
+      expect(route({ ...here, labelsRemoved: ['code-owned'], move })).toMatchObject({ pass: false });
+      // Whoever opened it: Dependabot's, or anyone's from a branch here.
+      for (const opener of [49699333, 42])
+        expect(
+          route({ ...here, pr: pr(opener, FACTORY_REPO), labelsRemoved: ['dependency-change'], move }),
+        ).toMatchObject({
+          pass: false,
+          rule: 'held',
+          title: 'Someone other than Martin removed its dependency-change label: waits for Martin to approve aaaaaaa',
+        });
+      expect(route({ ...here, pin: { unchecked: 'ghcr.io did not answer' }, move })).toMatchObject({
         pass: false,
+        pending: 'the gate could not check its exact pin: ghcr.io did not answer',
       });
-      expect(route(fixing({ labelsRemoved: ['dependency-change'] }))).toMatchObject({ pass: false, rule: 'held' });
-      expect(route(fixing({ unread: 'GET /files: 502' }))).toMatchObject({ pass: false, rule: 'held' });
-      const here = fixing({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO) });
-      expect(route(here)).toMatchObject({ pass: false, rule: 'held' });
-      // Martin's say, and an exact pin, come first.
-      expect(route(fixing({ reviews: [approved()] }))).toMatchObject({ rule: 'martin-approved-head' });
     });
   });
 

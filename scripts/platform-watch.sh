@@ -2,7 +2,7 @@
 # Watches the cluster platform.yml makes while `make up` waits for it, and says when to stop waiting: the platform
 # check's ceiling, and the two faults that waiting longer will not mend. It prints one line and exits 1 on the first of:
 #
-#   ceiling      DEADLINE seconds (default 1200) have passed since it started: the cluster did not come up in time. Its
+#   ceiling      DEADLINE seconds (default 720) have passed since it started: the cluster did not come up in time. Its
 #                line names what root's sync was doing (Argo CD names the hook it waits on); then each Application not
 #                yet Synced and Healthy, and each of its resources that is not.
 #   comparison   an Application has a ComparisonError (Argo CD could not render it: a chart or its values that do not
@@ -28,7 +28,7 @@ read -r -a kubectl <<<"${KUBECTL:-kubectl --context k3d-software-factory}"
 # Every request to the API ends within READ_TIMEOUT (default 10s), so an API that does not answer cannot hold the watch
 # past its ceiling. A read that fails or times out tells it nothing: no Application is taken for healthy, nor for broken.
 kubectl+=(--request-timeout="${READ_TIMEOUT:-10s}")
-deadline=$((SECONDS + ${DEADLINE:-1200}))
+deadline=$((SECONDS + ${DEADLINE:-720}))
 interval=${INTERVAL:-15}
 degraded_for=${DEGRADED:-300}
 # What it has seen of each Application, a file each: when it was first seen Degraded, and when Argo CD last compared
@@ -81,7 +81,7 @@ waited_on() {
 while [ -z "${WATCHED:-}" ] || kill -0 "$WATCHED" 2>/dev/null; do
   if ((SECONDS >= deadline)); then
     root=$(root_sync)
-    echo "ceiling: the cluster did not come up within ${DEADLINE:-1200} seconds; root's sync: ${root:-not started}"
+    echo "ceiling: the cluster did not come up within ${DEADLINE:-720} seconds; root's sync: ${root:-not started}"
     jobs_waited
     echo "Not yet Synced and Healthy:"
     "${kubectl[@]}" -n argocd get applications -o json 2>/dev/null | jq -r '.items[] |

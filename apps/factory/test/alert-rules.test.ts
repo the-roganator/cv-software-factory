@@ -274,6 +274,13 @@ describe('the alerts to Martin', () => {
     }
   });
 
+  it('say a move waits on Martin only for what only he moves: the review gate holds none for his approval', () => {
+    const waits = rules.find((rule) => rule.alert === 'PatchingMove' && rule.labels.kind === 'move-waits');
+    expect(waits?.annotations.description).toBe(
+      'A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you.',
+    );
+  });
+
   it('page for what loosens a guardrail or finds one not held, an attack not refused as it should be or not finished, changes who can sign in or keeps alerts from the phone, notify of what widens the line’s work or a flag or acts on a release, and inform of the rest', () => {
     const at = (level: string) => SECURITY_KINDS.filter((kind) => SECURITY_LEVELS[kind] === level).sort();
     expect(at(LEVELS.page)).toEqual([

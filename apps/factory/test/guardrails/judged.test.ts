@@ -69,6 +69,22 @@ describe('a refusal record taken again', () => {
     expect(judged.lines.some((l) => /^✗ live: .*"matchesSecret":false/.test(l))).toBe(true);
   });
 
+  it('does not hold when the cluster’s Traefik is not the one the mark’s record read, as after a move to a new k3s', () => {
+    const mark = kept('mark-refusals') as RefusalRecord & { traefik: { image: string; providers: string[] } };
+    expect(judgeRecord(mark, structuredClone(mark)).held).toBe(true);
+    const newer = structuredClone(mark);
+    newer.traefik.image = 'rancher/mirrored-library-traefik:3.8.0';
+    const judged = judgeRecord(mark, newer);
+    expect(judged.held).toBe(false);
+    expect(judged.lines.some((l) => /^✗ traefik: .*3\.8\.0.* now, .*take the record again/.test(l))).toBe(true);
+    const crossing = structuredClone(mark);
+    crossing.traefik.providers.push('--providers.kubernetescrd.allowCrossNamespace=true');
+    expect(judgeRecord(mark, crossing).held).toBe(false);
+    // A record that reads no Traefik is judged as before.
+    const route = kept('route-refusals');
+    expect(judgeRecord(route, { ...structuredClone(route), traefik: newer.traefik }).held).toBe(true);
+  });
+
   it('does not hold when taken against other policies, or against a record with no hash or no refusal', () => {
     const record = kept('route-refusals');
     expect(judgeRecord(record, { ...structuredClone(record), policyHash: 'f'.repeat(64) }).held).toBe(false);

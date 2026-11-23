@@ -10,5 +10,5 @@ export * from './events.ts';
 export * from './flags.ts';
 export * from './inbox.ts';
 export * from './job-tokens.ts';
-export { migrate } from './migrate.ts';
+export { migrate, storeAway } from './migrate.ts';
 export * from './reports.ts';

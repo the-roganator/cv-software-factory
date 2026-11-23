@@ -7,9 +7,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Finding } from '../../src/vulnerabilities/sarif.ts';
 import type { ReadTarget } from '../../src/vulnerabilities/scan.ts';
-import { type Carried, carry, fileOf, type World } from './path.ts';
+import { type Carried, carry, fileOf, runningNode, type World } from './path.ts';
 
 const digest = (c: string) => `sha256:${c.repeat(64)}`;
+const RUNTIME = 'gcr.io/distroless/nodejs24-debian13';
+/** The world with the runtime's newer image, at its tag, running a Node release. */
+const runtimeRuns = (world: World, release: string): World => ({
+  ...world,
+  digests: { ...world.digests, [`${RUNTIME}:nonroot`]: runningNode(RUNTIME, release) },
+  runs: { [`${RUNTIME}@${runningNode(RUNTIME, release)}`]: release },
+});
 const NODE = 'node:24.22.2-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85';
 const DISTROLESS =
   'gcr.io/distroless/nodejs24-debian13:nonroot@sha256:b8cec4b2f2126ff7bd034ec9ac207ffb3272667dfdc48376e3b035d3270549ba';
@@ -72,8 +79,8 @@ const WORLD: World = {
     'mcr.microsoft.com/devcontainers/base': ['ubuntu-24.04'],
   },
   digests: {
-    'node:24.22.3-alpine3.24': digest('1'),
-    'gcr.io/distroless/nodejs24-debian13:nonroot': digest('2'),
+    'node:24.22.3-alpine3.24': runningNode('node', '24.22.3'),
+    [`${RUNTIME}:nonroot`]: runningNode(RUNTIME, '24.22.2'),
     'ghcr.io/anchore/syft:v1.58.0': digest('3'),
     'mcr.microsoft.com/devcontainers/base:ubuntu-24.04': digest('4'),
   },
@@ -81,6 +88,10 @@ const WORLD: World = {
     { version: 'v24.22.3', date: '2026-11-01' },
     { version: 'v24.22.2', date: '2026-10-01' },
   ],
+  runs: {
+    [`node@${runningNode('node', '24.22.3')}`]: '24.22.3',
+    [`${RUNTIME}@${runningNode(RUNTIME, '24.22.2')}`]: '24.22.2',
+  },
   published: {
     'example-direct@1.0.1': '2026-11-01T00:00:00Z',
     'example-indirect@3.2.1': '2026-11-01T00:00:00Z',
@@ -135,17 +146,17 @@ const CASES: Case[] = [
   {
     name: 'the lockfile: a package at two versions, one advisory of both',
     findings: () => [npm('example-twice', '6.11.0, 7.6.4', '6.11.5, 7.6.6', 28)],
-    ends: [{ ends: 'never sent', why: /does not fit a signal \(move\.from/ }],
-    gap: 'the scan names both versions in one finding, and a signal’s move is from one version',
+    // The scan names both versions in one finding; the sense sends them as one word, as it joins an advisory of each.
+    ends: [{ ends: 'pull request', tags: ['dependency-change'] }],
   },
   {
     name: 'the lockfile: a package at two versions, an advisory of each',
     findings: () => [npm('example-twice', '6.11.0', '6.11.5', 28), npm('example-twice', '7.6.4', '7.6.6', 31)],
+    // The sense joins the two moves' versions with a comma, and the pin step moves each copy on its own line.
     ends: [
-      { ends: 'pin step', why: '6.11.5,7.6.6 is not a version, so example-twice cannot move to it.' },
-      { ends: 'pin step', why: '6.11.5,7.6.6 is not a version, so example-twice cannot move to it.' },
+      { ends: 'pull request', tags: ['dependency-change'] },
+      { ends: 'pull request', tags: ['dependency-change'] },
     ],
-    gap: 'the sense joins the two moves’ versions with a comma, and the pin step reads one version',
   },
   {
     name: 'the lockfile: a package at two versions, an advisory of the newer alone',
@@ -168,6 +179,29 @@ const CASES: Case[] = [
     name: 'the Dockerfile’s runtime stage: an operating system’s package in its image',
     findings: () => [found(T.distroless, {})],
     ends: [{ ends: 'pull request', tags: ['code-owned'] }],
+  },
+  {
+    name: 'the Dockerfile’s runtime stage: its newer image runs a newer Node, which moves with it (test 10)',
+    findings: () => [found(T.distroless, {})],
+    world: runtimeRuns(WORLD, '24.22.3'),
+    // One pull request: the runtime at its digest, and mise's pin, its lock and the build stage at the Node it runs.
+    ends: [{ ends: 'pull request', tags: ['code-owned'], wrote: ['Dockerfile', 'mise.lock', 'mise.toml'] }],
+  },
+  {
+    name: 'the Dockerfile’s runtime stage: its newer image runs a Node younger than mise.toml’s minimum_release_age',
+    findings: () => [found(T.distroless, {})],
+    world: runtimeRuns(
+      { ...WORLD, node: [{ version: 'v24.22.3', date: '2026-11-14' }, ...(WORLD.node ?? []).slice(1)] },
+      '24.22.3',
+    ),
+    // No fix yet, so no move: the scan lists it once mise may install that Node, and the line makes it then.
+    ends: [],
+  },
+  {
+    name: 'the Dockerfile’s runtime stage: its newer image runs a Node behind mise.toml’s',
+    findings: () => [found(T.distroless, {})],
+    world: runtimeRuns(WORLD, '24.22.1'),
+    ends: [],
   },
   {
     name: 'the Dockerfile’s runtime stage: the same, in distroless, which gives no time it was made',
@@ -194,8 +228,9 @@ const CASES: Case[] = [
     findings: () => [
       found(T.syft, { type: 'gobinary', package: 'github.com/example/jose', installed: 'v4.1.5', fixed: '4.1.6' }),
     ],
-    // Where the line may not write, and Dependabot reads: Dependabot's, and never sent.
-    ends: [{ ends: 'not the line’s', lane: 'dependabot' }],
+    // The line's, as an image at the root is: the pin step moves its FROM, which is all a patch may change under
+    // deploy/, and the review gate tags it code-owned, as CODEOWNERS gives deploy/ to Martin (test 12).
+    ends: [{ ends: 'pull request', tags: ['code-owned'], wrote: ['deploy/images/syft/Dockerfile'] }],
   },
   {
     name: '.devcontainer/Dockerfile: its base, built again',
@@ -233,8 +268,6 @@ describe('a move of the app’s, from the scan’s finding to a pull request', (
   it('names every gap there is', () => {
     expect(CASES.filter((each) => each.gap).map((each) => each.name)).toMatchInlineSnapshot(`
       [
-        "the lockfile: a package at two versions, one advisory of both",
-        "the lockfile: a package at two versions, an advisory of each",
         "the app’s image: Node’s own advisory",
       ]
     `);

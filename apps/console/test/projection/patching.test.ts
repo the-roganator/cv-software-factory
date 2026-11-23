@@ -28,45 +28,48 @@ describe('Patching, projected from the samples', () => {
   it('has a row for each move and each row the sense made, what waits on Martin first, then by deadline', () => {
     expect(view.moves).toBe(11);
     expect(view.running['unlisted-image']).toBe(1);
-    expect(view.waiting).toBe(5);
+    expect(view.waiting).toBe(3);
     expect(names(view.rows)).toEqual([
       'example-cd',
-      'example-logs',
       'k3s',
-      'example/sbom-tool',
       'example/debug-shell:1.4',
       'example/scanner-proxy',
+      'example-logs',
       '(withheld) the-roganator/cv-worlds-worst-website lockfile 1',
       'example-dashboards',
+      'example/sbom-tool',
       'example/sidecar',
       'example/node-base',
-      '@example/tokens',
+      '(withheld) the-roganator/cv-software-factory lockfile 1',
       'example/cluster-proxy',
     ]);
-    expect(view.rows.slice(0, 5).every((row) => row.waits)).toBe(true);
-    expect(view.rows.slice(5).some((row) => row.waits)).toBe(false);
+    expect(view.rows.slice(0, 3).every((row) => row.waits)).toBe(true);
+    expect(view.rows.slice(3).some((row) => row.waits)).toBe(false);
   });
 
-  it('reads each move’s state from its lane, its pull request where Dependabot opened one, and none it cannot', () => {
+  it('reads each move’s state from its lane, and none it cannot', () => {
     const state = (name: string) => view.rows.find((row) => row.name === name)?.state;
-    expect(state('example-logs')).toEqual({ kind: 'waits' });
+    // A major is the worker's as any move: no lane says it waits, and the autonomy level decides whether it merges.
+    expect(state('example-logs')).toEqual({ kind: 'lane', lane: 'worker' });
     expect(state('example/scanner-proxy')).toEqual({ kind: 'lane', lane: 'worker' });
-    // Dependabot's, clearing a High on a deadline with its pull request open: it waits for his approval.
-    expect(state('example/sbom-tool')).toEqual({ kind: 'waits' });
+    // An image whose pin Dependabot reads is the worker's too: nothing waits for Dependabot or for his approval.
+    expect(state('example/sbom-tool')).toEqual({ kind: 'lane', lane: 'worker' });
     expect(state('example/node-base')).toEqual({ kind: 'lane', lane: 'line' });
     expect(state('example/cluster-proxy')).toEqual({ kind: 'no-route' });
-    expect(view.rows.find((row) => row.name === 'example/sbom-tool')?.link).toEqual({
-      kind: 'pull',
-      number: 1339,
-      version: 'v1.55.1',
-    });
+    expect(view.rows.find((row) => row.name === 'example/sbom-tool')?.link).toBeUndefined();
   });
 
-  it('withholds a lockfile’s package from the public events until its pull request is open', () => {
-    const withheld = view.rows.find((row) => row.key === 'the-roganator/cv-worlds-worst-website lockfile 1');
-    expect(withheld).toMatchObject({ name: undefined, from: undefined, to: undefined, pins: [] });
-    // The factory's, whose Dependabot pull request is open, is named, as its diff names it.
-    expect(view.rows.find((row) => row.name === '@example/tokens')).toMatchObject({ from: '3.0.1', to: '3.0.2' });
+  it('withholds a lockfile’s package from the public events', () => {
+    for (const key of [
+      'the-roganator/cv-worlds-worst-website lockfile 1',
+      'the-roganator/cv-software-factory lockfile 1',
+    ])
+      expect(view.rows.find((row) => row.key === key)).toMatchObject({
+        name: undefined,
+        from: undefined,
+        to: undefined,
+        pins: [],
+      });
   });
 
   it('shortens each target to what a row has room for', () => {
@@ -355,12 +358,12 @@ describe('a deadline in words', () => {
 describe('a lockfile’s package whose versions the scan could not read', () => {
   const sample = day();
   if (!sample) throw new Error('the samples have no patching.read');
-  // The factory's, whose package the public view keeps, as its pull request is open.
+  // The factory's, with its package as Martin's own read of the day names it: the public view never does.
   const app = sample.payload.repositories[0];
   if (!app) throw new Error('the sample day has no factory');
-  const lockfile = app.moves.find((m) => m.lockfile && m.package);
-  if (!lockfile?.package) throw new Error('the factory has no named lockfile move');
-  const named = lockfile.package;
+  const lockfile = app.moves.find((m) => m.lockfile);
+  if (!lockfile) throw new Error('the factory has no lockfile move');
+  const named = { name: '@example/tokens', from: '3.0.1', to: '3.0.2', pins: [{ file: 'pnpm-lock.yaml', line: 2140 }] };
   const row = (from: string, to: string) => {
     const one: Day = {
       ...sample.payload,

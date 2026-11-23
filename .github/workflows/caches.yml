@@ -106,12 +106,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [static, tests, zap, node, crane, review, moves, scan, graph, platform]
+        job: [static, tests, zap, node, crane, review, scan, graph, platform]
         include:
           - job: static
             tools: node pnpm kustomize
           - job: tests
             tools: node pnpm kustomize step promtool yq crane
+          # ZAP's job, and review.yml's move job, which runs main's code with its locked dependencies.
           - job: zap
             tools: node pnpm
           # Node alone, for the workflows that run one script: pull-request.yml, drift-check.yml and the rest.
@@ -124,9 +125,6 @@ jobs:
           # Node and cosign, for review.yml, which checks an exact pin's signatures.
           - job: review
             tools: node cosign
-          # review.yml's pin move job: the list, the charts rendered, and policy-hash.ts's one dependency.
-          - job: moves
-            tools: node pnpm kustomize yq helm
           # The daily scan (vulnerabilities.yml): the list, its charts rendered, the SBOMs of ours verified, and the
           # registries' tags and manifests read.
           - job: scan

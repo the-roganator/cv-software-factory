@@ -50,4 +50,48 @@ describe('Markdown outside code', () => {
     expect(outsideCode('a \\` b `c`')).toBe('a \\` b    ');
     expect(outsideCode(lines('> `a', '>', '> b`'))).toBe(lines('> `a', '>', '> b`'));
   });
+
+  it('reads an HTML block as GitHub does: its backticks as text, HTML’s own code as code, to the block’s end', () => {
+    expect(outsideCode('<summary>Moves `@grpc/x`</summary>')).toBe('<summary>Moves `@grpc/x`</summary>');
+    expect(outsideCode(lines('<details>', '<summary>`a`</summary>', '', '`b`'))).toBe(
+      lines('<details>', '<summary>`a`</summary>', '', '   '),
+    );
+    expect(outsideCode('<p>Moves <code>@grpc/x</code> on</p>')).toBe(
+      `<p>Moves ${spaces('<code>@grpc/x</code>')} on</p>`,
+    );
+    expect(outsideCode(lines('> <div>', '> `a`', 'after `b`'))).toBe(lines('> <div>', '> `a`', 'after    '));
+    expect(outsideCode(lines('- <summary>`a`</summary>'))).toBe('- <summary>`a`</summary>');
+    expect(outsideCode(lines('<!-- `a`', '`b` -->', '`c`'))).toBe(lines('<!-- `a`', '`b` -->', '   '));
+    expect(outsideCode(lines('<pre>`a`</pre>', '`b`'))).toBe(lines(spaces('<pre>`a`</pre>'), '   '));
+  });
+
+  it('reads HTML’s code only from tags a browser reads as tags, with only text between them', () => {
+    for (const live of [
+      '<div><!-- <code> --> @a <!-- </code> --></div>',
+      '<div><span title="<code>">@a</span><span title="</code>"></span></div>',
+      '<div><!-- <code --> @a </code></div>',
+      '<div><span title=<code>@a</code></div>',
+      '<div><span <code>@a</code></div>',
+      '<div><! <code>@a</code></div>',
+      '<div><textarea><code></textarea>@a<textarea></code></textarea></div>',
+      '<div><code><b>@a</b></code></div>',
+      lines('> <div><span', '> <code>@a</code></div>'),
+      lines('<div title="', '', '<div>" <code>@a</code></div>'),
+    ])
+      expect(outsideCode(live), live).toBe(live);
+    expect(outsideCode('<div><span title="x">a</span> <code>@a</code></div>')).toBe(
+      `<div><span title="x">a</span> ${spaces('<code>@a</code>')}</div>`,
+    );
+    expect(outsideCode('<div><!-- x --><pre class="a">@a</pre></div>')).toBe(
+      `<div><!-- x -->${spaces('<pre class="a">@a</pre>')}</div>`,
+    );
+  });
+
+  it('starts no HTML block in a paragraph at a tag no block has, nor in code', () => {
+    expect(outsideCode(lines('text', '<span>', '`a`'))).toBe(lines('text', '<span>', '   '));
+    expect(outsideCode(lines('<span>', '`a`'))).toBe(lines('<span>', '`a`'));
+    expect(outsideCode(lines('text', '<div>', '`a`'))).toBe(lines('text', '<div>', '`a`'));
+    expect(outsideCode('a `<div>` b `c`')).toBe('a         b    ');
+    expect(outsideCode(lines('```', '<div>', '```', '`a`'))).toBe(lines('   ', '     ', '   ', '   '));
+  });
 });

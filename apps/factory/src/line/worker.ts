@@ -136,7 +136,10 @@ import { type Controls, controlsInForce, takeSet } from '../../../../policy/line
 import { release as RELEASE } from '../../../../policy/release.ts';
 import { sendCounts } from '../counts.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
+import { spentComment } from '../github/deploy-queue.ts';
 import { type Carry, DEPLOYS, type DeployProposal, MAX_CARRIES } from '../github/deploys.ts';
+import { askedIn } from '../github/made.ts';
+import { failedChecks } from '../github/merging.ts';
 import { outcomeOf } from '../github/reads.ts';
 import type {
   ActingFor,
@@ -150,9 +153,10 @@ import type {
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import type { PictureIndex } from '../pictures/index.ts';
 import { APP_REPOSITORY } from '../repositories.ts';
-import { EMPTY_PINS, type Step, type StepOutcome, type StepRequest } from '../runners/steps.ts';
+import type { Step, StepOutcome, StepRequest } from '../runners/steps.ts';
 import { verifyRefusal } from '../signed-refusals.ts';
 import { ATTRIBUTES as A, inSpan } from '../spans.ts';
+import { PassLog } from '../store-absence.ts';
 import {
   type Bounds,
   boundsOn,
@@ -784,8 +788,18 @@ export class Line {
       for (const stop of unobserved) stop();
     };
     try {
+      // A store restarting, as patching Postgres restarts it, fails a pass or two: a warning, not a fault, for a minute.
+      const passes = new PassLog(this.#o.log, this.#o.now, {
+        away: 'a pass of the line could not reach the store: the next pass tries again',
+        stillAway: 'a pass of the line failed: the store has been away for over a minute',
+        failed: 'a pass of the line failed',
+        back: (seconds) => `the line reached the store again, after ${seconds} s`,
+      });
       while (!abort.aborted) {
-        await this.tick().catch((error: unknown) => this.#o.log.error({ err: error }, 'a pass of the line failed'));
+        await this.tick().then(
+          () => passes.passed(),
+          (error: unknown) => passes.failed(error),
+        );
         const timer = setTimeout(nudge, 15_000);
         await wake.promise;
         clearTimeout(timer);
@@ -1125,6 +1139,18 @@ export class Line {
       case 'hold': {
         const draft = holdDraft('factory', next.hold);
         const { spentUsd } = next.hold;
+        const queue = next.hold.merge?.queue;
+        if (next.hold.merge?.why === 'queue' && queue && failedChecks(queue.reason)) {
+          // Out of tries: said on the pull request before the hold, so a comment that could not be made is tried
+          // again on the next pass, and once the hold is made, never again. One the App may not make is only logged.
+          const { pullRequest: number, head } = next.hold.merge;
+          await this.#o.github
+            .act('comment', this.#o.repo, { number, body: spentComment(head, queue.failed) }, { workItem })
+            .catch((error) => {
+              if (!issueGone(error)) throw error;
+              this.#o.log.warn({ workItem, number, err: error }, 'the pull request cannot be commented on');
+            });
+        }
         const guard = this.#o.settings?.holdForSpend;
         if (next.hold.cause === 'spend' && spentUsd !== undefined && guard) {
           // The cap was raised since this pass read it: no hold, and the next pass decides again under the new one.
@@ -1852,6 +1878,24 @@ export class Line {
     return { ecosystem, name, from, to };
   }
 
+  /**
+   * How the newest scan of main made a repository's moves, for the pin step to make one the same: the time it judged
+   * them, and the digest its `pins` job was given for each tag it asked (github/made.ts's `askedIn`). It is the run the
+   * review gate makes the move again from (scripts/moves.ts), read through the GitHub worker as the gate reads it from
+   * GitHub. None where that run wrote no moves, or the read failed: the pin step then makes the move as of now and asks
+   * each registry, and the gate holds it if a release or a tag moved between the two, never passes it.
+   */
+  async #madeAs(repo: string): Promise<Step['made']> {
+    try {
+      const moves = await this.#o.github.read('moves', repo, {});
+      if (!moves.file) return undefined;
+      return { at: moves.file.judged, asked: moves.made ? askedIn(moves.made) : [] };
+    } catch (error) {
+      this.#o.log.warn({ repo, err: error }, 'could not read the scan’s moves: the pin step makes the move as of now');
+      return undefined;
+    }
+  }
+
   /** The ticket's first signal: its sense, check, route and evidence, never a report's words. */
   async #firstSignal(workItem: string): Promise<FirstSignal | undefined> {
     type Row = {
@@ -1925,6 +1969,8 @@ export class Line {
       // A dependency's move is the pin step's to write, before the coder's first round: once the pull request is open,
       // its head has the pins.
       const move = agent === 'coder' && !pr ? await this.#moveOf(workItem) : undefined;
+      // Made as the scan made it, as the review gate makes it again.
+      const made = move ? await this.#madeAs(repo) : undefined;
       // A move whose spec asks for nothing but the move is the pin step's alone: no agent runs, and the line makes the
       // commit from its patch. The coder runs on a move only for a criterion a test shows, or when the work comes back.
       const alone = move !== undefined && state.spec !== undefined && movesAlone(state.spec);
@@ -1946,6 +1992,7 @@ export class Line {
             prompt: started.prompt,
             resume: started.resume,
             move,
+            made,
           },
         ),
         workItem,
@@ -1970,9 +2017,8 @@ export class Line {
         return;
       }
       if (outcome.kind === 'pinned') {
-        if (!outcome.pins) {
-          return await this.#failed(workItem, agent, outcome.job, [], EMPTY_PINS);
-        }
+        // A move main already has is done, not failed: another change made it, and nothing is left to make.
+        if (!outcome.pins && move) return await this.#madeAlready(item, agent, provider, outcome.job, move, commit);
         this.#o.log.info({ workItem, agent, job: outcome.job }, 'the move asks for nothing but its pins: no coder');
         // The move is the whole change, as a coder says it (`{"moved": true}`): the line titles and notes it.
         const moved: Pending = {
@@ -2135,6 +2181,48 @@ export class Line {
   /** Where an agent's calls go under the settings in force. */
   #providerOf(agent: LineAgent): Provider {
     return (this.#inForce?.providerOf ?? this.#o.providerOf)(agent);
+  }
+
+  /**
+   * A move the pin step found main has already, as the second of two moves that overlap finds it once the first merged:
+   * nothing is left to make, so the work item closes with no change of its own, and its issue as completed, saying so.
+   */
+  async #madeAlready(
+    item: QueueItem,
+    agent: LineAgent,
+    provider: Provider,
+    job: string,
+    move: NonNullable<Step['move']>,
+    commit: string,
+  ): Promise<void> {
+    const { workItem } = item;
+    const reason = cutTo(`Main already has its move, at ${commit.slice(0, 7)}: ${move.name} at ${move.to}`, 200);
+    if (item.issue) {
+      const comment = [
+        `Main already has this move, at ${commit.slice(0, 7)}: \`${move.name}\` at \`${move.to}\`. Another change made it.`,
+        '',
+        `The factory’s work item #${workItem} is closed with no change of its own.`,
+      ].join('\n');
+      // One that is gone, or that the App may not change, has nothing to close.
+      await closeIssue(
+        this.#o.github,
+        this.#o.repo,
+        { number: item.issue, reason: 'completed', comment },
+        workItem,
+        this.#o.log,
+      );
+    }
+    await this.#append(workItem, [
+      {
+        type: 'work-item.closed',
+        actor: 'factory',
+        summary: 'Closed: main already has its move',
+        payload: { outcome: 'no-change', reason },
+      },
+    ]);
+    await this.#queue.moved(workItem);
+    countStep(agent, provider, 'done');
+    this.#o.log.info({ workItem, agent, job, commit }, 'main already has the move: closed');
   }
 
   /**

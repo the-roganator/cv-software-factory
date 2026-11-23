@@ -532,11 +532,6 @@ function CanaryCard({ need, admin, onOpen }: { need: CanaryNeed; admin: Admin } 
  * words or a visitor's (`his`: "your" or "Martin’s"). Kept short: every page that has the bottom row loads them.
  */
 const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: string) => string, why: string]> = {
-  approval: [
-    '{his} approval',
-    (name) => `${name} waits for a review`,
-    'It changes more than a pin, or its fix is a major one, so the review gate passes its pull request only with {his} approval.',
-  ],
   cluster: [
     '{his} cluster',
     (name) => `${name} needs the cluster moved`,
@@ -545,12 +540,7 @@ const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: strin
   issue: [
     'an issue',
     (name) => `${name} needs moving by hand`,
-    'No pull request of the App’s can write it: mise pins it, or it is a workflow or a lockfile.',
-  ],
-  dependabot: [
-    '{his} approval',
-    (name) => `${name} waits in Dependabot’s pull request`,
-    'Dependabot moves this pin, and its pull request merges only with {his} approval.',
+    'No pull request of the App’s can write it: the Makefile pins it, or a workflow does.',
   ],
   'unlisted-image': [
     '{his} cluster',
@@ -602,7 +592,6 @@ function PatchCard({
       <p className="ev">
         {c &&
           `Clears ${[c.critical && `${count(c.critical)} Critical`, c.high && `${count(c.high)} High`].filter(Boolean).join(' and ') || 'nothing at High or Critical'}. `}
-        {need.pull !== undefined && `Dependabot opened #${need.pull}. `}
         {his(why)}
       </p>
       {(need.runs || need.to) && <p className="words">{need.runs ? need.runs.image : `${need.from} → ${need.to}`}</p>}
@@ -611,11 +600,7 @@ function PatchCard({
         <button type="button" className="linkish" onClick={() => onRow(need.key)}>
           Open its row in Patching
         </button>
-        {!martin && (
-          <span>
-            {need.kind === 'dependabot' ? 'Martin approves it, on GitHub' : 'Martin moves it, on GitHub or his cluster'}
-          </span>
-        )}
+        {!martin && <span>Martin moves it, on GitHub or his cluster</span>}
       </div>
     </article>
   );

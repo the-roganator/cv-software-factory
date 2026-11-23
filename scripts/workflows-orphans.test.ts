@@ -61,10 +61,18 @@ describe('runs the merge queue let go', () => {
     expect(stopped).toBeLessThan(make.indexOf('::error::The cluster did not come up'));
   });
 
-  it("platform's leftover report says only that the entry was let go", () => {
+  it("platform's leftover report says only that the entry was let go, and why, and keeps no artifact of it", () => {
     const steps = read('platform.yml').jobs.platform?.steps ?? [];
     const shows = steps.find((step) => step.name === 'What the cluster shows');
     expect(shows?.run).toMatch(/^.*\n\s*if \[ -e "\$RUNNER_TEMP\/queue-gone" \]; then .*; exit 0; fi\n/);
+    // The watch's log, and the mark the cluster's upload is skipped by, both before it leaves.
+    expect(shows?.run).toMatch(
+      /then echo "QUEUE_GONE=true" >> "\$GITHUB_ENV";.* cat "\$RUNNER_TEMP\/queue-watch.log"; exit 0; fi/,
+    );
+    // Each step that runs after a stop has a limit of its own, short of the job's.
+    for (const name of ['Where the time went', 'What the cluster shows']) {
+      expect((steps.find((step) => step.name === name) as { 'timeout-minutes'?: number })?.['timeout-minutes']).toBe(5);
+    }
   });
 
   it('checks no scanner pin under .github/images/, where nothing reads one', () => {

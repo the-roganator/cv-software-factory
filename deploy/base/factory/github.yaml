@@ -10,8 +10,8 @@ metadata:
   labels: &labels
     app.kubernetes.io/name: github
     app.kubernetes.io/part-of: software-factory
-    # Not `worker`: that would give the pod with the App's key and the internet a path to Postgres, which it never
-    # uses. Its own policy gives it the collector (network-policies.yaml).
+    # Not `worker`: that would give the pod with the App's key and the internet the workers' path to Postgres. Its own
+    # policy gives it the collector, and Postgres for the autonomy level alone (network-policies.yaml).
     app.kubernetes.io/component: github
   annotations:
     # With the other workers, after the artifacts volume it records dry runs to.
@@ -111,11 +111,27 @@ spec:
             - name: TUF_CACHE_DIR
               value: /var/cache/sigstore
             # The moves the pin watch takes: every move of the day (`*`), or those named as the scan's moves.json names
-            # them, comma-separated (docs/COMPONENTS/GITHUB-WORKER.md#pins). It opens each one's pull request, and the
-            # pin queue adds that to the merge queue once the gate passes it as `pin-move`. It is changed only by a pull
-            # request Martin merged, as CODEOWNERS gives him deploy/.
+            # them, comma-separated (docs/COMPONENTS/GITHUB-WORKER.md#pins). It opens one pull request for those at each
+            # set of files, and the pin queue adds that to the merge queue once the gate passes it by a rule the
+            # autonomy level queues (`move`, or `major` at Lights-out). It is changed only by a pull request Martin
+            # merged, as CODEOWNERS gives him deploy/.
             - name: PIN_WATCH_ONLY
               value: "*"
+            # The store, as factory_github, which reads Martin's controls and nothing else
+            # (0054_github-reads-the-level.sql): the autonomy level decides which moves the pin queue adds. Optional:
+            # without the Secret the worker cannot read the level, and queues no move, as at Supervised.
+            - name: PGHOST
+              value: postgres
+            - name: PGDATABASE
+              value: factory
+            - name: PGUSER
+              value: factory_github
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-github
+                  key: password
+                  optional: true
           readinessProbe:
             httpGet:
               path: /health

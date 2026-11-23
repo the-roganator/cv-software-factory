@@ -11,12 +11,19 @@
  *     the fix does not need. pnpm takes the newest release the range admits under the app's own release age and trust
  *     policy (`pnpm-workspace.yaml`). A package no manifest names is moved where its parents' ranges admit the fix; a
  *     copy left below it needs an override in `pnpm-workspace.yaml`, which is Martin's file, so the step stops and the
- *     work item waits for him (`PinsHeld`).
+ *     work item waits for him (`PinsHeld`). A package at two versions is one move to two (`1.0.0, 2.0.0` to
+ *     `1.0.1,2.0.3`, as the scan names them): each copy moves to the target on its own line.
  *   - Node (`node`): `mise.toml`'s version, `mise.lock`'s entry, with the checksum of each platform's download from
  *     Node's own `SHASUMS256.txt`, and each `FROM` of a Node image, its tag moved where it names the version and its
  *     digest the registry's for that tag. Not before the release is as old as `mise.toml`'s `minimum_release_age`.
  *   - a base image (`docker`): each `FROM` of the image at the move's `from`, given its `to`, once the registry says
- *     the tag is that digest.
+ *     the tag is that digest. An image that runs Node brings its Node: where the image at that digest runs another
+ *     release than `mise.toml` pins, Node moves to it as above, and the image to the move's digest.
+ *   - a tool mise pins (`tool`): its version in `mise.lock`, and then `mise lock <tool>`, which writes each
+ *     platform's download and checksum for that version, within the range `mise.toml` gives it. Not before the
+ *     release, and the newest upload of its downloads, are as old as `mise.toml`'s `minimum_release_age`. Only where
+ *     the step is given mise (`PinTools.mise`): the factory's moves, made by its scan and its review gate, never the
+ *     runner.
  * - **After a coder's step** that changed a `package.json` (`writeLockfile`), it applies the pins and the coder's
  *   patch to a fresh checkout and writes the lockfile with `pnpm install --lockfile-only`, printing only the
  *   lockfile's change.
@@ -31,26 +38,48 @@
  * mise is not run, and not in the image: nothing in this repository pins mise's own version, and `mise lock`'s entry
  * for Node is the version, its download for each platform, and that download's checksum, which the step writes from
  * the same file mise reads. So nothing of the app's `mise.toml` runs here either.
+ *
+ * The factory's own moves are made by the same step, from its scan and its review gate (scripts/derive.ts), on a
+ * checkout of its `main`: a workspace whose projects name each other as `workspace:` and its lockfile as `link:`, which
+ * the step takes there alone (`PinTools.workspace`), never from a checkout an agent may have written.
  */
 import { execFile } from 'node:child_process';
 import { copyFile, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import {
+  digestOf,
+  type Get,
+  libraryOf,
+  nodeInImage,
+  PinsRefused,
+  releaseAge,
+  releasedAt,
+  runsNode,
+} from '../../factory/src/vulnerabilities/registry.ts';
 import { git, gitInput } from './git.ts';
+
+export {
+  bringsPins,
+  digestOf,
+  type Get,
+  libraryOf,
+  nodeInImage,
+  nodeInTar,
+  PinsRefused,
+  registryOf,
+  releaseAge,
+  runsNode,
+} from '../../factory/src/vulnerabilities/registry.ts';
 
 const exec = promisify(execFile);
 
 /** What moves: as the work item names it (`work-item.opened`'s `dependency`). */
 export interface Move {
-  ecosystem: 'npm' | 'node' | 'docker';
+  ecosystem: 'npm' | 'node' | 'docker' | 'tool';
   name: string;
   from: string;
   to: string;
-}
-
-/** The step will not write this move, and says why: the work item fails its step, as any other failure. */
-export class PinsRefused extends Error {
-  override name = 'PinsRefused';
 }
 
 /** The move needs a file only Martin may change: the work item waits for him, told the file and why. */
@@ -116,12 +145,17 @@ const COMPARATOR = /^(?:[\^~]|[<>]=?|=)?\d+(?:\.(?:\d+|[xX*])){0,2}(?:-[0-9A-Za-
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
+/** A workspace's own project, as a manifest names it: `workspace:*`, `workspace:^`, or a range after it. */
+const WORKSPACE_SPEC = /^workspace:(?:[*^~]|[\^~]?\d+(?:\.\d+){0,2})$/;
+
 /**
  * Whether a manifest's spec is a range of the registry's versions: comparators, joined by spaces or `||`, or `*`.
- * Never a tarball, a git source, an alias (`npm:`), a `file:`, `link:` or `workspace:`, a URL or a dist-tag.
+ * Never a tarball, a git source, an alias (`npm:`), a `file:`, `link:` or `workspace:`, a URL or a dist-tag; with
+ * `workspace`, a project of the checkout's own workspace too (`workspace:*`).
  */
-export function registryRange(spec: string): boolean {
+export function registryRange(spec: string, workspace = false): boolean {
   if (spec.trim() === '*') return true;
+  if (workspace && WORKSPACE_SPEC.test(spec.trim())) return true;
   return spec.split('||').every(
     (part) =>
       part.trim() !== '' &&
@@ -132,13 +166,17 @@ export function registryRange(spec: string): boolean {
   );
 }
 
-/** Every dependency a checkout's manifests name with a spec that is not a range of the registry's. */
-export function notFromRegistry(manifests: readonly { path: string; json: Manifest }[]): string[] {
+/**
+ * Every dependency a checkout's manifests name with a spec that is not a range of the registry's; with `workspace`, a
+ * dependency on a project of the checkout's own workspace is one too, and never an override's.
+ */
+export function notFromRegistry(manifests: readonly { path: string; json: Manifest }[], workspace = false): string[] {
   const refused: string[] = [];
   for (const { path, json } of manifests) {
     for (const field of DEPENDENCY_FIELDS) {
       for (const [name, spec] of Object.entries(json[field] ?? {})) {
-        if (typeof spec !== 'string' || !registryRange(spec)) refused.push(`${path}: ${name} ${JSON.stringify(spec)}`);
+        if (typeof spec !== 'string' || !registryRange(spec, workspace))
+          refused.push(`${path}: ${name} ${JSON.stringify(spec)}`);
       }
     }
     // An override's value is a spec too: one may name a tarball as well as any dependency can.
@@ -155,15 +193,21 @@ export function notFromRegistry(manifests: readonly { path: string; json: Manife
 /**
  * The lines of a pnpm lockfile that resolve something other than a package of the registry: a tarball, a git source,
  * a folder, or an importer's `link:` or `file:`. pnpm writes a registry package's resolution as its integrity alone.
+ * With `workspace`, an importer's `workspace:` specifier and its `link:` to a relative folder are the workspace's own.
  */
-export function registryOnly(lock: string): string[] {
+export function registryOnly(lock: string, workspace = false): string[] {
+  const own = (line: string) =>
+    workspace &&
+    (/^\s+specifier: ['"]?workspace:[^\s'"]*['"]?$/.test(line) ||
+      /^\s+version: ['"]?link:(?!\/)[\w@./-]+['"]?$/.test(line));
   return lock
     .split('\n')
     .filter(
       (line) =>
         (/\bresolution: \{/.test(line) &&
           (!/\bintegrity: /.test(line) || /\b(tarball|type|repo|directory):/.test(line))) ||
-        /^\s+(version|specifier): ['"]?(link|file|git|git\+[a-z]+|https?|npm|github|workspace):/.test(line),
+        (/^\s+(version|specifier): ['"]?(link|file|git|git\+[a-z]+|https?|npm|github|workspace):/.test(line) &&
+          !own(line)),
     )
     .map((line) => line.trim());
 }
@@ -270,6 +314,12 @@ export function admits(spec: string, version: string): boolean {
   return compareVersions(version, base) === 0;
 }
 
+/** The line a caret range keeps a version on: its major, or below 1.0 its minor. */
+const lineOf = (version: string) => {
+  const [major, minor] = version.split('.');
+  return major === '0' ? `0.${minor}` : major;
+};
+
 /** The same range, moved to a version: its operator kept, so it never admits a major the version does not need. */
 export const movedRange = (spec: string, version: string): string =>
   `${/^[\^~]?/.exec(spec.trim())?.[0] ?? ''}${version}`;
@@ -281,18 +331,25 @@ export const movedRange = (spec: string, version: string): string =>
  * part of the move.
  */
 export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<void> {
+  // A package at two versions: each copy to the target on its own line, the older line first.
+  const tos = move.to.split(',').map((each) => each.trim());
+  const froms = move.from.split(',').map((each) => each.trim());
+  if (tos.length > 1 || froms.length > 1) {
+    for (const to of [...tos].sort(compareVersions)) {
+      if (!VERSION.test(to)) throw new PinsRefused(`${to} is not a version, so ${move.name} cannot move to it.`);
+      const from = froms.find((each) => VERSION.test(each) && lineOf(each) === lineOf(to));
+      if (!from) throw new PinsRefused(`${move.name} is at no version on the line of ${to}: ${move.from}.`);
+      await movePackage(dir, { ...move, from, to }, pnpm);
+    }
+    return;
+  }
   if (!VERSION.test(move.to)) throw new PinsRefused(`${move.to} is not a version, so ${move.name} cannot move to it.`);
   const lockPath = join(dir, 'pnpm-lock.yaml');
   const before = await readFile(lockPath, 'utf8');
   const versions = lockedVersions(before, move.name);
   if (!versions.length) throw new PinsRefused(`The lockfile resolves no ${move.name}.`);
   // A copy on another major that the move does not name has no advisory this move fixes: it stays where it is.
-  // The line a caret range keeps a version on: its major, or below 1.0 its minor.
-  const line = (version: string) => {
-    const [major, minor] = version.split('.');
-    return major === '0' ? `0.${minor}` : major;
-  };
-  const itsOwn = (version: string) => version === move.from || line(version) === line(move.to);
+  const itsOwn = (version: string) => version === move.from || lineOf(version) === lineOf(move.to);
   const own = versions.filter(itsOwn);
   // Already made: every copy is at the target or past it, or every copy of the move's own is, and there is one.
   const there = (list: string[]) => list.every((v) => compareVersions(v, move.to) >= 0);
@@ -332,9 +389,6 @@ async function writeJson(path: string, json: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(json, null, 2)}${text.endsWith('\n') ? '\n' : ''}`);
 }
 
-/** How the step reaches a registry: `fetch`, or a test's. */
-export type Get = (url: string, init?: RequestInit) => Promise<Response>;
-
 /** The platforms' file names a `SHASUMS256.txt` gives, with each checksum. */
 export function shasums(text: string): Map<string, string> {
   const sums = new Map<string, string>();
@@ -367,13 +421,6 @@ export function nodeLockMoved(lock: string, from: string, to: string, sums: Map<
   return lock.replace(entry[0], moved.join(''));
 }
 
-/** `mise.toml`'s `minimum_release_age`, in milliseconds: none when it sets none. */
-export function releaseAge(miseToml: string): number {
-  const m = /^minimum_release_age\s*=\s*"(\d+)([dhm])"\s*$/m.exec(miseToml);
-  if (!m) return 0;
-  return Number(m[1]) * { d: 86_400_000, h: 3_600_000, m: 60_000 }[m[2] as 'd' | 'h' | 'm'];
-}
-
 /** A `FROM` line of a Dockerfile that pins an image by its tag and digest, in parts. */
 const FROM =
   /^(\s*FROM\s+(?:--platform=\S+\s+)?)([^\s:@/]+(?::\d+)?(?:\/[^\s:@/]+)*):([\w][\w.-]{0,127})@(sha256:[0-9a-f]{64})(.*)$/i;
@@ -387,6 +434,8 @@ async function dockerfilesOf(dir: string): Promise<string[]> {
     '--',
     'Dockerfile',
     '**/Dockerfile',
+    'Dockerfile.*',
+    '**/Dockerfile.*',
     '*.Dockerfile',
     '**/*.Dockerfile',
   );
@@ -394,13 +443,98 @@ async function dockerfilesOf(dir: string): Promise<string[]> {
 }
 
 /**
- * Each `FROM` of a checkout's Dockerfiles that `change` gives a new tag, pinned again at that tag's digest from its
- * registry. `change` gives back the tag a line's image and tag move to, or nothing to leave the line as it is.
+ * How the step learns the digest a tag of an image has: its registry's answer now (`digestOf`), or, where the step is
+ * made again to be compared, the answer the one who made it first had (scripts/derive.ts).
+ */
+export type DigestOf = (image: string, tag: string) => Promise<string>;
+
+/** The registry's answer now. */
+const asRegistry =
+  (get: Get): DigestOf =>
+  (image, tag) =>
+    digestOf(image, tag, get);
+
+/** The key of a tag's answer among those a step was given (`remembering`): `image:tag`. */
+export const askedKey = (image: string, tag: string) => `${image}:${tag}`;
+
+/**
+ * A tag's digest from `asked` where it holds the tag's answer, and otherwise its registry's now, kept in `asked`: so a
+ * step made again with the answers the first was given is given the same, and the first keeps each it was given.
+ */
+export function remembering(asked: Map<string, string> | undefined, get: Get): DigestOf {
+  return async (image, tag) => {
+    const known = asked?.get(askedKey(image, tag));
+    if (known) return known;
+    const answer = await digestOf(image, tag, get);
+    asked?.set(askedKey(image, tag), answer);
+    return answer;
+  };
+}
+
+/** One tag of an image a step asked its registry for, and the digest it was given. */
+export interface Asked {
+  image: string;
+  tag: string;
+  digest: string;
+}
+
+/** The answers `remembering` kept, each as its image, tag and digest, in the order of their keys. */
+export const askedList = (asked: Map<string, string>): Asked[] =>
+  [...asked]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, digest]) => {
+      const at = key.lastIndexOf(':');
+      return { image: key.slice(0, at), tag: key.slice(at + 1), digest };
+    });
+
+/**
+ * How the scan made a move, for the line's pin step to make it so: as of when (`at`, the scan's `judged`, an ISO time),
+ * and with the digest the scan's step was given for each tag it asked (its artifact `pins`,
+ * apps/factory/src/github/made.ts). The review gate makes the move again from the same (scripts/moves.ts).
+ */
+export interface MadeAs {
+  at: string;
+  asked: Asked[];
+}
+
+/** pnpm's own release age, in minutes, where its settings name none: a day. */
+export const PNPM_RELEASE_AGE = 24 * 60;
+
+/** A checkout's pnpm release age, in minutes: its `pnpm-workspace.yaml`'s `minimumReleaseAge`, or pnpm's own. */
+export function pnpmAge(workspace: string): number {
+  if (!/^minimumReleaseAge\b/m.test(workspace)) return PNPM_RELEASE_AGE;
+  const set = /^minimumReleaseAge:\s*(\d+)\s*(?:#.*)?$/m.exec(workspace);
+  if (!set) throw new PinsRefused("pnpm-workspace.yaml's minimumReleaseAge is not a number of minutes.");
+  return Number(set[1]);
+}
+
+/**
+ * pnpm, made to resolve as of a time: told on its command line, over any setting of the checkout's, to take no
+ * release younger than the checkout's own release age at `asOf`, which is that age and the time since. Never less
+ * than the checkout's age now, and rounded up to pnpm's minute. The scan and the line's pin step each make a move so,
+ * and the review gate makes it again as of the same time (scripts/derive.ts).
+ */
+export function pnpmAsOf(pnpm: Pnpm, asOf: number, now: () => number = Date.now): Pnpm {
+  return async (dir, args) => {
+    const workspace = await readFile(join(dir, 'pnpm-workspace.yaml'), 'utf-8').catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return '';
+        throw error;
+      },
+    );
+    const minutes = pnpmAge(workspace) + Math.ceil(Math.max(0, now() - asOf) / 60_000);
+    await pnpm(dir, [`--config.minimum-release-age=${minutes}`, ...args]);
+  };
+}
+
+/**
+ * Each `FROM` of a checkout's Dockerfiles that `change` gives a new tag, pinned again at that tag's digest (`digest`).
+ * `change` gives back the tag a line's image and tag move to, or nothing to leave the line as it is.
  */
 async function moveFroms(
   dir: string,
   change: (image: string, tag: string, digest: string) => { tag: string; digest?: string } | undefined,
-  get: Get,
+  digest: DigestOf,
 ): Promise<number> {
   let moved = 0;
   // Each image's tag is asked of its registry once, so every line that names it is pinned to the same answer.
@@ -411,12 +545,11 @@ async function moveFroms(
     for (const [i, line] of lines.entries()) {
       const m = FROM.exec(line);
       if (!m) continue;
-      const [, start, image = '', tag = '', digest = '', rest] = m;
-      const next = change(image, tag, digest);
+      const [, start, image = '', tag = '', pinned = '', rest] = m;
+      const next = change(image, tag, pinned);
       if (next === undefined) continue;
       const key = `${image}:${next.tag}`;
-      if (!digests.has(key))
-        digests.set(key, next.digest ? Promise.resolve(next.digest) : digestOf(image, next.tag, get));
+      if (!digests.has(key)) digests.set(key, next.digest ? Promise.resolve(next.digest) : digest(image, next.tag));
       lines[i] = `${start}${image}:${next.tag}@${await digests.get(key)}${rest}`;
       moved++;
     }
@@ -426,16 +559,54 @@ async function moveFroms(
   return moved;
 }
 
+/** The exact Node release `mise.toml` pins, or nothing where it pins none, or a range. */
+const pinnedNode = (miseToml: string) => /^node\s*=\s*"(\d+\.\d+\.\d+)"\s*$/m.exec(miseToml)?.[1];
+
+/** The release `mise.lock`'s entry for Node is at, or nothing where it has none. */
+const lockedNode = (lock: string) => /^\[\[tools\.node\]\]\nversion = "([^"]+)"$/m.exec(lock)?.[1];
+
+/**
+ * What of Node's move to `to` a checkout does not have, in words, or nothing where it has it all: `mise.lock`'s entry
+ * at another release, or a `FROM` of a Node image, but `except`'s, that runs another, by the release its tag names or,
+ * where its tag names none (distroless's `nonroot`), as the image at its digest does (`nodeInImage`).
+ */
+async function nodeBehind(dir: string, to: string, get: Get, except?: string): Promise<string | undefined> {
+  const locked = lockedNode(await readFile(join(dir, 'mise.lock'), 'utf8'));
+  if (locked !== to) return `mise.lock pins node at ${locked ?? 'no release'}, not ${to}.`;
+  for (const path of await dockerfilesOf(dir)) {
+    for (const line of (await readFile(join(dir, path), 'utf8')).split('\n')) {
+      const [, , image = '', tag = '', pinned = ''] = FROM.exec(line) ?? [];
+      if (!runsNode(image) || image === except) continue;
+      const runs = /\d+\.\d+\.\d+/.exec(tag)?.[0] ?? (await nodeInImage(image, pinned, get));
+      if (runs !== to) return `${path}'s ${image}:${tag} runs Node ${runs}, not ${to}.`;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Moves Node: `mise.toml`, `mise.lock`, and each `FROM` of a Node image, the build's to the version's own tag and the
- * runtime's, whose tag names no version, to the digest its tag has now.
+ * runtime's, whose tag names no version, to the digest its tag has now; but `except`'s, which a base image's move pins
+ * itself (`moveImage`). A checkout whose `mise.toml` pins the target already has the move, and writes nothing, when
+ * every other pin is at the target too (`nodeBehind`). One that has part of it, a Dockerfile edited by hand or a revert
+ * of part of a move, gets the rest, as the move from `from` writes it; and where the rest still leaves a pin behind (a
+ * tag that names a third release), the move is refused, never taken for made.
  */
-export async function moveNode(dir: string, move: Move, get: Get, now = Date.now()): Promise<void> {
+export async function moveNode(
+  dir: string,
+  move: Move,
+  get: Get,
+  now = Date.now(),
+  except?: string,
+  digest: DigestOf = asRegistry(get),
+): Promise<void> {
   if (!VERSION.test(move.from) || !VERSION.test(move.to))
     throw new PinsRefused('Node moves from a version to a version.');
   const miseToml = await readFile(join(dir, 'mise.toml'), 'utf8');
+  const pinned = pinnedNode(miseToml) === move.to;
+  if (pinned && !(await nodeBehind(dir, move.to, get, except))) return;
   const pin = new RegExp(`^node\\s*=\\s*"${escaped(move.from)}"\\s*$`, 'm');
-  if (!pin.test(miseToml)) throw new PinsRefused(`mise.toml does not pin node at ${move.from}.`);
+  if (!pinned && !pin.test(miseToml)) throw new PinsRefused(`mise.toml does not pin node at ${move.from}.`);
   const releases = (await json(get, 'https://nodejs.org/dist/index.json')) as { version: string; date: string }[];
   const release = releases.find((r) => r.version === `v${move.to}`);
   if (!release) throw new PinsRefused(`Node ${move.to} is not a release of nodejs.org's.`);
@@ -443,96 +614,174 @@ export async function moveNode(dir: string, move: Move, get: Get, now = Date.now
   if (now - Date.parse(release.date) < age) {
     throw new PinsRefused(`Node ${move.to} came out on ${release.date}, within mise.toml's minimum_release_age.`);
   }
-  const sums = shasums(await text(get, `https://nodejs.org/dist/v${move.to}/SHASUMS256.txt`));
-  await writeFile(
-    join(dir, 'mise.toml'),
-    miseToml.replace(pin, (line) => line.replace(move.from, move.to)),
-  );
   const lock = await readFile(join(dir, 'mise.lock'), 'utf8');
-  await writeFile(join(dir, 'mise.lock'), nodeLockMoved(lock, move.from, move.to, sums));
+  const lockMoved =
+    lockedNode(lock) === move.to
+      ? undefined
+      : nodeLockMoved(
+          lock,
+          move.from,
+          move.to,
+          shasums(await text(get, `https://nodejs.org/dist/v${move.to}/SHASUMS256.txt`)),
+        );
+  if (!pinned)
+    await writeFile(
+      join(dir, 'mise.toml'),
+      miseToml.replace(pin, (line) => line.replace(move.from, move.to)),
+    );
+  if (lockMoved !== undefined) await writeFile(join(dir, 'mise.lock'), lockMoved);
   await moveFroms(
     dir,
     (image, tag) => {
-      if (!/^node/.test(image.split('/').at(-1) ?? '')) return undefined;
+      if (!runsNode(image) || image === except) return undefined;
       return { tag: tag.includes(move.from) ? tag.replace(move.from, move.to) : tag };
     },
-    get,
+    digest,
   );
+  const left = pinned ? await nodeBehind(dir, move.to, get, except) : undefined;
+  if (left) throw new PinsRefused(`Node's move to ${move.to} leaves a pin behind: ${left}`);
 }
 
 /**
- * Moves a base image: each `FROM` of it at `from` to `to`, a tag and its digest, once its registry agrees. `from` is
+ * Moves a base image: each `FROM` of it at `from` to `to`, a tag and its digest, once its registry agrees (`digest`:
+ * made again to be compared, the answer the one who made it first had). `from` is
  * what the image is pinned at now: a tag with its digest, or the tag alone, as the daily scan names a pin
  * (`moves.json`'s `from`), which then moves each `FROM` of the image at that tag, whatever its digest.
+ *
+ * An image that runs Node brings its Node with it, where `mise.toml` pins one release for every image of Node: when the
+ * image at `to` runs another, Node moves to it first (`moveNode`), and the image is pinned at `to`. A Node behind the
+ * one pinned is refused: a move goes forward.
  */
-export async function moveImage(dir: string, move: Move, get: Get): Promise<void> {
+export async function moveImage(
+  dir: string,
+  move: Move,
+  get: Get,
+  now = Date.now(),
+  digest: DigestOf = asRegistry(get),
+): Promise<void> {
   const [toTag, toDigest] = move.to.split('@');
   if (!toTag || !toDigest || !DIGEST.test(toDigest))
     throw new PinsRefused(`${move.to} is not a tag with its digest, so ${move.name} cannot move to it.`);
-  const registry = await digestOf(move.name, toTag, get);
+  const registry = await digest(move.name, toTag);
   if (registry !== toDigest) {
     throw new PinsRefused(`${move.name}:${toTag} is ${registry} in its registry, not ${toDigest}.`);
+  }
+  const pinned = runsNode(move.name)
+    ? await readFile(join(dir, 'mise.toml'), 'utf8').then(pinnedNode, () => undefined)
+    : undefined;
+  if (pinned) {
+    const runs = await nodeInImage(move.name, toDigest, get);
+    if (compareVersions(runs, pinned) < 0)
+      throw new PinsRefused(`${move.name}@${toDigest} runs Node ${runs}, behind the ${pinned} mise.toml pins.`);
+    await moveNode(dir, { ecosystem: 'node', name: 'node', from: pinned, to: runs }, get, now, move.name, digest);
   }
   const moved = await moveFroms(
     dir,
     // The digest the registry was just asked for, and agreed was the move's: never a second answer.
-    (image, tag, digest) =>
-      image === move.name && (move.from.includes('@') ? `${tag}@${digest}` : tag) === move.from
+    (image, tag, pinned) =>
+      image === move.name && (move.from.includes('@') ? `${tag}@${pinned}` : tag) === move.from
         ? { tag: toTag, digest: toDigest }
         : undefined,
-    get,
+    digest,
   );
   if (!moved) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
 }
 
-const MANIFESTS = [
-  'application/vnd.oci.image.index.v1+json',
-  'application/vnd.docker.distribution.manifest.list.v2+json',
-  'application/vnd.oci.image.manifest.v1+json',
-  'application/vnd.docker.distribution.manifest.v2+json',
-].join(', ');
-
-/** An image's registry and repository there: Docker Hub's, by its own names, when the first part names no host. */
-export function registryOf(image: string): { host: string; repository: string } {
-  const [first = '', ...rest] = image.split('/');
-  const hub = (path: string) => ({
-    host: 'registry-1.docker.io',
-    repository: path.includes('/') ? path : `library/${path}`,
-  });
-  // Docker Hub by the names it goes by, whose API is at registry-1.docker.io alone.
-  if (['docker.io', 'index.docker.io', 'registry-1.docker.io'].includes(first) && rest.length)
-    return hub(rest.join('/'));
-  if (rest.length && (first.includes('.') || first.includes(':') || first === 'localhost'))
-    return { host: first, repository: rest.join('/') };
-  return hub(image);
+/**
+ * Moves an image's library to the release its tag names (`v1.65.1-noble` is 1.65.1), the image's other half: every
+ * package of it a manifest names, with `pnpm update <package>@<release>`, which moves its range there too and the rest of
+ * the library with it, in every project of a workspace. Every copy the lockfile then resolves of any of its packages
+ * must be at that release, or the move is refused. A lockfile that resolves none of them has nothing to move, and one
+ * whose every copy is at the release has the move already.
+ */
+export async function moveLibrary(dir: string, image: string, tag: string, pnpm: Pnpm): Promise<void> {
+  const library = libraryOf(image);
+  if (!library) return;
+  const release = /^v?(\d+\.\d+\.\d+)(?![\d.])/.exec(tag)?.[1];
+  if (!release) throw new PinsRefused(`${image}:${tag} names no release of its library, ${library.join(', ')}.`);
+  const lockPath = join(dir, 'pnpm-lock.yaml');
+  const copies = (lock: string) => library.flatMap((name) => lockedVersions(lock, name).map((v) => ({ name, v })));
+  const before = copies(await readFile(lockPath, 'utf8').catch(() => ''));
+  if (before.every(({ v }) => v === release)) return;
+  const named = new Set(
+    (await manifestsOf(dir)).flatMap(({ json }) =>
+      PINNED_FIELDS.flatMap((field) => library.filter((name) => typeof json[field]?.[name] === 'string')),
+    ),
+  );
+  if (!named.size)
+    throw new PinsRefused(`No manifest names ${library.join(', ')}, so ${image}'s library cannot move to ${release}.`);
+  const workspace = /^packages:/m.test(await readFile(join(dir, 'pnpm-workspace.yaml'), 'utf8').catch(() => ''));
+  await pnpm(dir, [
+    'update',
+    ...(workspace ? ['--recursive'] : []),
+    ...[...named].sort().map((n) => `${n}@${release}`),
+  ]);
+  const left = copies(await readFile(lockPath, 'utf8')).filter(({ v }) => v !== release);
+  if (left.length)
+    throw new PinsRefused(
+      `${image}:${tag} is ${release}, and the lockfile keeps ${left.map(({ name, v }) => `${name}@${v}`).join(', ')}.`,
+    );
 }
 
+/** Runs mise in a checkout, as the factory's scan and review gate do. Injected so tests need no mise. */
+export type Mise = (dir: string, args: string[]) => Promise<void>;
+
 /**
- * The digest a tag of an image has in its registry now, as the registry's API gives it, asking for a token where the
- * registry asks for one, as an anonymous reader. A digest that is not a SHA-256's is refused.
+ * Moves a tool mise pins: its entry's version in `mise.lock`, then `mise lock <tool>`, which writes that version's
+ * download and checksum for each platform the lockfile keeps. Within the range `mise.toml` gives the tool, which is
+ * left as it is: a version outside it is refused, as `mise upgrade` would not take it. Not before the release, on the
+ * repository mise.lock's aqua backend names, and the newest upload of its downloads (`releasedAt`), are as old as
+ * `mise.toml`'s `minimum_release_age`, which mise holds only its own resolution to, never a version written into the
+ * lockfile. A lockfile that already pins the target has the move, and nothing is written.
  */
-export async function digestOf(image: string, tag: string, get: Get): Promise<string> {
-  const { host, repository } = registryOf(image);
-  const url = `https://${host}/v2/${repository}/manifests/${tag}`;
-  const headers: Record<string, string> = { accept: MANIFESTS };
-  let response = await get(url, { method: 'HEAD', headers });
-  if (response.status === 401) {
-    const challenge = response.headers.get('www-authenticate') ?? '';
-    const fields = Object.fromEntries([...challenge.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
-    if (!/^Bearer /i.test(challenge) || !fields.realm?.startsWith('https://'))
-      throw new PinsRefused(`${host} asks for a sign-in the pin step does not make.`);
-    const query = new URLSearchParams({
-      ...(fields.service ? { service: fields.service } : {}),
-      scope: `repository:${repository}:pull`,
-    });
-    const answer = (await json(get, `${fields.realm}?${query}`)) as { token?: string; access_token?: string };
-    headers.authorization = `Bearer ${answer.token ?? answer.access_token ?? ''}`;
-    response = await get(url, { method: 'HEAD', headers });
+export async function moveTool(
+  dir: string,
+  move: Move,
+  mise: Mise | undefined,
+  get: Get,
+  now = Date.now(),
+): Promise<void> {
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(move.name)) throw new PinsRefused(`${move.name} is not a tool's name in mise.`);
+  if (!VERSION.test(move.from) || !VERSION.test(move.to))
+    throw new PinsRefused(`A tool moves from a version to a version, not ${move.from} to ${move.to}.`);
+  if (!mise) throw new PinsRefused(`The pin step runs no mise here, so ${move.name} cannot move.`);
+  const path = join(dir, 'mise.lock');
+  const lock = await readFile(path, 'utf8');
+  const entry = new RegExp(`^\\[\\[tools\\.${escaped(move.name)}\\]\\]\\nversion = "([^"]+)"\\n`, 'm').exec(lock);
+  if (!entry) throw new PinsRefused(`mise.lock has no entry for ${move.name}.`);
+  if (entry[1] === move.to) return;
+  if (entry[1] !== move.from) throw new PinsRefused(`mise.lock's ${move.name} is ${entry[1]}, not ${move.from}.`);
+  const miseToml = await readFile(join(dir, 'mise.toml'), 'utf8');
+  const range = new RegExp(`^${escaped(move.name)}\\s*=\\s*"([^"]+)"\\s*$`, 'm').exec(miseToml)?.[1];
+  if (range === undefined) throw new PinsRefused(`mise.toml names no ${move.name}.`);
+  if (move.to !== range && !move.to.startsWith(`${range}.`))
+    throw new PinsRefused(`${move.name} ${move.to} is outside the range mise.toml gives it, ${range}.`);
+  const age = releaseAge(miseToml);
+  if (age) {
+    const next = lock.indexOf('\n[[', entry.index + 1);
+    const section = lock.slice(entry.index, next < 0 ? undefined : next);
+    const repository = /^backend = "aqua:([\w.-]+\/[\w.-]+)"$/m.exec(section)?.[1];
+    if (!repository)
+      throw new PinsRefused(`mise.lock names no repository for ${move.name}, so its release has no day.`);
+    // As the scan reads a tool's releases (deadlines.ts's `toolReleases`): a published release, not a draft or a
+    // prerelease, by its tag with or without its `v`, as old as its downloads (`releasedAt`).
+    const releases = await json(get, `https://api.github.com/repos/${repository}/releases?per_page=100`);
+    const release = (Array.isArray(releases) ? (releases as Record<string, unknown>[]) : []).find(
+      (each) =>
+        typeof each.tag_name === 'string' &&
+        each.tag_name.replace(/^v/, '') === move.to &&
+        each.draft !== true &&
+        each.prerelease !== true,
+    );
+    const published = release && releasedAt(release);
+    if (!published) throw new PinsRefused(`${move.name} ${move.to} is not a published release of ${repository}'s.`);
+    if (now - Date.parse(published) < age)
+      throw new PinsRefused(
+        `${move.name} ${move.to} came out on ${published}, within mise.toml's minimum_release_age.`,
+      );
   }
-  if (!response.ok) throw new PinsRefused(`${image}:${tag} is not in its registry (${response.status}).`);
-  const digest = response.headers.get('docker-content-digest') ?? '';
-  if (!DIGEST.test(digest)) throw new PinsRefused(`${image}:${tag}'s registry gives no SHA-256 digest.`);
-  return digest;
+  await writeFile(path, lock.replace(entry[0], entry[0].replace(`"${move.from}"`, `"${move.to}"`)));
+  await mise(dir, ['lock', move.name]);
 }
 
 async function text(get: Get, url: string): Promise<string> {
@@ -586,6 +835,15 @@ export interface PinTools {
   /** The prepare pod's own folder, which the agent never sees. */
   aside: string;
   now?: number;
+  /** mise, for a tool's move: given by the factory's scan and review gate alone. */
+  mise?: Mise;
+  /** How a tag's digest is learnt: its registry's answer now when not given (scripts/derive.ts gives another). */
+  digestOf?: DigestOf;
+  /**
+   * Whether the checkout's own workspace projects may be named (`workspace:`, and `link:` in the lockfile): the
+   * factory's `main`, which its scan and review gate check out, and never a checkout an agent may have written.
+   */
+  workspace?: boolean;
 }
 
 /**
@@ -593,21 +851,35 @@ export interface PinTools {
  * anything but the registry's versions, before pnpm runs, and a lockfile after it that resolves anything else.
  */
 export async function writePins(dir: string, move: Move, tools: PinTools): Promise<void> {
-  if (move.ecosystem === 'node') return moveNode(dir, move, tools.get, tools.now);
-  if (move.ecosystem === 'docker') return moveImage(dir, move, tools.get);
-  await refuseUnlessRegistry(dir);
-  await withoutNpmrc(dir, join(tools.aside, 'checkout.npmrc'), () => movePackage(dir, move, tools.pnpm));
-  await refuseUnlessRegistryLock(dir);
+  const digest = tools.digestOf ?? asRegistry(tools.get);
+  if (move.ecosystem === 'node') return moveNode(dir, move, tools.get, tools.now, undefined, digest);
+  if (move.ecosystem === 'tool') return moveTool(dir, move, tools.mise, tools.get, tools.now);
+  const workspace = tools.workspace ?? false;
+  const withPnpm = async (work: () => Promise<void>) => {
+    await refuseUnlessRegistry(dir, workspace);
+    await withoutNpmrc(dir, join(tools.aside, 'checkout.npmrc'), work);
+    await refuseUnlessRegistryLock(dir, workspace);
+  };
+  if (move.ecosystem === 'docker') {
+    await moveImage(dir, move, tools.get, tools.now, digest);
+    // An image one release with a library brings it: the lockfile's copies, to the release its tag names.
+    if (libraryOf(move.name)) {
+      const tag = move.to.split('@')[0] ?? '';
+      await withPnpm(() => moveLibrary(dir, move.name, tag, tools.pnpm));
+    }
+    return;
+  }
+  await withPnpm(() => movePackage(dir, move, tools.pnpm));
 }
 
-async function refuseUnlessRegistry(dir: string): Promise<void> {
-  const refused = notFromRegistry(await manifestsOf(dir));
+async function refuseUnlessRegistry(dir: string, workspace = false): Promise<void> {
+  const refused = notFromRegistry(await manifestsOf(dir), workspace);
   if (refused.length)
     throw new PinsRefused(`Only versions from the registry are pinned, and the manifests name ${refused.join('; ')}.`);
 }
 
-async function refuseUnlessRegistryLock(dir: string): Promise<void> {
-  const lines = registryOnly(await readFile(join(dir, 'pnpm-lock.yaml'), 'utf8'));
+async function refuseUnlessRegistryLock(dir: string, workspace = false): Promise<void> {
+  const lines = registryOnly(await readFile(join(dir, 'pnpm-lock.yaml'), 'utf8'), workspace);
   if (lines.length)
     throw new PinsRefused(`The lockfile resolves something not from the registry: ${lines.slice(0, 5).join('; ')}.`);
 }

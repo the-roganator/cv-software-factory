@@ -18,7 +18,7 @@
  */
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { Move } from './pins.ts';
+import type { MadeAs, Move } from './pins.ts';
 
 export interface Step {
   /** The agent: planner, coder, reviewer or describer. */
@@ -59,6 +59,11 @@ export interface Step {
    * on a dependency's work item, before its pull request has the move.
    */
   move?: Move;
+  /**
+   * How the scan made the move (`MadeAs`): the pin step makes it as of the scan's time and with the digest the scan was
+   * given for each tag, as the review gate does. Absent, it makes it as of now and asks each registry.
+   */
+  made?: MadeAs;
   /** For the lockfile step (`runner lockfile`): the pin step's earlier patch, committed on the commit first. */
   pins?: string;
   /** For the lockfile step: the coder's patch, applied on the pins, whose manifests the lockfile is written for. */
@@ -95,6 +100,18 @@ export const resultPath = (env = process.env) => join(work(env), 'out', 'result.
 /** Where the agent writes a field of its result that is a file of its own. */
 export const resultFilePath = (name: string, env = process.env) => join(work(env), 'out', name);
 
+/**
+ * What a move's pin is at, and what it moves to: a version, or a tag and its digest; or a package's versions joined by
+ * a comma (`5.7.1,7.5.1`), each the version alone. One word, either way.
+ */
+const PINNED = z
+  .string()
+  .regex(
+    /^([\w.:@+-]+|\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(,\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)+)$/,
+    'a version, a tag and its digest, or versions joined by a comma',
+  )
+  .max(200);
+
 const STEP = z
   .strictObject({
     agent: z.string().min(1),
@@ -129,13 +146,26 @@ const STEP = z
           .string()
           .regex(/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w./:-]*$/, 'a package, an image or node')
           .max(200),
-        from: z
-          .string()
-          .regex(/^[\w.:@+-]+$/, 'a version, or a tag and its digest')
-          .max(200),
-        to: z
-          .string()
-          .regex(/^[\w.:@+-]+$/, 'a version, or a tag and its digest')
+        from: PINNED,
+        to: PINNED,
+      })
+      // A package at two versions under one advisory is one move of both (`5.7.1,7.5.1`), which the pin step makes
+      // copy by copy: Node and an image move from one pin to one.
+      .refine((move) => move.ecosystem === 'npm' || !`${move.from}${move.to}`.includes(','), {
+        message: 'only a package moves from versions joined by a comma',
+      })
+      .optional(),
+    made: z
+      .strictObject({
+        at: z.iso.datetime(),
+        asked: z
+          .array(
+            z.strictObject({
+              image: z.string().regex(/^[^\s\p{Cc}@]{1,512}$/u),
+              tag: z.string().regex(/^[\w][\w.-]{0,127}$/),
+              digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+            }),
+          )
           .max(200),
       })
       .optional(),
@@ -145,7 +175,9 @@ const STEP = z
   // A seed is committed on the commit, so `git diff base` would show it as part of the change.
   .refine((step) => !(step.seed && step.base), { message: 'a step with a base reads a change, and takes no seed' })
   // The files are fields of the result: with no result, nothing would read them.
-  .refine((step) => !step.resultFiles || step.result, { message: 'a step’s result files are part of its result' });
+  .refine((step) => !step.resultFiles || step.result, { message: 'a step’s result files are part of its result' })
+  // How the scan made a move is read only beside the move.
+  .refine((step) => !step.made || step.move, { message: 'a step says how the scan made a move only with its move' });
 
 export function stepFrom(env = process.env): Step {
   const text = env.RUNNER_STEP;

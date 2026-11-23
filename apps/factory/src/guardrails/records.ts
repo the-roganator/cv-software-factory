@@ -1,9 +1,10 @@
 /**
  * Judging a refusal record taken again by `make guardrails` against the one kept in `deploy/test/`, which the fences'
  * tests hold to what each case must get, and to the policies deploy/ renders (refusal-records.test.ts). A record taken
- * now holds when it was taken against the same policies and Roles (its `policyHash`), and the cluster answered each
- * case as the kept record says: so a proof holds only while the cluster refuses what the reviewed record says it
- * refuses, and admits its controls.
+ * now holds when it was taken against the same policies and Roles (its `policyHash`), the cluster answered each case as
+ * the kept record says, and, where the kept record read the cluster's Traefik, the cluster runs that Traefik with those
+ * settings: so a proof holds only while the cluster refuses what the reviewed record says it refuses, and admits its
+ * controls.
  */
 
 /** One case of a record: what was asked, and what the cluster answered. */
@@ -25,6 +26,11 @@ export interface RefusalRecord {
    * as the rest), or the share key's public half matching its Secret (judged as the kept record has it).
    */
   live?: Case[] | Record<string, unknown>;
+  /**
+   * What the mark's script read of the cluster's Traefik: its image and its arguments, the providers' settings that keep
+   * a reference from crossing namespaces among them. k3s bundles Traefik, so a new k3s may bring another.
+   */
+  traefik?: unknown;
 }
 
 export interface Judged {
@@ -63,6 +69,14 @@ export function judgeRecord(kept: RefusalRecord | Case[], fresh: RefusalRecord):
   const keptLive = Array.isArray(kept) ? undefined : kept.live;
   if (keptLive && !Array.isArray(keptLive) && JSON.stringify(fresh.live) !== JSON.stringify(keptLive)) {
     problems.push(`live: ${JSON.stringify(fresh.live ?? null)} now, ${JSON.stringify(keptLive)} in deploy/test/`);
+  }
+  // Traefik as the cluster runs it now, where the kept record read it: after a move to a new k3s, the record is taken
+  // again on it, and reviewed, before the proof holds.
+  const keptTraefik = Array.isArray(kept) ? undefined : kept.traefik;
+  if (keptTraefik !== undefined && JSON.stringify(fresh.traefik) !== JSON.stringify(keptTraefik)) {
+    problems.push(
+      `traefik: ${JSON.stringify(fresh.traefik ?? null)} now, ${JSON.stringify(keptTraefik)} in deploy/test/: take the record again with its script`,
+    );
   }
   const keptNames = new Set(before.map(nameOf));
   for (const c of now) if (!keptNames.has(nameOf(c))) problems.push(`${nameOf(c)}: not in deploy/test/`);

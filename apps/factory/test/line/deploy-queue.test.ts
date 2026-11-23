@@ -6,6 +6,7 @@
 import { AUTONOMY, type PayloadOf } from '@software-factory/events';
 import { describe, expect, it, vi } from 'vitest';
 import { RULES } from '../../../../policy/review-verdict.ts';
+import { QUEUE_TRIES, spentComment } from '../../src/github/deploy-queue.ts';
 import type { ReviewVerdict } from '../../src/github/merging.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { deployWait } from '../../src/line/deploy.ts';
@@ -243,7 +244,7 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     const soak = lineWith('exact-pin');
     soak.github.queued.add(DEPLOY);
     await soak.pass();
-    soak.github.dequeue(DEPLOY, 'failed_checks', ['e2e']);
+    soak.github.dequeue(DEPLOY, 'dequeued');
     await soak.pass();
     await controls({});
     const again = lineWith('exact-pin');
@@ -278,16 +279,26 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     expect(await changes(workItem)).toEqual([{ head: 'd', pullRequest: DEPLOY, state: 'passed' }]);
   });
 
-  it('records the queue taking it out as a wait for Martin, and adds a newer build’s head afresh', async () => {
+  it('adds a head the queue took out for failed checks again, records the third time as a wait for Martin, and adds a newer build’s head afresh', async () => {
     await controls({});
     const workItem = await heldForDeploy(sha('2'));
     const { pass, github, enqueues } = lineWith('exact-pin');
     await pass();
+    // Taken out for failed checks, it is added again at once, and the third time it waits.
+    for (let time = 2; time <= QUEUE_TRIES; time++) {
+      github.dequeue(DEPLOY, 'failed_checks', ['e2e']);
+      await pass();
+      expect(enqueues()).toHaveLength(time);
+      expect((await changes(workItem)).map((c) => c.state)).toEqual(['queued']);
+    }
     // The queue's checks, each named once however often it ran.
     github.dequeue(DEPLOY, 'failed_checks', ['e2e', 'e2e']);
     await pass();
     await pass();
-    expect(enqueues()).toHaveLength(1);
+    expect(enqueues()).toHaveLength(QUEUE_TRIES);
+    expect(github.acts.filter((a) => a.action === 'comment')).toEqual([
+      { action: 'comment', args: { number: DEPLOY, body: spentComment(sha('d'), ['e2e']) } },
+    ]);
     expect((await changes(workItem)).at(-1)).toEqual({
       head: 'd',
       pullRequest: DEPLOY,
@@ -304,7 +315,7 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     propose(github, sha('e'));
     await pass();
     expect(enqueues().map(([, , args]) => args)).toEqual([
-      { number: DEPLOY, expectedHead: sha('d') },
+      ...Array.from({ length: QUEUE_TRIES }, () => ({ number: DEPLOY, expectedHead: sha('d') })),
       { number: DEPLOY, expectedHead: sha('e') },
     ]);
     expect((await changes(workItem)).at(-1)).toMatchObject({ head: 'e', state: 'queued' });

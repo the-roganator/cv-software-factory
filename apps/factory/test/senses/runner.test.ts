@@ -1,8 +1,8 @@
 import type { Evidence, InboxSignal } from '@software-factory/events';
 import { validateSignal } from '@software-factory/events/schemas';
-import { type Logger, pino } from 'pino';
+import { pino } from 'pino';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SenseRunner } from '../../src/senses/runner.ts';
+import { type RunnerOptions, SenseRunner } from '../../src/senses/runner.ts';
 import type { Finding, Observation, Sense } from '../../src/senses/types.ts';
 
 const V1 = 'a'.repeat(40);
@@ -33,7 +33,7 @@ function scripted(...results: Array<Finding | null | 'trouble'>) {
 }
 
 /** A runner with a clock and a version that the test moves, and an inbox that is a list. */
-function setup(sense: Sense, options: { every?: number; log?: Logger } = {}) {
+function setup(sense: Sense, options: Partial<RunnerOptions> = {}) {
   const state = { now: Date.parse('2026-10-03T12:00:00Z'), version: V1 };
   const sent: InboxSignal[] = [];
   const runner = new SenseRunner({
@@ -310,6 +310,143 @@ describe('when it runs', () => {
     await runner.tick();
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(await runner.tick()).toMatchObject({ failed: 1, signalled: 0 });
+  });
+});
+
+describe('a signal the inbox could not take', () => {
+  const refused = Object.assign(new Error('connect ECONNREFUSED 10.43.0.7:5432'), { code: 'ECONNREFUSED' });
+
+  /** A runner whose inbox is a store the test takes away, and the lines it logs, each with its level's name. */
+  function withStore(sense: Sense) {
+    const store = { away: false, sent: [] as Array<{ check: string; id: string }>, tries: 0 };
+    const lines: Array<Record<string, unknown>> = [];
+    const log = pino(
+      { level: 'info', formatters: { level: (label) => ({ level: label }) } },
+      { write: (line: string) => void lines.push(JSON.parse(line)) },
+    );
+    const state = { now: Date.parse('2026-10-03T12:00:00Z') };
+    const runner = new SenseRunner({
+      sense,
+      version: async () => V1,
+      send: async (signal, id) => {
+        store.tries++;
+        if (store.away) throw refused;
+        store.sent.push({ check: signal.check, id });
+      },
+      log,
+      now: () => state.now,
+    });
+    const after = async (ms: number) => {
+      state.now += ms;
+      return runner.tick();
+    };
+    /** The lines about the inbox and the store, as `level: message`. */
+    const said = () =>
+      lines.filter(({ msg }) => /inbox|store/.test(String(msg))).map(({ level, msg }) => `${level}: ${msg}`);
+    return { store, lines, after, said };
+  }
+
+  const AWAY =
+    'warn: the inbox did not take a signal, as the store is away: it is kept, and sent again when the store is back';
+
+  it('is kept while the store is away for a restart, and handed over at the poll that finds it back', async () => {
+    const { sense, passes } = scripted(broken, broken);
+    const { store, lines, after, said } = withStore(sense);
+    await after(0);
+    store.away = true;
+    expect(await after(5 * MINUTE)).toMatchObject({ failed: 1, signalled: 0 });
+    await after(15_000);
+    store.away = false;
+    await after(15_000);
+    expect(store.sent).toHaveLength(1);
+    expect(store.sent[0]?.check).toBe('one');
+    expect(said()).toEqual([AWAY, AWAY, 'info: the store is back after 30 s: the inbox took the signals kept for it']);
+    expect(lines.find(({ level }) => level === 'warn')).toMatchObject({ sense: 'probe', check: 'one' });
+    // Handing over is not a run: the sense looked twice, on its schedule.
+    expect(passes).toHaveLength(2);
+    await after(15_000);
+    expect(store.sent).toHaveLength(1);
+  });
+
+  it('is sent again under the id it had, so a store that took it as it went away keeps one', async () => {
+    const { sense } = scripted(broken, broken);
+    const ids: string[] = [];
+    const runner = new SenseRunner({
+      sense,
+      version: async () => V1,
+      send: async (_, id) => {
+        ids.push(id);
+        if (ids.length === 1) throw refused;
+      },
+      log: pino({ level: 'silent' }),
+      every: 0,
+    });
+    await runner.tick();
+    await runner.tick();
+    await runner.tick();
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]);
+  });
+
+  it('is one line a poll while the store is away, however many checks fail, and the newest of each check is kept', async () => {
+    const results = [broken, broken, broken];
+    const sense: Sense = {
+      name: 'crawler',
+      async pass() {
+        const finding = results.shift() ?? null;
+        return ['one', 'two', 'three'].map((check) => ({ check, route: `/${check}`, finding, artifacts: [] }));
+      },
+    };
+    const { store, after, said } = withStore(sense);
+    await after(0);
+    store.away = true;
+    await after(5 * MINUTE);
+    expect(said()).toEqual([AWAY]);
+    expect(store.tries).toBe(1);
+    store.away = false;
+    await after(15_000);
+    expect(store.sent.map(({ check }) => check)).toEqual(['one', 'two', 'three']);
+    expect(new Set(store.sent.map(({ id }) => id)).size).toBe(3);
+  });
+
+  it('fails loudly at every poll once the store has been away for a minute, and still hands it over', async () => {
+    const { sense } = scripted(broken, broken);
+    const { store, after, said } = withStore(sense);
+    await after(0);
+    store.away = true;
+    await after(5 * MINUTE);
+    await after(45_000);
+    await after(15_000);
+    await after(15_000);
+    const STILL = 'error: the inbox did not take a signal: the store has been away for over a minute';
+    expect(said()).toEqual([AWAY, AWAY, STILL, STILL]);
+    store.away = false;
+    await after(15_000);
+    expect(store.sent).toHaveLength(1);
+  });
+
+  it('is dropped, with an error, when the inbox refuses it for any other reason', async () => {
+    const { sense } = scripted(broken, broken, broken);
+    const lines: Array<Record<string, unknown>> = [];
+    const log = pino({ level: 'warn' }, { write: (line: string) => void lines.push(JSON.parse(line)) });
+    let tries = 0;
+    const { runner, after } = setup(sense, {
+      log,
+      send: async () => {
+        tries++;
+        throw new Error('The inbox refuses this signal');
+      },
+    });
+    await runner.tick();
+    await after(5 * MINUTE);
+    expect(lines.map(({ level, msg, check }) => ({ level, msg, check }))).toEqual([
+      { level: 50, msg: 'the inbox did not take a signal', check: 'one' },
+    ]);
+    // Not kept: the next poll sends nothing, and the next run sends the check's next signal.
+    await after(15_000);
+    expect(tries).toBe(1);
+    await after(5 * MINUTE);
+    expect(tries).toBe(2);
   });
 });
 

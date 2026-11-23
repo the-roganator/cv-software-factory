@@ -101,12 +101,25 @@ export interface MergeQueue {
    * The last time it left the queue, when it has not gone back in since: GitHub's reason (`merged`, `failed_checks`,
    * `dequeued`, …), and the queue's commit it was tested on.
    */
-  removed: (QueueEvent & { reason: string | null; commit: string | null }) | null;
+  removed:
+    | (QueueEvent & {
+        reason: string | null;
+        commit: string | null;
+        /**
+         * How often the queue has taken it out for failed checks since its head was committed, of the times read: at
+         * this head, that is, as a head is committed before it is queued.
+         */
+        failures: number;
+      })
+    | null;
   /**
    * The checks on the queue's commit: the one it is queued on, or the one it left the queue from. Empty with neither.
    */
   checks: CheckRun[];
 }
+
+/** Whether a removal's reason, as GitHub gives it, is that a required check failed on the queue's commit. */
+export const failedChecks = (reason: string | null): boolean => reason?.toLowerCase() === 'failed_checks';
 
 /** Whether a pull request can merge into its base as it stands. */
 export interface Mergeability {

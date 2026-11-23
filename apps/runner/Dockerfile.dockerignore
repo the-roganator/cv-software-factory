@@ -8,3 +8,4 @@
 !apps/runner/package.json
 !apps/runner/src
 !apps/runner/plugin
+!apps/factory/src/vulnerabilities/registry.ts

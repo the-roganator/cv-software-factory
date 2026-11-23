@@ -13,10 +13,9 @@
 #              without asking GitHub whose the pull request is. In the queue it stands on the merge queue's ALLGREEN
 #              grouping (scripts/github-settings.ts): an entry made on one ahead skips the browser tests that entry runs
 #              for itself, so a group merges only once every entry's own run has passed.
-#   code       anything else: every check runs. A pin move of the App's (scripts/pin-move.ts) is this kind: the review
-#              gate passes one only once the job that runs its pin (ZAP scan, image builds, tests) succeeded at its
-#              head, so none of them may be skipped for it. One under deploy/ that only a cluster runs is `manifests`,
-#              and the gate passes it once `cluster from the change`, which every change to deploy/ runs, succeeded at its head.
+#   code       anything else: every check runs. A move of a pin outside deploy/ (scripts/move.ts) is this kind, so the
+#              job that runs its pin (ZAP scan, image builds, tests) runs on it. One under deploy/ is `manifests`, and
+#              `cluster from the change` runs on it.
 #
 # `scripts/check-kind.sh platform` says instead whether platform.yml's cluster runs, `cluster` or `none`: `cluster` when
 # HEAD changes from HEAD^1 any input, which is any path outside the classes a cluster is not made from (is_input, below:
@@ -258,7 +257,7 @@ passed_at_head() {
   inputs_still "$b0" HEAD^1 || return 1
 
   # The pull request ran it for itself alone: never retargeted, no other from its branch since it was opened, and no
-  # other with its head. A run's pull requests are those it matches now, not the one it ran for (scripts/pin-moves.ts).
+  # other with its head. A run's pull requests are those it matches now, not the one it ran for.
   events=$(gh api --paginate "repos/$repo/issues/$number/events?per_page=100" | jq -r '.[].event') ||
     { why "GitHub did not list #$number's events"; return 1; }
   ! grep -qxE 'base_ref_changed|automatic_base_change_succeeded' <<< "$events" ||

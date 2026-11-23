@@ -20,19 +20,28 @@ import { AUTONOMY, type Autonomy, type TakeKind } from '../packages/events/src/v
 import type { Rule } from './review-verdict.ts';
 
 /**
- * The review gate's rules the line adds its own pull request to the merge queue by, at each autonomy level, with
- * auto-merge on (spec 4.3, deviation 2): at Supervised none, so every change waits for Martin's merge; at Guarded a
- * low-risk change, an exact pin, a Critical vulnerability's fix the gate proved (ADR 0020), and a head Martin approved
- * on GitHub; at Lights-out those, and the gate's Lights-out pass of a risk-tagged change. Martin's own pull request (`martin-opened`) is his to merge, at every level. The gate
- * passes by a rule only when its own reading of the diff allows it, so the stricter of the two always wins.
+ * The review gate's rules a pull request is added to the merge queue by, at each autonomy level (spec 4.3, deviation
+ * 2): the one table the line and the GitHub worker both obey, each only with auto-merge on (`enqueues`). At
+ * Supervised none, so every change waits for Martin's merge; at Guarded a low-risk change, an exact pin, a move (exactly the scan's moves,
+ * which the gate made itself), and a head Martin approved on GitHub; at Lights-out those, a major (a move across a
+ * major that clears no Critical), and the gate's Lights-out pass of a risk-tagged change. Martin's own pull request
+ * (`martin-opened`) is his to merge, at every level. The gate passes by a rule only when its own reading of the diff
+ * allows it, so the stricter of the two always wins.
+ *
+ * The level and auto-merge govern new change. The factory's local deploy pin, which runs only what Martin already
+ * merged, is not new change: the GitHub worker queues it at every level, whatever the switch says
+ * (`apps/factory/src/github/deploy-queue.ts`).
  */
 export const ENQUEUES: Readonly<Record<Autonomy, readonly Rule[]>> = {
   supervised: [],
-  guarded: ['low-risk', 'exact-pin', 'critical-fix', 'martin-approved-head'],
-  'lights-out': ['low-risk', 'exact-pin', 'critical-fix', 'martin-approved-head', 'lights-out'],
+  guarded: ['low-risk', 'exact-pin', 'move', 'martin-approved-head'],
+  'lights-out': ['low-risk', 'exact-pin', 'move', 'major', 'martin-approved-head', 'lights-out'],
 };
 
-/** Whether the line adds its own pull request to the merge queue by the gate's rule, at the level and switch in force. */
+/**
+ * Whether a pull request the gate passed by a rule is added to the merge queue at the level and switch in force: the
+ * line's own, and a move of the GitHub worker's.
+ */
 export const enqueues = ({ autonomy, autoMerge }: Pick<Controls, 'autonomy' | 'autoMerge'>, rule: Rule): boolean =>
   autoMerge && ENQUEUES[autonomy].includes(rule);
 

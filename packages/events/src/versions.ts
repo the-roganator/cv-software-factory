@@ -32,13 +32,13 @@ export const VERSIONS = {
   'gates.finished': 1,
   'review.submitted': 5,
   'review.accepted': 1,
-  'pull-request.enqueued': 1,
+  'pull-request.enqueued': 2,
   'pull-request.dequeued': 1,
   'pull-request.merged': 1,
   // Release and verify
   'build.unsigned': 1,
   'build.signed': 1,
-  'deploy.changed': 2,
+  'deploy.changed': 3,
   'release.started': 3,
   'canary.stepped': 2,
   'canary.measuring': 1,
@@ -50,7 +50,7 @@ export const VERSIONS = {
   'signal.rechecked': 3,
   // Anywhere on the line
   'work.returned': 3,
-  'hold.started': 12,
+  'hold.started': 13,
   'hold.answered': 4,
   'action.refused': 3,
   'model.called': 2,
@@ -85,7 +85,7 @@ export const VERSIONS = {
   // Martin's request for an improvement, in his own words (the admin service), with the work item it opens
   'improvement.requested': 1,
   // The day's moves for both repositories, and what the cluster runs that the scan's list does not say (the dependency sense)
-  'patching.read': 2,
+  'patching.read': 4,
 } as const;
 
 export type EventType = keyof typeof VERSIONS;

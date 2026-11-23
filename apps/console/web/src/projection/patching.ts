@@ -15,7 +15,7 @@
 import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-factory/events';
 import { REPOSITORIES } from '../repositories.ts';
 import type { ItemState } from './items.ts';
-import { DAY, dependabotWaits, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
+import { DAY, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
 
 export { dueSoon, dueWords, PATCHING_ROLE, targetWords } from './patch-needs.ts';
 
@@ -41,12 +41,11 @@ type Running = Day['rows'][number];
 export type MoveState =
   | { kind: 'waits' }
   | { kind: 'lane'; lane: Exclude<MoveLane, 'none'> }
-  | { kind: 'opened' }
   | { kind: 'stage'; stage: 'plan' | 'build' | 'review' }
   | { kind: 'no-route' };
 
-/** Where a row points: the pull request Dependabot opened, or the work item the line carries it on. */
-export type Link = { kind: 'pull'; number: number; version: string } | { kind: 'item'; number: string };
+/** Where a row points: the work item the line carries it on. */
+export type Link = { kind: 'item'; number: string };
 
 /** What a row moves: a pin of the scan's list, or a row the sense made of what the cluster runs. */
 export type RowSource =
@@ -159,7 +158,7 @@ export const total = (counts: Counts) => SEVERITIES.reduce((n, s) => n + counts[
 /**
  * The line's work item that carries an app's move: open, and naming the same package or image. Only the app's moves go
  * down the line, and the line's work items are all the app's, so a move of the factory's is never matched; a lockfile's
- * move whose package the public view withholds has no name to match, and reads as its lane until its pull request opens.
+ * move whose package the public view withholds has no name to match, and reads as its lane.
  */
 function carrying(items: readonly ItemState[], name: string): ItemState | undefined {
   return items.find((item) => item.closedAt === undefined && item.dependency?.name === name);
@@ -172,23 +171,17 @@ function carrying(items: readonly ItemState[], name: string): ItemState | undefi
 function moveRow(repository: string, move: ScanMove, items: readonly ItemState[], key: string): PatchingRow {
   const shown = move.lockfile ? move.package : undefined;
   const name = move.lockfile ? shown?.name : move.name;
-  const waits = HIS.includes(move.lane) || dependabotWaits(move);
+  const waits = HIS.includes(move.lane);
   const item = move.lane === 'line' && repository === APP_REPOSITORY && name ? carrying(items, name) : undefined;
   const stage = item?.stage === 'plan' || item?.stage === 'build' || item?.stage === 'review' ? item.stage : undefined;
-  const link: Link | undefined = move.pullRequest
-    ? { kind: 'pull', ...move.pullRequest, number: move.pullRequest.number }
-    : item
-      ? { kind: 'item', number: item.number }
-      : undefined;
+  const link: Link | undefined = item ? { kind: 'item', number: item.number } : undefined;
   const state: MoveState = waits
     ? { kind: 'waits' }
     : move.lane === 'none'
       ? { kind: 'no-route' }
       : stage
         ? { kind: 'stage', stage }
-        : move.pullRequest
-          ? { kind: 'opened' }
-          : { kind: 'lane', lane: move.lane };
+        : { kind: 'lane', lane: move.lane };
   // A version the scan could not read is empty: it is left unsaid, never drawn as an empty side of an arrow.
   const from = (move.lockfile ? shown?.from : shortDigests(move.from).trim()) || undefined;
   const unbuilt = move.to.startsWith('another line');

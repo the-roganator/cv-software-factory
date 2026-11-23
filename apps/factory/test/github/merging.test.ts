@@ -421,15 +421,18 @@ function queueAnswer({
   entry = null as unknown,
   events = [] as unknown[],
   state = 'OPEN',
+  committed = undefined as string | undefined,
 }: {
   entry?: unknown;
   events?: unknown[];
   state?: string;
+  committed?: string;
 }) {
+  const commits = committed ? { commits: { nodes: [{ commit: { committedDate: committed } }] } } : {};
   return {
     data: {
       repository: {
-        pullRequest: { headRefOid: SHA, state, mergeQueueEntry: entry, timelineItems: { nodes: events } },
+        pullRequest: { headRefOid: SHA, state, ...commits, mergeQueueEntry: entry, timelineItems: { nodes: events } },
       },
     },
   };
@@ -526,6 +529,26 @@ describe('the merge queue', () => {
       conclusion: 'failure',
       annotations: [{ path: '.github', message: 'console browser (1/4) failed' }],
     });
+  });
+
+  it('counts the times the queue failed its head: those since the head was committed, and every one without that', async () => {
+    const events = [
+      added('2026-11-04T09:00:00Z'),
+      removed('2026-11-04T09:10:00Z', 'failed_checks'),
+      // The head was committed here, at ten.
+      added('2026-11-04T11:40:00Z'),
+      removed('2026-11-04T11:46:00Z', 'FAILED_CHECKS'),
+      added('2026-11-04T11:50:00Z'),
+      removed('2026-11-04T11:52:00Z', 'dequeued'),
+      added('2026-11-04T12:00:00Z'),
+      removed('2026-11-04T12:06:00Z', 'failed_checks'),
+    ];
+    const at = async (committed?: string) =>
+      (await queueReads(queueAnswer({ events, ...(committed ? { committed } : {}) })).mergeQueue(REPO, 17)).removed;
+    expect(await at('2026-11-04T10:00:00Z')).toMatchObject({ reason: 'failed_checks', failures: 2 });
+    expect(await at('2026-11-04T12:30:00Z')).toMatchObject({ failures: 0 });
+    expect(await at()).toMatchObject({ failures: 3 });
+    expect(await at('not a time')).toMatchObject({ failures: 3 });
   });
 
   it('says nothing of a removal once it has gone back in, and nothing of a queue it never joined', async () => {

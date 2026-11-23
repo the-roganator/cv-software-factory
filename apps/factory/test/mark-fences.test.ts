@@ -151,12 +151,14 @@ describe('Traefik', () => {
   it('reads no reference across namespaces: its providers are the bundled chart’s, as the cluster has them', async () => {
     const { k3s, helmChartConfigs, traefik } = await record();
     const cluster = parse(await readFile(join(DEPLOY, 'k3d', 'cluster.yaml'), 'utf-8')) as {
-      image: string;
       files?: unknown;
       options?: { k3s?: unknown };
     };
-    // The record was made on the k3s this repository pins; a new one is checked again.
-    expect(cluster.image).toBe(`rancher/k3s:${k3s.replace('+', '-')}`);
+    // The record says which k3s it was read on, and the pin may be ahead of it: a k3s move merges as any other, before
+    // any cluster runs it. Once `make upgrade-cluster` has applied it, `make guardrails` reads Traefik again on that
+    // cluster and holds it to this record (`judgeRecord`), so a k3s that brings another Traefik fails there until the
+    // record is taken again.
+    expect(k3s).toMatch(/^v\d+\.\d+\.\d+\+k3s\d+$/);
     expect(traefik.image).toBe('rancher/mirrored-library-traefik:3.7.15');
     expect(traefik.providers).toEqual([
       '--providers.kubernetescrd',

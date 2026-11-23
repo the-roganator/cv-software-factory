@@ -1481,7 +1481,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
     }
 
     test('a move that waits on Martin opened, for him', async ({ page }) => {
-      await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory example-logs');
+      await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory k3s');
       await expect(page).toHaveScreenshot(`m07-patching-open-${width}.png`);
     });
 
@@ -1532,7 +1532,7 @@ for (const width of ['laptop', 'phone'] as const) {
 
     for (const theme of THEMES) {
       test(`a held pin’s card for Martin, in ${theme}`, async ({ page }) => {
-        const card = await patchCardAt(page, 'martin', theme, 'example-logs waits for a review');
+        const card = await patchCardAt(page, 'martin', theme, 'k3s needs the cluster moved');
         await expect(card).toHaveScreenshot(`m07-needs-patch-martin-${theme}-${width}.png`);
       });
 

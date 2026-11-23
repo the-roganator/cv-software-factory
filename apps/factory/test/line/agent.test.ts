@@ -6,7 +6,9 @@ import {
   commitTitle,
   holdDraft,
   mentions,
+  mentionsIn,
   problemOf,
+  scopedNamesInCode,
   stepFrom,
 } from '../../src/line/agents/agent.ts';
 import { AGENTS } from '../../src/line/agents/index.ts';
@@ -143,6 +145,48 @@ describe('what a published text may not do from the App’s account', () => {
     ]) {
       expect(mentions(mention), mention).toBe(true);
     }
+  });
+
+  it('names each mention as written, without the full stop after it', () => {
+    expect(mentionsIn('Thanks @mrogan. Ask (@org/team) first, not `@coded` or martin@example.com.')).toEqual([
+      '@mrogan',
+      '@org/team',
+    ]);
+  });
+
+  it('puts a scoped package’s name outside code in code, and leaves a user’s mention and code as they were', () => {
+    expect(
+      scopedNamesInCode(
+        'protobufjs, pulled in through @grpc/proto-loader, moves.\n\n- **@types/node.** and `@grpc/grpc-js`',
+      ),
+    ).toBe('protobufjs, pulled in through `@grpc/proto-loader`, moves.\n\n- **`@types/node`.** and `@grpc/grpc-js`');
+    expect(scopedNamesInCode('```\n@grpc/grpc-js\n```\nThanks @mrogan, see https://npm.im/@grpc/grpc-js.')).toBe(
+      '```\n@grpc/grpc-js\n```\nThanks @mrogan, see https://npm.im/@grpc/grpc-js.',
+    );
+    for (const coded of [
+      scopedNamesInCode('Through @grpc/proto-loader and (@bufbuild/protobuf).'),
+      scopedNamesInCode('A lone `` ` and @grpc/grpc-js.'),
+    ]) {
+      expect(mentionsIn(coded), coded).toEqual([]);
+    }
+    expect(mentionsIn(scopedNamesInCode('Through @grpc/proto-loader, thanks to @mrogan.'))).toEqual(['@mrogan']);
+  });
+
+  it('puts a scoped package’s name in an HTML block in HTML’s code, and finds a mention there in backticks', () => {
+    const folded = '<details>\n<summary>Moves @grpc/proto-loader</summary>\n\nThrough @grpc/grpc-js.\n</details>';
+    expect(scopedNamesInCode(folded)).toBe(
+      '<details>\n<summary>Moves <code>@grpc/proto-loader</code></summary>\n\nThrough `@grpc/grpc-js`.\n</details>',
+    );
+    expect(mentionsIn(scopedNamesInCode(folded))).toEqual([]);
+    expect(mentionsIn('<summary>Thanks `@mrogan` and <code>@coded</code></summary>')).toEqual(['@mrogan']);
+  });
+
+  it('finds a mention in an HTML block that a `<code>` in a comment or an attribute seems to hide', () => {
+    expect(mentionsIn('<div><!-- <code> --> @someone <!-- </code> --></div>')).toEqual(['@someone']);
+    expect(mentionsIn('<div><span title="<code>">@someone</span><span title="</code>"></span></div>')).toEqual([
+      '@someone',
+    ]);
+    expect(mentionsIn('<div>@someone</div>')).toEqual(['@someone']);
   });
 });
 

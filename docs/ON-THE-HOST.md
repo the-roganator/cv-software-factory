@@ -25,7 +25,7 @@ export PGHOST=127.0.0.1 PGDATABASE=factory
 # Each worker connects as its own role (policy/store-grants.ts), with the password from its Secret, in a subshell of its own.
 store_role() {
   export PGUSER="factory_$1" PGPASSWORD="$(kubectl --context k3d-software-factory -n factory get secret "postgres-$1" -o jsonpath='{.data.password}' | base64 -d)"
-  [ -n "$PGPASSWORD" ] || { echo "no password for $1: run make worker-secrets" >&2; return 1; }
+  [ -n "$PGPASSWORD" ] || { echo "no password for $1: run make up, which makes every role's" >&2; return 1; }
 }
 # Triage's token for judgements, the cluster's (make judgements-token), so the gateway and triage get the same value in
 # any terminal. Without it the gateway answers every judgement 401, and triage will not start.
@@ -74,6 +74,18 @@ SCAN_STATE_KEY_CV_WORLDS_WORST_WEBSITE="$(kubectl --context k3d-software-factory
 
 Without one the worker starts, says which repository's moves it cannot read, and fails that read naming `make scan-state-key`; one that is set and is not a key stops it starting.
 
+It reads Martin's autonomy level and auto-merge from the store, as its own role, `factory_github`, which reads his controls and nothing else (`make up` makes `postgres-github`): they decide which moves its pin queue adds to the merge queue (`enqueues` in `policy/line.ts`). Without `PGHOST` it reads neither and queues no move, as at Supervised with auto-merge off; the local deploy pin it queues at every level. With Postgres forwarded as for the workers, `store_role github` gives it the role. Its pin watch takes the moves `PIN_WATCH_ONLY` names, or `*` for every one, as the cluster's does; unset, it opens, updates and closes nothing.
+
+`scripts/moves.ts --print` says what the review gate would of a pull request, working its move out on the Mac as the gate's `move` job does, and posts nothing ([a move](COMPONENTS/APPROVAL-ROUTING.md#a-move)). It reads the moves of the newest finished scan of `main` in the pull request's repository, with the state that run sealed, which it opens with `SCAN_STATE_KEY`, that repository's key as the Secret `scan-state-key` holds it; makes them itself on `main`'s tip, with the pnpm this checkout's `mise.lock` holds; and compares the result with the pull request. `--as-app` judges it as if the factory's App had opened it, with no say of Martin's:
+
+```sh
+GH_TOKEN="$(gh auth token)" AUTONOMY= \
+  SCAN_STATE_KEY="$(kubectl --context k3d-software-factory -n factory get secret scan-state-key -o 'jsonpath={.data.cv-software-factory}' | base64 -d)" \
+  mise exec -- node scripts/moves.ts --print --as-app the-roganator/cv-software-factory <number>
+```
+
+For one of the app's, the key is the Secret's `cv-worlds-worst-website`.
+
 ## Scratch copies of the two repositories
 
 Everything that decides by a repository's name takes the two from `FACTORY_REPOSITORY` and `APP_REPOSITORY` ([`policy/repositories.ts`](../policy/repositories.ts)): each the real one unless set, both under `the-roganator`, in lower case and with no dot. Given copies, the same code works on them. The line clones the app's copy and opens its pull requests there. The GitHub worker guards, queues deploys and moves pins in them. The scan tells the app's moves from the factory's. The review gate routes by them and trusts each copy's `build.yml` to sign its images. The console marks the app's rows and links to GitHub by them. Set both on each process that takes part (a worker on the host, or the cluster's Deployments for a try, with `GITHUB_REPOSITORIES` left unset or naming the copies), and in the shell for `make scan-state-key` and `node scripts/github-settings.ts`, which then apply to the copies.
@@ -102,7 +114,7 @@ kubectl --context k3d-software-factory -n factory port-forward svc/github 8082:8
 
 ## The dependency sense
 
-The dependency sense (`factory patching`, [its page](COMPONENTS/PATCHING.md#the-dependency-sense)) connects as its own role, `factory_patching` (`make up` makes `postgres-patching`), lists the cluster's pods through the Kubernetes API, and asks the GitHub worker's door for its two reads (`GITHUB_URL`, the worker's `PATCHING_PORT`). `--once` makes one pass and says what it appended, or why not. Give it the Deployment's `PATCHING_NAMESPACES`: unset, it lists every namespace, `runners` and its job tokens included. Scale the cluster's copy to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/patching --replicas=0`), and back to one after:
+The dependency sense (`factory patching`, [its page](COMPONENTS/PATCHING.md#the-dependency-sense)) connects as its own role, `factory_patching` (`make up` makes `postgres-patching`), lists the cluster's pods through the Kubernetes API, and asks the GitHub worker's door for its one read, the day's moves (`GITHUB_URL`, the worker's `PATCHING_PORT`). `--once` makes one pass and says what it appended, or why not. Give it the Deployment's `PATCHING_NAMESPACES`: unset, it lists every namespace, `runners` and its job tokens included. Scale the cluster's copy to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/patching --replicas=0`), and back to one after:
 
 ```sh
 kubectl --context k3d-software-factory proxy --port=8001 &

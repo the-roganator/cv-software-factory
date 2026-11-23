@@ -26,7 +26,7 @@ import type { Handback, Step } from '../../runners/steps.ts';
 import type { Draft } from '../gates.ts';
 import type { Answer, LineAgent, WorkItemState } from '../machine.ts';
 import type { GateCounts } from '../moves.ts';
-import { outsideCode } from './code.ts';
+import { outsideCode, readCode } from './code.ts';
 import type { Asked, Request, Signal } from './evidence.ts';
 
 /** A step that went wrong in a way the line counts against it: no handback, a result refused, an action refused. */
@@ -278,6 +278,8 @@ export interface StepOf {
   commits?: { message: string; patch: string }[] | undefined;
   /** A dependency's move, for the pin step to write before the agent starts (`apps/runner/src/pins.ts`). */
   move?: Step['move'] | undefined;
+  /** How the scan made the move, for the pin step to make it the same (`Step['made']`). */
+  made?: Step['made'] | undefined;
 }
 
 /**
@@ -286,7 +288,7 @@ export interface StepOf {
  */
 export function stepFrom(
   definition: Pick<Agent, 'agent' | 'skill' | 'maxTurns' | 'resultFiles'>,
-  { repository, commit, base, prompt, resume, seed, commits, move }: StepOf,
+  { repository, commit, base, prompt, resume, seed, commits, move, made }: StepOf,
 ): Step {
   return {
     agent: definition.agent,
@@ -302,6 +304,7 @@ export function stepFrom(
     ...(commits?.length ? { commits } : {}),
     ...(resume ? { resume } : {}),
     ...(move ? { move } : {}),
+    ...(move && made ? { made } : {}),
   };
 }
 
@@ -438,11 +441,48 @@ const CLOSES = new RegExp(String.raw`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)
  */
 export const closesAnIssue = (text: string) => CLOSES.test(text);
 
+/** A user's, an organisation's or a team's name in a mention, without the full stop of a sentence it ends. */
+const HANDLE = String.raw`[a-z\d](?:[\w.~-]*[\w~-])?`;
+
 /**
- * Whether Markdown mentions someone (`@name`, or a team's `@org/name`) outside code, where GitHub notifies nobody:
- * published from the App's account, it would notify them. An email address is no mention.
+ * A mention as GitHub reads one: an @ that starts a word, before a name (`@name`), or a team's (`@org/name`). An email
+ * address, or an @ in a path or an address, is no mention.
  */
-export const mentions = (markdown: string) => /(?:^|[^\w`@./])@[a-z\d]/im.test(outsideCode(markdown));
+const MENTION = new RegExp(String.raw`(?<=^|[^\w@./])@${HANDLE}(?:\/${HANDLE})?`, 'gim');
+
+/**
+ * Each mention in Markdown outside code, where GitHub notifies nobody, as written: published from the App's account,
+ * it would notify them.
+ */
+export const mentionsIn = (markdown: string) =>
+  [...outsideCode(markdown).matchAll(MENTION)].map(([mention]) => mention);
+
+/** Whether Markdown mentions someone (`@name`, or a team's `@org/name`) outside code (`mentionsIn`). */
+export const mentions = (markdown: string) => mentionsIn(markdown).length > 0;
+
+/**
+ * Markdown with each scoped package's name outside code put in code: `@grpc/proto-loader` is how npm names a package
+ * and how GitHub mentions a team, and only in code does GitHub read it as text. In Markdown that is inline code; in an
+ * HTML block, where GitHub keeps a backtick as it is, HTML's own `<code>`. A move names its packages in words, so the
+ * line makes the name harmless itself rather than refuse a description over it. A user's `@name` is no package's, and
+ * stays as written, for the rule against mentions to refuse.
+ */
+export function scopedNamesInCode(markdown: string): string {
+  const { outside, html } = readCode(markdown);
+  // A backtick outside code opens nothing, but would close a run as long as itself: the line's runs are longer than any.
+  const stray = Math.max(0, ...[...outside.matchAll(/`+/g)].map(([run]) => run.length));
+  const tick = '`'.repeat(stray + 1);
+  let coded = '';
+  let at = 0;
+  // `readCode` keeps each character where it was, so a match there is at the same place in the Markdown.
+  for (const { 0: name, index } of outside.matchAll(MENTION)) {
+    if (!name.includes('/')) continue;
+    const line = outside.slice(0, index).split('\n').length - 1;
+    coded += `${markdown.slice(at, index)}${html[line] ? `<code>${name}</code>` : `${tick}${name}${tick}`}`;
+    at = index + name.length;
+  }
+  return coded + markdown.slice(at);
+}
 
 /** A pull request's title of one of these Conventional Commit types, of 80 characters at most, closing no issue. */
 const titleOf = (types: string, message: string) =>

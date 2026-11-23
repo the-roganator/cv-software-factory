@@ -17,12 +17,10 @@ import {
   labelWait,
   pinPullWait,
   type QueuePull,
-  toldWait,
   verdictWait,
 } from '../../src/github/deploy-queue.ts';
 import { APP_USER, IssueGuard, MARTIN } from '../../src/github/issues.ts';
 import { guardPinBranch, pinBranchFor } from '../../src/github/pin-guard.ts';
-import { readPinScope } from '../../src/github/pins.ts';
 import type { CheckRun, Reads } from '../../src/github/reads.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
@@ -380,8 +378,8 @@ describe('the pin queue’s own conditions', () => {
   });
 
   it('takes the verdict only at this head, as pin-move, not pending; and no check the factory’s App ran', () => {
-    const judged = { number: PIN, head: HEAD, rule: 'pin-move' as const, tags: [] };
-    expect(verdictWait({ head: HEAD, judged, problem: null }, HEAD, 'pin-move')).toBeUndefined();
+    const judged = { number: PIN, head: HEAD, rule: 'move' as const, tags: [] };
+    expect(verdictWait({ head: HEAD, judged, problem: null }, HEAD, ['move'])).toBeUndefined();
     const older = 'd'.repeat(40);
     const not = [
       { head: HEAD, judged: null, problem: 'none' },
@@ -394,7 +392,7 @@ describe('the pin queue’s own conditions', () => {
       { head: HEAD, judged: { ...judged, rule: 'held' as const }, problem: null },
       { head: HEAD, judged: { ...judged, pending: 'a read' }, problem: null },
     ];
-    for (const verdict of not) expect(verdictWait(verdict as never, HEAD, 'pin-move')?.waits).toBe('verdict');
+    for (const verdict of not) expect(verdictWait(verdict as never, HEAD, ['move'])?.waits).toBe('verdict');
 
     const required = ['platform', 'lint, types, tests', 'review'];
     const actions = [run('platform', 'github-actions'), run('lint, types, tests', 'github-actions')];
@@ -420,22 +418,7 @@ describe('the pin queue’s own conditions', () => {
     expect(checksWait(actions, [])?.waits).toBe('checks');
   });
 
-  /** The pin watch's pull request for `zap`, as it names and titles it. */
-  const ZAP = { title: 'chore(pin): move zap to 2.17.0', head: { ref: 'factory/pin/zap', sha: '', repo: null } };
-
-  it('reads PIN_WATCH_ONLY as none unset or blank, * alone as every move, and a name it does not have as no branch', () => {
-    for (const none of [undefined, '', ' ', ',', ' , ,'])
-      expect(toldWait(readPinScope(none), ZAP)?.waits, String(none)).toBe('not-a-pin');
-    for (const every of ['*', ' * ', '*,', ',*']) expect(toldWait(readPinScope(every), ZAP), every).toBeUndefined();
-    for (const both of ['*,zap', 'zap, *']) expect(() => readPinScope(both)).toThrow(/stands alone/);
-    expect(toldWait(readPinScope(' zap , other '), ZAP)).toBeUndefined();
-    for (const other of ['zap2', 'za', 'other', 'factory/pin/zap', 'pin/zap', '**', '***', '-', '.', '?'])
-      expect(toldWait(readPinScope(other), ZAP)?.waits, other).toBe('not-a-pin');
-    // A name removed since: the worker starts again with the new setting, and its pull request is no longer told.
-    expect(toldWait(readPinScope('other'), ZAP)?.waits).toBe('not-a-pin');
-  });
-
-  it('folds no name to a branch outside factory/pin/, to pin-next, or to anything guardPinBranch refuses but the empty one', () => {
+  it('makes of no files a branch outside factory/pin/, in pin-next, or one guardPinBranch refuses, major or not', () => {
     const alphabet = [
       ...'abzAZ09',
       ...'./-_ *,:@+~\\\t\n\r\0',
@@ -460,18 +443,13 @@ describe('the pin queue’s own conditions', () => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed;
     };
-    const branches = new Set<string>();
     for (let i = 0; i < 20_000; i++) {
-      const name = Array.from({ length: next() % 100 }, () => alphabet[next() % alphabet.length]).join('');
-      const branch = pinBranchFor(name);
-      branches.add(branch);
-      expect(branch.startsWith('factory/pin/'), JSON.stringify(name)).toBe(true);
+      const path = () => Array.from({ length: next() % 100 }, () => alphabet[next() % alphabet.length]).join('');
+      const files = Array.from({ length: 1 + (next() % 3) }, path);
+      const branch = pinBranchFor(files, next() % 2 === 0);
+      expect(branch.startsWith('factory/pin/'), JSON.stringify(files)).toBe(true);
       expect(pinBranch(branch)).toBe(true);
-      const segment = branch.slice('factory/pin/'.length);
-      expect(/^[a-z0-9.-]*$/.test(segment), JSON.stringify(name)).toBe(true);
-      if (segment !== '') expect(() => guardPinBranch(branch), JSON.stringify(name)).not.toThrow();
-      // A name that folds to nothing names no branch a pull request can be on.
-      else expect(() => guardPinBranch(branch)).toThrow(BranchRefused);
+      expect(() => guardPinBranch(branch), JSON.stringify(files)).not.toThrow();
     }
   });
 });

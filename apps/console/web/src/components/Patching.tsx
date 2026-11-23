@@ -13,7 +13,7 @@
  * what it reads is the same, so an event that changes nothing here renders nothing here.
  *
  * A visitor reads all of it, read-only, with "Martin" for "you", no link into code scanning, and a lockfile's package
- * withheld until its pull request is open, as the public view withholds it.
+ * withheld, as the public view withholds it.
  */
 import { memo, useEffect, useId, useRef, useState } from 'react';
 import type { Admin } from '../admin.ts';
@@ -56,10 +56,6 @@ function route(row: PatchingRow, who: Who): string {
       return 'The line';
     case 'worker':
       return 'The worker';
-    case 'dependabot':
-      return 'Dependabot';
-    case 'approval':
-      return `${your(who)} approval`;
     case 'cluster':
       return `${your(who)} cluster`;
     case 'issue':
@@ -75,8 +71,6 @@ function reads(row: PatchingRow, who: Who): [word: string, tone: string, glyph: 
   switch (state.kind) {
     case 'waits':
       return [`Waits on ${you(who.martin)}`, 'attn', 'ring'];
-    case 'opened':
-      return ['Opened', 'signal', 'ring'];
     case 'stage':
       return [`In ${state.stage}`, 'signal', 'ring'];
     case 'lane':
@@ -153,25 +147,13 @@ function why(row: PatchingRow, who: Who): string {
             ? `The app’s move goes down the line as work item #${row.link.number}: its pins are written, then its gates and review, as any change.`
             : 'The app’s moves are the line’s: it takes one as a work item, as it takes any ticket.';
         case 'worker':
-          return 'A pin forward on its own line, which the review gate can prove from its pull request: the factory’s App moves it.';
-        case 'dependabot':
-          // In the app, a pin where the line may not write: Dependabot's whatever its deadline.
-          if (isApp(row))
-            return row.link?.kind === 'pull'
-              ? `Dependabot opened #${row.link.number}, to ${row.link.version}. The line writes nothing where this is pinned, so the pin is Dependabot’s, and the pull request waits for ${yours(who)} approval.`
-              : `The line writes nothing where this is pinned, and Dependabot reads it, so the pin is Dependabot’s. Its pull request will wait for ${yours(who)} approval.`;
-          // One that clears a High or a Critical on a deadline, its pull request open: it waits for his approval.
-          if (row.waits && row.link?.kind === 'pull')
-            return `Dependabot opened #${row.link.number}, to ${row.link.version}. Dependabot moves this pin, and its pull request merges only with ${yours(who)} approval.`;
-          return row.link?.kind === 'pull'
-            ? `Dependabot opened #${row.link.number}, to ${row.link.version}, and the move has no High or Critical on a deadline, so the pin stays Dependabot’s.`
-            : 'A pin Dependabot reads, with no High or Critical on a deadline, so it stays Dependabot’s.';
-        case 'approval':
-          return `${source.major ? 'Its fix is a major one, so' : 'It changes more than a pin, so'} the review gate passes it only with ${yours(who)} approval.`;
+          return source.major
+            ? 'Its fix is a major one. The factory’s App opens its pull request as any other, the review gate names it a major, and the autonomy level decides whether it merges unasked.'
+            : 'A pin forward on its own line, which the review gate can prove from its pull request: the factory’s App moves it.';
         case 'cluster':
           return 'Only the cluster’s own command applies a new k3s, with the line stopped: no pull request can show it works.';
         case 'issue':
-          return 'No pull request of the factory’s App can write it: mise pins it, or it is a workflow, or a package in the lockfile Dependabot has not moved. A person moves it.';
+          return 'No pull request of the factory’s App can write it: the Makefile pins it, or a workflow does. A person moves it.';
         case 'none':
           return source.unbuilt
             ? 'Its tag is not a version, and its image is more than 180 days old: a line nobody builds any more, so there is nothing to move to. Its findings count under No fix yet.'
@@ -181,7 +163,7 @@ function why(row: PatchingRow, who: Who): string {
 }
 
 /** What Martin does about a row that waits on him. */
-function whatToDo(row: PatchingRow, who: Who): string {
+function whatToDo(row: PatchingRow): string {
   const { source } = row;
   if (source.kind === 'unlisted-image')
     return 'Nothing to merge: add the image to the list in a pull request, or delete the pod. The sense reads again when it starts, and each day.';
@@ -191,11 +173,7 @@ function whatToDo(row: PatchingRow, who: Who): string {
     return 'Sync it in Argo CD, or for k3s run make upgrade-cluster with the line stopped. The row goes once the sense reads it running.';
   if (source.lane === 'cluster')
     return 'Run make upgrade-cluster, with the line stopped. It loses nothing in the store.';
-  if (source.lane === 'approval')
-    return `Move it in a pull request ${who.martin ? 'of your own' : 'of his own'}, and review it there.`;
-  if (source.lane === 'dependabot')
-    return `Review Dependabot’s pull request${row.link?.kind === 'pull' ? `, #${row.link.number},` : ''} and approve it there: it merges once ${who.martin ? 'you have' : 'Martin has'}.`;
-  return 'Move it by hand in a pull request: the App writes no mise file, workflow or lockfile.';
+  return 'Move it by hand in a pull request: the App writes no Makefile or workflow.';
 }
 
 /** What happens if it is left: the scan fails from its deadline. */
@@ -240,7 +218,7 @@ function Row({
         </span>
         <span className="facts">
           {withheld ? (
-            <span className="ft zero">versions once its pull request opens</span>
+            <span className="ft zero">versions withheld</span>
           ) : row.source.kind === 'unlisted-image' ? (
             <span className="ft">pinned nowhere</span>
           ) : (
@@ -274,7 +252,7 @@ function Row({
           {row.waits && (
             <div>
               <span className="label">What to do</span>
-              <p>{who.martin ? whatToDo(row, who) : 'Martin does it, on GitHub or his cluster.'}</p>
+              <p>{who.martin ? whatToDo(row) : 'Martin does it, on GitHub or his cluster.'}</p>
               {left && <p className="help">{left}</p>}
             </div>
           )}
@@ -296,18 +274,12 @@ function Row({
           )}
           {row.link && (
             <div>
-              <span className="label">{row.link.kind === 'pull' ? 'Its pull request' : 'Its work item'}</span>
+              <span className="label">Its work item</span>
               <p>
-                {row.link.kind === 'pull' ? (
-                  <a href={`${repoUrl(row.repository)}/pull/${row.link.number}`} target="_blank" rel="noopener">
-                    #{row.link.number} on GitHub ↗
-                  </a>
-                ) : (
-                  // The work item's sheet, opened in place as Guardrails opens an attack's.
-                  <button type="button" className="linkish" onClick={() => onOpen(String(row.link?.number))}>
-                    #{row.link.number}
-                  </button>
-                )}
+                {/* The work item's sheet, opened in place as Guardrails opens an attack's. */}
+                <button type="button" className="linkish" onClick={() => onOpen(String(row.link?.number))}>
+                  #{row.link.number}
+                </button>
               </p>
             </div>
           )}

@@ -1,6 +1,6 @@
 /**
  * The dependency sense's day, `patching.read`: its shape, on one invented sample day in the shape `packages/samples`
- * will hold, and its public view, which leaves out a lockfile move's package until a pull request moving it is open.
+ * will hold, and its public view, which leaves out a lockfile move's package.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,8 +17,8 @@ const view = (payload: unknown) =>
   publicView('patching.read', { summary: 'The day', payload: schema.parse(payload), artifacts: [] }).payload;
 
 describe("the day's moves", () => {
-  it('is a line event at version 2, appended by the sense alone', () => {
-    expect(VERSIONS['patching.read']).toBe(2);
+  it('is a line event at version 4, appended by the sense alone', () => {
+    expect(VERSIONS['patching.read']).toBe(4);
     expect(LINE_TYPES).toContain('patching.read');
     expect(PATCHING_ONLY_TYPES).toEqual(['patching.read']);
   });
@@ -75,6 +75,43 @@ describe("the day's moves", () => {
     expect(schema.safeParse(v1).success).toBe(true);
   });
 
+  it('reads a version 2 day’s `approval` lane as the worker’s, its moves and its count', () => {
+    const [factory, app] = DAY.repositories;
+    const held = { ...factory.moves[0], lane: 'approval' };
+    const lanes = { ...factory.totals.lanes, worker: factory.totals.lanes.worker - 1, approval: 1 };
+    const v2 = {
+      ...DAY,
+      repositories: [
+        { ...factory, moves: [held, ...factory.moves.slice(1)], totals: { ...factory.totals, lanes } },
+        app,
+      ],
+    };
+    expect(schema.safeParse(v2).success).toBe(false);
+    const read = upcast({ type: 'patching.read', version: 2, payload: v2 });
+    expect(read.ok && read.event.payload).toEqual(DAY);
+    // A day whose scan wrote no totals has none to count.
+    const none = { ...DAY, repositories: [{ ...factory, totals: null, judged: null, moves: [] }, app] };
+    const kept = upcast({ type: 'patching.read', version: 2, payload: none });
+    expect(kept.ok && kept.event.payload).toEqual(none);
+  });
+
+  it('reads a version 3 day’s `dependabot` lane as the worker’s, and leaves out the pull request each named', () => {
+    const [factory, app] = DAY.repositories;
+    const theirs = { ...factory.moves[2], lane: 'dependabot', pullRequest: { number: 77, version: '1.0.1' } };
+    const lanes = { ...factory.totals.lanes, worker: factory.totals.lanes.worker - 1, dependabot: 1 };
+    const named = { ...factory.moves[0], pullRequest: { number: 78, version: '2.0.1' } };
+    const v3 = {
+      ...DAY,
+      repositories: [
+        { ...factory, moves: [named, factory.moves[1], theirs], totals: { ...factory.totals, lanes } },
+        { ...app, totals: { ...app.totals, lanes: { ...app.totals.lanes, dependabot: 0 } } },
+      ],
+    };
+    expect(schema.safeParse(v3).success).toBe(false);
+    const read = upcast({ type: 'patching.read', version: 3, payload: v3 });
+    expect(read.ok && read.event.payload).toEqual(DAY);
+  });
+
   it('refuses a repository twice, a package on a move that is not a lockfile’s, and rows with no comparison', () => {
     const [factory] = DAY.repositories;
     expect(schema.safeParse({ ...DAY, repositories: [factory, factory] }).success).toBe(false);
@@ -86,14 +123,12 @@ describe("the day's moves", () => {
     expect(schema.safeParse({ ...DAY, repositories: [pullRequestRun] }).success).toBe(false);
   });
 
-  it('shows a lockfile move’s package only once a pull request moving it is open', () => {
+  it('never shows a lockfile move’s package', () => {
     const lockfile = (payload: unknown) =>
       (payload as typeof DAY).repositories[0].moves.find((m: { lockfile: boolean }) => m.lockfile);
+    expect(lockfile(DAY).package.name).toBe('example-parser');
     expect(lockfile(view(DAY))).not.toHaveProperty('package');
     expect(lockfile(view(DAY)).name).toBe('a package in `pnpm-lock.yaml`');
-    const opened = structuredClone(DAY);
-    lockfile(opened).pullRequest = { number: 77, version: '1.0.1' };
-    expect(lockfile(view(opened)).package.name).toBe('example-parser');
     // Everything else is as the scan's log has it.
     expect(view(DAY).rows).toEqual(DAY.rows);
     expect((view(DAY) as typeof DAY).repositories[1]).toEqual(DAY.repositories[1]);

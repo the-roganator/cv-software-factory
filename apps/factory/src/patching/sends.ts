@@ -1,7 +1,7 @@
 /**
  * What the dependency sense sends triage (milestone 7, task 35): one `dependency` signal for each of the app's moves in
  * the lane `line` that has a target, which triage makes a ticket of. A move with no target sends nothing, and nor does
- * any other lane's: those are the GitHub worker's, Dependabot's or Martin's.
+ * any other lane's: those are the GitHub worker's or Martin's.
  *
  * A pure function of the read, the same read always giving the same signals under the same ids. **The same send** is
  * one move of one repository from one run of the scan: its id is derived from those three (`sendId`), so a sense
@@ -93,14 +93,17 @@ function nodeMove(read: ReadMove, target: Target | undefined): { from: string; t
 }
 
 /** A read move as the signal names it, or why it cannot be sent: it has no target to move to, or no ecosystem. */
-function moveOf(repository: string, read: ReadMove): Move | string {
+export function moveOf(repository: string, read: ReadMove): Move | string {
   if (read.lockfile) {
     const withheld = read.withheld;
     if (!withheld) return 'a lockfile’s move whose package the scan’s state does not give';
     // The state gives the package's target in the scan's grammar (`version 1.0.1`).
     const to = targetWord(readTarget(withheld.to));
-    if (!to || !withheld.from) return 'a lockfile’s move with no version to move from or to';
-    return { repository, name: withheld.package, ecosystem: 'npm', from: withheld.from, to, pins: withheld.pins };
+    // A package locked at two versions under one advisory is one finding from both (`6.11.0, 7.6.4`, sarif.ts): one
+    // word, as its target is, which the pin step reads as each copy on its own line.
+    const from = withheld.from.split(', ').filter(Boolean).join(',');
+    if (!to || !from) return 'a lockfile’s move with no version to move from or to';
+    return { repository, name: withheld.package, ecosystem: 'npm', from, to, pins: withheld.pins };
   }
   const target = readTarget(read.to);
   const to = targetWord(target);

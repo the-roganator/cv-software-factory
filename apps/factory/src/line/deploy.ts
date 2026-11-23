@@ -27,7 +27,9 @@
  *
  * It does so once for each head: once it has added it (`queued`), the queue merges it, which the read of the pull
  * request records, or takes it out (`dequeued`, with GitHub's reason and the checks that failed on the queue's commit),
- * and it waits for Martin. Nor does it try again a head the worker or GitHub refused (`waits: 'refused'`): the worker
+ * and it waits for Martin. But for a check that failed on the queue's commit, which may be a flake: then the line adds
+ * the head again at once, `QUEUE_TRIES` times in all by GitHub's count, as the GitHub worker adds its own
+ * (`github/deploy-queue.ts`), and the last time it records it and says so on the pull request. Nor does it try again a head the worker or GitHub refused (`waits: 'refused'`): the worker
  * signs a refusal, which is relayed as for any action (`refusals.ts`), on the first held work item the pull request
  * carries, as the action is for that one. A newer build's head is judged afresh. A refusal for a head that moved since
  * (409) is no refusal: nothing is recorded, and the next pass reads the new head.
@@ -53,10 +55,11 @@ import { cutAt, cutTo, unsignedBuildWords } from '@software-factory/events';
 import type { Logger } from 'pino';
 import { type Controls, enqueues } from '../../../../policy/line.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
+import { QUEUE_TRIES, spentComment } from '../github/deploy-queue.ts';
 import type { DeployBuild, DeployProposal } from '../github/deploys.ts';
-import type { ReviewVerdict } from '../github/merging.ts';
+import { failedChecks, type ReviewVerdict } from '../github/merging.ts';
 import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
-import { GitHubWorkerError } from '../github/worker-client.ts';
+import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import { type Draft, judge, latestRuns } from './gates.ts';
 import { PENDING_LIMIT_MS } from './merging.ts';
 import type { GitHubPort } from './worker.ts';
@@ -381,9 +384,37 @@ async function queueDeploy(
       .filter((run) => run.status === 'completed' && outcomeOf(run.conclusion) === 'failure')
       .map((run) => cutAt(run.name, 80))
       .slice(0, 40);
-    return { pullRequest: number, commit: head, state: 'dequeued', reason, ...(failed.length ? { failed } : {}) };
-  }
-  if (done) return done;
+    const out: DeployChange = {
+      pullRequest: number,
+      commit: head,
+      state: 'dequeued',
+      reason,
+      ...(failed.length ? { failed } : {}),
+    };
+    if (!failedChecks(reason)) return out;
+    // Taken out because a check failed on the queue's commit, which may be a flake, it goes in again at once, up to
+    // `QUEUE_TRIES` times in all by GitHub's count, as the GitHub worker adds its own (`github/deploy-queue.ts`). The
+    // last time it is Martin's, and the line says so on the pull request, as it records it, once.
+    const { failures } = queue.removed;
+    if (failures >= QUEUE_TRIES) {
+      await github
+        .act('comment', repo, { number, body: spentComment(head, failed) }, { workItem: by })
+        .catch((error: unknown) => {
+          if (!issueGone(error)) throw error;
+          log.warn({ number, err: error }, 'the deploy pull request cannot be commented on');
+        });
+      log.warn(
+        { number, head, failures },
+        'the merge queue took the deploy pull request out for failed checks: it waits for Martin',
+      );
+      return out;
+    }
+    if (o.mayEnqueue === false || base.state !== 'passed') return out;
+    log.info(
+      { number, head, failures },
+      'the merge queue took the deploy pull request out for failed checks: adds it again',
+    );
+  } else if (done) return done;
   const verdict = await github.read('reviewVerdict', repo, { number });
   // While the gate is still judging the head, nothing is the line's or Martin's yet: one of its checks still runs.
   if (gateJudging(verdict, head, (o.now ?? (() => new Date()))())) return { ...base, state: 'checking' };

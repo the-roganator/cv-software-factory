@@ -10,21 +10,19 @@
  * Its lane says who moves it, worked out, never chosen, in this order:
  *
  * - `none`: nothing to move to (a line no longer built);
- * - `dependabot`, in the app: an image's pin where no patch of the line's may write (`LINE_NEVER`), in a directory
- *   `dependabot.yml`'s docker entries read, whatever its deadline: nobody else can move it;
- * - `line`: the app's, which its line moves;
+ * - `line`: the app's, which its line moves, an image's under `deploy/` among them;
  * - `cluster`: k3s, which only the cluster's own command applies;
- * - `issue`: what no pull request of the App's can write: anything mise or the Makefile pins (k3d, Argo CD's chart with
- *   its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a
- *   day of its fix, an image whose other half is in the lockfile, and Playwright's image, whose library is in the
- *   lockfile, where Dependabot does not read its pin;
- * - `approval`: a major, of any kind (a chart's, or a version past every copy's major), which needs more than its pins'
- *   lines written, what judges a move (Kyverno, Trivy, Syft), and one chart at two Applications' pins, neither of which the gate passes; whether a chart within its major changes
- *   more than its images is the review gate's to prove from the pull request, not the scan's to assume;
- * - `dependabot`: Playwright's image where Dependabot reads its pin, whose group moves it with its library; a pin
- *   `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
- *   package of the lockfile within a day of its fix, which its security update moves;
- * - `worker`: every other pin, which the GitHub worker moves: a chart within its major among them.
+ * - `issue`: what no pull request of the App's can write: what the Makefile pins (Argo CD's chart, with its CLI), and
+ *   a workflow;
+ * - `worker`: every other pin, which the GitHub worker moves: a chart among them, at one Application or several; and
+ *   every package of the lockfile, what mise pins (k3d, a tool's release), and an image that brings another pin with
+ *   it (Node, or Playwright's library: the pin step's `moveImage`), which the pin step makes in the scan's run for the
+ *   worker to commit (github/made.ts).
+ *
+ * Every move with a fix is the App's, made by the line or the worker: none waits for Dependabot, whose pull request
+ * for the same pin closes itself once `main` has moved. No lane says a move waits for Martin. A major is in the lane it
+ * would be in without its major: the review gate names it (`major`), and the autonomy level decides whether it is
+ * queued (`ENQUEUES`, `policy/line.ts`).
  *
  * `moves.json`, the scan's artifact, is `MovesFile`: what the log prints, no more. A lockfile's move is "a package in
  * `pnpm-lock.yaml`", with neither its versions nor its lines, which name the package in a public lockfile; the alerts
@@ -44,8 +42,8 @@ export const APP = APP_REPOSITORY;
 /** The shape of `moves.json`: a reader refuses a version it does not know. */
 export const MOVES_VERSION = 1;
 
-export type Lane = 'line' | 'worker' | 'dependabot' | 'approval' | 'cluster' | 'issue' | 'none';
-export const LANES: Lane[] = ['line', 'worker', 'dependabot', 'approval', 'cluster', 'issue', 'none'];
+export type Lane = 'line' | 'worker' | 'cluster' | 'issue' | 'none';
+export const LANES: Lane[] = ['line', 'worker', 'cluster', 'issue', 'none'];
 
 /** A pin a move writes: its file and line. */
 export interface Pin {
@@ -101,14 +99,8 @@ export interface Context {
   repository: string;
   /** Whether it is the app's repository, whose moves its line makes. */
   app: boolean;
-  /** The directories `dependabot.yml`'s docker entries read, as it writes them (`/apps/console`). */
-  dependabot: string[];
-  /** The lockfiles' direct dependencies, by name. */
-  direct: Set<string>;
   now: number;
 }
-
-const DAY = 86_400_000;
 
 const zero = (): Counts => Object.fromEntries(SEVERITIES.map((s) => [s, 0])) as Counts;
 
@@ -118,100 +110,15 @@ const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const pinKey = (each: Pick<Judged, 'name' | 'from' | 'kind'>) =>
   JSON.stringify([each.kind === 'lockfile' ? 'npm' : '', each.name, each.from]);
 
-const MISE_FILES = new Set(['mise.toml', 'mise.lock']);
-
-/**
- * Where no patch of the line's may write, in the app's repository: the GitHub worker's `NEVER` (github/paths.ts),
- * written again here as this runs with no dependencies; a test holds the two together.
- */
-export const LINE_NEVER = ['.github/', 'deploy/'];
-
-/** A pin `dependabot.yml`'s docker entries read: one in a directory they name. */
-const readByDependabot = (pin: Pin, directories: string[]) => {
-  const dir = `/${pin.file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';
-  return directories.some((each) => {
-    // A glob, as dependabot.yml's `directories` takes one: `*` within a directory's name, `**` across them.
-    const pattern = (each.replace(/\/$/, '') || '/')
-      .split(/(\*\*|\*)/)
-      .map((part) => (part === '**' ? '.*' : part === '*' ? '[^/]*' : part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')))
-      .join('');
-    return new RegExp(`^${pattern}$`).test(dir);
-  });
-};
-
-const isLockfile = (file: string) => /(^|\/)pnpm-lock\.yaml$/.test(file);
-
-/** Playwright's image, whose browsers are one release with the lockfile's library. */
-export const PLAYWRIGHT_IMAGE = 'mcr.microsoft.com/playwright';
-
-/**
- * What judges a move, by its name and pins: Kyverno (its chart, and each image of it a values file pins), Trivy and
- * Syft. The review gate never passes one as a pin move (scripts/pin-move.ts, condition 2), so it waits for Martin from
- * the start.
- */
-export const JUDGES: Record<string, (move: Pick<Move, 'name' | 'pins'>) => boolean> = {
-  Kyverno: (move) => /^kyverno(:|$)/.test(move.name) || /(^|[\s/])kyverno\//.test(move.name),
-  Trivy: (move) =>
-    move.pins.some((pin) => pin.file.startsWith('deploy/images/trivy/')) ||
-    /(^|\/)aquasec(urity)?\/trivy$/.test(move.name),
-  Syft: (move) =>
-    move.pins.some((pin) => pin.file.startsWith('deploy/images/syft/')) || /(^|\/)anchore\/syft$/.test(move.name),
-};
-
 /** A move's lane, worked out from what it is: see the module's comment for the order. */
-export function laneOf(
-  move: Pick<Move, 'to' | 'major' | 'pins' | 'name' | 'lockfile'>,
-  kinds: Set<Kind>,
-  members: Judged[],
-  context: Context,
-): Lane {
+export function laneOf(move: Pick<Move, 'to' | 'pins'>, kinds: Set<Kind>, context: Context): Lane {
   const target = move.to;
   if (!target || target.kind === 'unbuilt') return 'none';
-  // Playwright's image and its library in the lockfile are one release (scripts/image-pins.test.ts): no change that
-  // writes the image alone can pass. Dependabot's group moves both, in either repository, where it reads the pin;
-  // otherwise a person does here, from an issue, and in the app it is the line's as any other.
-  if (move.name === PLAYWRIGHT_IMAGE && move.pins.every((pin) => readByDependabot(pin, context.dependabot)))
-    return 'dependabot';
-  if (context.app) {
-    // A pin the line may not write is refused at the worker's guard every time: Dependabot's, where it reads it.
-    const forbidden = move.pins.some((pin) => LINE_NEVER.some((path) => pin.file.startsWith(path)));
-    // An image's alone: Dependabot's docker entries move a `FROM`, and nothing else a directory they read may hold.
-    if (forbidden && target.kind === 'image' && move.pins.every((pin) => readByDependabot(pin, context.dependabot)))
-      return 'dependabot';
-    return 'line';
-  }
+  if (context.app) return 'line';
   if (target.kind === 'k3s' || kinds.has('k3s') || kinds.has('k3s-release')) return 'cluster';
-  // What mise or the Makefile pins (Argo CD's chart with its CLI) no pull request of the App's writes, a major or not.
-  if (
-    target.kind === 'tool' ||
-    kinds.has('k3d') ||
-    move.pins.some((pin) => MISE_FILES.has(pin.file) || pin.file === 'Makefile')
-  )
-    return 'issue';
-  if (move.name === PLAYWRIGHT_IMAGE) return 'issue';
-  // What judges a move is Martin's to move, as the review gate holds it (scripts/pin-move.ts's `JUDGES`).
-  if (Object.values(JUDGES).some((judge) => judge(move))) return 'approval';
-  // A major, of any kind: the one move the scan can tell needs more than its pins' lines written. Whether a chart on its
-  // major changes more than its images is the gate's to prove from the pull request, not the scan's to assume.
-  if (move.major) return 'approval';
+  // What the Makefile pins (Argo CD's chart with its CLI) no pull request of the App's writes, nor a workflow.
+  if (move.pins.some((pin) => pin.file === 'Makefile')) return 'issue';
   if (move.pins.some((pin) => pin.file.startsWith('.github/workflows/'))) return 'issue';
-  // One chart two Applications run: the gate proves a chart's move from one Application's rendering (pin-move.ts),
-  // so it holds a move of two, and Martin approves it.
-  if (target.kind === 'chart' && move.pins.length > 1) return 'approval';
-  // An Application's chart within its major, the worker's: Dependabot's docker entries read no Application's
-  // targetRevision, though they read the directory it is in.
-  if (target.kind === 'chart') return 'worker';
-  if (move.lockfile) {
-    // An image of ours that carries the same package: its other half is the lockfile, which no pin move writes.
-    if (move.pins.some((pin) => !isLockfile(pin.file))) return 'issue';
-    if (!context.direct.has(move.name)) return 'issue';
-    const fixed = Math.min(...members.map((each) => each.finding.fix?.day ?? context.now));
-    return context.now - fixed > DAY ? 'issue' : 'dependabot';
-  }
-  const urgent = members.some(
-    (each) => each.due !== undefined && (each.severity === 'CRITICAL' || each.severity === 'HIGH'),
-  );
-  if (!urgent && move.pins.every((pin) => readByDependabot(pin, context.dependabot))) return 'dependabot';
   return 'worker';
 }
 
@@ -321,7 +228,7 @@ export function moves(results: Judged[], context: Context): Move[] {
       lockfile: first.kind === 'lockfile',
       results: members.map((each) => fingerprint(each.finding)),
     };
-    move.lane = laneOf(move, new Set(members.map((each) => each.kind)), members, context);
+    move.lane = laneOf(move, new Set(members.map((each) => each.kind)), context);
     out.push(move);
   }
   return out.sort(
@@ -485,59 +392,4 @@ export function table(file: MovesFile): string[] {
       `| ${move.name} | ${move.from || '–'} | ${move.to || '–'} | ${short(move.clears)} | ${short(move.leaves)} | ${move.newToday} | ${move.deadline ?? '–'} | ${move.lane} |`,
     );
   return lines;
-}
-
-/** The directories `dependabot.yml`'s docker entries read, from its text: `directory:` and `directories:` lists. */
-export function dependabotDirectories(text: string | undefined) {
-  if (!text) return [];
-  const found: string[] = [];
-  let docker = false;
-  let listing = false;
-  for (const raw of text.split('\n')) {
-    const line = raw.replace(/\s+#.*$/, '');
-    const entry = /^ {2}- package-ecosystem:\s*['"]?([\w-]+)['"]?\s*$/.exec(line);
-    if (entry) {
-      docker = entry[1] === 'docker';
-      listing = false;
-      continue;
-    }
-    if (!docker) continue;
-    const one = /^ {4}directory:\s*['"]?([^'"\s]+)['"]?\s*$/.exec(line);
-    if (one?.[1]) found.push(one[1]);
-    if (/^ {4}directories:\s*$/.test(line)) {
-      listing = true;
-      continue;
-    }
-    const item = /^ {6}- ['"]?([^'"\s]+)['"]?\s*$/.exec(line);
-    if (listing && item?.[1]) found.push(item[1]);
-    else if (listing && /^ {4}\S/.test(line)) listing = false;
-  }
-  return found;
-}
-
-/** The direct dependencies of a pnpm lockfile's importers. */
-export function directPackages(lockfile: string | undefined) {
-  const found = new Set<string>();
-  if (!lockfile) return found;
-  let inImporters = false;
-  let inDependencies = false;
-  for (const line of lockfile.split('\n')) {
-    if (/^\S/.test(line)) {
-      inImporters = line.startsWith('importers:');
-      inDependencies = false;
-      continue;
-    }
-    if (!inImporters) continue;
-    if (/^ {4}(dependencies|devDependencies|optionalDependencies):\s*$/.test(line)) {
-      inDependencies = true;
-      continue;
-    }
-    if (/^ {4}\S/.test(line) || /^ {2}\S/.test(line)) {
-      inDependencies = false;
-      continue;
-    }
-    const name = /^ {6}'?([^':\s][^':]*)'?:\s*$/.exec(line)?.[1];
-    if (inDependencies && name) found.add(name);
-  }
-  return found;
 }

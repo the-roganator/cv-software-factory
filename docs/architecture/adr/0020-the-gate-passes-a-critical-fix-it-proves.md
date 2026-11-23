@@ -1,5 +1,7 @@
 # 0020: The review gate passes a Critical vulnerability's fix it can prove from the pull request, and holds every other update for Martin
 
+**Superseded by [ADR 0022](0022-the-gate-passes-exactly-the-scans-moves.md).** A fix in the app is one of the scan's moves, which its line makes and the gate passes as `move` or `major` when the pull request is exactly that move, and the autonomy level decides whether the line queues it; `critical-fix`, its scripts and the conditions below are gone. What follows is the decision as it was made.
+
 ## Decision
 
 In the app's repository, beside the exact pin and the untagged change (ADR 0014), the review gate passes, as `critical-fix`, a pull request of the factory's App's into `main`, from a branch in the repository, from the start and never retargeted, whose head no other pull request has had and whose branch no other comes from, that carries a dependency's change, when it can prove each of these from its two commits, and holds it for Martin with its `dependency-change` tag and the first reason it could not, otherwise (`scripts/critical-fix.ts`):

@@ -24,8 +24,12 @@
  *                                     user's cache)
  *     ATTACK_PORT                     the red-team harness's attack door, on a port of its own (github/attacks.ts);
  *                                     unset, it is not served
- *     PATCHING_PORT                   the dependency sense's door, on a port of its own: its two reads, and no
+ *     PATCHING_PORT                   the dependency sense's door, on a port of its own: its one read, and no
  *                                     action (server.ts's PATCHING_READS); unset, it is not served
+ *     PGHOST, PGDATABASE, PGUSER,     the store, as factory_github, which reads Martin's controls and nothing else:
+ *     PGPASSWORD                      the autonomy level and auto-merge decide which moves the pin queue adds
+ *                                     (level.ts). Without PGHOST it reads neither, and queues no move, as at
+ *                                     Supervised
  *     PIN_WATCH_ONLY                  the moves the pin watch takes, by name, separated by commas, or * for every
  *                                     one; unset or blank, it takes none, and opens, updates and closes nothing
  *     PORT                            default 8080
@@ -66,6 +70,8 @@ export interface GitHubConfig {
   patchingPort: number | undefined;
   /** The moves the pin watch takes (`PIN_WATCH_ONLY`): every one (`*`), those named, or, unset, none. */
   pinWatchOnly: PinScope;
+  /** Whether it reads the level and auto-merge from the store (`PGHOST` set); without it, it queues as at Supervised. */
+  readsLevel: boolean;
   port: number;
   host: string;
 }
@@ -121,6 +127,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     attackPort: env.ATTACK_PORT?.trim() ? Number(env.ATTACK_PORT) : undefined,
     patchingPort: env.PATCHING_PORT?.trim() ? Number(env.PATCHING_PORT) : undefined,
     pinWatchOnly: readPinScope(env.PIN_WATCH_ONLY),
+    readsLevel: Boolean(env.PGHOST?.trim()),
     port: Number(env.PORT ?? 8080),
     host: env.HOST || '127.0.0.1',
   };

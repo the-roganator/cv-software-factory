@@ -33,9 +33,7 @@ describe('Needs you’s moves, projected from the samples', () => {
   it('has a card for each move only Martin moves and each row the sense made, and for no other', () => {
     expect(needs.map((need) => [need.kind, need.name])).toEqual([
       ['issue', 'example-cd'],
-      ['approval', 'example-logs'],
       ['cluster', 'k3s'],
-      ['dependabot', 'example/sbom-tool'],
       ['unlisted-image', 'example/debug-shell:1.4'],
     ]);
   });
@@ -71,41 +69,12 @@ describe('Needs you’s moves, projected from the samples', () => {
     expect(restarted.map((need) => need.key)).toEqual(patchNeeds([readAt(sample().ts, day)]).map((need) => need.key));
   });
 
-  it('has a card for Dependabot’s move on a deadline once its pull request is open, and its row waits', () => {
-    const day = sample().payload;
-    const [first] = day.repositories;
-    const theirs = first?.moves.find((m) => !m.lockfile && m.deadline !== undefined);
-    if (!first || !theirs) throw new Error('the samples have no move on a deadline');
-    const dayWith = (move: typeof theirs): Day => ({
-      ...day,
-      repositories: [{ ...first, moves: [move] }, ...day.repositories.slice(1).map((r) => ({ ...r, moves: [] }))],
-      rows: [],
-    });
-    const open = {
-      ...theirs,
-      lane: 'dependabot' as const,
-      clears: { ...theirs.clears, high: 7 },
-      pullRequest: { number: 43, version: '1.57.1' },
-    };
-    const events = [readAt(sample().ts, dayWith(open))];
-    expect(patchNeeds(events)).toMatchObject([{ kind: 'dependabot', name: theirs.name, pull: 43 }]);
-    const view = patchingView(events, [], END);
-    if (view.state !== 'read') throw new Error('no day read');
-    expect(view.rows.filter((row) => row.waits).map((row) => row.key)).toEqual(patchNeeds(events).map((n) => n.key));
-    // With no pull request open there is nothing of his to approve yet, and with no deadline nothing presses.
-    const { pullRequest: _, ...unopened } = open;
-    expect(patchNeeds([readAt(sample().ts, dayWith(unopened))])).toEqual([]);
-    const { deadline: __, ...undated } = open;
-    expect(patchNeeds([readAt(sample().ts, dayWith(undated))])).toEqual([]);
-    // A routine move, which clears nothing at High or Critical, is no card.
-    const routine = { ...open, clears: { ...open.clears, critical: 0, high: 0 } };
-    expect(patchNeeds([readAt(sample().ts, dayWith(routine))])).toEqual([]);
-  });
-
   it('says only what the day gives: what it clears at High and Critical, its deadline, where a pod runs', () => {
-    const logs = needs.find((need) => need.name === 'example-logs');
-    expect(logs?.clears).toEqual({ critical: 1, high: 21 });
-    expect(logs?.deadline).toBe(Date.parse('2026-10-07T00:00:00.000Z'));
+    const k3s = needs.find((need) => need.name === 'k3s');
+    expect(k3s?.clears).toEqual({ critical: 0, high: 21 });
+    expect(k3s?.deadline).toBe(Date.parse('2026-10-11T04:16:00.000Z'));
+    // A major is no card: the autonomy level decides whether its pull request waits, and no event records that.
+    expect(needs.find((need) => need.name === 'example-logs')).toBeUndefined();
     const pod = needs.find((need) => need.kind === 'unlisted-image');
     expect(pod?.clears).toBeUndefined();
     expect(pod?.deadline).toBeUndefined();
@@ -113,14 +82,13 @@ describe('Needs you’s moves, projected from the samples', () => {
   });
 
   it('writes a target as the Patching row does, in its few characters', () => {
-    const logs = needs.find((need) => need.name === 'example-logs');
-    expect([logs?.from, logs?.to]).toEqual(['18.13.7', '21.1.1, a major']);
-    expect(needs.find((need) => need.name === 'k3s')?.to).toBe('v1.34.5+k3s1');
+    const k3s = needs.find((need) => need.name === 'k3s');
+    expect([k3s?.from, k3s?.to]).toEqual(['v1.34.4+k3s1', 'v1.34.5+k3s1']);
   });
 
   it('counts each in Needs you’s view, beside the holds', () => {
     const items = foldItems(SAMPLES);
-    expect(needsView(items, END, undefined, needs).patches).toHaveLength(5);
+    expect(needsView(items, END, undefined, needs).patches).toHaveLength(3);
     expect(needsView(items, END).patches).toEqual([]);
   });
 });
@@ -136,8 +104,6 @@ describe('Needs you’s moves, over the days', () => {
     ]);
     expect(needs.map((need) => [need.name, new Date(need.since).toISOString()])).toEqual([
       ['example-cd', '2026-10-05T04:20:00.000Z'],
-      ['example-logs', '2026-10-05T04:20:00.000Z'],
-      ['example/sbom-tool', '2026-10-05T04:20:00.000Z'],
       ['k3s', '2026-10-06T04:20:00.000Z'],
       ['example/debug-shell:1.4', '2026-10-06T04:20:00.000Z'],
     ]);
@@ -165,7 +131,7 @@ describe('Needs you’s moves, over the days', () => {
       readAt('2026-10-05T04:20:00.000Z', failed),
       readAt('2026-10-06T04:20:00.000Z', day),
     ]);
-    expect(needs).toHaveLength(5);
+    expect(needs).toHaveLength(3);
     expect(needs.every((need) => need.since === Date.parse('2026-10-04T04:20:00.000Z'))).toBe(true);
     // The last day judged nothing: its cards are the day before's, not none, with their waits unbroken.
     const last = patchNeeds([readAt('2026-10-04T04:20:00.000Z', day), readAt('2026-10-05T04:20:00.000Z', failed)]);
@@ -195,7 +161,7 @@ describe('Needs you’s moves, over the days', () => {
       rows: [],
       repositories: day.repositories.map((r) => ({
         ...r,
-        moves: r.moves.filter((m) => !['approval', 'cluster', 'issue', 'dependabot'].includes(m.lane)),
+        moves: r.moves.filter((m) => !['cluster', 'issue'].includes(m.lane)),
       })),
     };
     expect(patchNeeds([readAt('2026-10-06T04:20:00.000Z', quiet)])).toEqual([]);

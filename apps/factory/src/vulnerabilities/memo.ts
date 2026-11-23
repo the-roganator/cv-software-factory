@@ -102,6 +102,7 @@ export function memoised(
         sources.toolReleases(tool),
       ),
     k3s: (release) => once(`k3s ${release}`, () => sources.k3s(release)),
+    node: (image, digest) => once(`node ${image}@${digest}`, () => sources.node(image, digest)),
   };
 }
 

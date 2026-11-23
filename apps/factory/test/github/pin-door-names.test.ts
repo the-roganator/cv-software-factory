@@ -7,14 +7,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { readPinScope } from '../../src/github/pins.ts';
 import { worker } from './pin-worker-harness6.ts';
-import { day, FakeRepo, FILES, factoryMoves, writes } from './pins-harness.ts';
+import { day, FakeRepo, FILES, factoryMoves, pinBranchOf, writes } from './pins-harness.ts';
 
 const closing: (() => void)[] = [];
 afterEach(() => {
   for (const close of closing.splice(0)) close();
 });
 
-const A = 'factory/pin/example-dashboards';
+const A = pinBranchOf('example-dashboards');
 const tail = 'example-dashboards';
 
 /** Each a name some layer could read as `factory/pin/example-dashboards`. */

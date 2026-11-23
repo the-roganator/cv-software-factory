@@ -263,7 +263,7 @@ export const PUBLIC_VIEWS = {
   // redactor.
   'improvement.requested': redacted,
   // The day's moves are public, as the scan's log is, but a lockfile's move's package, which its alerts name and the
-  // log does not: it shows once a pull request moving it is open, which names it anyway.
+  // log does not.
   'patching.read': ({ payload, ...event }) =>
     redacted({
       ...event,
@@ -271,9 +271,7 @@ export const PUBLIC_VIEWS = {
         ...payload,
         repositories: payload.repositories.map((day) => ({
           ...day,
-          moves: day.moves.map(({ package: withheld, ...move }) =>
-            withheld && move.pullRequest ? { ...move, package: withheld } : move,
-          ),
+          moves: day.moves.map(({ package: _withheld, ...move }) => move),
         })),
       },
     }),

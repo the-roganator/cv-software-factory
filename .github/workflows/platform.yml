@@ -81,7 +81,10 @@ jobs:
     # `kind` failing runs everything.
     if: ${{ !cancelled() && (needs.which.result != 'success' || (needs.which.outputs.platform != 'none' && needs.which.outputs.platform != 'matched')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # GitHub's service ends the job at this limit even when its runner has stopped answering, closing it 5 to 10 minutes
+    # later; `Make the cluster`'s own limit, below, ends a cluster that hangs sooner, as a failure, while the runner still
+    # answers. A healthy job takes 5 to 10 minutes, and one whose cluster did not come up about 15 to 17.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -94,10 +97,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The merge queue deletes an entry's branch when it ejects or removes it, and nothing cancels the runs on it: this
-      # stops the job, `make up` and the watch below included, once that branch is gone and the entry did not merge
-      # (scripts/queue-branch-gone.sh). A watcher of the whole job rather than a question in the watch's loop, so the
-      # steps after `make up` stop too.
+      # The merge queue deletes an entry's branch when it ejects or removes it, or makes its group again, and nothing
+      # cancels the runs on it: this stops the job, `make up` and the watch below included, once the entry's own record
+      # says it left the queue, or the queue made its group again (scripts/queue-branch-gone.sh). A watcher of the whole
+      # job rather than a question in the watch's loop, so the steps after `make up` stop too.
       - name: Stop if the merge queue lets this entry go
         env:
           QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
@@ -129,26 +132,64 @@ jobs:
       # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
       # any kind would have it try: the GitHub worker, given one, acts as the App and polls GitHub each pass, and
       # Alertmanager, given Pushover's, sends each alert with a level that fires while the cluster comes up.
-      # scripts/platform-watch.sh watches it, and stops it at the 20-minute ceiling, or sooner on what waiting will not
-      # mend: an Application Argo CD cannot render, or one Degraded for five minutes.
+      # scripts/platform-watch.sh watches it, and stops it at the 12-minute ceiling, or sooner on what waiting will not
+      # mend: an Application Argo CD cannot render, or one Degraded for five minutes. A healthy cluster comes up in 4 to
+      # 8. The step's own limit, 15 minutes, ends one whose watch is stuck too: a hosted runner can hang with the Argo CD
+      # install's hook pod never pulling its image, its watch stuck short of the ceiling. The runner times the step and
+      # ends it as a failure, so the merge queue's and the GitHub worker's recoveries start then.
       - name: Make the cluster
+        id: make
+        timeout-minutes: 15
         env:
           REVISION: ${{ github.sha }}
         run: |
           unset TYPESAFE_API_KEY ANTHROPIC_API_KEY GITHUB_APP_PRIVATE_KEY PUSHOVER_APP_TOKEN PUSHOVER_USER_KEY
-          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 K3D_REGISTRIES=deploy/k3d/ci-registries.yaml SYNC_TIMEOUT=20m TIMEOUT=1200 &
+          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 K3D_REGISTRIES=deploy/k3d/ci-registries.yaml SYNC_TIMEOUT=12m TIMEOUT=720 \
+            > >(tee "$RUNNER_TEMP/measure/make.log") 2>&1 &
           make=$!
           # make has a session of its own, so a cancelled step stops it here.
           trap 'kill -- "-$make" 2>/dev/null' TERM INT
-          if ! WATCHED=$make scripts/platform-watch.sh; then
+          # Why it stopped, with the runner's figures, said now, while the runner is alive, for the next step's name.
+          fault() {
+            local line
+            line=$(scripts/platform-fault.sh "$1" "$RUNNER_TEMP/measure")
+            echo "$line"
+            echo "PLATFORM_FAULT=$line" >> "$GITHUB_ENV"
+            printf '## Why the cluster did not come up\n\n%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
+          }
+          if ! WATCHED=$make scripts/platform-watch.sh | tee "$RUNNER_TEMP/measure/watch.log"; then
             kill -- "-$make" 2>/dev/null || true
             wait "$make" || true
             # Stopped because the merge queue let the entry go (its notice is above): no fault of the cluster's.
             [ ! -e "$RUNNER_TEMP/queue-gone" ] || exit 1
+            fault watch
             echo "::error::The cluster did not come up: the watch's first line above says why, and the lines after it what it waited on."
             exit 1
           fi
-          wait "$make"
+          wait "$make" || { status=$?; fault "make $status"; exit "$status"; }
+      # Why the cluster did not come up, in this step's name. A hosted runner has died after `make up` failed (the Argo
+      # CD install's five minutes run out with its hook's pod never started), and a dead runner keeps no log, annotation,
+      # step summary or artifact not yet uploaded; GitHub keeps each step's name, state and times, which the runner sends
+      # as the step starts. A runner that lives says it in the log, the summary and the `cluster` artifact as well.
+      # A stop while the cluster hangs (the step's own time limit, the job's, or a cancel) gives `Make the cluster`
+      # seconds, too few for the figures, so the step after it takes them, unless the merge queue let the entry go. After
+      # the step's own limit it says so first, for the `cluster` artifact to be skipped.
+      - name: Why it was stopped
+        if: ${{ (cancelled() || steps.make.outcome == 'failure') && env.PLATFORM_FAULT == '' }}
+        timeout-minutes: 2
+        env:
+          # A failure that said no fault is the step's time limit: every other way it fails says one.
+          WHY: ${{ steps.make.outcome == 'failure' && 'timed out' || 'cancelled' }}
+        run: |
+          [ ! -e "$RUNNER_TEMP/queue-gone" ] || exit 0
+          [ "$WHY" != 'timed out' ] || echo "PLATFORM_TIMED_OUT=true" >> "$GITHUB_ENV"
+          line=$(scripts/platform-fault.sh "$WHY" "$RUNNER_TEMP/measure")
+          echo "$line"
+          echo "PLATFORM_FAULT=$line" >> "$GITHUB_ENV"
+          printf '## Why the cluster did not come up\n\n%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
+      - name: "Why: ${{ env.PLATFORM_FAULT }}"
+        if: ${{ (failure() || cancelled()) && env.PLATFORM_FAULT != '' }}
+        run: echo "$PLATFORM_FAULT"
       # Every Application Synced, and Healthy but the website's, whose health is its release's, and root's, which rolls
       # the website's up: `make up` has waited for the website to settle, and for everything else root deploys to be
       # Healthy (scripts/wait-deployed.sh), so a canary in flight on the app's main holds no change here.
@@ -185,6 +226,7 @@ jobs:
       - name: Take the API versions
         run: node scripts/api-versions.ts take "$RUNNER_TEMP/records/api-versions.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         with:
           name: refusal-records
           path: ${{ runner.temp }}/records
@@ -203,6 +245,7 @@ jobs:
       # pull, in the log and the step summary (scripts/platform-timeline.sh).
       - name: Where the time went
         if: ${{ always() }}
+        timeout-minutes: 5
         env:
           KUBECTL: kubectl --context k3d-software-factory
         run: |
@@ -211,10 +254,13 @@ jobs:
       # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}
+        timeout-minutes: 5
         run: |
-          # A run the merge queue let go shows nothing worth reading.
-          if [ -e "$RUNNER_TEMP/queue-gone" ]; then echo "The merge queue let this entry go: nothing to show."; exit 0; fi
+          # A run the merge queue let go shows nothing worth reading but why the watch stopped it, and uploads nothing.
+          if [ -e "$RUNNER_TEMP/queue-gone" ]; then echo "QUEUE_GONE=true" >> "$GITHUB_ENV"; echo "The merge queue let this entry go: the watch's log says why."; cat "$RUNNER_TEMP/queue-watch.log"; exit 0; fi
           exec > >(tee "$RUNNER_TEMP/measure/cluster.txt") 2>&1
+          echo "--- The merge queue's watch (none outside the queue)"
+          cat "$RUNNER_TEMP/queue-watch.log" 2>/dev/null || true
           echo "Peak memory in use: $(sort -n "$RUNNER_TEMP/measure/memory" | tail -1) MiB"
           df -h / | tail -1
           docker system df || true
@@ -256,12 +302,16 @@ jobs:
             grep -E '^alertmanager_notification(s|_requests)(_failed)?_total' | grep -v ' 0$' || true
           echo "--- Alertmanager's log"
           kubectl --context k3d-software-factory -n telemetry logs statefulset/prometheus-alertmanager -c alertmanager --tail=40 || true
-      # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states, the
+      # On every outcome but success, cancellation included, but a run the merge queue let go, which made nothing worth
+      # reading (the step above prints the watch's log), so its job ends at once, or one stopped by `Make the
+      # cluster`'s own limit: in the hangs seen, the runner stopped answering in this upload, past its five minutes, and
+      # the job waited for its own limit. It holds Argo CD's, the pods' and the events' states, the
       # runner's figures, every failed pod's log and Postgres's, and each pod the end found not running: its description, which shows an env value a manifest
       # writes and only the name of a Secret another is read from, and its logs. No Secret is read, and the cluster
       # holds no key: its passwords and keys are made on the runner, and go with it.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ failure() || cancelled() }}
+        if: ${{ (failure() || cancelled()) && env.QUEUE_GONE != 'true' && env.PLATFORM_TIMED_OUT != 'true' }}
+        timeout-minutes: 5
         with:
           name: cluster
           path: ${{ runner.temp }}/measure

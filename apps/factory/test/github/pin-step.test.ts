@@ -22,6 +22,9 @@ const FILES: Record<string, string> = {
   'pnpm-workspace.yaml': 'trustPolicy: no-downgrade\n',
   'src/money.ts': 'export const pence = 1;\n',
   'tools/seed.Dockerfile': `FROM node:24.22.1-alpine3.24@sha256:${'b'.repeat(64)}\n`,
+  'deploy/images/syft/Dockerfile': `# Syft's one pin.\nFROM ghcr.io/anchore/syft:v1.54.0@sha256:${'b'.repeat(64)}\n`,
+  'deploy/base/rollout.yaml': `        image: ghcr.io/example/shop:1.0.0@sha256:${'b'.repeat(64)}\n`,
+  '.github/images/scanner/Dockerfile': `FROM example/scanner:1.0.0@sha256:${'b'.repeat(64)}\n`,
 };
 
 /** A unified diff of one line of a file, as `git diff` writes one. */
@@ -147,6 +150,35 @@ describe('the pin step’s patches, as the GitHub worker guards them', () => {
     const added =
       'diff --git a/.npmrc b/.npmrc\nnew file mode 100644\n--- /dev/null\n+++ b/.npmrc\n@@ -0,0 +1 @@\n+x=1\n';
     await expect(worker().apply({ patch: FIX, pins: added })).rejects.toThrow(/never writes it/);
+  });
+
+  it('may move a Dockerfile’s FROM under deploy/, as Syft’s, and nothing else of the deployment or the workflows (test 12)', async () => {
+    const { apply, records } = worker();
+    const syft = lineChange(
+      'deploy/images/syft/Dockerfile',
+      `FROM ghcr.io/anchore/syft:v1.54.0@sha256:${'b'.repeat(64)}`,
+      `FROM ghcr.io/anchore/syft:v1.57.2@sha256:${'c'.repeat(64)}`,
+    );
+    await apply({ patch: '', pins: syft });
+    expect(records.at(-1)?.args.changes.additions.map((a) => a.path)).toEqual(['deploy/images/syft/Dockerfile']);
+    const rollout = lineChange(
+      'deploy/base/rollout.yaml',
+      `        image: ghcr.io/example/shop:1.0.0@sha256:${'b'.repeat(64)}`,
+      `        image: ghcr.io/example/shop:1.0.1@sha256:${'c'.repeat(64)}`,
+    );
+    await expect(worker().apply({ patch: '', pins: rollout })).rejects.toThrow(
+      /rollout\.yaml: the pin step never writes it/,
+    );
+    const workflow = lineChange(
+      '.github/images/scanner/Dockerfile',
+      `FROM example/scanner:1.0.0@sha256:${'b'.repeat(64)}`,
+      `FROM example/scanner:1.0.1@sha256:${'c'.repeat(64)}`,
+    );
+    await expect(worker().apply({ patch: '', pins: workflow })).rejects.toThrow(
+      /Dockerfile: the pin step never writes it/,
+    );
+    // An agent's patch may write no part of the deployment, a Dockerfile there or not.
+    await expect(worker().apply({ patch: syft })).rejects.toThrow(/which no patch may/);
   });
 
   it('refuses a lockfile written after the agent that is anything but pnpm’s lockfile', async () => {

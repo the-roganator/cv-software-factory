@@ -7,9 +7,9 @@ import {
   definite,
   judge,
   MARTIN,
+  type MoveAnswer,
   momentary,
   PIN_BACKOFF_MS,
-  type PinMoveAnswer,
   type PullRequest,
   QUEUE_BRANCH,
   type Review,
@@ -23,6 +23,7 @@ import {
   together,
   unsigned,
   verdict,
+  writeAnswers,
 } from './review-gate.ts';
 import { APP_REPO, FACTORY_APP } from './review-routing.ts';
 
@@ -394,14 +395,13 @@ describe("the review gate's workflows", () => {
     // workflow_run runs the workflow as main has it; pull_request would run the change's copy. GitHub's default event
     // policy blocks pull_request_target in public repositories.
     expect(triggers(gate)).toEqual(['workflow_call', 'workflow_run']);
-    // And after check.yml and platform.yml, so a pin move that waited for the job running its pin is judged again.
-    expect(gate).toMatch(/workflow_run:\n(?: {4}# [^\n]*\n)+ {4}workflows: \[pull request, check, platform\]\n/);
+    // After pull request alone: a verdict waits for no other workflow's run.
+    expect(gate).toMatch(/workflow_run:\n {4}workflows: \[pull request\]\n/);
     // Which workflow asked is the event's `workflow`: `workflow_run.name` is that run's title, which run-name sets.
     expect(gate).not.toMatch(/workflow_run\.name/);
-    expect(gate.match(/github\.event\.workflow\.name != 'platform'/g)).toHaveLength(2);
-    // The pin move job reads, and holds no secret: which workflow made a check run is an Actions read.
+    // The move job reads, and holds no secret: the scan's moves are an Actions read.
     expect(gate).toMatch(
-      /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n(?: {6}# [^\n]*\n)? {6}actions: read\n {4}outputs:/m,
+      /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n(?: {6}# [^\n]*\n)? {6}actions: read\n {4}outputs:/m,
     );
     expect(requested).toMatch(/^name: pull request$/m);
     // The key is in an environment only main may use: a pull request into another branch runs that branch's copy.
@@ -415,10 +415,10 @@ describe("the review gate's workflows", () => {
     // Its job reads this repository, to check out the gate, and pull requests; it writes nothing with its own token.
     // And test integrity's check run, which low-risk needs.
     expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {4}env:/m);
-    // Each checkout is this workflow's own commit, main's, and never the pull request's: the gate's, and the pin move
-    // and critical fix jobs', which hold no secret (scripts/workflows.test.ts).
-    expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(3);
-    expect(gate.match(/ref: \$\{\{ job\.workflow_sha \}\}\n/g)).toHaveLength(3);
+    // Each checkout is this workflow's own commit, main's, and never the pull request's: the gate's, and the move
+    // job's, which holds no secret (scripts/workflows.test.ts).
+    expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(2);
+    expect(gate.match(/ref: \$\{\{ job\.workflow_sha \}\}\n/g)).toHaveLength(2);
     // Nothing the pull request's author writes reaches a step: its branch names only the concurrency group.
     const steps = gate.slice(gate.indexOf('\njobs:\n'));
     expect(steps).not.toMatch(/github\.event\.(pull_request|workflow_run)\.(head|title|body|user)|github\.head_ref/);
@@ -428,7 +428,7 @@ describe("the review gate's workflows", () => {
     // A called workflow's `vars` are its caller's; only an admin of that repository can set one.
     expect(gate).toContain(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, as the workflow holds it
-      '          AUTONOMY: ${{ vars.AUTONOMY }}\n          PIN_MOVES: ${{ needs.pin-move.outputs.answers }}\n          CRITICAL_FIXES: ${{ needs.critical-fix.outputs.answers }}\n        run: node scripts/review-gate.ts\n',
+      '          AUTONOMY: ${{ vars.AUTONOMY }}\n          MOVES: ${{ needs.move.outputs.answers }}\n        run: node scripts/review-gate.ts\n',
     );
     expect(gate).not.toMatch(/inputs/);
     // The gate's modules, and nothing of the pull request's, from main's sparse checkout; cosign for an exact pin.
@@ -661,133 +661,97 @@ describe('judging a pull request through the API', () => {
     expect(await said([judgedFor(9)])).toMatchObject({ pass: true, rule: 'low-risk' });
   });
 
-  describe("a pin move, taken from the pin move job's answers", () => {
+  describe("a move, taken from the move job's answers", () => {
     const FACTORY = 'the-roganator/cv-software-factory';
     const here: PullRequest = {
       ...theirs,
-      head: { ...theirs.head, ref: 'factory/pin/zap', repo: { full_name: FACTORY } },
+      head: { ...theirs.head, ref: 'factory/pin/prometheus', repo: { full_name: FACTORY } },
       base: { ref: 'main', repo: { full_name: FACTORY } },
     };
-    const zap = [{ filename: 'apps/console/zap/scan.ts', status: 'modified', patch: '-a\n+b' }];
-    const title = 'A pin move of ghcr.io/zaproxy/zaproxy to 2.17.0, forward on its line';
-    const taking = (answers: Map<string, PinMoveAnswer> | undefined) => ({
+    const files = [{ filename: 'deploy/base/telemetry/prometheus.yaml', status: 'modified', patch: '-a\n+b' }];
+    const title = 'The scan’s move of prometheus to 29.47.2, made by the gate on main and the same as the pull request';
+    const taking = (answers: Map<string, MoveAnswer> | undefined, repo = FACTORY) => ({
       ...run,
-      repo: FACTORY,
+      repo,
       moves: { kind: 'take' as const, answers },
     });
 
-    it('passes the App’s pull request here on its answer at its head, and holds it on any other', async () => {
-      github({ '/pulls/9/files': zap });
-      const passed = await judge(taking(new Map([[`9@${HEAD}`, { title }]])), here);
-      expect(passed).toMatchObject({ pass: true, rule: 'pin-move', title });
+    it('passes on its answer at its head, in either repository, and holds on any other', async () => {
+      github({ '/pulls/9/files': files });
+      const passed = await judge(taking(new Map([[`9@${HEAD}`, { rule: 'move', title }]])), here);
+      expect(passed).toMatchObject({ pass: true, rule: 'move', title });
+      const major = await judge(taking(new Map([[`9@${HEAD}`, { rule: 'major', title }]])), here);
+      expect(major).toMatchObject({ pass: true, rule: 'major' });
+      const lock = [{ filename: 'pnpm-lock.yaml', status: 'modified', patch: '-a\n+b' }];
+      github({ '/pulls/9/files': lock });
+      const app = await judge(
+        taking(new Map([[`9@${HEAD}`, { rule: 'move', title }]]), theirs.base.repo.full_name),
+        theirs,
+      );
+      expect(app).toMatchObject({ pass: true, rule: 'move', tags: [{ tag: 'dependency-change' }] });
+      github({ '/pulls/9/files': files });
       const held = await judge(taking(new Map([[`9@${HEAD}`, { reason: 'a move backwards' }]])), here);
       expect(held).toMatchObject({ pass: false, rule: 'held' });
-      expect(held.title).toContain('nor a pin move: a move backwards');
-      // An answer for another head, or none at all, is no answer.
-      const stale = await judge(taking(new Map([[`9@${EARLIER}`, { title }]])), here);
-      expect(stale.title).toContain(`the pin move job gave no answer for #9 at ${HEAD.slice(0, 7)}`);
+      expect(held.title).toContain('nor a move: a move backwards');
+      // An answer for another head is a wait for the run the push started, never a verdict on this head; none at all
+      // is no move.
+      const stale = await judge(taking(new Map([[`9@${EARLIER}`, { rule: 'move', title }]])), here);
+      const why = `the move job did not judge #9 at ${HEAD.slice(0, 7)}, which the run its push started judges`;
+      expect(stale).toMatchObject({ pass: false, rule: 'held', pending: why });
+      expect(stale.title).toContain(`Not judged yet: ${why}`);
+      expect(stale.title).not.toContain('nor a move');
       expect((await judge(taking(undefined), here)).title).toContain('gave the gate no answers it could read');
-      // Retargeted since: the answer was proved against main, so it is not this pull request's.
       const elsewhere = { ...here, base: { ...here.base, ref: 'feat/below' } };
-      expect((await judge(taking(new Map([[`9@${HEAD}`, { title }]])), elsewhere)).title).toContain(
-        'it is into feat/below, and a pin move is judged into main alone',
+      expect((await judge(taking(new Map([[`9@${HEAD}`, { rule: 'move', title }]])), elsewhere)).title).toContain(
+        'it is into feat/below, and a move is judged into main alone',
       );
-      // Nor is a run that says nothing of where its answers come from.
-      expect((await judge({ ...run, repo: FACTORY }, here)).title).toContain('gave the gate no answers');
+    });
+
+    it('passes anyone’s from a branch here', async () => {
+      github({ '/pulls/9/files': files });
+      const answers = new Map<string, MoveAnswer>([[`9@${HEAD}`, { rule: 'move', title }]]);
+      expect(await judge(taking(answers), { ...here, user: { id: 42 } })).toMatchObject({ pass: true, rule: 'move' });
     });
 
     it('holds on the reader’s own words when it throws, rather than reading the pull request as unread', async () => {
-      github({ '/pulls/9/files': zap });
+      github({ '/pulls/9/files': files });
       const throwing = {
         ...run,
         repo: FACTORY,
         moves: {
           kind: 'read' as const,
           read: async () => {
-            throw new Error("EACCES, Permission denied: '/home/runner/work/_temp/pin-move-x'");
+            throw new Error('git could not fetch');
           },
         },
       };
       const said = await judge(throwing, here);
       expect(said).toMatchObject({ pass: false, rule: 'held' });
-      expect(said.title).toContain(
-        "nor a pin move: the pin move job could not work it out (EACCES, Permission denied: '/home/runner/work/_temp/pin-move-x')",
-      );
+      expect(said.title).toContain('nor a move: the move job could not work it out (git could not fetch)');
       expect(said.title).not.toContain('could not read the pull request whole');
     });
 
-    it('never takes one for someone else’s pull request, or in the app’s repository', async () => {
-      github({ '/pulls/9/files': zap });
-      const answers = new Map([[`9@${HEAD}`, { title }]]);
-      expect(await judge(taking(answers), { ...here, user: { id: 42 } })).toMatchObject({ pass: false });
-      const there = await judge({ ...run, moves: { kind: 'take', answers } }, theirs);
-      expect(there.rule).not.toBe('pin-move');
-    });
-
-    it('reads only answers that are whole: each `<number>@<head>` to a title or a reason, in words', () => {
-      const good = JSON.stringify({ [`9@${HEAD}`]: { title }, [`10@${EARLIER}`]: { reason: 'no' } });
-      expect(readAnswers(good)).toEqual(
-        new Map<string, PinMoveAnswer>([
-          [`9@${HEAD}`, { title }],
-          [`10@${EARLIER}`, { reason: 'no' }],
-        ]),
-      );
+    it('reads only answers that are whole, as the job writes them', () => {
+      const answers = new Map<string, MoveAnswer>([
+        [`9@${HEAD}`, { rule: 'move', title }],
+        [`10@${EARLIER}`, { rule: 'major', title }],
+        [`11@${HEAD}`, { reason: 'no' }],
+        [`12@${HEAD}`, { none: 'none' }],
+      ]);
+      expect(readAnswers(writeAnswers(answers))).toEqual(answers);
       expect(readAnswers('{}')).toEqual(new Map());
       for (const bad of [
         '',
         'not json',
         '[]',
-        JSON.stringify({ '9': { title } }),
-        JSON.stringify({ [`9@${HEAD}`]: { title, reason: 'x' } }),
-        JSON.stringify({ [`9@${HEAD}`]: { pass: true } }),
-        JSON.stringify({ [`9@${HEAD}`]: { title: '' } }),
-        JSON.stringify({ [`9@${HEAD}`]: { title: 'x'.repeat(1001) } }),
+        JSON.stringify({ '9': { move: title } }),
+        JSON.stringify({ [`9@${HEAD}`]: { move: title, reason: 'x' } }),
+        JSON.stringify({ [`9@${HEAD}`]: { title } }),
+        JSON.stringify({ [`9@${HEAD}`]: { rule: 'move', title } }),
+        JSON.stringify({ [`9@${HEAD}`]: { move: '' } }),
+        JSON.stringify({ [`9@${HEAD}`]: { move: 'x'.repeat(1001) } }),
       ])
         expect(readAnswers(bad), bad).toBeUndefined();
-    });
-  });
-
-  describe("a Critical fix, taken from the critical fix job's answers", () => {
-    const lock = [{ filename: 'pnpm-lock.yaml', status: 'modified', patch: '-a\n+b' }];
-    const title = "A Critical vulnerability's fix: protobufjs's CVE-2026-1 gone from pnpm-lock.yaml";
-    const taking = (answers: Map<string, PinMoveAnswer> | undefined) => ({
-      ...run,
-      fixes: { kind: 'take' as const, answers },
-    });
-
-    it('passes the App’s dependency change in the app on its answer at its head, and holds it on any other', async () => {
-      github({ '/pulls/9/files': lock });
-      expect(await judge(taking(new Map([[`9@${HEAD}`, { title }]])), theirs)).toMatchObject({
-        pass: true,
-        rule: 'critical-fix',
-        title,
-      });
-      const held = await judge(taking(new Map([[`9@${HEAD}`, { reason: 'a group' }]])), theirs);
-      expect(held).toMatchObject({ pass: false, rule: 'held', tags: [{ tag: 'dependency-change' }] });
-      expect(held.title).toContain('not a critical fix: a group');
-      // A head pushed after the answer, or none at all, is no answer.
-      const stale = await judge(taking(new Map([[`9@${EARLIER}`, { title }]])), theirs);
-      expect(stale.title).toContain(`the critical fix job gave no answer for #9 at ${HEAD.slice(0, 7)}`);
-      expect((await judge(run, theirs)).title).toContain('the critical fix job gave the gate no answers it could read');
-      const below = { ...theirs, base: { ...theirs.base, ref: 'feat/below' } };
-      expect((await judge(taking(new Map([[`9@${HEAD}`, { title }]])), below)).title).toContain(
-        'a critical fix is judged into main alone',
-      );
-    });
-
-    it('never asks for one for an untagged change, someone else’s pull request, or in this repository', async () => {
-      const answers = new Map([[`9@${HEAD}`, { title }]]);
-      github({ '/pulls/9/files': [{ filename: 'src/a.ts', status: 'modified', patch: '-a\n+b' }] });
-      expect(await judge(taking(answers), theirs)).toMatchObject({ rule: 'low-risk' });
-      github({ '/pulls/9/files': lock });
-      expect(await judge(taking(answers), { ...theirs, user: { id: 42 } })).toMatchObject({ pass: false });
-      const FACTORY = 'the-roganator/cv-software-factory';
-      const here = {
-        ...theirs,
-        head: { ...theirs.head, repo: { full_name: FACTORY } },
-        base: { ...theirs.base, repo: { full_name: FACTORY } },
-      };
-      expect((await judge({ ...taking(answers), repo: FACTORY }, here)).rule).not.toBe('critical-fix');
     });
   });
 

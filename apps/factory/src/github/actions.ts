@@ -15,7 +15,8 @@
  * Both refuse to move, delete or commit to a branch the factory does not own (`branches.ts`), and to act on an issue
  * or pull request the App did not open (`issues.ts`), whatever they are asked: only opening one takes none. A pin
  * watch's branch is written by `commitPins` alone, whose guard (`pin-guard.ts`) lets a commit replace the version or
- * digest at each pin and nothing else; every other action that writes a branch refuses one.
+ * digest at each pin, and write what a move writes in the files the scan's pin step made, and nothing else; every other
+ * action that writes a branch refuses one.
  *
  * A pull request's description is where test integrity reads the tests its spec contradicts (`gates/contradicts.ts`).
  * Only the worker writes that section, rendered from the list the line gives it (`contradicts`), replacing any the
@@ -27,7 +28,7 @@ import type { ArtifactStore } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { type Contradicted, render, strip } from '../gates/contradicts.ts';
-import { guardBranch, guardWritable } from './branches.ts';
+import { guardBranch, guardWritable, pinBranch } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import {
   carriesIn,
@@ -36,6 +37,7 @@ import {
   DeployRefused,
   deployTarget,
   deployTitle,
+  scratchBranch,
   withCarries,
 } from './deploys.ts';
 import { type IssueAction, IssueGuard, openedBy } from './issues.ts';
@@ -51,7 +53,7 @@ import {
   pinStepRefusals,
   protectedFrom,
 } from './paths.ts';
-import { type PinCommit, type PinSource, pinChanges, pinNextBranch, treeSource } from './pin-guard.ts';
+import { guardPinBranch, type PinCommit, type PinSource, pinChanges, pinNextBranch, treeSource } from './pin-guard.ts';
 import { RefusalRecorder } from './refusals.ts';
 
 /** How the App appears as a pull request's author, and as whoever merged one or added it to the merge queue. */
@@ -298,9 +300,10 @@ export interface Actions {
   /** Applies a runner's patch to the files at the branch's head, outside the sandbox, and commits it. */
   applyPatch(repo: string, patch: PatchCommit): Promise<string>;
   /**
-   * Commits a pin move on `main`'s head and moves its branch, `factory/pin/<move>`, to the commit, in one forced update
+   * Commits a pin move on `main`'s head and moves its branch, `factory/pin/<files>`, to the commit, in one forced update
    * from a branch of its own, so an open pull request on it never has nothing to merge; returns the commit. Its guard
-   * (`pin-guard.ts`) reads each pin from the repository and refuses anything but a version or digest replaced at a pin.
+   * (`pin-guard.ts`) reads each pin from the repository and refuses anything but a version or digest replaced at a pin,
+   * and, in a file the scan's pin step wrote, anything but what a move writes there.
    */
   commitPins(repo: string, commit: PinCommit): Promise<string>;
   openPullRequest(repo: string, draft: PullRequestDraft): Promise<PullRequestRef>;
@@ -366,6 +369,34 @@ export interface Actions {
    * fork, from a branch the factory does not own, or from a red-team attack's.
    */
   enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued>;
+  /**
+   * Writes a watch's commit again, so that GitHub runs a pull request's checks again on a new head: the commit at
+   * `head`, the branch's head now, made once more on its one parent with the same tree, its message the same but for
+   * its `Checks-run:` line, which says `run` (`withChecksRun`). Only on a pin move's branch or a deploy branch, and
+   * only when the tree it makes is the head's: it writes nothing the branch did not already hold.
+   */
+  commitAgain(repo: string, branch: string, head: string, run: number): Promise<string>;
+}
+
+/** The line a commit written again carries, saying which run of its pull request's checks it is for. */
+const CHECKS_RUN = /^Checks-run: (\d+)$/m;
+
+/** Which run of its checks a commit is for, by its `Checks-run:` line: 1 for a commit with none. */
+export function checksRunOf(message: string): number {
+  const run = Number(CHECKS_RUN.exec(message)?.[1] ?? 1);
+  return Number.isSafeInteger(run) && run >= 1 ? run : 1;
+}
+
+/**
+ * A commit's message for a run of its checks: its `Checks-run:` line replaced where it has one, or a paragraph of its
+ * own after the first line where it has none, so every other line is as it was.
+ */
+export function withChecksRun(message: string, run: number): string {
+  const line = `Checks-run: ${run}`;
+  if (CHECKS_RUN.test(message)) return message.replace(CHECKS_RUN, line);
+  const [headline = '', ...rest] = message.split('\n');
+  const body = rest.join('\n').trim();
+  return body ? `${headline}\n\n${line}\n\n${body}` : `${headline}\n\n${line}`;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -853,7 +884,81 @@ export class LiveActions implements Actions {
     const entry = answer.enqueuePullRequest.mergeQueueEntry;
     return { position: entry?.position ?? null, state: entry?.state ?? null };
   }
+
+  async commitAgain(repo: string, branch: string, head: string, run: number): Promise<string> {
+    const side = againSide(repo, branch);
+    const at = await this.#github.read(repo, `/repos/${repo}/git/ref/heads/${branch}`, REF);
+    if (at.object.sha !== head) throw branchMoved(branch, at.object.sha, head);
+    const made = await this.#github.read(repo, `/repos/${repo}/commits/${head}`, COMMIT_AGAIN);
+    const [parent, ...more] = made.parents;
+    if (!parent || more.length) throw new PatchRefused('unsupported', `${head.slice(0, 7)} is not one commit on one.`);
+    // Each file the commit changes, as it has it: the same changes on the same parent make the same tree.
+    const changes: Commit['changes'] = { additions: [], deletions: [] };
+    for (const file of made.files) {
+      if (file.status === 'removed') changes.deletions.push(file.filename);
+      else {
+        if (file.status === 'renamed' && file.previous_filename) changes.deletions.push(file.previous_filename);
+        const blob = await this.#github.read(repo, `/repos/${repo}/git/blobs/${file.sha}`, BLOB);
+        changes.additions.push({ path: file.filename, contents: Buffer.from(blob.content, 'base64') });
+      }
+    }
+    await this.#setBranch(repo, side, parent.sha, { force: true });
+    try {
+      const sha = await this.#commit(repo, {
+        branch: side,
+        expectedHead: parent.sha,
+        message: withChecksRun(made.commit.message, run),
+        changes,
+      });
+      const again = await this.#github.read(repo, `/repos/${repo}/git/commits/${sha}`, TREE);
+      if (again.tree.sha !== made.commit.tree.sha) {
+        throw new PatchRefused('does-not-apply', `${head.slice(0, 7)} made again is not the same tree.`);
+      }
+      // Read again just before it moves: a branch the watch wrote meanwhile is the watch's.
+      const now = await this.#github.read(repo, `/repos/${repo}/git/ref/heads/${branch}`, REF);
+      if (now.object.sha !== head) throw branchMoved(branch, now.object.sha, head);
+      await this.#setBranch(repo, branch, sha, { force: true });
+      return sha;
+    } finally {
+      await this.#github.write(repo, 'DELETE', `/repos/${repo}/git/refs/heads/${side}`);
+    }
+  }
 }
+
+const REF = z.object({ object: z.object({ sha: SHA }) });
+const TREE = z.object({ tree: z.object({ sha: SHA }) });
+const BLOB = z.object({ content: z.string(), encoding: z.literal('base64') });
+/** A commit as GitHub's REST API gives it: its parents, its message and tree, and the files it changes from its parent. */
+const COMMIT_AGAIN = z.object({
+  parents: z.array(z.object({ sha: SHA })),
+  commit: z.object({ message: z.string(), tree: z.object({ sha: SHA }) }),
+  files: z
+    .array(
+      z.object({
+        filename: z.string(),
+        status: z.string(),
+        sha: SHA,
+        previous_filename: z.string().optional(),
+      }),
+    )
+    .max(299),
+});
+
+/**
+ * The branch a commit written again is made on before its own branch moves to it: a pin move's next branch, or a
+ * deploy's scratch branch, as each watch makes its commits. Any other branch is refused.
+ */
+function againSide(repo: string, branch: string): string {
+  guardBranch(branch);
+  if (pinBranch(branch)) {
+    guardPinBranch(branch);
+    return pinNextBranch(branch);
+  }
+  return scratchBranch(deployTarget(repo, branch));
+}
+
+const branchMoved = (branch: string, at: string, head: string) =>
+  new GitHubError('conflict', `${branch} is at ${at.slice(0, 7)}, not ${head.slice(0, 7)}.`, 409);
 
 /** What a dry run records for one action: enough to see exactly what would have changed. */
 export interface DryRunRecord {
@@ -1283,6 +1388,21 @@ export class DryRunActions implements Actions {
     if (!own) return { position: null, state: null };
     if (!this.queuedAt(own)) Object.assign(own, { enqueuedAt: this.#now(), enqueuedHead: expectedHead });
     return { position: 1, state: 'QUEUED' };
+  }
+
+  /**
+   * Guarded as the live one is, by its branch, then recorded: a commit this dry run made is made again with its
+   * message's new `Checks-run:` line, its files the same, and the branch moves to it.
+   */
+  async commitAgain(repo: string, branch: string, head: string, run: number): Promise<string> {
+    againSide(repo, branch);
+    const at = this.#branches.get(`${repo} ${branch}`);
+    if (at !== undefined && at !== head) throw branchMoved(branch, at, head);
+    const sha = (await this.#record('commitAgain', repo, { branch, head, run })).slice(0, 40);
+    const made = this.#commits.get(head);
+    if (made) this.#commits.set(sha, { ...made, at: this.#now(), message: withChecksRun(made.message, run) });
+    this.#branches.set(`${repo} ${branch}`, sha);
+    return sha;
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

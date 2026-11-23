@@ -54,9 +54,6 @@ import {
 import type { Kube } from './kube.ts';
 import type { StepEnding, StepLogs } from './logs.ts';
 
-/** Why a move's step fails when its pin step wrote nothing: the checkout pins it where it moves already. */
-export const EMPTY_PINS = 'The pin step wrote nothing for the move: the checkout pins it where it moves already.';
-
 /** The most a result may be, as JSON: the runner's own bound (`apps/runner/src/step.ts`), which a test holds equal. */
 export const RESULT_BYTES = 64 * 1024;
 
@@ -107,7 +104,10 @@ export type StepOutcome =
       /** The lockfile the pin step wrote after the agent's patch changed a manifest, which goes on that patch. */
       lockfile?: string;
     }
-  /** The pin step wrote the move's pins, and no agent ran, as the step asked (`pinsOnly`). Empty when nothing moved. */
+  /**
+   * The pin step wrote the move's pins, and no agent ran, as the step asked (`pinsOnly`). Empty, whatever the step
+   * asked, when the checkout has the move already.
+   */
   | { kind: 'pinned'; job: string; pins: string }
   /** The move's pins need a file only Martin may change: no agent ran. */
   | { kind: 'held'; job: string; path: string; reason: string }
@@ -268,8 +268,8 @@ export class Runners {
       }
       if (typeof said.pins !== 'string')
         return { kind: 'failed', job, reason: 'The prepare pod printed no pins for the move.' };
-      // A move the checkout already has writes nothing: no agent builds on a move that is not there.
-      if (!said.pins) return { kind: 'failed', job, reason: EMPTY_PINS };
+      // A move the checkout already has writes nothing: it is made, and no agent builds on a move that is not there.
+      if (!said.pins) return { kind: 'pinned', job, pins: '' };
       pins = said.pins;
       log.info({ job, workItem, files: pathsIn(pins).length }, 'the pin step wrote the pins');
       if (pinsOnly) return { kind: 'pinned', job, pins };

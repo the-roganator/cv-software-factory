@@ -6,21 +6,25 @@
  * - A check that fails becomes a signal only when it has failed twice in a row, so one blip opens nothing. After
  *   that each failing run sends another, which triage counts without making an event of it.
  * - Never two runs at once, and a run that the app changed under is thrown away and repeated.
+ * - A signal the inbox could not take because the store is away, as it is for the seconds a patch restarts Postgres,
+ *   is kept and handed over again at each poll until the store has it. Any other signal the inbox refuses is dropped.
  *
  * The clock and the polling are the caller's: `tick()` does one poll of the version, and `start()` calls it on a
  * timer. Tests call `tick()` themselves.
  */
 import { cutTo, type InboxSignal } from '@software-factory/events';
+import { storeAway } from '@software-factory/store';
 import type { Logger } from 'pino';
 import type { Look } from '../pictures/index.ts';
+import { PassLog } from '../store-absence.ts';
 import type { Finding, Observation, Sense } from './types.ts';
 
 export interface RunnerOptions {
   sense: Sense;
   /** The app's version as its `/version` says now. Rejects when the app does not answer. */
   version(): Promise<string>;
-  /** Leaves a signal in the inbox. */
-  send(signal: InboxSignal): Promise<void>;
+  /** Leaves a signal in the inbox. Sent again with the same id, a signal is left as it was the first time. */
+  send(signal: InboxSignal, id: string): Promise<void>;
   /** Remembers where a signal's finding boxed the elements it found, for the release's pictures (`pictures/`). */
   remember?(look: Look, at: Date): Promise<void>;
   log: Logger;
@@ -75,15 +79,32 @@ export class SenseRunner {
   /** When each limited check last ran. */
   private readonly ranAt = new Map<string, number>();
   private busy = false;
+  /**
+   * The signals the inbox could not take while the store is away, the newest of each check under the id it was sent
+   * with, so the store keeps one of it however the first send ended. Empty unless the store is away.
+   */
+  private readonly kept = new Map<string, { signal: InboxSignal; id: string }>();
+  /** Says how each hand-over to the inbox ended: a short absence of the store as a warning, anything else as an error. */
+  private readonly handovers: PassLog;
 
   constructor(options: RunnerOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
+    this.handovers = new PassLog(options.log.child({ sense: options.sense.name }), () => new Date(this.now()), {
+      away: 'the inbox did not take a signal, as the store is away: it is kept, and sent again when the store is back',
+      stillAway: 'the inbox did not take a signal: the store has been away for over a minute',
+      failed: 'the inbox did not take a signal',
+      back: (seconds) => `the store is back after ${seconds} s: the inbox took the signals kept for it`,
+    });
   }
 
-  /** Looks at the version, and runs the sense if it is new or the schedule says it is time. Null if it did not. */
+  /**
+   * Hands the kept signals over, then looks at the version, and runs the sense if it is new or the schedule says it is
+   * time. Null if it did not.
+   */
   async tick(): Promise<Run | null> {
     if (this.busy) return null;
+    await this.handOver();
     let version: string;
     try {
       version = await this.options.version();
@@ -141,12 +162,8 @@ export class SenseRunner {
           `a check failed: ${finding.message}`,
         );
         if (!signalled) continue;
-        try {
-          await this.options.send(signalOf(sense.name, { ...observation, finding }, version, new Date(this.now())));
-          run.signalled++;
-        } catch (error) {
-          log.error({ sense: sense.name, check, err: describe(error) }, 'the inbox did not take a signal');
-        }
+        const signal = signalOf(sense.name, { ...observation, finding }, version, new Date(this.now()));
+        if (await this.send(signal, crypto.randomUUID())) run.signalled++;
         if (observation.look && this.options.remember) {
           const look = { sense: sense.name, check, route, ...observation.look };
           await this.options.remember(look, new Date(this.now())).catch((error) => {
@@ -177,6 +194,39 @@ export class SenseRunner {
     } finally {
       this.busy = false;
     }
+  }
+
+  /**
+   * Leaves a signal in the inbox, and says whether the inbox took it. While the store is away the signal is kept for
+   * the next poll instead, without another try at a store that has just refused one, so an absence is one line a poll.
+   */
+  private async send(signal: InboxSignal, id: string): Promise<boolean> {
+    if (this.kept.size === 0) {
+      try {
+        await this.options.send(signal, id);
+        return true;
+      } catch (error) {
+        this.handovers.failed(error, { check: signal.check });
+        if (!storeAway(error)) return false;
+      }
+    }
+    this.kept.set(signal.check, { signal, id });
+    return false;
+  }
+
+  /** Hands over the signals kept while the store was away, and stops at the first the store is still away for. */
+  private async handOver(): Promise<void> {
+    for (const [check, { signal, id }] of this.kept) {
+      try {
+        await this.options.send(signal, id);
+      } catch (error) {
+        this.handovers.failed(error, { check });
+        // Kept only while the store is away: a signal the inbox refuses for another reason is dropped, as in a run.
+        if (storeAway(error)) return;
+      }
+      this.kept.delete(check);
+    }
+    this.handovers.passed();
   }
 
   /** The checks that ran too lately to run again, unless the app is new. */

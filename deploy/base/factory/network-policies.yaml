@@ -94,7 +94,7 @@ spec:
               app.kubernetes.io/component: worker
         - podSelector:
             matchExpressions:
-              - { key: app.kubernetes.io/name, operator: In, values: [console, admin, migrate, postgres-exporter, red-team, patching] }
+              - { key: app.kubernetes.io/name, operator: In, values: [console, admin, migrate, postgres-exporter, red-team, patching, github] }
         # The scoreboard, from its own namespace: the namespace and the label in one peer, so both must match.
         - namespaceSelector:
             matchLabels:
@@ -311,7 +311,8 @@ spec:
 ---
 # The GitHub worker reaches GitHub and GHCR, over TLS, and nothing else outside the cluster. Their addresses are many
 # and change, so, as for the gateway, the rule is the internet on 443 with the cluster's, the local network's and the
-# host's addresses excepted. Only the line calls it. It sends its telemetry, and touches no store.
+# host's addresses excepted. Only the line calls it. It sends its telemetry, and reaches Postgres, where its role reads
+# the autonomy level and nothing else (0054_github-reads-the-level.sql).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -360,6 +361,12 @@ spec:
               app.kubernetes.io/name: opentelemetry-collector
       ports:
         - { protocol: TCP, port: 4318 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
 ---
 # Triage asks the gateway to judge a report, and the probes' page reader for the page it names. It reads Prometheus,
 # Loki and Tempo, which the senses read besides the app, before it trusts a sense's signal: through the read-only proxy.

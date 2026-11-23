@@ -43,12 +43,12 @@ describe('the GitHub worker’s door for the sense', () => {
     return { call, asked };
   }
 
-  it('serves the moves and Dependabot’s pull requests', async () => {
+  it('serves the moves, and not Dependabot’s pull requests', async () => {
     const { call, asked } = await door();
-    expect(PATCHING_READS).toEqual(['moves', 'dependencyPulls']);
+    expect(PATCHING_READS).toEqual(['moves']);
     expect(await call('/v1/reads/moves')).toBe(200);
-    expect(await call('/v1/reads/dependencyPulls')).toBe(200);
-    expect(asked).toEqual(['moves', 'dependencyPulls']);
+    expect(await call('/v1/reads/dependencyPulls')).toBe(404);
+    expect(asked).toEqual(['moves']);
   });
 
   it('serves no other read and no action, dry run or not', async () => {

@@ -270,7 +270,7 @@ const PATCHING_WORDS: Record<PatchingKind, { summary: string; description: strin
   'move-waits': {
     summary: 'A move waits on you',
     description:
-      'A pin only you can move: the review gate holds it for your approval, only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you.',
+      'A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you.',
   },
   'move-due-soon': {
     summary: 'A move is due within a day',

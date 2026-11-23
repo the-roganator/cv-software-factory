@@ -19,7 +19,6 @@ import { listenLocal } from '@software-factory/testing';
 import { APP_LOGIN, LiveActions } from '../../src/github/actions.ts';
 import { WatchedHeads } from '../../src/github/branches.ts';
 import { GitHubError } from '../../src/github/client.ts';
-import { dependencyPulls } from '../../src/github/dependabot.ts';
 import {
   type DeployQueueDependencies,
   type LabelEvents,
@@ -45,6 +44,11 @@ export interface Times {
 
 export interface Options {
   realEnqueue?: boolean;
+  /**
+   * How each required check concluded at a head (`null` while it runs); without it, every one passed. A failed one
+   * has the queue write the watch's commit again through the live action (`commitAgain`).
+   */
+  conclusion?: (head: string, check: string) => string | null;
 }
 
 export async function worker(
@@ -213,7 +217,6 @@ export async function worker(
       github,
       reads: {
         moves: async () => today(),
-        dependencyPulls: (r: string) => dependencyPulls(github, r, async () => 'version: 2\nupdates: []\n'),
       },
       actions,
       recorder,
@@ -236,15 +239,19 @@ export async function worker(
       head: head(number),
       check: null,
       verdict: null,
-      judged: { number, head: head(number), rule: 'pin-move', tags: [] },
+      judged: { number, head: head(number), rule: 'move', tags: [] },
       problem: null,
     }),
-    checkRuns: async () =>
+    checkRuns: async (_repo, sha) =>
       REQUIRED.filter((name) => name !== 'review').map((name, i) => ({
         id: i + 1,
         name,
-        status: 'completed',
-        conclusion: 'success',
+        ...(options.conclusion
+          ? {
+              status: options.conclusion(sha, name) === null ? 'in_progress' : 'completed',
+              conclusion: options.conclusion(sha, name),
+            }
+          : { status: 'completed', conclusion: 'success' }),
         app: 'github-actions',
         startedAt: null,
         completedAt: null,
@@ -282,8 +289,12 @@ export async function worker(
           enqueued.push({ number, head: at });
           return { position: 1, state: 'QUEUED' };
         },
+        comment: (repo: string, number: number, body: string) => actions.comment(repo, number, body),
+        commitAgain: (repo: string, branch: string, head: string, run: number) =>
+          actions.commitAgain(repo, branch, head, run),
       },
       heads,
+      level: async () => ({ autonomy: 'guarded', autoMerge: true }) as const,
       log: quiet,
     },
     FACTORY,

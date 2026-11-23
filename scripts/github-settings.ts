@@ -31,6 +31,9 @@
 import { execFileSync } from 'node:child_process';
 import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../apps/factory/src/repositories.ts';
 
+/** platform.yml's job that makes a cluster from the change, a required check here (check-kind.sh names it too). */
+export const PLATFORM_CHECK = 'cluster from the change';
+
 /**
  * Each repository, and the jobs that must pass before anything merges into its main. A job in a shared workflow
  * reports as "<calling job> / <job>".
@@ -43,7 +46,7 @@ export const REPOSITORIES: Record<string, string[]> = {
     'lockfile scan',
     'title',
     // A change to what the cluster runs, made into a cluster in CI (platform.yml); skipped, and so passed, for any other.
-    'cluster from the change',
+    PLATFORM_CHECK,
   ],
   // The app's gates come from this repository (app-gates.yml); tests first is a signal, not a requirement.
   [APP_REPOSITORY]: [

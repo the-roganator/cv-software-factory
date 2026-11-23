@@ -107,11 +107,13 @@ describe('waiting for the store before migrating', () => {
     const said: string[] = [];
     const sql = connect(url.href, { max: 1 });
     try {
+      // Nothing said is no attempt waited for, and the time is shorter than one wait between attempts: one attempt, its
+      // connection's handshake and all, has taken over a second on a busy machine, so the wait is longer than that.
       const start = performance.now();
       await expect(
-        waitForStore(sql, { withinMs: 10_000, everyMs: 1_000, say: (line) => said.push(line) }),
+        waitForStore(sql, { withinMs: 10_000, everyMs: 4_000, say: (line) => said.push(line) }),
       ).rejects.toMatchObject({ code: '28P01' });
-      expect(performance.now() - start).toBeLessThan(1_000);
+      expect(performance.now() - start).toBeLessThan(4_000);
       expect(said).toEqual([]);
     } finally {
       await sql.end({ timeout: 0 });

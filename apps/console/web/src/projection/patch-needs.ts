@@ -1,8 +1,7 @@
 /**
  * The moves that wait on Martin, as Needs you shows them: one card for each move of the sense's last day whose lane only
- * he moves (his approval, his cluster's own command, or an issue, where no pull request of the App's can write it), one
- * for each of Dependabot's that clears a High or a Critical on a deadline and has its pull request open, and
- * one for each row the sense made of what the cluster runs, which nothing scanned. A pure function of the events, which
+ * he moves (his cluster's own command, or an issue, where no pull request of the App's can write it), and one for each
+ * row the sense made of what the cluster runs, which nothing scanned. A pure function of the events, which
  * needs no time: a card's deadline is said at t by the card.
  *
  * It is in the first view, as the rest of `project()` is, so it is kept small: the sense's day, its role, a row's key
@@ -10,8 +9,9 @@
  * Everything else of the day stays in that chunk (`patching.ts`).
  *
  * A card says only what the event gives. The sense's day names each move's lane, its pins, from and to, what it clears
- * and its deadline; the pull request the factory's App opens for a held pin, and the review gate's verdict on it, are on
- * GitHub, and no event records them yet, so a held pin's card names its move and opens its row, and links nowhere.
+ * and its deadline. The pull request the factory's App opens for a move, the review gate's verdict on it, and whether the
+ * autonomy level queues it (a major waits at any level but Lights-out) are on GitHub, and no event records them yet: a
+ * move the level holds has no card.
  */
 import type { MoveLane, PayloadOf, PublicEvent } from '@software-factory/events';
 
@@ -24,18 +24,8 @@ type Running = Day['rows'][number];
 const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
 
-/** The lanes only Martin moves: his approval, his cluster's own command, and what no pull request of the App's can write. */
-export const HIS: readonly MoveLane[] = ['approval', 'cluster', 'issue'];
-
-/**
- * Dependabot's move that clears a High or a Critical on a deadline, once its pull request is open: nothing but
- * Martin's approval merges it. Its routine moves, which clear neither, wait for no one in particular.
- */
-export const dependabotWaits = (move: Day['repositories'][number]['moves'][number]) =>
-  move.lane === 'dependabot' &&
-  move.pullRequest !== undefined &&
-  move.deadline !== undefined &&
-  move.clears.critical + move.clears.high > 0;
+/** The lanes only Martin moves: his cluster's own command, and what no pull request of the App's can write. */
+export const HIS: readonly MoveLane[] = ['cluster', 'issue'];
 
 /**
  * Each row's key in a day, the same for Martin and a visitor, while its pull request opens, and in a card and its row,
@@ -99,9 +89,7 @@ export interface PatchNeed {
   /** Its row's key in Patching's sheet, which the card opens. */
   key: string;
   /** What waits: a lane only he moves, or what the sense found running. */
-  kind: 'approval' | 'cluster' | 'issue' | 'dependabot' | Running['row'];
-  /** For Dependabot's: its open pull request, which merges only with his approval. */
-  pull?: number | undefined;
+  kind: 'cluster' | 'issue' | Running['row'];
   /** What moves, as the event names it; undefined for a lockfile's package the public view withholds. */
   name: string | undefined;
   /** From and to, as the scan writes them; undefined where the event withholds them or a row has none. */
@@ -142,14 +130,12 @@ function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
   const keys = rowKeys(day);
   const moves = day.repositories.flatMap((r, i) =>
     r.moves.flatMap((move, j): Omit<PatchNeed, 'since'>[] => {
-      const dependabots = dependabotWaits(move);
-      if (!HIS.includes(move.lane) && !dependabots) return [];
+      if (!HIS.includes(move.lane)) return [];
       const shown = move.lockfile ? move.package : undefined;
       return [
         {
           key: keys.moves[i]?.[j] ?? '',
           kind: move.lane as PatchNeed['kind'],
-          ...(dependabots && { pull: move.pullRequest?.number }),
           name: move.lockfile ? shown?.name : move.name,
           from: move.lockfile ? shown?.from : shortDigests(move.from).trim() || undefined,
           // A line nobody builds any more has nothing to move to, as its row says.

@@ -34,7 +34,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
   ts: '2026-10-06T05:12:00.000Z',
   work_item: null,
   type: 'patching.read',
-  version: 2,
+  version: 4,
   actor: 'factory',
   summary: 'The day’s moves: 9 in the factory, 2 in the app; 1 unscanned image running',
   payload: {
@@ -47,7 +47,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
         totals: {
           fixed: 1664,
           moves: 9,
-          lanes: { line: 0, worker: 3, dependabot: 2, approval: 1, cluster: 1, issue: 1, none: 1 },
+          lanes: { line: 0, worker: 6, cluster: 1, issue: 1, none: 1 },
           noFix: 14844,
           excepted: 0,
           overdue: 0,
@@ -97,7 +97,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
             leaves: counts(0, 0, 2, 1),
             deadline: '2026-10-07T00:00:00.000Z',
             newToday: 0,
-            lane: 'approval',
+            lane: 'worker',
             lockfile: false,
           },
           {
@@ -136,9 +136,8 @@ export const PATCHING: NewEvent<'patching.read'> = {
             leaves: none,
             deadline: '2026-10-11T04:16:00.000Z',
             newToday: 0,
-            lane: 'dependabot',
+            lane: 'worker',
             lockfile: false,
-            pullRequest: { number: 1339, version: 'v1.55.1' },
           },
           {
             name: 'example/sidecar',
@@ -166,7 +165,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
             leaves: none,
             deadline: '2027-01-04T04:16:00.000Z',
             newToday: 0,
-            lane: 'dependabot',
+            lane: 'worker',
             lockfile: true,
             package: {
               name: '@example/tokens',
@@ -174,7 +173,6 @@ export const PATCHING: NewEvent<'patching.read'> = {
               to: '3.0.2',
               pins: [{ file: 'pnpm-lock.yaml', line: 2140 }],
             },
-            pullRequest: { number: 1340, version: '3.0.2' },
           },
           {
             name: 'example/cluster-proxy',
@@ -198,7 +196,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
         totals: {
           fixed: 3,
           moves: 2,
-          lanes: { line: 2, worker: 0, dependabot: 0, approval: 0, cluster: 0, issue: 0, none: 0 },
+          lanes: { line: 2, worker: 0, cluster: 0, issue: 0, none: 0 },
           noFix: 212,
           excepted: 0,
           overdue: 0,

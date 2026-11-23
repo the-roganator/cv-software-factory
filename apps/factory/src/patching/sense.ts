@@ -1,5 +1,5 @@
 /**
- * The dependency sense's pass: ask the GitHub worker for both repositories' moves and open Dependabot pull requests,
+ * The dependency sense's pass: ask the GitHub worker for both repositories' moves,
  * list what the cluster's pods run, compare the two, and append the day as `patching.read` when it differs from the
  * last. It keeps nothing between passes: the last day is the store's, so a restart appends nothing new unless
  * something changed.
@@ -14,7 +14,6 @@ import { type NewEvent, upcast, VERSIONS } from '@software-factory/events';
 import { type EventWriter, storeKind } from '@software-factory/store';
 import type { Logger } from 'pino';
 import type { Sql } from 'postgres';
-import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves } from '../github/scanning.ts';
 import type { Outbox } from '../outbox.ts';
 import { compare } from './compare.ts';
@@ -23,10 +22,9 @@ import type { RunningContainer } from './running.ts';
 import { type Next, stale } from './schedule.ts';
 import { sendsOf } from './sends.ts';
 
-/** What the sense reads through: the GitHub worker's two reads, and the cluster's pods. */
+/** What the sense reads through: the GitHub worker's read of the moves, and the cluster's pods. */
 export interface Senses {
   moves(repo: string): Promise<Moves>;
-  dependencyPulls(repo: string): Promise<DependencyPull[]>;
   running(): Promise<RunningContainer[]>;
 }
 
@@ -146,18 +144,11 @@ export class PatchingSense {
   async #pass(): Promise<Pass> {
     if ((await storeKind(this.#sql)) === 'sample') return { pass: 'not-real' };
     const asked: { what: string; worker?: true; read: () => Promise<unknown> }[] = [
-      ...this.#repositories.flatMap((repo) => [
-        {
-          what: `the moves of ${repo}`,
-          worker: true as const,
-          read: () => this.#senses.moves(repo),
-        },
-        {
-          what: `the Dependabot pull requests of ${repo}`,
-          worker: true as const,
-          read: () => this.#senses.dependencyPulls(repo),
-        },
-      ]),
+      ...this.#repositories.map((repo) => ({
+        what: `the moves of ${repo}`,
+        worker: true as const,
+        read: () => this.#senses.moves(repo),
+      })),
       { what: "the cluster's pods", read: () => this.#senses.running() },
     ];
     const answers = await Promise.allSettled(asked.map(({ read }) => read()));
@@ -183,10 +174,7 @@ export class PatchingSense {
       return { pass: 'failed', failed };
     }
     const values = answers.map((answer) => (answer as PromiseFulfilledResult<unknown>).value);
-    const reads: RepositoryRead[] = this.#repositories.map((_, i) => ({
-      moves: values[2 * i] as Moves,
-      pulls: values[2 * i + 1] as DependencyPull[],
-    }));
+    const reads: RepositoryRead[] = this.#repositories.map((_, i) => ({ moves: values[i] as Moves }));
     const containers = values.at(-1) as RunningContainer[];
 
     const lists = reads.map(({ moves }) => ({ repository: moves.repository, scanned: scannedOf(moves) }));

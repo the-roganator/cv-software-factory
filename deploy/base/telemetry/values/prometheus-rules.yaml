@@ -317,7 +317,7 @@ serverFiles:
               kind: "move-waits"
             annotations:
               summary: "A move waits on you"
-              description: "A pin only you can move: the review gate holds it for your approval, only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you."
+              description: "A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you."
           - alert: PatchingMove
             expr: "max(increase(line_patching_moves_total{kind=\"move-due-soon\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
             for: 0s

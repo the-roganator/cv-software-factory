@@ -138,6 +138,7 @@ import {
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
+import { failedChecks } from '../github/merging.ts';
 import { whoAborted } from '../release/watch.ts';
 import { type MergeFacts, mergeDecision } from './merging.ts';
 import { type Finding, suggestionsLeft } from './review.ts';
@@ -300,6 +301,8 @@ export interface WorkItemState {
   enqueued: PayloadOf<'pull-request.enqueued'> | undefined;
   /** The merge queue's taking it out, without merging it, since the latest push. */
   dequeued: PayloadOf<'pull-request.dequeued'> | undefined;
+  /** The head of each time since the latest push the merge queue took it out because a check failed (`merging.ts`). */
+  queueFailures: string[];
   /** The heads the review gate's refusal of the pull request is recorded for (`action.refused`, `review-gate`). */
   refusedHeads: string[];
   /** Whether any spec of the work item was tagged out-of-scope: never the line's to merge, whatever Martin approved. */
@@ -392,6 +395,7 @@ const initial = (): WorkItemState => ({
   merged: false,
   enqueued: undefined,
   dequeued: undefined,
+  queueFailures: [],
   refusedHeads: [],
   outOfScope: false,
   release: undefined,
@@ -506,6 +510,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         state.accepted = undefined;
         state.enqueued = undefined;
         state.dequeued = undefined;
+        state.queueFailures = [];
         break;
       // A run on a newer commit of the same push (main merged into the branch, as to resolve a conflict) replaces the
       // run before once it ends: until then, gates that passed still stand, and the work item waits where it is.
@@ -695,6 +700,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         if (state.enqueued?.number !== event.payload.number || state.enqueued.commit !== event.payload.commit) break;
         state.enqueued = undefined;
         state.dequeued = event.payload;
+        if (failedChecks(event.payload.reason)) state.queueFailures.push(event.payload.commit);
         break;
       case 'pull-request.merged':
         state.merged = true;

@@ -3,8 +3,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { GitHub, GitHubError } from '../../src/github/client.ts';
 import { branchPin, ecosystemsOf, groupMovesTo, rewrittenLines } from '../../src/github/dependabot.ts';
+import { type Made, sealMade } from '../../src/github/made.ts';
 import { LiveReads } from '../../src/github/reads.ts';
 import { ScanReads } from '../../src/github/scanning.ts';
+import { FACTORY_REPOSITORY } from '../../src/repositories.ts';
 import { newKey, readKey, type State, type StateFinding, seal } from '../../src/vulnerabilities/state.ts';
 import { zipEntry } from '../../src/vulnerabilities/zip.ts';
 import { zipOf } from '../vulnerabilities/zip-of.ts';
@@ -51,9 +53,14 @@ interface Day {
   stateExpires?: string;
   /** GitHub refuses the App the runs: it lacks `actions: read`. */
   refuse?: boolean;
+  /** What the run's pin step made, sealed with the test's key: none where it made none. */
+  pins?: Buffer;
 }
 
-/** One run's two artifacts: each one's listing, the link GitHub answers its download with, and its archive. */
+/**
+ * One run's artifacts: each one's listing, the link GitHub answers its download with, and its archive; `pins` only
+ * where the day has one.
+ */
 function artifactRoutes(run: number, ids: { moves: number; state: number }, day: Day): Route[] {
   const listed = (id: number, name: string, expires?: string) => ({
     total_count: 1,
@@ -88,6 +95,12 @@ function artifactRoutes(run: number, ids: { moves: number; state: number }, day:
       'state',
       () => day.archive ?? archived(seal(day.state ?? { ...state(), run: String(run) }, KEY)),
     ),
+    {
+      method: 'GET',
+      path: artifactsPath(run, 'pins'),
+      answer: () => ({ body: day.pins ? listed(81, 'pins') : { total_count: 0, artifacts: [] } }),
+    },
+    ...download(81, 'pins', () => zipOf({ 'pins.sealed': day.pins ?? Buffer.alloc(0) })),
   ];
 }
 
@@ -156,7 +169,7 @@ describe('the scan’s moves', () => {
     );
     const [image] = (await read({ state: more })).moves;
     expect(Object.keys(image?.findings[0] ?? {}).sort()).toEqual(
-      ['advisory', 'file', 'firstSeen', 'fix', 'fixed', 'installed', 'line', 'package', 'severity'].sort(),
+      ['advisory', 'file', 'firstSeen', 'fix', 'fixed', 'installed', 'line', 'package', 'severity', 'type'].sort(),
     );
     expect(JSON.stringify(image)).not.toMatch(/invented advisory|2026-10-31/);
   });
@@ -891,5 +904,72 @@ describe('the scan’s moves, kept for each run', () => {
     const first = await reads.moves(REPO);
     first.moves.length = 0;
     expect((await reads.moves(REPO)).moves).toHaveLength(2);
+  });
+});
+
+describe('the moves the scan made with the pin step, in the factory', () => {
+  const swap = <T>(value: T): T => JSON.parse(JSON.stringify(value).replaceAll(REPO, FACTORY_REPOSITORY));
+  const COMMIT = 'c'.repeat(40);
+  const made = (over: Partial<Made> = {}): Made => ({
+    version: 1,
+    repository: FACTORY_REPOSITORY,
+    run: String(RUN),
+    commit: COMMIT,
+    groups: [
+      {
+        files: ['pnpm-lock.yaml'],
+        major: false,
+        moves: [2],
+        refused: [],
+        changed: [{ path: 'pnpm-lock.yaml', text: 'moved' }],
+        steps: [{ move: 2, ecosystem: 'npm', name: '@example/tokens', before: ['3.0.1'], after: ['3.0.2'] }],
+      },
+    ],
+    ...over,
+  });
+  /** The fixtures' day as the factory's, with the run's `pins` artifact, or none. */
+  function factoryRead(pins: Buffer | undefined, sent: Sent[] = []) {
+    const day: Day = {
+      runs: swap(fixture('runs.json')),
+      moves: swap({ ...fixture('moves.json'), run: String(RUN) }),
+      state: swap({ ...state(), run: String(RUN) }),
+      ...(pins && { pins }),
+    };
+    const all: Route[] = routes(day).map((route) => ({
+      ...route,
+      path: typeof route.path === 'string' ? route.path.replaceAll(REPO, FACTORY_REPOSITORY) : route.path,
+    }));
+    return new LiveReads(client(all, sent).github, undefined, { stateKeys: keys }).moves(FACTORY_REPOSITORY);
+  }
+
+  it('come with the day, opened with the key; a run that made none has none', async () => {
+    const read = await factoryRead(sealMade(made(), KEY));
+    expect(read.made?.groups[0]?.steps[0]?.name).toBe('@example/tokens');
+    expect((await factoryRead(undefined)).made).toBeUndefined();
+  });
+
+  it('come with the app’s day too, for its line’s pin step to make its moves with (S2-M1)', async () => {
+    const asked = [
+      { image: 'gcr.io/distroless/nodejs24-debian13', tag: 'nonroot', digest: `sha256:${'4'.repeat(64)}` },
+    ];
+    const group = { ...(made().groups[0] as Made['groups'][number]), moves: [1], steps: [], asked };
+    const pins = sealMade(made({ repository: REPO, groups: [group] }), KEY);
+    const day = { moves: { ...(fixture('moves.json') as object), run: String(RUN) }, pins };
+    expect((await read(day)).made?.groups[0]?.asked).toEqual(asked);
+  });
+
+  it('fail the read when sealed for another run, made on another commit, or naming a move past the list', async () => {
+    for (const [pins, why] of [
+      [sealMade({ ...made(), run: '1' }, KEY), /made moves cannot be read/],
+      [sealMade(made({ commit: 'd'.repeat(40) }), KEY), /made its moves on another commit/],
+      [
+        sealMade(made({ groups: [{ ...(made().groups[0] as Made['groups'][number]), moves: [99] }] }), KEY),
+        /past its list/,
+      ],
+    ] as const) {
+      const error = await factoryRead(pins).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(GitHubError);
+      expect((error as Error).message).toMatch(why);
+    }
   });
 });

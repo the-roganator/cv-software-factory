@@ -39,7 +39,7 @@ test('the summary counts every open finding and what the moves clear at a glance
   await ready(page);
   const card = summary(page);
   await expect(card.getByRole('heading', { level: 2 })).toHaveText('Patching');
-  await expect(card.locator('.panel-head .label')).toHaveText('11 moves · 5 wait on Martin');
+  await expect(card.locator('.panel-head .label')).toHaveText('11 moves · 3 wait on Martin');
   // Needs you's rule: moves wait on Martin, a deadline is within a day, and the scan failed.
   await expect(card).toHaveClass(/\battn\b/);
   await expect(card.locator('.clr-head span')).toHaveText(['C', 'H', 'M', 'L']);
@@ -81,25 +81,25 @@ test('a visitor reads the day: what waits on Martin first, then by deadline, and
 }) => {
   await patching(page);
   await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText(
-    '11 moves · 1 unscanned image running · 5 wait on Martin · Read only',
+    '11 moves · 1 unscanned image running · 3 wait on Martin · Read only',
   );
   await expect(panel(page).locator('.pm .name')).toHaveText([
     'example-cd',
-    'example-logs',
     'k3s',
-    'example/sbom-tool',
     'Unscanned image running',
     'example/scanner-proxy',
+    'example-logs',
     'A package in the app’s lockfile',
     'example-dashboards',
+    'example/sbom-tool',
     'example/sidecar',
     'example/node-base',
-    '@example/tokens',
+    'A package in the factory’s lockfile',
     'example/cluster-proxy',
   ]);
-  await expect(panel(page).locator('.pm.wait')).toHaveCount(5);
+  await expect(panel(page).locator('.pm.wait')).toHaveCount(3);
   await expect(panel(page).locator('.pm.wait .v').first()).toHaveText('Waits on Martin');
-  await expect(row(page, 'A package in the app’s lockfile')).toContainText('versions once its pull request opens');
+  await expect(row(page, 'A package in the app’s lockfile')).toContainText('versions withheld');
   await expect(panel(page).locator('.patch-day')).toContainText('Scan failed today');
   await expect(panel(page).locator('.patch-day')).toContainText(
     '41 new High or Critical: 6 have a fix (in 2 moves below), 35 have none yet',
@@ -125,32 +125,43 @@ test('a row opens in place, one at a time: why it waits, what to do, what it cle
   page,
 }) => {
   await patching(page, 'martin');
-  const logs = row(page, 'example-logs');
-  await logs.click();
-  await expect(logs).toHaveAttribute('aria-expanded', 'true');
-  const more = panel(page).locator(`#${await logs.getAttribute('aria-controls')}`);
-  await expect(more).toContainText('Its fix is a major one, so the review gate passes it only with your approval.');
-  await expect(more).toContainText('Move it in a pull request of your own, and review it there.');
-  await expect(more).toContainText('Clears · 56 findings');
-  await expect(more).toContainText('1 Critical, 21 High, 30 Medium, 4 Low');
+  const k3s = row(page, 'k3s');
+  await k3s.click();
+  await expect(k3s).toHaveAttribute('aria-expanded', 'true');
+  const more = panel(page).locator(`#${await k3s.getAttribute('aria-controls')}`);
+  await expect(more).toContainText('Only the cluster’s own command applies a new k3s, with the line stopped');
+  await expect(more).toContainText('Run make upgrade-cluster, with the line stopped. It loses nothing in the store.');
+  await expect(more).toContainText('Clears · 74 findings');
+  await expect(more).toContainText('21 High, 44 Medium, 9 Low');
   await expect(more.getByRole('link', { name: /Code scanning/ })).toHaveAttribute(
     'href',
     'https://github.com/the-roganator/cv-software-factory/security/code-scanning',
   );
-  await expect(more.locator('.pins')).toContainText('telemetry/logs.yaml:14');
+  await expect(more.locator('.pins')).toContainText('k3d/cluster.yaml:8');
+
+  // A major is the worker's as any move, and no row says it waits: the autonomy level decides whether it merges.
+  const logs = row(page, 'example-logs');
+  await logs.click();
+  await expect(k3s).toHaveAttribute('aria-expanded', 'false');
+  await expect(panel(page).locator('.more')).toContainText(
+    'Its fix is a major one. The factory’s App opens its pull request as any other, the review gate names it a major, and the autonomy level decides whether it merges unasked.',
+  );
 
   const sbom = row(page, 'example/sbom-tool');
   await sbom.click();
   await expect(sbom).toHaveAttribute('aria-expanded', 'true');
   await expect(logs).toHaveAttribute('aria-expanded', 'false');
   await expect(panel(page).locator('.more')).toHaveCount(1);
-  await expect(panel(page).locator('.more')).toContainText('Dependabot opened #1339, to v1.55.1');
+  // A pin Dependabot reads is the App's to move as any other: nothing waits for Dependabot.
+  await expect(panel(page).locator('.more')).toContainText(
+    'A pin forward on its own line, which the review gate can prove from its pull request: the factory’s App moves it.',
+  );
 });
 
 test('Martin reads the app’s lockfile move whole, and “you” for himself', async ({ page }) => {
   await patching(page, 'martin');
   await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText(
-    '11 moves · 1 unscanned image running · 5 wait on you',
+    '11 moves · 1 unscanned image running · 3 wait on you',
   );
   await expect(row(page, '@example/parser')).toContainText('4.2.0 → 4.2.3');
   await expect(panel(page).locator('.pm.wait .v').first()).toHaveText('Waits on you');
@@ -242,8 +253,8 @@ test('an event Patching does not read renders nothing in its summary or sheet, a
     }),
   };
   await send(after(2, day, payload));
-  await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText('11 moves · 4 wait on Martin · Read only');
-  await expect(summary(page).locator('.panel-head .label')).toHaveText('11 moves · 4 wait on Martin');
+  await expect(sheet(page).locator('.sheet-head .panel-count')).toHaveText('11 moves · 2 wait on Martin · Read only');
+  await expect(summary(page).locator('.panel-head .label')).toHaveText('11 moves · 2 wait on Martin');
   expect(await renders()).toEqual(before.map((n) => n + 1));
   // All open is a dash under each header, in the summary and under the sheet's rows, never a figure worked out from
   // what the moves clear; what they clear is still there.
@@ -263,31 +274,27 @@ test('each move that waits on Martin is a card in Needs you, which opens its row
   const cards = page.locator('article.needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patch · / }) });
   await expect(cards.locator('h3')).toHaveText([
     'example-cd needs moving by hand',
-    'example-logs waits for a review',
     'k3s needs the cluster moved',
-    'example/sbom-tool waits in Dependabot’s pull request',
     'An unscanned image is running',
   ]);
   await expect(cards.locator('.kick b')).toHaveText([
     'Patch · an issue',
-    'Patch · your approval',
     'Patch · your cluster',
-    'Patch · your approval',
     'Patch · your cluster',
   ]);
-  const logs = cards.filter({ hasText: 'example-logs waits for a review' });
-  await expect(logs.locator('.ev')).toHaveText(
-    'Clears 1 Critical and 21 High. It changes more than a pin, or its fix is a major one, so the review gate passes its pull request only with your approval.',
+  const k3s = cards.filter({ hasText: 'k3s needs the cluster moved' });
+  await expect(k3s.locator('.ev')).toHaveText(
+    'Clears 21 High. Only make upgrade-cluster applies it, with the line stopped: no pull request can show it works.',
   );
   // A card has no answer of its own: the move is moved on GitHub or the cluster, and the card goes with the next day.
-  await expect(logs.locator('.answers')).toHaveCount(0);
-  const open = logs.getByRole('button', { name: 'Open its row in Patching' });
+  await expect(k3s.locator('.answers')).toHaveCount(0);
+  const open = k3s.getByRole('button', { name: 'Open its row in Patching' });
   await open.click();
   // Patching's sheet, at the card's row: opened, scrolled to and focused.
   await expect(sheet(page)).toBeVisible();
-  await expect(row(page, 'example-logs')).toHaveAttribute('aria-expanded', 'true');
-  await expect(row(page, 'example-logs')).toBeInViewport();
-  await expect(row(page, 'example-logs')).toBeFocused();
+  await expect(row(page, 'k3s')).toHaveAttribute('aria-expanded', 'true');
+  await expect(row(page, 'k3s')).toBeInViewport();
+  await expect(row(page, 'k3s')).toBeFocused();
   // Closed, focus is back on the card's link.
   await page.keyboard.press('Escape');
   await expect(sheet(page)).toHaveCount(0);

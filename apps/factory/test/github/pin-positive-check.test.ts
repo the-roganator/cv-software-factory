@@ -1,24 +1,25 @@
 /**
  * The positive check (`WatchedHeads`, `headWait`).
  *
- * The record is set only from what `commitPins` gives back: the id of the commit GitHub's `createCommitOnBranch` made
- * on main's head for the watch's own edits. A branch moved by anyone else (set here straight in the fake repository,
- * as a write route nobody has found would) is never adopted, at a restart or in a race, and the enqueue goes only at
- * the recorded commit, which GitHub takes only while the branch is at it.
+ * The record is set from what `commitPins` gives back, the id of the commit GitHub's `createCommitOnBranch` made on
+ * main's head for the watch's own edits, or, by a worker that has written nothing to the branch since it started, from
+ * a head that is already that commit (`pin-restart-cost.test.ts`). A branch moved by anyone else to anything else (set
+ * here straight in the fake repository, as a write route nobody has found would) is never adopted, at a restart or in a
+ * race, and the enqueue goes only at the recorded commit, which GitHub takes only while the branch is at it.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { WatchedHeads } from '../../src/github/branches.ts';
 import { headWait, type QueuePull } from '../../src/github/deploy-queue.ts';
 import { readPinScope } from '../../src/github/pins.ts';
 import { worker } from './pin-worker-harness6.ts';
-import { day, FACTORY, FakeRepo, FILES, factoryMoves } from './pins-harness.ts';
+import { day, FACTORY, FakeRepo, FILES, factoryMoves, pinBranchOf } from './pins-harness.ts';
 
 const closing: (() => void)[] = [];
 afterEach(() => {
   for (const close of closing.splice(0)) close();
 });
 
-const A = 'factory/pin/example-dashboards';
+const A = pinBranchOf('example-dashboards');
 const ONLY = readPinScope('example-dashboards');
 
 async function start(options: { realEnqueue?: boolean } = {}) {
@@ -117,7 +118,10 @@ describe('a commit the watch did not write is never the recorded one', () => {
   it('a list lagging at an older commit of the watch’s own is not queued at it', async () => {
     const { repo, w, today } = await start();
     const first = repo.refs.get(A) as string;
-    // A restart writes the branch again; GitHub's list still names the first commit.
+    // main changes the pinned file on another line, so a restart writes the branch again; GitHub's list still names
+    // the first commit.
+    const file = 'deploy/base/telemetry/dashboards.yaml';
+    repo.push({ [file]: (repo.file('main', file) as string).replace('spec:', 'spec: # moved') });
     const next = await worker(repo, ONLY, today, closing);
     next.lag.set(A, first);
     await next.pass();

@@ -5,7 +5,7 @@
  * move, ever, so nothing repeats on a timer, and a day has at most a message or two for a move:
  *
  * - `move-fix`: a move first clears a High or a Critical, which a fix the scan found has given it;
- * - `move-waits`: a move first waits on him: its lane is his approval, his cluster's own command or an issue, or it is a
+ * - `move-waits`: a move first waits on him: its lane is his cluster's own command or an issue, or it is a
  *   row the sense made of what the cluster runs;
  * - `move-due-soon`: a move still in the sense's last day comes within a day of its deadline. One first seen within a
  *   day of it, or past it, is told by `move-fix` alone, which says it is due; one that passes its deadline unjudged
@@ -15,8 +15,8 @@
  *   day: a move merged since the last is still in it until the next, and may be told of until then;
  * - `app-fix-merged`: the line merges (its role's `pull-request.merged`, queued by it) the pull request of a work item
  *   opened for a vulnerable dependency of the app (`work-item.opened`'s `dependency.security`), with no merge hold on
- *   that work item before it: a merge Martin approved after a hold is his, and not told. At Guarded only the review
- *   gate's rule for a Critical fix lets the line do so.
+ *   that work item before it: a merge Martin approved after a hold is his, and not told. At Guarded the review gate's
+ *   `move` rule lets the line do so; a `major` waits for Lights-out.
  *
  * A deadline is judged at the time each day arrives, for the moves of the day before, and at the clock's time for the
  * last day's, so a line that restarts and reads the store again counts what the line before it counted: a move leaves
@@ -39,8 +39,8 @@ type Move = Day['repositories'][number]['moves'][number];
 
 const DAY = 24 * 3_600_000;
 
-/** The lanes only Martin moves: his approval, his cluster's own command, and what no pull request of the App's can write. */
-const HIS: readonly Move['lane'][] = ['approval', 'cluster', 'issue'];
+/** The lanes only Martin moves: his cluster's own command, and what no pull request of the App's can write. */
+const HIS: readonly Move['lane'][] = ['cluster', 'issue'];
 
 /** The counts so far, what each has counted, and the deadlines of the last day's moves, by move. */
 export interface PatchingTally {

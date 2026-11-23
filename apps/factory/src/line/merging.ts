@@ -16,6 +16,10 @@
  * - it is not a change that is never the line's: an improvement, a release, a red-team branch, or a work item whose
  *   spec was ever tagged `out-of-scope`, whatever the rule;
  * - it does not conflict with main, the queue has not taken it out at that head, and GitHub has not refused to add it.
+ *   A head the queue took out because a check failed on the queue's commit is added again, `QUEUE_TRIES` times in all,
+ *   counted from the store (`pull-request.dequeued`), as the GitHub worker adds its own (`github/deploy-queue.ts`):
+ *   main's checks can fail for a reason that is not the change's, and a change that breaks main fails every time. The
+ *   last time, the hold says so, and the line says so on the pull request, once, with the checks that failed.
  *
  * Otherwise it is held for Martin (`hold.started`, cause `merge`), with the gate's rule, its tags and its words, and
  * why the line does not add it (`MERGE_HOLDS`), so Needs you can say so. A hold that would say the same is not made
@@ -53,6 +57,8 @@ import { canonical } from '@software-factory/events/signed';
 import { enqueues } from '../../../../policy/line.ts';
 import { GIVEN_LIMIT, type Judged } from '../../../../policy/review-verdict.ts';
 import { redTeamBranch } from '../github/branches.ts';
+import { QUEUE_TRIES } from '../github/deploy-queue.ts';
+import { failedChecks } from '../github/merging.ts';
 import type { Decision, WorkItemState } from './machine.ts';
 
 /**
@@ -197,13 +203,18 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
     merge: { pullRequest: number, head: m.head, why, ...verdict, approving: false, ...extra },
   });
 
-  // What the queue or GitHub said of this head stands until the head moves: the line does not ask again.
+  // What the queue or GitHub said of this head stands until the head moves, but for a failed check, which may be a
+  // flake: the line adds the head again, up to `QUEUE_TRIES` times in all, as the GitHub worker does its own.
   if (s.dequeued?.commit === m.head) {
     const { reason, failed } = s.dequeued;
-    const checks = failed.length ? `: ${failed.join(', ')} failed on the queue’s commit` : '';
-    return held('queue', `The merge queue took #${number} out (${reason})${checks}. It waits for Martin`, {
-      queue: { reason, failed },
-    });
+    const times = s.queueFailures.filter((head) => head === m.head).length;
+    if (!failedChecks(reason) || times >= QUEUE_TRIES) {
+      const checks = failed.length ? `: ${failed.join(', ')} failed on the queue’s commit` : '';
+      const often = failedChecks(reason) ? ` ${QUEUE_TRIES} times at ${short(m.head)}` : '';
+      return held('queue', `The merge queue took #${number} out${often} (${reason})${checks}. It waits for Martin`, {
+        queue: { reason, failed },
+      });
+    }
   }
   if (s.hold?.cause === 'merge' && s.hold.merge?.why === 'refused' && s.hold.merge.head === m.head) return s.hold;
   if (m.conflicts === true) {

@@ -235,7 +235,7 @@ describe('the prepare step, on a dependency’s work item', () => {
     git('commit', '--quiet', '--message', 'more');
     return { url: `file://${dir}`, commit: git('rev-parse', 'HEAD').trim() };
   }
-  const envFor = (url: string, commit: string, move: unknown) => {
+  const envFor = (url: string, commit: string, move: unknown, made?: unknown) => {
     const work = mkdtempSync(join(tmpdir(), 'work-'));
     const own = mkdtempSync(join(tmpdir(), 'prepare-'));
     mkdirSync(join(own, 'home'));
@@ -247,7 +247,15 @@ describe('the prepare step, on a dependency’s work item', () => {
         PREPARE: own,
         HOME: join(own, 'home'),
         npm_config_store_dir: join(own, 'store'),
-        RUNNER_STEP: JSON.stringify({ agent: 'coder', repository: url, commit, prompt: 'Fix it.', maxTurns: 5, move }),
+        RUNNER_STEP: JSON.stringify({
+          agent: 'coder',
+          repository: url,
+          commit,
+          prompt: 'Fix it.',
+          maxTurns: 5,
+          move,
+          made,
+        }),
       },
     };
   };
@@ -278,6 +286,70 @@ describe('the prepare step, on a dependency’s work item', () => {
       `chore(deps): move gcr.io/distroless/static from nonroot@${OLD} to nonroot@${NEW} pins`,
     );
     expect(git('status', '--porcelain', '--', 'Dockerfile')).toBe('');
+  });
+
+  it('makes the move with the digest the scan was given for a tag, though its registry answers another since (S2-M1)', async () => {
+    const { url, commit } = originWith({ Dockerfile: `FROM gcr.io/distroless/static:nonroot@${OLD}\n` });
+    const move = {
+      ecosystem: 'docker',
+      name: 'gcr.io/distroless/static',
+      from: `nonroot@${OLD}`,
+      to: `nonroot@${NEW}`,
+    };
+    const made = {
+      at: '2026-11-20T05:00:00Z',
+      asked: [{ image: 'gcr.io/distroless/static', tag: 'nonroot', digest: NEW }],
+    };
+    // The tag was pushed again after the scan.
+    const get = async () => new Response(null, { headers: { 'docker-content-digest': `sha256:${'3'.repeat(64)}` } });
+    const lines: string[] = [];
+    await prepare(envFor(url, commit, move, made).env, (line) => lines.push(line), { get });
+    const pins = lines.map((line) => JSON.parse(line)).find((line) => line.msg === 'the pins');
+    expect(pins.pins).toContain(`+FROM gcr.io/distroless/static:nonroot@${NEW}`);
+    // Asked of its registry now, as with no scan to make it from, the move is refused.
+    await expect(prepare(envFor(url, commit, move).env, () => {}, { get })).rejects.toThrow(
+      /is sha256:3{64} in its registry/,
+    );
+  });
+
+  it('takes a package at two versions as the dependency sense sends it, and moves each copy', async () => {
+    // semver twice, neither copy any importer's, so the install after the pins fetches nothing.
+    const lock = (older: string, newer: string) =>
+      `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n\npackages:\n\n  semver@${older}:\n    resolution: {integrity: sha512-a}\n\n  semver@${newer}:\n    resolution: {integrity: sha512-b}\n\nsnapshots:\n\n  semver@${older}: {}\n\n  semver@${newer}: {}\n`;
+    const { url, commit } = originWith({ 'pnpm-lock.yaml': lock('5.7.1', '7.5.1') });
+    const move = { ecosystem: 'npm', name: 'semver', from: '5.7.1,7.5.1', to: '5.7.2,7.5.2' };
+    const { work, env } = envFor(url, commit, move);
+    const updates: string[][] = [];
+    const pnpm = async (dir: string, args: string[]) => {
+      updates.push(args);
+      writeFileSync(join(dir, 'pnpm-lock.yaml'), lock('5.7.2', '7.5.2'));
+    };
+    const lines: string[] = [];
+    await prepare(env, (line) => lines.push(line), { pnpm });
+    const said = lines.map((line) => JSON.parse(line));
+    const pins = said.find((line) => line.msg === 'the pins');
+    expect(pins).toMatchObject({ move });
+    expect(pins.pins).toContain('+  semver@5.7.2:');
+    expect(pins.pins).toContain('+  semver@7.5.2:');
+    // pnpm moved both on the first copy's update; the second's is already there.
+    expect(updates).toEqual([[expect.stringMatching(/^--config/), 'update', 'semver', '--depth', 'Infinity']]);
+    expect(said.at(-1)).toMatchObject({ msg: 'installed the dependencies' });
+    const repo = join(work, 'repo');
+    expect(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: repo, encoding: 'utf-8' }).trim()).toBe(
+      'chore(deps): move semver from 5.7.1,7.5.1 to 5.7.2,7.5.2',
+    );
+  });
+
+  it('takes versions joined by a comma for a package alone, and nothing looser', async () => {
+    const { url, commit } = origin();
+    const refused = (move: object) => expect(prepare(envFor(url, commit, move).env, () => {})).rejects;
+    const npm = { ecosystem: 'npm', name: 'semver' };
+    await refused({ ...npm, from: '5.7.1, 7.5.1', to: '5.7.2,7.5.2' }).toThrow('move.from');
+    await refused({ ...npm, from: '5.7.1,7.5.1', to: '5.7.2,latest' }).toThrow('move.to');
+    await refused({ ...npm, from: '5.7.1,7.5.1;', to: '5.7.2,7.5.2' }).toThrow('move.from');
+    await refused({ ecosystem: 'node', name: 'node', from: '24.1.0,22.1.0', to: '24.1.1,22.1.1' }).toThrow(
+      'only a package moves from versions joined by a comma',
+    );
   });
 
   it('prints that the pins wait for Martin, and installs nothing, when the move needs his file', async () => {

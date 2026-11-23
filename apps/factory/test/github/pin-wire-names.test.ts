@@ -15,7 +15,7 @@ import { LiveActions } from '../../src/github/actions.ts';
 import { guardWritable, pinBranch, plainBranch } from '../../src/github/branches.ts';
 import { GitHub, GitHubError } from '../../src/github/client.ts';
 import { CLIENT_ID, PRIVATE_KEY, quiet } from './fake.ts';
-import { FACTORY } from './pins-harness.ts';
+import { FACTORY, pinBranchOf } from './pins-harness.ts';
 
 const closing: (() => void)[] = [];
 afterEach(() => {
@@ -44,7 +44,7 @@ async function wire() {
   return { seen, actions: new LiveActions(github), github };
 }
 
-const PIN = 'factory/pin/example-dashboards';
+const PIN = pinBranchOf('example-dashboards');
 const _SCRATCH = 'factory/deploy/local';
 const at = (branch: string) => `/repos/${FACTORY}/git/refs/heads/${branch}`;
 

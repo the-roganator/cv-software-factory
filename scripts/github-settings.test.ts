@@ -18,6 +18,7 @@ import {
   inOrderOf,
   MERGE_QUEUE,
   matches,
+  PLATFORM_CHECK,
   REPOSITORIES,
   RETIRED,
   REVIEW_APP,
@@ -27,7 +28,6 @@ import {
   rulesetProblems,
   SCAN_STATE_ENVIRONMENT,
 } from './github-settings.ts';
-import { PLATFORM_CHECK } from './pin-move-ran.ts';
 
 const [checks] = Object.values(REPOSITORIES) as [string[]];
 /** The parameters of one rule of a ruleset. */

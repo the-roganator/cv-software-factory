@@ -46,6 +46,7 @@ Every request the probes, the crawler and the page reader make sends `x-unmeasur
 
 - every few minutes, and at once when `/version` changes;
 - sending a signal only for a check that has failed twice in a row, with a screenshot and the evidence.
+- keeping a signal the inbox could not take because the store is away, as it is for the seconds a patch restarts Postgres, and handing it over again at each look at the version until the store has it: a warning while the store has been away under a minute, an error at every look after that. A signal the inbox refuses for any other reason is dropped, with an error.
 
 A check that costs something, such as sending a contact message, may run at most so often (the contact checks, once an hour).
 

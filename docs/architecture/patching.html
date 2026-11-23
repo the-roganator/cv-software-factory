@@ -101,7 +101,7 @@ details p { font-size: 13.5px; margin-top: 8px; }
 
   <footer class="foot">
     <div class="left">
-      <span>The details: <a href="../COMPONENTS/PATCHING.md">patching</a>, <a href="../COMPONENTS/SECURITY-SCANNING.md">the scan</a>, and <a href="adr/0019-the-gate-passes-a-pin-move-it-proves.md">why</a>.</span>
+      <span>The details: <a href="../COMPONENTS/PATCHING.md">patching</a>, <a href="../COMPONENTS/SECURITY-SCANNING.md">the scan</a>, and <a href="adr/0022-the-gate-passes-exactly-the-scans-moves.md">why</a>.</span>
       <a href="wiring.html">How the parts connect</a>
       <a href="flags.html">Feature flags</a>
       <a href="hosting.html">Where the factory lives</a>
@@ -129,10 +129,10 @@ const NODES = {
   moves: { x: 460, y: 40, t: 'The moves', s: 'what to move, by when' },
   watch: { x: 680, y: 40, t: 'The pin watch', s: 'in the GitHub worker' },
   dependabot: { x: 680, y: 130, t: 'Dependabot', s: 'its own pull requests' },
-  pr: { x: 900, y: 40, t: 'A pin pull request', s: 'one move, one commit' },
+  pr: { x: 900, y: 40, t: 'A pin pull request', s: 'a file’s moves, one commit' },
   ci: { x: 900, y: 145, t: 'A cluster in CI', s: 'built from the change' },
   checks: { x: 900, y: 250, t: 'The checks', s: 'tests and scans' },
-  gate: { x: 680, y: 250, t: 'The review gate', s: 'proves the pin move' },
+  gate: { x: 680, y: 250, t: 'The review gate', s: 'makes the move itself' },
   queue: { x: 460, y: 250, t: 'The merge queue', s: 'runs the checks again' },
   martin: { x: 20, y: 250, t: 'Martin', s: 'the console, his phone', person: true },
   sense: { x: 20, y: 440, t: 'Dependency sense', s: '05:30 UTC' },
@@ -151,7 +151,7 @@ const EDGES = {
   // A held move leaves the gate downwards and comes round to Martin; his answer goes straight to the queue.
   gm: { d: 'M778,310 L778,345 Q778,360 763,360 L173,360 Q158,360 158,345 L158,310' },
   mq: ['martin', 'queue'],
-  // A move with no pin to edit never becomes a pull request: it goes to Martin as an issue.
+  // A move the App may not write never becomes a pull request: it goes to Martin as an issue.
   mi: { d: 'M558,100 L558,205 Q558,220 543,220 L133,220 Q118,220 118,235 L118,250' },
   qa: ['queue', 'argo'],
   qb: { d: 'M500,310 C 500,390 330,370 330,440' },
@@ -185,7 +185,7 @@ const STEPS = [
     body: `
 <p>Everything the factory runs is <b>pinned</b>: a version written in a file. A patch is a <b>move</b>: one pin going to one version.</p>
 <p>Read the diagram as an S: the top row <b>finds</b> a move, the middle row <b>proves</b> it, the bottom row <b>runs</b> it.</p>
-<div class="callout"><b>Proved, not trusted.</b> A late patch is its own kind of unsafe, so most moves go through with nobody looking. Each is proved on the way, and what cannot be proved waits for Martin.</div>`,
+<div class="callout"><b>Proved, not trusted.</b> A late patch is its own kind of unsafe, so most moves go through with nobody looking. Each is checked on the way to be exactly what the scan asked for, and anything else waits for Martin.</div>`,
   },
   {
     title: 'Found, and given a deadline',
@@ -201,7 +201,7 @@ const STEPS = [
 <tr><th>Images</th><td>Ours are built and signed on <code>main</code>. Anyone else's is pinned by digest: a tag can be moved, a digest cannot.</td></tr>
 </table>
 <p>A fix that can be installed starts a clock: <b>2 days</b> for a Critical, <b>7</b> High, <b>30</b> Medium, <b>90</b> Low. A missed deadline fails the scan.</p>
-<p>The pin watch opens <b>one pull request for each move it can write</b>, changing the pin and nothing else. A move with no pin to edit becomes an issue, and Dependabot keeps the ones it already makes.</p>
+<p>The pin watch opens <b>one pull request for the day's moves at each file</b>, changing the pins and nothing else. A lockfile's or a tool's move is made in the scan's own run, and the watch commits what it made. A move the App may not write (a workflow's pin, the Makefile's) becomes an issue.</p>
 <details><summary>In the docs</summary><p><a href="${DOCS}/SECURITY-SCANNING.md">The scan</a>, its <a href="${DOCS}/SECURITY-SCANNING.md#moves">moves</a> and <a href="${DOCS}/SECURITY-SCANNING.md#exceptions">exceptions</a>; <a href="${DOCS}/SUPPLY-CHAIN.md">signing</a>; <a href="adr/0013-vulnerabilities-found-everywhere-fixed-by-a-deadline.md">ADR 0013</a>.</p></details>`,
   },
   {
@@ -209,23 +209,17 @@ const STEPS = [
     tab: 'Proved',
     nodes: ['pr', 'ci', 'checks', 'gate'],
     edges: { pk: 'read', kc: 'read', cg: 'read' },
-    tags: { gate: 'pin-move or held', ci: 'platform' },
+    tags: { gate: 'move, major or held', ci: 'platform' },
     body: `
-<p>Nobody has read this pull request, so the review gate proves it, with code it cannot change:</p>
+<p>Nobody has read this pull request, so the review gate checks it, with code it cannot change. Three questions:</p>
 <ol>
-<li>It is the pull request it claims to be.</li>
-<li>It changes one move's pins, and nothing else.</li>
-<li>It does not move a scanner or a policy engine.</li>
-<li>The image is its publisher's, by digest.</li>
-<li>It goes forward, and not across a major.</li>
-<li>No guardrail changes.</li>
-<li>What will run differs only by the image.</li>
-<li>The finding is gone, and nothing worse came.</li>
-<li>Something really ran the new image.</li>
+<li><b>Is it exactly what the scan asked for?</b> The gate makes the day's moves itself on <code>main</code> and compares them with the pull request, byte for byte. Anything that differs is held.</li>
+<li><b>Did every required check pass</b> on its head?</li>
+<li><b>Does the level allow it?</b> The gate names a move across a major that clears no Critical a <code>major</code>, and reads no level: the GitHub worker reads Martin's.</li>
 </ol>
 <div class="callout"><b>Tested on a real cluster.</b> A move that changes what the cluster runs gets a whole cluster, built in CI from the change. It passes only when every part comes up healthy and every image is admitted. The merge queue builds it again, unless a cluster made from the same inputs passed at the pull request's head within the day.</div>
-<p><b>A fact unread is a hold:</b> one condition unproved, and the move waits for Martin.</p>
-<details><summary>In the docs</summary><p><a href="${DOCS}/APPROVAL-ROUTING.md">Approval routing</a>; <a href="adr/0019-the-gate-passes-a-pin-move-it-proves.md">ADR 0019</a>.</p></details>`,
+<p><b>A fact unread is a hold:</b> anything the gate cannot read, or that differs, and the move waits for Martin.</p>
+<details><summary>In the docs</summary><p><a href="${DOCS}/APPROVAL-ROUTING.md">Approval routing</a>; <a href="adr/0022-the-gate-passes-exactly-the-scans-moves.md">ADR 0022</a>.</p></details>`,
   },
   {
     title: 'Queued, or held',
@@ -238,14 +232,14 @@ const STEPS = [
 <p>Same pull request, same checks, same gate. What differs is who adds it to the merge queue.</p>
 <table>
 <tr><th></th><th>Proved</th><th>Held</th></tr>
-<tr><th>Which</th><td>everything proved</td><td>a major, k3s, a scanner, Argo CD, or anything unproved</td></tr>
-<tr><th>Queued by</th><td>the GitHub worker</td><td>Martin, after approving</td></tr>
-<tr><th>He hears</th><td>nothing</td><td>for a major, k3s or an issue, a card in Needs you, and his phone, once; for any other move the gate held, its check on GitHub, with the reason</td></tr>
+<tr><th>Which</th><td>a move, and at Lights-out a major</td><td>a major below Lights-out, or anything that is not exactly the scan's moves</td></tr>
+<tr><th>Queued by</th><td>the GitHub worker, at Guarded or Lights-out with auto-merge on</td><td>Martin</td></tr>
+<tr><th>He hears</th><td>nothing</td><td>for a major the level holds, its pull request's description; for anything the gate held, its check on GitHub, with the reason</td></tr>
 </table>
 <ul>
 <li>The worker queues <b>only the commit it wrote itself</b>. A matching name or label is not enough.</li>
-<li>A move with <b>no pin to edit</b> (a tool, a workflow) goes to Martin as an issue.</li>
-<li>In <b>the app's repository</b> the line does the patching, and lights-out is a setting only Martin makes.</li>
+<li>A move the App <b>may not write</b> (a workflow's pin, the Makefile's) goes to Martin as an issue. It, and k3s's move, which his cluster's own command applies once its pull request merges, is a card in Needs you and reaches his phone, once.</li>
+<li>In <b>the app's repository</b> the line does the patching, by the same rule and the same level.</li>
 </ul>
 <details><summary>In the docs</summary><p><a href="${DOCS}/PATCHING.md">Patching</a>; <a href="${DOCS}/GITHUB-WORKER.md">the GitHub worker</a>; <a href="adr/0017-the-worker-queues-the-local-deploy-pins.md">ADR 0017</a>.</p></details>`,
   },
@@ -277,7 +271,7 @@ const STEPS = [
 <li>An exception expires, and is Martin's to merge.</li>
 <li>The moves are checked against the scan's state.</li>
 <li>One guard writes every pin commit: the pin only.</li>
-<li>The gate proves each move; unproved is held.</li>
+<li>The gate makes each move itself; any difference is held.</li>
 <li>A cluster built in CI really runs the new image.</li>
 <li>The worker queues only the commit it wrote.</li>
 <li>The queue runs the checks again on what will merge.</li>
@@ -286,7 +280,7 @@ const STEPS = [
 <li>The sense compares what runs with what was scanned.</li>
 <li>The rules themselves change only with Martin's approval.</li>
 </ol>
-<p><b>To stop one move:</b> take the <code>pin</code> label off its pull request. <b>To stop them all:</b> unset <code>PIN_WATCH_ONLY</code>.</p>
+<p><b>To stop one move:</b> take the <code>pin</code> label off its pull request. <b>To stop them merging:</b> Supervised, or auto-merge off. <b>To stop them opening:</b> unset <code>PIN_WATCH_ONLY</code>.</p>
 <details><summary>In the docs</summary><p><a href="${DOCS}/GUARDRAILS.md">Guardrails</a>; <a href="${DOCS}/PATCHING.md">patching</a>.</p></details>`,
   },
 ];

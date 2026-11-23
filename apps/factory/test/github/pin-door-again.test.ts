@@ -13,7 +13,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { LiveActions } from '../../src/github/actions.ts';
 import { GitHubError } from '../../src/github/client.ts';
 import { configFromEnv } from '../../src/github/config.ts';
-import { dependencyPulls } from '../../src/github/dependabot.ts';
 import { pinHeadsOf } from '../../src/github/deploy-queue.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
 import { PASS_MS, pinWatch } from '../../src/github/pins.ts';
@@ -21,7 +20,7 @@ import type { PullRequestState, Reads } from '../../src/github/reads.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { client, quiet, type Route, type Sent } from './fake.ts';
-import { day, FACTORY, FakeRepo, FILES, factoryMoves, writes } from './pins-harness.ts';
+import { day, FACTORY, FakeRepo, FILES, factoryMoves, pinBranchOf, writes } from './pins-harness.ts';
 
 const closing: (() => void)[] = [];
 afterEach(() => {
@@ -38,7 +37,7 @@ const REQUIRED = [
   'platform',
   'review',
 ];
-const PIN = 'factory/pin/example-dashboards';
+const PIN = pinBranchOf('example-dashboards');
 const SHA = (c: string) => c.repeat(40);
 
 async function worker() {
@@ -94,7 +93,6 @@ async function worker() {
       github,
       reads: {
         moves: async () => day(scanned, factoryMoves()),
-        dependencyPulls: (r: string) => dependencyPulls(github, r, async () => 'version: 2\nupdates: []\n'),
       },
       actions,
       recorder,
@@ -192,6 +190,7 @@ describe('the door, asked again each earlier bypass', () => {
       'graphql',
       'commitPins',
       'updateIssue',
+      'commitAgain',
       'constructor',
     ]) {
       expect((await ask(url, none, asked)).status).toBe(404);

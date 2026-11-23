@@ -6,6 +6,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import type { PayloadOf } from '@software-factory/events';
 import pino from 'pino';
 import { describe, expect, it } from 'vitest';
+import { QUEUE_TRIES, spentComment } from '../../src/github/deploy-queue.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { recordBytes, recordHash, type SignedRefusal, signRecord } from '../../src/signed-refusals.ts';
 import { clock, database, event, line, martin, payloads, stage, ticket, types, withLineStore } from './harness.ts';
@@ -354,32 +355,59 @@ describe('the line, merging through the queue', () => {
     expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'held' } });
   });
 
-  it('records the queue taking it out as an event, with the checks that failed, and holds it', async () => {
+  it('records the queue taking it out as an event, adds it again for failed checks, and holds it the third time', async () => {
     await controls({});
     const { workItem, pass, github } = await readyToMerge();
     await pass();
     expect(await payloads(workItem, 'pull-request.enqueued')).toHaveLength(1);
+    const head = String(github.pulls.get(12)?.head.sha);
+    for (let time = 2; time <= QUEUE_TRIES; time++) {
+      github.dequeue(12, 'FAILED_CHECKS', ['test']);
+      await pass();
+      await pass();
+      expect(enqueues(github.acts)).toHaveLength(time);
+      expect(await types(workItem)).not.toContain('hold.started');
+    }
     github.dequeue(12, 'FAILED_CHECKS', ['test']);
     await pass();
     await pass();
-    const head = github.pulls.get(12)?.head.sha;
-    expect(await payloads(workItem, 'pull-request.dequeued')).toEqual([
-      {
-        number: 12,
-        commit: head,
-        reason: 'failed_checks',
-        by: 'github-merge-queue',
-        queueCommit: 'd'.repeat(40),
-        failed: ['test'],
-      },
+    await pass();
+    const out = {
+      number: 12,
+      commit: head,
+      reason: 'failed_checks',
+      by: 'github-merge-queue',
+      queueCommit: 'd'.repeat(40),
+      failed: ['test'],
+    };
+    expect(await payloads(workItem, 'pull-request.dequeued')).toEqual(Array.from({ length: QUEUE_TRIES }, () => out));
+    expect(await payloads(workItem, 'hold.started')).toEqual([
+      expect.objectContaining({
+        cause: 'merge',
+        reason: expect.stringContaining(`The merge queue took #12 out ${QUEUE_TRIES} times at ${head.slice(0, 7)}`),
+        merge: expect.objectContaining({ why: 'queue', queue: { reason: 'failed_checks', failed: ['test'] } }),
+      }),
     ]);
+    // It does not add that head again, and says why on the pull request, once.
+    expect(enqueues(github.acts)).toHaveLength(QUEUE_TRIES);
+    expect(github.acts.filter((a) => a.action === 'comment')).toEqual([
+      { action: 'comment', args: { number: 12, body: spentComment(head, ['test']) } },
+    ]);
+  });
+
+  it('holds a head the queue took out for any other reason, and adds it no more', async () => {
+    await controls({});
+    const { workItem, pass, github } = await readyToMerge();
+    await pass();
+    github.dequeue(12, 'DEQUEUED');
+    await pass();
+    await pass();
     expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
-      cause: 'merge',
-      reason: expect.stringContaining('The merge queue took #12 out (failed_checks): test failed'),
-      merge: { why: 'queue', queue: { reason: 'failed_checks', failed: ['test'] } },
+      reason: expect.stringContaining('The merge queue took #12 out (dequeued). It waits for Martin'),
+      merge: { why: 'queue', queue: { reason: 'dequeued', failed: [] } },
     });
-    // It does not add that head again.
     expect(enqueues(github.acts)).toHaveLength(1);
+    expect(github.acts.filter((a) => a.action === 'comment')).toEqual([]);
   });
 
   it('records the queue taking it out for a push, by the head it queued, and waits on no queue entry after', async () => {

@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import {
   admits,
@@ -10,7 +13,10 @@ import {
   digestOf,
   type Get,
   lockedVersions,
+  type Mise,
   movedRange,
+  nodeInImage,
+  nodeInTar,
   nodeLockMoved,
   notFromRegistry,
   PinsHeld,
@@ -287,6 +293,220 @@ describe('a package’s move', () => {
   });
 });
 
+describe('a package at two versions, and a workspace’s own projects (the factory’s moves)', () => {
+  const tools = (pnpm: Pnpm, workspace = false) => ({
+    pnpm,
+    get: noRegistry,
+    aside: mkdtempSync(join(tmpdir(), 'aside-')),
+    workspace,
+  });
+  // semver twice: 5.7.1 under one parent, 7.5.1 under another, each with its own fix on its own line.
+  const TWICE = (old: string, newer: string) => `lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    devDependencies:
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5
+
+packages:
+
+  semver@${old}:
+    resolution: {integrity: sha512-old}
+
+  semver@${newer}:
+    resolution: {integrity: sha512-new}
+
+  vitest@5.0.5:
+    resolution: {integrity: sha512-vitest}
+
+snapshots:
+
+  semver@${old}: {}
+
+  semver@${newer}: {}
+
+  vitest@5.0.5:
+    dependencies:
+      semver: ${newer}
+`;
+
+  it('moves each copy to the target on its line, with one update for both', async () => {
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': TWICE('5.7.1', '7.5.1') });
+    const { pnpm, runs } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), TWICE('5.7.2', '7.8.6')));
+    await writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '5.7.2,7.5.2' }, tools(pnpm));
+    // pnpm moved both on the first; the second line's copy is already past its target.
+    expect(runs).toEqual([['update', 'semver', '--depth', 'Infinity']]);
+    expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'semver')).toEqual(['5.7.2', '7.8.6']);
+  });
+
+  it('refuses a target with no copy on its line, and one that is not a version', async () => {
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': TWICE('5.7.1', '7.5.1') });
+    const { pnpm, runs } = fakePnpm(() => {});
+    await expect(
+      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '6.0.1,7.5.2' }, tools(pnpm)),
+    ).rejects.toThrow('semver is at no version on the line of 6.0.1: 5.7.1, 7.5.1.');
+    await expect(
+      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '5.7.2,latest' }, tools(pnpm)),
+    ).rejects.toThrow('latest is not a version');
+    expect(runs).toEqual([]);
+  });
+
+  it('takes a workspace’s own projects only where it is told the checkout is its own', async () => {
+    const manifest = `${JSON.stringify({ devDependencies: { vitest: '^5.0.5', '@own/testing': 'workspace:*' } }, null, 2)}\n`;
+    const lock = LOCK('5.0.5', '4.2.1').replace(
+      '        version: 5.0.5\n',
+      "        version: 5.0.5\n      '@own/testing':\n        specifier: workspace:*\n        version: link:packages/testing\n",
+    );
+    const dir = checkout({ 'package.json': manifest, 'pnpm-lock.yaml': lock });
+    const { pnpm, runs } = fakePnpm((d) =>
+      writeFileSync(
+        join(d, 'pnpm-lock.yaml'),
+        lock.replaceAll('vitest@5.0.5', 'vitest@5.1.0').replace('version: 5.0.5', 'version: 5.1.0'),
+      ),
+    );
+    const vitest = { ecosystem: 'npm' as const, name: 'vitest', from: '5.0.5', to: '5.1.0' };
+    await expect(writePins(dir, vitest, tools(pnpm))).rejects.toThrow(/Only versions from the registry/);
+    expect(runs).toEqual([]);
+    await writePins(dir, vitest, tools(pnpm, true));
+    expect(runs).toHaveLength(1);
+    // Never a link out of the tree's own folders, nor an override's workspace.
+    expect(registryOnly('        version: link:/etc\n', true)).toEqual(['version: link:/etc']);
+    expect(registryRange('workspace:*', true)).toBe(true);
+    expect(
+      notFromRegistry([{ path: 'package.json', json: { pnpm: { overrides: { a: 'workspace:*' } } } }], true),
+    ).toEqual(['package.json: the override of a "workspace:*"']);
+  });
+});
+
+describe('a tool mise pins (the factory’s moves)', () => {
+  const MISE_TOML = '[tools]\nk3d = "5"\nkubectl = "1.37"\n';
+  const lockAt = (version: string) =>
+    `[[tools.k3d]]\nversion = "${version}"\nbackend = "aqua:k3d-io/k3d"\nspecifiers = ["5"]\n\n[tools.k3d."platforms.linux-x64"]\nchecksum = "sha256:${'a'.repeat(64)}"\nurl = "https://github.com/k3d-io/k3d/releases/download/v${version}/k3d-linux-amd64"\n\n[[tools.kubectl]]\nversion = "1.37.2"\n`;
+  const tools = (mise?: Mise) => ({
+    pnpm: fakePnpm(() => {}).pnpm,
+    get: noRegistry,
+    aside: mkdtempSync(join(tmpdir(), 'aside-')),
+    ...(mise ? { mise } : {}),
+  });
+
+  it('moves its entry’s version, then has mise lock it, for each platform the lockfile keeps', async () => {
+    const dir = checkout({ 'mise.toml': MISE_TOML, 'mise.lock': lockAt('5.8.3') });
+    const asked: string[][] = [];
+    let seen = '';
+    const mise: Mise = async (d, args) => {
+      asked.push(args);
+      seen = read(d, 'mise.lock');
+      writeFileSync(join(d, 'mise.lock'), lockAt('5.9.0'));
+    };
+    await writePins(dir, { ecosystem: 'tool', name: 'k3d', from: '5.8.3', to: '5.9.0' }, tools(mise));
+    expect(asked).toEqual([['lock', 'k3d']]);
+    // mise was asked with the version moved and its downloads still the old one's, which it writes again.
+    expect(seen).toContain('version = "5.9.0"');
+    expect(seen).toContain('/v5.8.3/');
+    expect(read(dir, 'mise.lock')).toBe(lockAt('5.9.0'));
+    expect(read(dir, 'mise.toml')).toBe(MISE_TOML);
+  });
+
+  it('writes nothing where the entry pins the target, and refuses outside the range, another from, or with no mise', async () => {
+    const dir = checkout({ 'mise.toml': MISE_TOML, 'mise.lock': lockAt('5.9.0') });
+    const asked: string[][] = [];
+    const mise: Mise = async (_, args) => {
+      asked.push(args);
+    };
+    await writePins(dir, { ecosystem: 'tool', name: 'k3d', from: '5.8.3', to: '5.9.0' }, tools(mise));
+    expect(asked).toEqual([]);
+    await expect(
+      writePins(dir, { ecosystem: 'tool', name: 'k3d', from: '5.9.0', to: '6.0.0' }, tools(mise)),
+    ).rejects.toThrow('k3d 6.0.0 is outside the range mise.toml gives it, 5.');
+    await expect(
+      writePins(dir, { ecosystem: 'tool', name: 'k3d', from: '5.8.0', to: '5.9.1' }, tools(mise)),
+    ).rejects.toThrow("mise.lock's k3d is 5.9.0, not 5.8.0.");
+    await expect(
+      writePins(dir, { ecosystem: 'tool', name: 'k3d', from: '5.9.0', to: '5.9.1' }, tools()),
+    ).rejects.toThrow('The pin step runs no mise here');
+    await expect(
+      writePins(dir, { ecosystem: 'tool', name: 'helm', from: '4.3.1', to: '4.3.2' }, tools(mise)),
+    ).rejects.toThrow('mise.lock has no entry for helm.');
+    expect(asked).toEqual([]);
+  });
+
+  it('waits for mise.toml’s minimum_release_age from the day the tool’s repository published the release', async () => {
+    const NOW = Date.parse('2026-11-10T04:30:00Z');
+    const urls: string[] = [];
+    const get: Get = async (url) => {
+      urls.push(url);
+      return new Response(
+        JSON.stringify([
+          { tag_name: 'v5.9.1', published_at: '2026-11-09T00:00:00Z' },
+          { tag_name: 'v5.9.0', published_at: '2026-11-06T00:00:00Z' },
+          { tag_name: '5.9.2', published_at: '2026-11-01T00:00:00Z', draft: true },
+        ]),
+      );
+    };
+    const asked: string[][] = [];
+    const mise: Mise = async (_, args) => {
+      asked.push(args);
+    };
+    const aged = `[settings]\nminimum_release_age = "3d"\n\n${MISE_TOML}`;
+    const move = (to: string, now: number) =>
+      writePins(
+        checkout({ 'mise.toml': aged, 'mise.lock': lockAt('5.8.3') }),
+        { ecosystem: 'tool', name: 'k3d', from: '5.8.3', to },
+        { ...tools(mise), get, now },
+      );
+    // A day old: within the three days, so no move and no mise.
+    await expect(move('5.9.1', NOW)).rejects.toThrow(
+      "k3d 5.9.1 came out on 2026-11-09T00:00:00Z, within mise.toml's minimum_release_age.",
+    );
+    // A draft is no release to count from.
+    await expect(move('5.9.2', NOW)).rejects.toThrow("k3d 5.9.2 is not a published release of k3d-io/k3d's.");
+    expect(asked).toEqual([]);
+    expect(urls[0]).toBe('https://api.github.com/repos/k3d-io/k3d/releases?per_page=100');
+    // Four days old, and the young one once its three days are up.
+    await move('5.9.0', NOW);
+    await move('5.9.1', Date.parse('2026-11-12T00:00:00Z'));
+    expect(asked).toEqual([
+      ['lock', 'k3d'],
+      ['lock', 'k3d'],
+    ]);
+  });
+
+  it('counts a release’s age from the newest upload of its downloads (S2-L3)', async () => {
+    // A release published weeks ago whose download was uploaded again a day ago: as young as the upload.
+    const get: Get = async () =>
+      Response.json([
+        {
+          tag_name: 'v5.9.0',
+          published_at: '2026-10-01T00:00:00Z',
+          assets: [
+            { name: 'k3d-linux-amd64', updated_at: '2026-10-01T00:05:00Z' },
+            { name: 'k3d-darwin-arm64', updated_at: '2026-11-09T00:00:00Z' },
+          ],
+        },
+      ]);
+    const asked: string[][] = [];
+    const mise: Mise = async (_, args) => {
+      asked.push(args);
+    };
+    const aged = `[settings]\nminimum_release_age = "3d"\n\n${MISE_TOML}`;
+    const move = (now: string) =>
+      writePins(
+        checkout({ 'mise.toml': aged, 'mise.lock': lockAt('5.8.3') }),
+        { ecosystem: 'tool', name: 'k3d', from: '5.8.3', to: '5.9.0' },
+        { ...tools(mise), get, now: Date.parse(now) },
+      );
+    await expect(move('2026-11-10T04:30:00Z')).rejects.toThrow(
+      "k3d 5.9.0 came out on 2026-11-09T00:00:00Z, within mise.toml's minimum_release_age.",
+    );
+    expect(asked).toEqual([]);
+    await move('2026-11-12T00:00:00Z');
+    expect(asked).toEqual([['lock', 'k3d']]);
+  });
+});
+
 describe('Node’s move', () => {
   const MISE_TOML = '[settings]\nminimum_release_age = "3d"\n\n[tools]\nnode = "24.22.1"\npnpm = "12"\n';
   const MISE_LOCK = (version: string, sum: string) =>
@@ -315,6 +535,60 @@ describe('Node’s move', () => {
     if (url === 'https://gcr.io/v2/distroless/nodejs24-debian13/manifests/nonroot')
       return new Response(null, { headers: { 'docker-content-digest': `sha256:${'4'.repeat(64)}` } });
     return new Response(null, { status: 404 });
+  };
+
+  const RUNTIME = 'gcr.io/distroless/nodejs24-debian13';
+  /**
+   * The runtime at the digest it gives, running a release: an index, linux on amd64's manifest, a configuration with
+   * no NODE_VERSION, two layers, each the bytes its digest names.
+   */
+  const image = (release: string) => {
+    // The last layer holds Node, as distroless's does; the first is never read.
+    const layers = [
+      gzipSync(tar([['etc/os-release', 'debian']])),
+      gzipSync(
+        tar([
+          ['nodejs/LICENSE', 'MIT'],
+          [
+            'nodejs/bin/node',
+            `\x7fELF…https://nodejs.org/download/release/v${release}/node-v${release}-headers.tar.gz…`,
+          ],
+        ]),
+      ),
+    ];
+    const config = Buffer.from(JSON.stringify({ config: { Env: ['PATH=/usr/bin'] } }));
+    const platform = Buffer.from(
+      JSON.stringify({
+        config: { digest: sha256(config) },
+        layers: layers.map((layer) => ({
+          digest: sha256(layer),
+          mediaType: 'application/vnd.oci.image.layer.v1.tar+gzip',
+        })),
+      }),
+    );
+    const index = Buffer.from(
+      JSON.stringify({
+        manifests: [
+          { digest: `sha256:${'0'.repeat(64)}`, platform: { os: 'linux', architecture: 'arm64' } },
+          { digest: sha256(platform), platform: { os: 'linux', architecture: 'amd64' } },
+        ],
+      }),
+    );
+    const base = 'https://gcr.io/v2/distroless/nodejs24-debian13';
+    const blobs = new Map<string, Buffer>([
+      [`${base}/manifests/${sha256(index)}`, index],
+      [`${base}/manifests/${sha256(platform)}`, platform],
+      [`${base}/blobs/${sha256(config)}`, config],
+      [`${base}/blobs/${sha256(layers[1] as Buffer)}`, layers[1] as Buffer],
+    ]);
+    const get: Get = async (url, init) => {
+      if (url === `${base}/manifests/nonroot`)
+        return new Response(null, { headers: { 'docker-content-digest': sha256(index) } });
+      const blob = blobs.get(url);
+      if (blob) return new Response(new Uint8Array(blob));
+      return registries(url, init);
+    };
+    return { digest: sha256(index), get };
   };
 
   it('moves mise.toml, mise.lock with each platform’s checksum, and each FROM of a Node image to its digest', async () => {
@@ -375,7 +649,204 @@ describe('Node’s move', () => {
     expect(releaseAge(MISE_TOML)).toBe(3 * 86_400_000);
     expect(releaseAge('[settings]\n')).toBe(0);
   });
+
+  describe('a checkout whose mise.toml pins the target already (S2-L4)', () => {
+    const NODE = { ecosystem: 'node' as const, name: 'node', from: '24.22.1', to: '24.22.2' };
+    const runtime = image('24.22.2');
+    const made = {
+      'mise.toml': MISE_TOML.replace('24.22.1', '24.22.2'),
+      // As the move from 24.22.1 writes it: each platform's checksum from Node's SHASUMS256.txt.
+      'mise.lock': MISE_LOCK('24.22.2', 'a'.repeat(64)).replace(
+        `checksum = "sha256:${'a'.repeat(64)}"\nurl = "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin`,
+        `checksum = "sha256:${'b'.repeat(64)}"\nurl = "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin`,
+      ),
+      Dockerfile: DOCKERFILE.replace('24.22.1', '24.22.2').replace(`sha256:${'2'.repeat(64)}`, runtime.digest),
+    };
+    const old = image('24.22.1');
+    /** The registries, with the runtime at both its digests and Node's image at a third release's tag. */
+    const both: Get = async (url, init) => {
+      if (url === 'https://registry-1.docker.io/v2/library/node/manifests/24.20.0-alpine3.24')
+        return new Response(null, { headers: { 'docker-content-digest': `sha256:${'5'.repeat(64)}` } });
+      const answer = await runtime.get(url, init);
+      return answer.status === 404 ? old.get(url, init) : answer;
+    };
+    const pin = (files: Record<string, string>) => {
+      const dir = checkout(files);
+      const tools = { pnpm: fakePnpm(() => {}).pnpm, get: both, aside: dir, now: Date.parse('2026-11-11') };
+      return { dir, written: writePins(dir, NODE, tools) };
+    };
+
+    it('writes nothing where every pin is at the target: the move is made', async () => {
+      const { dir, written } = pin(made);
+      await written;
+      for (const [path, text] of Object.entries(made)) expect(read(dir, path)).toBe(text);
+    });
+
+    it('writes the pins a lockfile or a Dockerfile still has at the old Node, as the move from it does', async () => {
+      // The whole move from 24.22.1, as the first test of Node's move writes it: each Node image at its tag's digest.
+      const moved = {
+        ...made,
+        Dockerfile: `FROM node:24.22.2-alpine3.24@sha256:${'3'.repeat(64)} AS build\nRUN true\nFROM ${RUNTIME}:nonroot@${runtime.digest}\n`,
+      };
+      for (const files of [
+        { ...made, 'mise.lock': MISE_LOCK('24.22.1', 'f'.repeat(64)) },
+        { ...made, Dockerfile: made.Dockerfile.replace('node:24.22.2', 'node:24.22.1') },
+        { ...made, Dockerfile: made.Dockerfile.replace(runtime.digest, old.digest) },
+      ]) {
+        const { dir, written } = pin(files);
+        await written;
+        for (const [path, text] of Object.entries(moved)) expect(read(dir, path)).toBe(text);
+      }
+    });
+
+    it('refuses, never takes for made, a pin the move leaves behind', async () => {
+      const { written } = pin({ ...made, Dockerfile: made.Dockerfile.replace('node:24.22.2', 'node:24.20.0') });
+      await expect(written).rejects.toThrow(
+        "Node's move to 24.22.2 leaves a pin behind: Dockerfile's node:24.20.0-alpine3.24 runs Node 24.20.0, not 24.22.2.",
+      );
+    });
+  });
+
+  describe('brought by the runtime image’s move (test 10)', () => {
+    /** The runtime's move to the image that runs a release. */
+    const moveTo = (release: string) => ({
+      ecosystem: 'docker' as const,
+      name: RUNTIME,
+      from: 'nonroot',
+      to: `nonroot@${image(release).digest}`,
+    });
+    const MOVED = image('24.22.2').digest;
+    const move = moveTo('24.22.2');
+    const files = () => ({
+      'mise.toml': MISE_TOML,
+      'mise.lock': MISE_LOCK('24.22.1', 'f'.repeat(64)),
+      Dockerfile: DOCKERFILE,
+    });
+
+    it('moves Node to the release the image at the move’s digest runs, and pins the image at that digest', async () => {
+      const dir = checkout(files());
+      const tools = {
+        pnpm: fakePnpm(() => {}).pnpm,
+        get: image('24.22.2').get,
+        aside: dir,
+        now: Date.parse('2026-11-11'),
+      };
+      await writePins(dir, move, tools);
+      expect(read(dir, 'mise.toml')).toBe(MISE_TOML.replace('24.22.1', '24.22.2'));
+      expect(read(dir, 'mise.lock')).toContain('version = "24.22.2"');
+      expect(read(dir, 'Dockerfile')).toBe(
+        `FROM node:24.22.2-alpine3.24@sha256:${'3'.repeat(64)} AS build\nRUN true\nFROM ${RUNTIME}:nonroot@${MOVED}\n`,
+      );
+    });
+
+    it('moves the image alone where it runs the Node mise.toml pins', async () => {
+      const dir = checkout(files());
+      const same = image('24.22.1');
+      await writePins(dir, moveTo('24.22.1'), { pnpm: fakePnpm(() => {}).pnpm, get: same.get, aside: dir });
+      expect(read(dir, 'mise.toml')).toBe(MISE_TOML);
+      expect(read(dir, 'Dockerfile')).toBe(DOCKERFILE.replace(`sha256:${'2'.repeat(64)}`, same.digest));
+    });
+
+    it('writes nothing once Node’s move has pinned the image at the move’s digest (test W3)', async () => {
+      const done = {
+        'mise.toml': MISE_TOML.replace('24.22.1', '24.22.2'),
+        'mise.lock': MISE_LOCK('24.22.2', 'a'.repeat(64)),
+        Dockerfile: `FROM node:24.22.2-alpine3.24@sha256:${'3'.repeat(64)} AS build\nRUN true\nFROM ${RUNTIME}:nonroot@${MOVED}\n`,
+      };
+      const dir = checkout(done);
+      await writePins(dir, move, { pnpm: fakePnpm(() => {}).pnpm, get: image('24.22.2').get, aside: dir });
+      for (const [path, text] of Object.entries(done)) expect(read(dir, path)).toBe(text);
+    });
+
+    it('refuses a Node behind mise.toml’s, and one younger than its minimum_release_age, writing nothing', async () => {
+      for (const [release, now, why] of [
+        ['24.21.0', '2026-11-11', 'runs Node 24.21.0, behind the 24.22.1 mise.toml pins'],
+        ['24.22.2', '2026-11-02', 'within mise.toml'],
+      ] as const) {
+        const dir = checkout(files());
+        const tools = { pnpm: fakePnpm(() => {}).pnpm, get: image(release).get, aside: dir, now: Date.parse(now) };
+        await expect(writePins(dir, moveTo(release), tools)).rejects.toThrow(why);
+        for (const [path, text] of Object.entries(files())) expect(read(dir, path)).toBe(text);
+      }
+    });
+  });
 });
+
+describe('the Node an image runs', () => {
+  /** Node's own image, as its registry answers: a manifest and a configuration that sets NODE_VERSION. */
+  const config = Buffer.from(
+    JSON.stringify({ config: { Env: ['PATH=/usr/bin', 'NODE_VERSION=24.22.3', 'YARN_VERSION=1.22.22'] } }),
+  );
+  const manifest = Buffer.from(JSON.stringify({ config: { digest: sha256(config) }, layers: [] }));
+  const nodeImage =
+    (asked: string[], answer = config): Get =>
+    async (url) => {
+      asked.push(url);
+      if (url.endsWith(`/manifests/${sha256(manifest)}`)) return new Response(new Uint8Array(manifest));
+      if (url.endsWith(`/blobs/${sha256(config)}`)) return new Response(new Uint8Array(answer));
+      return new Response(null, { status: 404 });
+    };
+
+  it('reads Node’s own images’ NODE_VERSION, with no layer fetched', async () => {
+    const asked: string[] = [];
+    expect(await nodeInImage('node', sha256(manifest), nodeImage(asked))).toBe('24.22.3');
+    expect(asked).toHaveLength(2);
+  });
+
+  it('refuses an answer that is not the bytes its digest names (S-L4)', async () => {
+    // A registry, or a mirror, that answers the configuration's digest with another release's.
+    const other = Buffer.from(JSON.stringify({ config: { Env: ['NODE_VERSION=25.0.0'] } }));
+    await expect(nodeInImage('node', sha256(manifest), nodeImage([], other))).rejects.toThrow(
+      /answers blobs\/sha256:[0-9a-f]{64} with bytes that are not its digest's/,
+    );
+    // And a manifest asked for by a digest it is not.
+    await expect(
+      nodeInImage('node', `sha256:${'1'.repeat(64)}`, async () => new Response(new Uint8Array(manifest))),
+    ).rejects.toThrow(/answers manifests\/sha256:1{64} with bytes that are not its digest's/);
+  });
+
+  it('reads a tar’s bin/node by its ustar prefix or a GNU long name, plain or gzipped, and nothing else', async () => {
+    const binary = 'one\0two https://nodejs.org/download/release/v24.22.3/node-v24.22.3.tar.gz three';
+    const long = `${'very/'.repeat(30)}nodejs/bin/node`;
+    expect(await nodeInTar(Readable.from([tar([['opt/bin/node', binary]], 'opt')]), false)).toBe('24.22.3');
+    expect(await nodeInTar(Readable.from([gzipSync(tar([[long, binary]]))]), true)).toBe('24.22.3');
+    // Split across chunks, the URL still reads.
+    const whole = tar([['nodejs/bin/node', binary]]);
+    const at = whole.indexOf('download/release');
+    expect(await nodeInTar(Readable.from([whole.subarray(0, at), whole.subarray(at)]), false)).toBe('24.22.3');
+    expect(await nodeInTar(Readable.from([tar([['nodejs/bin/nodejs-helper', binary]])]), false)).toBeUndefined();
+  });
+});
+
+/** The digest of some bytes, as a registry names them. */
+const sha256 = (bytes: Buffer) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+
+/** A tar of these files, a GNU long-name entry before any name past 100 bytes, or under a ustar prefix. */
+function tar(files: [string, string][], prefix = ''): Buffer {
+  const header = (name: string, size: number, type: string) => {
+    const block = Buffer.alloc(512);
+    block.write(name.slice(0, 100), 0, 'utf8');
+    block.write(size.toString(8).padStart(11, '0'), 124, 'latin1');
+    block.write(type, 156, 'latin1');
+    block.write('ustar\0', 257, 'latin1');
+    return block;
+  };
+  const pad = (size: number) => Buffer.alloc((512 - (size % 512)) % 512);
+  const blocks: Buffer[] = [];
+  for (const [path, text] of files) {
+    const body = Buffer.from(text, 'latin1');
+    let name = prefix && path.startsWith(`${prefix}/`) ? path.slice(prefix.length + 1) : path;
+    if (name.length > 100) {
+      const long = Buffer.from(`${name}\0`);
+      blocks.push(header('././@LongLink', long.length, 'L'), long, pad(long.length));
+      name = name.slice(0, 100);
+    }
+    const head = header(name, body.length, '0');
+    if (prefix && path.startsWith(`${prefix}/`)) head.write(prefix, 345, 'utf8');
+    blocks.push(head, body, pad(body.length));
+  }
+  return Buffer.concat([...blocks, Buffer.alloc(1024)]);
+}
 
 describe('a base image’s move', () => {
   it('takes the digest only from the registry, and refuses a target the registry does not have at that tag', async () => {
@@ -420,6 +891,101 @@ describe('a base image’s move', () => {
   it('refuses a registry digest that is not a SHA-256’s', async () => {
     const get: Get = async () => new Response(null, { headers: { 'docker-content-digest': 'md5:abc' } });
     await expect(digestOf('node', '24', get)).rejects.toThrow(/gives no SHA-256 digest/);
+  });
+});
+
+describe('an image one release with a library: Playwright’s (test 6)', () => {
+  const IMAGE = 'mcr.microsoft.com/playwright';
+  const was = `sha256:${'2'.repeat(64)}`;
+  const now = `sha256:${'5'.repeat(64)}`;
+  const get: Get = async () => new Response(null, { headers: { 'docker-content-digest': now } });
+  const playwrightLock = (version: string) => `lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    devDependencies:
+      playwright:
+        specifier: ^1.65.0
+        version: ${version}
+
+packages:
+
+  playwright-core@${version}:
+    resolution: {integrity: sha512-core}
+
+  playwright@${version}:
+    resolution: {integrity: sha512-playwright}
+
+snapshots:
+
+  playwright-core@${version}: {}
+
+  playwright@${version}:
+    dependencies:
+      playwright-core: ${version}
+`;
+  const files = (version: string) => ({
+    'Dockerfile.browser': `FROM node:24.22.2-trixie-slim@sha256:${'1'.repeat(64)} AS node\nFROM ${IMAGE}:v${version}-noble@${was} AS browsers\n`,
+    'Dockerfile.dockerignore': '*\n!package.json\n',
+    'package.json': `${JSON.stringify({ name: 'factory', devDependencies: { playwright: '^1.65.0' } }, null, 2)}\n`,
+    'pnpm-lock.yaml': playwrightLock(version),
+  });
+  /** pnpm's update to the release named: every copy of the library moves, and the range with it. */
+  const updates = (leave?: string) =>
+    fakePnpm((dir, args) => {
+      const release = args.at(-1)?.split('@').at(-1) ?? '';
+      let lock = read(dir, 'pnpm-lock.yaml').replaceAll('1.65.0', release);
+      if (leave) lock = lock.replace(`playwright-core@${release}:`, `playwright-core@${leave}:`);
+      writeFileSync(join(dir, 'pnpm-lock.yaml'), lock.replace('^1.65.0', `^${release}`));
+      writeFileSync(join(dir, 'package.json'), read(dir, 'package.json').replace('^1.65.0', `^${release}`));
+    });
+  const move = (to: string) => ({
+    ecosystem: 'docker' as const,
+    name: IMAGE,
+    from: 'v1.65.0-noble',
+    to: `${to}@${now}`,
+  });
+
+  it('moves the image’s FROM, in a Dockerfile.<name>, and its library to the release its tag names', async () => {
+    const dir = checkout(files('1.65.0'));
+    const { pnpm, runs } = updates();
+    await writePins(dir, move('v1.65.1-noble'), { pnpm, get, aside: dir });
+    expect(read(dir, 'Dockerfile.browser')).toContain(`FROM ${IMAGE}:v1.65.1-noble@${now} AS browsers`);
+    // Node's image beside it is no part of the move.
+    expect(read(dir, 'Dockerfile.browser')).toContain(`FROM node:24.22.2-trixie-slim@sha256:${'1'.repeat(64)} AS node`);
+    expect(runs).toEqual([
+      [
+        'update',
+        // Only what a manifest names: the rest of the library follows it.
+        'playwright@1.65.1',
+      ],
+    ]);
+    expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'playwright')).toEqual(['1.65.1']);
+    expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'playwright-core')).toEqual(['1.65.1']);
+    expect(JSON.parse(read(dir, 'package.json')).devDependencies.playwright).toBe('^1.65.1');
+  });
+
+  it('runs no pnpm for a move of the digest alone: the library is at the release already', async () => {
+    const dir = checkout(files('1.65.0'));
+    const { pnpm, runs } = updates();
+    await writePins(dir, move('v1.65.0-noble'), { pnpm, get, aside: dir });
+    expect(read(dir, 'Dockerfile.browser')).toContain(`FROM ${IMAGE}:v1.65.0-noble@${now} AS browsers`);
+    expect(runs).toEqual([]);
+    expect(read(dir, 'pnpm-lock.yaml')).toBe(playwrightLock('1.65.0'));
+  });
+
+  it('refuses a move whose lockfile keeps a copy of the library at another release, and a tag that names none', async () => {
+    const dir = checkout(files('1.65.0'));
+    await expect(
+      writePins(dir, move('v1.65.1-noble'), { pnpm: updates('1.65.0').pnpm, get, aside: dir }),
+    ).rejects.toThrow(
+      'mcr.microsoft.com/playwright:v1.65.1-noble is 1.65.1, and the lockfile keeps playwright-core@1.65.0.',
+    );
+    const other = checkout(files('1.65.0'));
+    await expect(writePins(other, move('noble'), { pnpm: updates().pnpm, get, aside: other })).rejects.toThrow(
+      /names no release of its library/,
+    );
   });
 });
 

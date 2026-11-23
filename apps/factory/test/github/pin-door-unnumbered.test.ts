@@ -12,7 +12,6 @@ import { listenLocal } from '@software-factory/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 import { APP_LOGIN, LiveActions } from '../../src/github/actions.ts';
 import { GitHubError } from '../../src/github/client.ts';
-import { dependencyPulls } from '../../src/github/dependabot.ts';
 import { type DeployQueueDependencies, pinHeadsOf, pinQueueWatch } from '../../src/github/deploy-queue.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
 import { PASS_MS, type PinScope, pinWatch, readPinScope } from '../../src/github/pins.ts';
@@ -21,7 +20,7 @@ import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker, type GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { client, quiet, type Route, type Sent } from './fake.ts';
-import { day, digest, FACTORY, FakeRepo, FILES, factoryMoves, writes } from './pins-harness.ts';
+import { day, digest, FACTORY, FakeRepo, FILES, factoryMoves, pinBranchOf, writes } from './pins-harness.ts';
 
 let close: (() => void) | undefined;
 afterEach(() => close?.());
@@ -82,7 +81,6 @@ async function worker(only: PinScope) {
       github,
       reads: {
         moves: async () => day(scanned, factoryMoves()),
-        dependencyPulls: (r: string) => dependencyPulls(github, r, async () => 'version: 2\nupdates: []\n'),
       },
       actions,
       recorder,
@@ -125,7 +123,7 @@ describe('the door, asked for actions that name no pull request', () => {
 
   it('refuses a branch at a pin pull request’s head, so no second pull request has it and the gate does not hold the move', async () => {
     const { repo, door, sent, refusals } = await worker('*');
-    const pin = repo.pulls.find((p) => p.head === 'factory/pin/ghcr.io-example-scanner-proxy');
+    const pin = repo.pulls.find((p) => p.head === pinBranchOf('ghcr.io/example/scanner-proxy'));
     if (!pin) throw new Error('the pin watch opened no pull request for the scanner');
     const head = repo.refs.get(pin.head) as string;
     const before = sent.length;
@@ -143,7 +141,7 @@ describe('the door, asked for actions that name no pull request', () => {
 
   it('refuses a check run named as the review gate’s, or as a check main requires, at any head', async () => {
     const { repo, door, sent, refusals } = await worker('*');
-    const pin = repo.pulls.find((p) => p.head === 'factory/pin/ghcr.io-example-scanner-proxy');
+    const pin = repo.pulls.find((p) => p.head === pinBranchOf('ghcr.io/example/scanner-proxy'));
     const head = repo.refs.get(pin?.head ?? '') as string;
     const asked = { headSha: head, status: 'completed', conclusion: 'success', title: 't', summary: 's' } as const;
     for (const name of ['review', ' Review ']) {
@@ -197,7 +195,14 @@ describe('the door, asked for actions that name no pull request', () => {
     });
     const none = { enqueuePullRequest: async () => ({ position: null, state: null }) };
     await pinQueueWatch(
-      { github, reads, actions: none, heads: { get: () => undefined }, log: quiet },
+      {
+        github,
+        reads,
+        actions: none,
+        heads: { get: () => undefined },
+        level: async () => ({ autonomy: 'guarded', autoMerge: true }) as const,
+        log: quiet,
+      },
       FACTORY,
       readPinScope(undefined),
     )();

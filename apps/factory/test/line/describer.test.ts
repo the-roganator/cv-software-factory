@@ -83,6 +83,18 @@ describe('the describer', () => {
     }
   });
 
+  it('puts a scoped package’s name in code itself, and refuses a user’s mention by name', () => {
+    const ok = { title: 'fix(deps): move protobufjs', summary };
+    const body = 'protobufjs, pulled in through @grpc/proto-loader, is at a version that fixes the scan’s advisory.';
+    expect(describerResult.parse({ ...ok, body }).body).toBe(
+      'protobufjs, pulled in through `@grpc/proto-loader`, is at a version that fixes the scan’s advisory.',
+    );
+    const refused = describerResult.safeParse({ ...ok, body: `${body} Thanks @mrogan.` });
+    expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
+      'no @mention outside code: @mrogan would notify someone from the App’s account',
+    ]);
+  });
+
   describe('of an improvement', () => {
     const coded =
       FIXTURES.coder['delivery-dates']?.input ??

@@ -11,9 +11,9 @@ import { APP_USER, MARTIN } from '../../src/github/issues.ts';
 import { readPinScope } from '../../src/github/pins.ts';
 import type { ReadMove } from '../../src/github/scanning.ts';
 import { worker } from './pin-queue-harness.ts';
-import { day, FakeRepo, FILES, factoryMoves } from './pins-harness.ts';
+import { day, FakeRepo, FILES, factoryMoves, pinBranchOf } from './pins-harness.ts';
 
-const BRANCH = 'factory/pin/example-dashboards';
+const BRANCH = pinBranchOf('example-dashboards');
 
 /** The day's moves, with example-dashboards moved to a version, or left out. */
 const movesTo = (version: string | null): ReadMove[] =>

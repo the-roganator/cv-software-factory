@@ -65,11 +65,15 @@ describe("the store's client", () => {
   it('counts the connections it holds open, and each it opened', async () => {
     const before = count(find(await series('store.connection.attempts'), { outcome: 'connected' }));
     const sql = connect(inject('databaseUrl'), { max: 2 });
+    // Two connections held at once, each reserved, so the pool must open both. Two short queries need not: when the
+    // second connection is slow to open, the first finishes its query and takes the other, and both are done before
+    // the second is counted.
+    const held = await Promise.all([sql.reserve(), sql.reserve()]);
     try {
-      await Promise.all([sql`select pg_sleep(0.05)`, sql`select pg_sleep(0.05)`]);
       expect(count((await series('store.connections'))[0])).toBe(2);
       expect(count(find(await series('store.connection.attempts'), { outcome: 'connected' }))).toBe(before + 2);
     } finally {
+      for (const connection of held) connection.release();
       await sql.end();
     }
     expect(count((await series('store.connections'))[0])).toBe(0);

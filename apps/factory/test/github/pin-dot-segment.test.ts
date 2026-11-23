@@ -13,15 +13,15 @@ import { GitHub } from '../../src/github/client.ts';
 import { readPinScope } from '../../src/github/pins.ts';
 import { CLIENT_ID, PRIVATE_KEY, quiet } from './fake.ts';
 import { heldByMartin, worker } from './pin-worker-harness.ts';
-import { day, digest, FACTORY, FakeRepo, FILES, factoryMoves } from './pins-harness.ts';
+import { day, digest, FACTORY, FakeRepo, FILES, factoryMoves, pinBranchOf } from './pins-harness.ts';
 
 const closing: (() => void)[] = [];
 afterEach(() => {
   for (const close of closing.splice(0)) close();
 });
 
-const A = 'factory/pin/example-dashboards';
-const B = 'factory/pin/example-sidecar';
+const A = pinBranchOf('example-dashboards');
+const B = pinBranchOf('example/sidecar');
 const SIDECAR_FILES = ['deploy/base/telemetry/values/dashboards.yaml', 'deploy/base/telemetry/values/logs.yaml'];
 
 /** The sidecar's move, as the pin watch would write it: the tag and digest at each of its two pins. */

@@ -4,8 +4,11 @@
  * the enqueue, or the dry run's own. The pin queue watch beside it adds the pin watch's pull requests the gate passed
  * as pin moves, each condition tested alone against one that passes.
  */
+import type { Autonomy } from '@software-factory/events';
+import { type Logger, pino } from 'pino';
 import { describe, expect, it } from 'vitest';
-import { DryRunActions } from '../../src/github/actions.ts';
+import { ENQUEUES, enqueues } from '../../../../policy/line.ts';
+import { APP_LOGIN, DryRunActions, withChecksRun } from '../../src/github/actions.ts';
 import { GitHubError } from '../../src/github/client.ts';
 import {
   checksWait,
@@ -17,18 +20,21 @@ import {
   MAX_TRIES,
   pinPullWait,
   pinQueueWatch,
+  QUEUE_TRIES,
   QUEUED_DEPLOYS,
   type QueuePull,
-  toldWait,
+  RUN_TRIES,
   verdictWait,
 } from '../../src/github/deploy-queue.ts';
 import { DEPLOYS, type DeployTarget } from '../../src/github/deploys.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
+import { type LevelReader, noLevel, storeLevel } from '../../src/github/level.ts';
 import type { MergeQueue, ReviewVerdict } from '../../src/github/merging.ts';
+import { PatchRefused } from '../../src/github/patches.ts';
 import type { PinScope } from '../../src/github/pins.ts';
 import type { CheckRun } from '../../src/github/reads.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
-import { calls, client, quiet, type Sent } from './fake.ts';
+import { calls, client, quiet, type Route, type Sent } from './fake.ts';
 
 const [FACTORY, APP] = DEPLOYS as [DeployTarget, DeployTarget];
 const REPO = FACTORY.repo;
@@ -100,6 +106,11 @@ const vouching = (pulls: () => QueuePull[]) => ({
   get: (_repo: string, branch: string) => pulls().find((p) => p.head.ref === branch)?.head.sha,
 });
 
+interface Comment {
+  body: string;
+  user: { login: string };
+}
+
 /** A worker's deploy queue watch against a deploy branch with these open pull requests, as each pass reads them. */
 function harness(o: {
   heads?: DeployQueueDependencies['heads'];
@@ -111,6 +122,10 @@ function harness(o: {
   enqueue?: (number: number, head: string) => Promise<{ position: number | null; state: string | null }>;
   actions?: DeployQueueDependencies['actions'];
   recorder?: RefusalRecorder;
+  /** The pull request's comments, as GitHub keeps them: shared by two harnesses, a worker and its restart. */
+  comments?: Comment[];
+  /** More of GitHub, such as GitHub Actions' runs. */
+  routes?: Route[];
 }) {
   const sent: Sent[] = [];
   const { github } = client(
@@ -120,6 +135,12 @@ function harness(o: {
         path: `/repos/${REPO}/pulls?state=open&per_page=10&head=the-roganator:deploy%2Flocal`,
         answer: () => ({ body: (o.pulls ?? (() => [pull()]))() }),
       },
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/issues/973/comments?per_page=100`,
+        answer: () => ({ body: o.comments ?? [] }),
+      },
+      ...(o.routes ?? []),
     ],
     sent,
   );
@@ -246,7 +267,7 @@ describe('the deploy queue watch', () => {
       { ...verdict(HEAD), judged: { number: 973, head: NEWER, rule: 'exact-pin' as const, tags: [] } },
     ];
     for (const v of verdicts) {
-      expect(verdictWait(v, HEAD, 'exact-pin')?.waits).toBe('verdict');
+      expect(verdictWait(v, HEAD, ['exact-pin'])?.waits).toBe('verdict');
       const { pass, enqueued } = harness({ verdict: () => v });
       await pass();
       expect(enqueued, JSON.stringify(v.judged)).toEqual([]);
@@ -292,6 +313,335 @@ describe('the deploy queue watch', () => {
     const { pass, enqueued } = harness({ queued: () => queued });
     await pass();
     expect(enqueued).toEqual([]);
+  });
+
+  /** A queue that fails every head it is given: each pass after an enqueue finds it taken out for failed checks. */
+  const failing = (reason = 'failed_checks') => {
+    let outs = 0;
+    const said: [number, string][] = [];
+    const h = harness({
+      queued: () =>
+        outs === 0
+          ? queue()
+          : queue({
+              added: { at: '2026-11-18T04:47:47Z', by: 'mrogan-software-factory' },
+              removed: {
+                at: '2026-11-18T04:53:12Z',
+                by: 'github-merge-queue',
+                reason,
+                commit: 'c'.repeat(40),
+                failures: reason === 'failed_checks' ? outs : 0,
+              },
+              checks: [run('lint, types, tests', 'failure'), run('browser tests', 'skipped')],
+            }),
+      actions: {
+        enqueuePullRequest: async (_repo, number, head) => {
+          outs++;
+          h.enqueued.push([number, head]);
+          return { position: 1, state: 'QUEUED' };
+        },
+        comment: async (_repo, number, body) => {
+          said.push([number, body]);
+        },
+      },
+    });
+    return { ...h, said };
+  };
+
+  it('adds a head the queue took out for failed checks again, QUEUE_TRIES times in all, then says so once', async () => {
+    const { pass, enqueued, said } = failing();
+    for (let i = 0; i < QUEUE_TRIES; i++) await pass();
+    expect(enqueued).toEqual(Array.from({ length: QUEUE_TRIES }, () => [973, HEAD]));
+    expect(said).toEqual([]);
+    for (let i = 0; i < 3; i++) await pass();
+    expect(enqueued).toHaveLength(QUEUE_TRIES);
+    expect(said).toHaveLength(1);
+    expect(said[0]?.[0]).toBe(973);
+    expect(said[0]?.[1]).toContain(`out ${QUEUE_TRIES} times at aaaaaaa`);
+    expect(said[0]?.[1]).toContain('`lint, types, tests` failed');
+    expect(said[0]?.[1]).not.toContain('browser tests');
+  });
+
+  it('counts the queue’s failures from GitHub, so a worker that restarts neither starts again nor stops early', async () => {
+    const out = (failures: number) =>
+      queue({
+        added: { at: '2026-11-18T04:47:47Z', by: 'mrogan-software-factory' },
+        removed: {
+          at: '2026-11-18T04:53:12Z',
+          by: 'github-merge-queue',
+          reason: 'FAILED_CHECKS',
+          commit: 'c'.repeat(40),
+          failures,
+        },
+      });
+    // A worker new to the head, which another before it added: one failure short, it adds it; at the limit, never.
+    const short = harness({ queued: () => out(QUEUE_TRIES - 1) });
+    await short.pass();
+    expect(short.enqueued).toEqual([[973, HEAD]]);
+    const spent = harness({ queued: () => out(QUEUE_TRIES) });
+    await spent.pass();
+    await spent.pass();
+    expect(spent.enqueued).toEqual([]);
+    // Failures at a head it has left are not this head's: the read counts none, and the new head is added.
+    const moved = harness({ queued: () => out(0) });
+    await moved.pass();
+    expect(moved.enqueued).toEqual([[973, HEAD]]);
+  });
+
+  it('says a head is out of tries once across restarts, by the mark on its comment, whichever checks failed last', async () => {
+    const comments: Comment[] = [];
+    const spent = (checks: CheckRun[]) =>
+      queue({
+        removed: {
+          at: '2026-11-18T04:53:12Z',
+          by: 'github-merge-queue',
+          reason: 'failed_checks',
+          commit: 'c'.repeat(40),
+          failures: QUEUE_TRIES,
+        },
+        checks,
+      });
+    const worker = (checks: CheckRun[]) =>
+      harness({
+        queued: () => spent(checks),
+        comments,
+        actions: {
+          enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
+          comment: async (_repo, _number, body) => {
+            comments.push({ body, user: { login: APP_LOGIN } });
+          },
+        },
+      });
+    await worker([run('lint, types, tests', 'failure')]).pass();
+    expect(comments).toHaveLength(1);
+    // Restarted, it reads another check failed since on the queue's commit: its words differ, its mark does not.
+    await worker([run('lint, types, tests', 'failure'), run('browser tests', 'failure')]).pass();
+    expect(comments).toHaveLength(1);
+    // A mark in a comment another account made, or for another head, is not the App's word for this one.
+    comments.splice(0, 1, { body: comments[0]?.body as string, user: { login: 'someone' } });
+    comments.push({ body: `<!-- factory: out of tries ${NEWER} -->`, user: { login: APP_LOGIN } });
+    await worker([]).pass();
+    expect(comments).toHaveLength(3);
+    expect(comments[2]?.body).toContain(`<!-- factory: out of tries ${HEAD} -->`);
+  });
+
+  it('tries the comment again on the next pass when it could not be made, and adds nothing meanwhile', async () => {
+    let fails = 1;
+    const said: string[] = [];
+    const enqueued: number[] = [];
+    const { pass } = harness({
+      queued: () =>
+        queue({
+          removed: {
+            at: '2026-11-18T04:53:12Z',
+            by: 'github-merge-queue',
+            reason: 'failed_checks',
+            commit: null,
+            failures: QUEUE_TRIES,
+          },
+        }),
+      actions: {
+        enqueuePullRequest: async (_repo, number) => {
+          enqueued.push(number);
+          return { position: 1, state: 'QUEUED' };
+        },
+        comment: async (_repo, _number, body) => {
+          if (fails-- > 0) throw new GitHubError('server', 'Bad gateway', 502);
+          said.push(body);
+        },
+      },
+    });
+    await expect(pass()).rejects.toThrow('Bad gateway');
+    await pass();
+    await pass();
+    expect(said).toHaveLength(1);
+    expect(enqueued).toEqual([]);
+  });
+
+  it('never adds again a head that left the queue for any reason but failed checks', async () => {
+    for (const reason of ['dequeued', 'merge_conflict', 'queue_cleared']) {
+      const { pass, enqueued, said } = failing(reason);
+      for (let i = 0; i < 4; i++) await pass();
+      expect(enqueued, reason).toHaveLength(1);
+      expect(said, reason).toEqual([]);
+    }
+  });
+
+  it('adds a failed head again only while the gate, its checks and main still pass it', async () => {
+    let judged: Parameters<typeof verdict>[1] = {};
+    let outs = 0;
+    const h = harness({
+      verdict: () => verdict(HEAD, judged),
+      queued: () =>
+        outs === 0
+          ? queue()
+          : queue({
+              removed: {
+                at: '2026-11-18T04:53:12Z',
+                by: 'github-merge-queue',
+                reason: 'failed_checks',
+                commit: null,
+                failures: outs,
+              },
+            }),
+      enqueue: async () => {
+        outs++;
+        return { position: 1, state: 'QUEUED' };
+      },
+    });
+    await h.pass();
+    judged = { rule: 'held' };
+    await h.pass();
+    expect(h.enqueued).toHaveLength(1);
+    judged = {};
+    await h.pass();
+    expect(h.enqueued).toHaveLength(2);
+  });
+
+  /** The head's commit as git's data API gives it, its message saying which run of its checks it is for. */
+  const headCommit = (message: () => string): Route[] => [
+    {
+      method: 'GET',
+      path: new RegExp(`^/repos/${REPO}/git/commits/[0-9a-f]{40}$`),
+      answer: () => ({ body: { sha: HEAD, message: message() } }),
+    },
+  ];
+  const red = () => [...green(), run('lint, types, tests', 'failure')];
+  /** The record of the watch's commits, which a commit written again is set in. */
+  const recording = (pulls: () => QueuePull[]) => {
+    const set: [string, string][] = [];
+    return {
+      ...vouching(pulls),
+      set: (_repo: string, branch: string, sha: string) => void set.push([branch, sha]),
+      was: set,
+    };
+  };
+
+  it('writes the watch’s commit again once every required check there finished, and queues the new head once it passes', async () => {
+    let at = HEAD;
+    let building = true;
+    const pulls = () => [pull({ head: { ref: 'deploy/local', sha: at, repo: { full_name: REPO } } })];
+    const heads = recording(pulls);
+    const again: [string, string, number][] = [];
+    const { pass, enqueued } = harness({
+      pulls,
+      heads,
+      verdict: () => verdict(at),
+      routes: headCommit(() => TITLE),
+      // A failed check beside one still running, then the failed one alone; green at the new head.
+      runs: () =>
+        at === NEWER
+          ? green()
+          : [
+              ...red().filter((r) => !(building && r.name === 'image builds')),
+              run('image builds', building ? null : 'success'),
+            ],
+      actions: {
+        enqueuePullRequest: async (_repo, number, head) => {
+          enqueued.push([number, head]);
+          return { position: 1, state: 'QUEUED' };
+        },
+        commitAgain: async (_repo, branch, head, checksRun) => {
+          again.push([branch, head, checksRun]);
+          return NEWER;
+        },
+      },
+    });
+    await pass();
+    expect(again).toEqual([]);
+    building = false;
+    await pass();
+    expect(again).toEqual([['deploy/local', HEAD, 2]]);
+    expect(heads.was).toEqual([['deploy/local', NEWER]]);
+    expect(enqueued).toEqual([]);
+    at = NEWER;
+    await pass();
+    expect(enqueued).toEqual([[973, NEWER]]);
+  });
+
+  it('counts the runs from the head’s own message, and after RUN_TRIES says so once, across a restart', async () => {
+    const comments: Comment[] = [];
+    const worker = (message: string) => {
+      const again: number[] = [];
+      const h = harness({
+        heads: recording(() => [pull()]),
+        routes: headCommit(() => message),
+        runs: red,
+        comments,
+        actions: {
+          enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
+          comment: async (_repo, _number, body) => void comments.push({ body, user: { login: APP_LOGIN } }),
+          commitAgain: async (_repo, _branch, _head, checksRun) => {
+            again.push(checksRun);
+            return NEWER;
+          },
+        },
+      });
+      return { ...h, again };
+    };
+    // A worker new to the head reads its run from the message: the second, so it writes the third.
+    const short = worker(withChecksRun(TITLE, RUN_TRIES - 1));
+    await short.pass();
+    expect(short.again).toEqual([RUN_TRIES]);
+    // At the limit, nothing is written, and the pull request is told once, across a restart.
+    for (const spent of [worker(withChecksRun(TITLE, RUN_TRIES)), worker(withChecksRun(TITLE, RUN_TRIES))]) {
+      await spent.pass();
+      await spent.pass();
+      expect(spent.again).toEqual([]);
+      expect(spent.enqueued).toEqual([]);
+    }
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain(`in ${RUN_TRIES} runs`);
+    expect(comments[0]?.body).toContain('`lint, types, tests` failed the last time');
+    expect(comments[0]?.body).toContain(`<!-- factory: checks out of tries ${HEAD} -->`);
+  });
+
+  it('writes nothing again for a check another app posted, a head the gate has not passed, or with no record to set', async () => {
+    const cases: Parameters<typeof harness>[0][] = [
+      { runs: () => [...green(), run('lint, types, tests', 'failure', 'some-ci')] },
+      { verdict: () => verdict(HEAD, { rule: 'exact-pin', pending: 'test integrity' }) },
+      { heads: vouching(() => [pull()]) },
+    ];
+    for (const c of cases) {
+      const again: string[] = [];
+      const { pass, enqueued } = harness({
+        runs: red,
+        heads: recording(() => [pull()]),
+        routes: headCommit(() => TITLE),
+        ...c,
+        actions: {
+          enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
+          commitAgain: async (_repo, _branch, head) => {
+            again.push(head);
+            return NEWER;
+          },
+        },
+      });
+      await pass();
+      expect(again).toEqual([]);
+      expect(enqueued).toEqual([]);
+    }
+  });
+
+  it('leaves the head for Martin when the commit cannot be written again, and tries a failure that may pass again', async () => {
+    const failures = [
+      new GitHubError('server', 'Bad gateway', 502),
+      new PatchRefused('does-not-apply', 'aaaaaaa made again is not the same tree.'),
+    ];
+    let asked = 0;
+    const { pass } = harness({
+      heads: recording(() => [pull()]),
+      routes: headCommit(() => TITLE),
+      runs: red,
+      actions: {
+        enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
+        commitAgain: async () => {
+          throw failures[asked++] ?? new Error('asked again');
+        },
+      },
+    });
+    for (let i = 0; i < 4; i++) await pass();
+    expect(asked).toBe(2);
   });
 
   it('keeps and signs GitHub’s refusal, and does not ask again at that head', async () => {
@@ -449,9 +799,17 @@ const pinVerdict = (
   head,
   check: null,
   verdict: null,
-  judged: judged === null ? null : { number, head, rule: 'pin-move', tags: [], ...judged },
+  judged: judged === null ? null : { number, head, rule: 'move', tags: [], ...judged },
   problem: judged === null ? 'the review App has posted no review check' : null,
 });
+
+/** A log whose lines a test reads: what the queue said of each wait. */
+function capture() {
+  const lines: { msg: string; waits?: string; why?: string }[] = [];
+  return { lines, log: pino({ level: 'info' }, { write: (line: string) => void lines.push(JSON.parse(line)) }) };
+}
+
+const guarded: LevelReader = async () => ({ autonomy: 'guarded', autoMerge: true });
 
 /** A worker's pin queue watch against a repository with these open pull requests and each one's events. */
 function pinHarness(o: {
@@ -465,6 +823,9 @@ function pinHarness(o: {
   heads?: DeployQueueDependencies['heads'];
   /** The closed pull requests GitHub lists from a branch, as the queue reads them for an earlier hold. */
   closed?: (branch: string) => unknown[];
+  /** The level and auto-merge in force, read before each enqueue: Guarded, with auto-merge on, unless a test says. */
+  level?: LevelReader;
+  log?: Logger;
 }) {
   const sent: Sent[] = [];
   /** GitHub's requests and the merge queue's reads, in the order they were made. */
@@ -521,7 +882,7 @@ function pinHarness(o: {
     },
   };
   const pass = pinQueueWatch(
-    { github, reads, actions, heads: o.heads ?? vouching(pulls), log: quiet },
+    { github, reads, actions, heads: o.heads ?? vouching(pulls), log: o.log ?? quiet, level: o.level ?? guarded },
     REPO,
     o.only ?? '*',
   );
@@ -530,23 +891,131 @@ function pinHarness(o: {
 }
 
 describe('the pin queue watch', () => {
+  it('queues a move at Guarded and Lights-out, a major only at Lights-out, and nothing at Supervised', async () => {
+    const at = (autonomy: Autonomy, rule: 'move' | 'major') =>
+      pinHarness({
+        level: async () => ({ autonomy, autoMerge: true }),
+        verdict: (n) => pinVerdict(PIN_HEAD, { rule }, n),
+      });
+    const cases: [Autonomy, 'move' | 'major', boolean][] = [
+      ['supervised', 'move', false],
+      ['supervised', 'major', false],
+      ['guarded', 'move', true],
+      ['guarded', 'major', false],
+      ['lights-out', 'move', true],
+      ['lights-out', 'major', true],
+    ];
+    for (const [autonomy, rule, queues] of cases) {
+      const h = at(autonomy, rule);
+      await h.pass();
+      expect(h.enqueued, `${rule} at ${autonomy}`).toEqual(queues ? [[1040, PIN_HEAD]] : []);
+      // As the one table says, and the line reads it too.
+      expect(ENQUEUES[autonomy].includes(rule), `${rule} at ${autonomy}`).toBe(queues);
+    }
+  });
+
+  it('reads the level afresh each pass, so a level Martin changes holds from the next, with nothing restarted', async () => {
+    let autonomy: Autonomy = 'guarded';
+    let reads = 0;
+    const h = pinHarness({
+      level: async () => {
+        reads++;
+        return { autonomy, autoMerge: true };
+      },
+      verdict: (n) => pinVerdict(PIN_HEAD, { rule: 'major' }, n),
+    });
+    await h.pass();
+    expect(h.enqueued).toEqual([]);
+    autonomy = 'lights-out';
+    await h.pass();
+    expect(h.enqueued).toEqual([[1040, PIN_HEAD]]);
+    expect(reads).toBe(2);
+  });
+
+  it('queues no move with auto-merge off, at any level, says why once, and queues it once the switch is on again', async () => {
+    for (const [autonomy, rule] of [
+      ['guarded', 'move'],
+      ['lights-out', 'move'],
+      ['lights-out', 'major'],
+    ] as const) {
+      let autoMerge = false;
+      const { lines, log } = capture();
+      const h = pinHarness({
+        level: async () => ({ autonomy, autoMerge }),
+        verdict: (n) => pinVerdict(PIN_HEAD, { rule }, n),
+        log,
+      });
+      await h.pass();
+      await h.pass();
+      expect(h.enqueued, `${rule} at ${autonomy}`).toEqual([]);
+      expect(lines.filter((l) => l.waits !== undefined)).toEqual([
+        expect.objectContaining({ waits: 'auto-merge', why: `with auto-merge off a ${rule} waits for Martin` }),
+      ]);
+      // As the line asks it: the same table, and the same switch.
+      expect(enqueues({ autonomy, autoMerge }, rule)).toBe(false);
+      autoMerge = true;
+      await h.pass();
+      expect(h.enqueued, `${rule} at ${autonomy}`).toEqual([[1040, PIN_HEAD]]);
+    }
+  });
+
+  it('says the level, not the switch, of a move neither allows', async () => {
+    const { lines, log } = capture();
+    const h = pinHarness({ level: async () => ({ autonomy: 'supervised', autoMerge: false }), log });
+    await h.pass();
+    expect(h.enqueued).toEqual([]);
+    expect(lines.filter((l) => l.waits !== undefined)).toEqual([
+      expect.objectContaining({ waits: 'level', why: 'at Supervised a move waits for Martin' }),
+    ]);
+  });
+
+  it('queues no move when it cannot read the level, as at Supervised, and says so once', async () => {
+    const warned: unknown[] = [];
+    const log = { info: () => {}, warn: (...args: unknown[]) => void warned.push(args) };
+    const failing = storeLevel({} as never, log);
+    // A store that is not there: `latestControls` throws on its first query.
+    expect(await failing()).toEqual({ autonomy: 'supervised', autoMerge: false });
+    expect(await failing()).toEqual({ autonomy: 'supervised', autoMerge: false });
+    expect(warned).toHaveLength(1);
+    const h = pinHarness({ level: failing });
+    await h.pass();
+    expect(h.enqueued).toEqual([]);
+    const none = pinHarness({ level: noLevel(log) });
+    await none.pass();
+    expect(none.enqueued).toEqual([]);
+  });
+
+  it('reads the level last but for who labelled it, once the gate and the checks pass it', async () => {
+    let reads = 0;
+    const h = pinHarness({
+      level: async () => {
+        reads++;
+        return { autonomy: 'guarded', autoMerge: true };
+      },
+      verdict: (n) => pinVerdict(PIN_HEAD, null, n),
+    });
+    await h.pass();
+    expect(reads).toBe(0);
+  });
+
   it('queues pin moves in this repository alone, never the app’s', () => {
     const { github } = client([]);
-    const deps = { github, reads: {} as never, actions: {} as never, heads: { get: () => undefined }, log: quiet };
+    const deps = {
+      github,
+      reads: {} as never,
+      actions: {} as never,
+      heads: { get: () => undefined },
+      log: quiet,
+      level: guarded,
+    };
     expect(() => pinQueueWatch(deps, APP.repo)).toThrow(/does not queue/);
   });
 
-  it('queues only a move the pin watch is told to take, as the watch opens only those, and reads nothing told none', async () => {
-    // `zap` folds to factory/pin/zap, the branch the pin watch opens for it.
+  it('queues what the pin watch wrote, whatever moves it is told to take, and reads nothing told none', async () => {
+    // The watch commits only the moves it is told to take, and the queue adds only a head the watch wrote (`headWait`).
     const told = pinHarness({ only: ['zap'] });
     await told.pass();
     expect(told.enqueued).toEqual([[1040, PIN_HEAD]]);
-
-    // One left open from an earlier setting, or opened by hand on a pin branch: the watch is told another move.
-    const other = pinHarness({ only: ['argo-rollouts: quay.io/argoproj/argo-rollouts'] });
-    await other.pass();
-    expect(other.enqueued).toEqual([]);
-    expect(calls(other.sent).some((s) => s.path.includes('/events'))).toBe(false);
 
     for (const none of [[], undefined]) {
       const { github } = client([]);
@@ -555,38 +1024,10 @@ describe('the pin queue watch', () => {
         get: (_t, name) => async () => void sent.push(String(name)),
       });
       const actions = { enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }) };
-      const deps = { github, reads, actions, heads: { get: () => undefined }, log: quiet };
+      const deps = { github, reads, actions, heads: { get: () => undefined }, log: quiet, level: guarded };
       await (none === undefined ? pinQueueWatch(deps, REPO) : pinQueueWatch(deps, REPO, none))();
       expect(sent).toEqual([]);
     }
-    const at = (ref: string, title = 'chore(pin): move zap to 2.17.0') => ({
-      title,
-      head: { ref, sha: PIN_HEAD, repo: null },
-    });
-    expect(toldWait(['zap'], at('factory/pin/zap'))).toBeUndefined();
-    expect(toldWait('*', at('factory/pin/anything'))).toBeUndefined();
-    expect(toldWait(['zap'], at('factory/pin/zap2'))?.waits).toBe('not-a-pin');
-  });
-
-  it('takes the setting by the exact move name, as the watch does: no name that only folds to the branch', async () => {
-    const at = (ref: string, title: string) => ({ title, head: { ref, sha: PIN_HEAD, repo: null } });
-    const dashboards = at('factory/pin/example-dashboards', 'chore(pin): move example-dashboards to 13.7.2');
-    // Each folds to the same branch, and the watch takes no move by any of them.
-    for (const name of ['Example-Dashboards', 'example_dashboards', 'example.dashboards*', 'example-dashboards ']) {
-      expect(toldWait([name], dashboards)?.waits, name).toBe('not-a-pin');
-    }
-    expect(toldWait(['example-dashboards'], dashboards)).toBeUndefined();
-    // A told name whose title prefixes another move's on the same branch (names cut at 80 characters fold to one).
-    const long = 'x'.repeat(80);
-    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to x to 1.0`))?.waits).toBe(
-      'not-a-pin',
-    );
-    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to 1.0`))).toBeUndefined();
-    // A told name whose title prefixes another move's is still on its own branch.
-    expect(toldWait(['zap'], at('factory/pin/zap-to-x', 'chore(pin): move zap to x to 1.0'))?.waits).toBe('not-a-pin');
-    const folded = pinHarness({ only: ['Zap'] });
-    await folded.pass();
-    expect(folded.enqueued).toEqual([]);
   });
 
   it('carries Martin’s hold to a pull request the watch opened again for the move, at any target, until a merge', async () => {
@@ -894,20 +1335,20 @@ describe('the pin queue watch', () => {
     ['a pin move at an older head', pinVerdict(OLDER)],
     [
       'judged at an older head under the current one',
-      { ...pinVerdict(PIN_HEAD), judged: { number: 1040, head: OLDER, rule: 'pin-move', tags: [] } },
+      { ...pinVerdict(PIN_HEAD), judged: { number: 1040, head: OLDER, rule: 'move', tags: [] } },
     ],
   ];
   for (const [what, v] of verdicts) {
     it(`never queues a pin move whose verdict at its head is ${what}`, async () => {
-      expect(verdictWait(v, PIN_HEAD, 'pin-move')?.waits).toBe('verdict');
+      expect(verdictWait(v, PIN_HEAD, ['move'])?.waits).toBe('verdict');
       const { pass, enqueued } = pinHarness({ verdict: () => v });
       await pass();
       expect(enqueued).toEqual([]);
     });
   }
   it('never takes a pin move as a deploy pin, nor a deploy pin as a pin move', () => {
-    expect(verdictWait(pinVerdict(PIN_HEAD), PIN_HEAD, 'exact-pin')?.waits).toBe('verdict');
-    expect(verdictWait(verdict(HEAD), HEAD, 'pin-move')?.waits).toBe('verdict');
+    expect(verdictWait(pinVerdict(PIN_HEAD), PIN_HEAD, ['exact-pin'])?.waits).toBe('verdict');
+    expect(verdictWait(verdict(HEAD), HEAD, ['move'])?.waits).toBe('verdict');
   });
 
   const checks: [string, CheckRun[]][] = [

@@ -19,7 +19,9 @@
  *
  * The line publishes the description as the agent wrote it, and the squash commit takes it as its message, so the
  * schema refuses what would act from the App's account: a closing keyword, which would close the ticket's issue on
- * merge, before the fix is verified in production, and an @mention, which would notify someone. It refuses a folded
+ * merge, before the fix is verified in production, and an @mention, which would notify someone, naming each it found
+ * for the next attempt. A scoped package's name, such as `@grpc/grpc-js`, is a team's mention outside code: the line
+ * puts it in code itself, since a move names its packages, and refuses only what is left. It refuses a folded
  * section that would not render, too (`folds.ts`): the skill folds what supports the story into `<details>`, which a
  * missing blank line breaks, leaving its Markdown as text in the published description. The line adds the
  * line that refers to the issue itself, and the section that names the tests the spec contradicts, which test
@@ -42,8 +44,9 @@ import {
   defineAgent,
   type EffectsContext,
   failedAttemptLines,
-  mentions,
+  mentionsIn,
   need,
+  scopedNamesInCode,
   titleFor,
   words,
 } from './agent.ts';
@@ -88,8 +91,15 @@ export const describerResultFor = (title: z.ZodType<string>, moved?: string) =>
     title,
     /** Its description, in Markdown: written by the agent as a file of its own, and read into the result. */
     body: words(30_000)
+      // A scoped package's name outside code would mention a team: the line puts it in code itself (`agent.ts`).
+      .transform(scopedNamesInCode)
       .refine((body) => !closesAnIssue(body), 'no closing keyword before an issue: the issue closes once verified')
-      .refine((body) => !mentions(body), 'no @mention outside code: it would notify someone from the App’s account')
+      .superRefine((body, ctx) => {
+        const named = [...new Set(mentionsIn(body))];
+        if (!named.length) return;
+        const message = `no @mention outside code: ${named.slice(0, 3).join(', ')} would notify someone from the App’s account`;
+        ctx.addIssue({ code: 'custom', message });
+      })
       .refine(
         (body) => !/factory\s*:\s*contradicts/i.test(body),
         'no factory:contradicts marker: the line writes the section that names the tests the spec contradicts',

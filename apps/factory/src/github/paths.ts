@@ -148,8 +148,9 @@ function notPinLines(lines: readonly string[]): string | undefined {
 
 /**
  * Why the pin step's patch may not go on GitHub: the reasons, one for each file, or none. It may change the version or
- * digest on a pin's line in a file a person owns (`owned`, and every manifest), and the lockfiles pnpm writes, whole,
- * and nothing else: never the workflows or the deployment, pnpm's settings, another line, or a file it adds or
+ * digest on a pin's line in a file a person owns (`owned`, and every manifest), a Dockerfile's under `deploy/` among
+ * them (an image the deployment's workflows read, such as Syft's), and the lockfiles pnpm writes, whole, and nothing
+ * else: never the workflows, anything else of the deployment, pnpm's settings, another line, or a file it adds or
  * deletes. A lockfile it writes after the coder (`lockfileOnly`) is a pnpm lockfile and nothing more.
  */
 export function pinStepRefusals(
@@ -160,7 +161,9 @@ export function pinStepRefusals(
   const pnpmLock = ['pnpm-lock.yaml', '**/pnpm-lock.yaml'];
   return files.flatMap(({ path, change, lines }) => {
     if (lockfileOnly && !inScope(path, pnpmLock)) return [`${path}: the lockfile step writes pnpm's lockfile alone`];
-    if (inScope(path, [...NEVER, ...PNPM_SETTINGS])) return [`${path}: the pin step never writes it`];
+    // Under `deploy/`, a Dockerfile's FROM alone, which the step moves as any other's: the rest of it is the cluster's.
+    const deployed = path.startsWith('deploy/') && isDockerfile(path);
+    if (!deployed && inScope(path, [...NEVER, ...PNPM_SETTINGS])) return [`${path}: the pin step never writes it`];
     if (change !== 'modify') return [`${path}: the pin step adds or deletes no file`];
     if (inScope(path, pnpmLock) && !inScope(path, owned)) {
       const resolved = lines.flat().filter((line) => line.startsWith('+') && notFromRegistry(line.slice(1)));

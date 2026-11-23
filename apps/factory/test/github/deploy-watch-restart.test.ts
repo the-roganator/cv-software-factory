@@ -58,6 +58,9 @@ const compareRoute = (repo: string, fail: () => boolean): Route => ({
   method: 'GET',
   path: new RegExp(`^/repos/${repo}/compare/`),
   answer: ({ path }) => {
+    // main's head with the deploy branch's commit, which the watch asks of a head it did not write: these commits are
+    // made up, and GitHub knows none of them, so none is the watch's own (deploy-restart-cost.test.ts has real ones).
+    if (!path.includes('?per_page=')) return { status: 404, body: { message: 'Not Found' } };
     if (fail()) return { status: 502, body: { message: 'Server Error' } };
     const [, base, head, page] = /compare\/(\w+)\.\.\.(\w+)\?per_page=100&page=(\d+)$/.exec(path) ?? [];
     const of = (sha?: string) => HISTORY.findIndex((c) => commit(c) === sha);

@@ -38,6 +38,8 @@ export interface Database {
   redteam: Sql;
   /** The dependency sense's. */
   patching: Sql;
+  /** The GitHub worker's, which reads the autonomy level alone. */
+  github: Sql;
   /** A connection as each worker's own role. */
   as: Record<Worker, Sql>;
   end(): Promise<void>;
@@ -172,8 +174,9 @@ export const SLOW_COPY_MS = 2000;
 /**
  * How long a copy may take before `createDatabase` fails. When each test migrated its own, under one lock for the
  * server, the wait for that lock alone was over two seconds for one database in ten, and up to seven: a queue like
- * that, come back, fails here, naming the cause, before a test's hook times out at ten seconds on a wait that is not
- * its own. A busy machine's copies stay well inside it.
+ * that, come back, fails here, naming the cause, before a test's hook times out at ten seconds, or the test itself
+ * (vitest.config.ts), on a wait that is not its own. A busy machine's copies stay inside it, if not well inside: one
+ * beside three other runs of the database tests took 4.6 s.
  */
 export const COPY_LIMIT_MS = 8000;
 
@@ -309,6 +312,7 @@ export async function createDatabase(
   const proofs = as('factory_proofs', PASSWORDS.proofs);
   const redteam = as('factory_redteam', PASSWORDS.redteam);
   const patching = as('factory_patching', PASSWORDS.patching);
+  const github = as('factory_github', PASSWORDS.github);
   const workers = Object.fromEntries(WORKERS.map((w) => [w, as(ROLES[w].role, PASSWORDS[w])])) as Record<Worker, Sql>;
   return {
     name: database,
@@ -322,6 +326,7 @@ export async function createDatabase(
     proofs,
     redteam,
     patching,
+    github,
     as: workers,
     end: async () => {
       const all = [
@@ -335,6 +340,7 @@ export async function createDatabase(
         proofs,
         redteam,
         patching,
+        github,
         ...Object.values(workers),
       ];
       await Promise.all(all.map((c) => c.end()));

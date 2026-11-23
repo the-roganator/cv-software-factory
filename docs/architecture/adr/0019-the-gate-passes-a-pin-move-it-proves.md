@@ -1,5 +1,7 @@
 # 0019: The review gate passes a pin move it can prove from the pull request, and holds every other for Martin
 
+**Superseded by [ADR 0022](0022-the-gate-passes-exactly-the-scans-moves.md).** The gate makes the scan's moves itself on `main` and passes a pull request that is exactly them, as `move` or `major`, in either repository; `pin-move`, its scripts and the conditions below are gone. What follows is the decision as it was made.
+
 ## Decision
 
 In this repository the factory's App merges nothing but pins. Beside the exact pin of an image of ours (ADR 0014), the review gate passes, as `pin-move`, a pull request of the App's into `main`, from the start and never retargeted (by anyone, or by GitHub when the base branch went: `base_ref_changed` or `automatic_base_change_succeeded`), whose head no other pull request has had, and whose branch no other pull request comes from, open or closed since it was opened (a check run is the head's, whichever base it ran for, and a workflow run's list of pull requests names the open ones that match it now, not the one it ran for), that moves one pin of the vulnerability scan's list (ADR 0013) forward, when it can prove each of these from the pull request itself, and holds it for Martin, with the first reason it could not, otherwise (`scripts/pin-move.ts`):

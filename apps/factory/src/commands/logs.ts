@@ -11,12 +11,15 @@
  */
 import { parseArgs } from 'node:util';
 import { connect } from '@software-factory/store';
+import type { Logger } from 'pino';
 import { objectives } from '../../../../policy/objectives.ts';
 import { telemetryFrom } from '../clients/env.ts';
+import { TELEMETRY_AWAY_MS, telemetryAway } from '../clients/http.ts';
 import { log } from '../log.ts';
 import { reportsFrom as readReportsFrom } from '../logs/cursor.ts';
 import { TIMING, Watcher } from '../logs/watcher.ts';
 import { inbox, printing } from '../outbox.ts';
+import { PassLog } from '../store-absence.ts';
 
 export const USAGE = '  factory logs [--dry-run] [--since <duration, such as 90m or 24h>]';
 
@@ -28,6 +31,25 @@ export function duration(text: string): number {
   const match = /^(\d+)(s|m|h|d)$/.exec(text);
   if (!match) throw new Error(`"${text}" is not a duration such as 90m or 24h`);
   return Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as 's' | 'm' | 'h' | 'd'];
+}
+
+/**
+ * Says how each turn of one check ended. Every check reads Loki, and agreement Prometheus and Tempo too, and patching
+ * one restarts it: a turn that could not reach it, while it has been away under two minutes, is a warning, and its
+ * next turn tries again. Once it has been away for longer, and for any other failure, the turn failed, as an error.
+ */
+export function checkTurns(log: Logger, now: () => Date, check: string): PassLog {
+  return new PassLog(
+    log.child({ check }),
+    now,
+    {
+      away: 'a check could not reach the telemetry it reads, as for a restart: its next turn tries again',
+      stillAway: 'check failed: the telemetry it reads has been away for over two minutes',
+      failed: 'check failed',
+      back: (seconds) => `the check reached the telemetry it reads again, after ${seconds} s`,
+    },
+    { away: telemetryAway, awayMs: TELEMETRY_AWAY_MS },
+  );
 }
 
 export async function run(args: string[]): Promise<number> {
@@ -66,13 +88,15 @@ export async function run(args: string[]): Promise<number> {
   // A check that fails is tried again at its next turn; one running still is not started twice.
   const every = (ms: number, name: string, check: () => Promise<number>) => {
     let running = false;
+    const turns = checkTurns(log, now, name);
     const tick = async () => {
       if (running) return;
       running = true;
       try {
         await check();
+        turns.passed();
       } catch (error) {
-        log.error({ check: name, err: error }, 'check failed');
+        turns.failed(error);
       } finally {
         running = false;
       }

@@ -20,10 +20,8 @@ const DECIDES = [
   ...readdirSync(join(ROOT, 'apps/factory/src/gates')).map((f) => `apps/factory/src/gates/${f}`),
   'apps/factory/src/line/gates.ts',
   'scripts/review-gate.ts',
-  // The review gate's pin moves, which review.yml's pin move job works out for it.
-  'scripts/pin-moves.ts',
-  // And its Critical fixes, which review.yml's critical fix job works out for it in the app.
-  'scripts/critical-fixes.ts',
+  // The review gate's moves, which review.yml's move job works out for it.
+  'scripts/moves.ts',
 ];
 
 /** What it must never reach, each with why. A path ending in `/` is everything under it. */
@@ -106,7 +104,7 @@ function walk(starts: string[]) {
 }
 
 /**
- * The runner's files a Critical fix runs, the pin step's own derivation of a lockfile (ADR 0020): they call no model,
+ * The runner's files a move's proof runs, the pin step's own derivation of a lockfile (ADR 0022): they call no model,
  * and the walk still follows each of their imports, so one that came to reach a model would fail here.
  */
 const PIN_STEP = ['apps/runner/src/pins.ts', 'apps/runner/src/git.ts', 'apps/runner/scripts/install-pnpm.ts'];

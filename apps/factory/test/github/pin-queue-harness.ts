@@ -9,7 +9,6 @@ import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
 import { APP_LOGIN, LiveActions } from '../../src/github/actions.ts';
 import { WatchedHeads } from '../../src/github/branches.ts';
-import { dependencyPulls } from '../../src/github/dependabot.ts';
 import { type DeployQueueDependencies, type LabelEvents, pinQueueWatch } from '../../src/github/deploy-queue.ts';
 import { APP_USER, IssueGuard, openedBy } from '../../src/github/issues.ts';
 import { PASS_MS, type PinScope, pinWatch } from '../../src/github/pins.ts';
@@ -83,7 +82,6 @@ export function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
       github,
       reads: {
         moves: async () => today(),
-        dependencyPulls: (r: string) => dependencyPulls(github, r, async () => 'version: 2\nupdates: []\n'),
       },
       actions,
       recorder,
@@ -102,7 +100,7 @@ export function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
       head: head(number),
       check: null,
       verdict: null,
-      judged: { number, head: head(number), rule: 'pin-move', tags: [] },
+      judged: { number, head: head(number), rule: 'move', tags: [] },
       problem: null,
     }),
     checkRuns: async () =>
@@ -139,6 +137,7 @@ export function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
         },
       },
       heads,
+      level: async () => ({ autonomy: 'guarded', autoMerge: true }) as const,
       log: quiet,
     },
     FACTORY,

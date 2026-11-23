@@ -419,8 +419,8 @@ export const GATE_RULES = [
   'martin-opened',
   'martin-approved-head',
   'exact-pin',
-  'pin-move',
-  'critical-fix',
+  'move',
+  'major',
   'low-risk',
   'lights-out',
   'held',
@@ -585,10 +585,10 @@ export const MARTIN_CLOSE_CHARS = 180;
 
 /**
  * Who moves a move, as the vulnerability scan works it out (`apps/factory/src/vulnerabilities/moves.ts`, whose `LANES`
- * a test holds to this): the app's line, the GitHub worker, Dependabot, Martin's approval, the cluster's own command,
- * an issue, or nobody (a line no longer built).
+ * a test holds to this): the app's line, the GitHub worker, the cluster's own command, an issue, or nobody (a line no
+ * longer built).
  */
-export const MOVE_LANES = ['line', 'worker', 'dependabot', 'approval', 'cluster', 'issue', 'none'] as const;
+export const MOVE_LANES = ['line', 'worker', 'cluster', 'issue', 'none'] as const;
 export type MoveLane = (typeof MOVE_LANES)[number];
 
 /** A finding's severity, as the scan rates it: the publisher's, or none it could read. */

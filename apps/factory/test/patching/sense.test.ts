@@ -7,7 +7,6 @@ import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
-import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { GitHubWorker, GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { inbox } from '../../src/outbox.ts';
@@ -25,18 +24,7 @@ import {
 } from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
-import {
-  APP,
-  APP_COUNTS,
-  agreeing,
-  appMoves,
-  digest,
-  FACTORY,
-  FACTORY_COUNTS,
-  factoryMoves,
-  PULL,
-  pod,
-} from './fixtures.ts';
+import { APP, APP_COUNTS, agreeing, appMoves, digest, FACTORY, FACTORY_COUNTS, factoryMoves, pod } from './fixtures.ts';
 
 let database: Database;
 const logged: { level: number; msg: string; failed?: string[] }[] = [];
@@ -59,7 +47,6 @@ const kube = (pods: unknown[]): Kube => ({
 function senses(change: Partial<Senses> = {}, pods: unknown[] = agreeing()): Senses {
   return {
     moves: async (repo) => (repo === FACTORY ? factoryMoves() : appMoves()),
-    dependencyPulls: async () => [],
     running: () => runningContainers(kube(pods)),
     ...change,
   };
@@ -117,22 +104,14 @@ describe('the dependency sense', () => {
     });
   });
 
-  it('keeps a lockfile move’s package out of the public view until a pull request moving it is open', async () => {
+  it('keeps a lockfile move’s package out of the public view', async () => {
     await sense(senses()).pass();
-    await sense(senses({ dependencyPulls: async (repo) => (repo === FACTORY ? [PULL] : []) })).pass();
-    const [before, after] = await days();
+    const [before] = await days();
     const moveOf = (payload: unknown) =>
       PAYLOADS['patching.read'].parse(payload).repositories[0]?.moves.find((m) => m.lockfile);
     expect(moveOf(before?.payload)?.package?.name).toBe('example-parser');
     expect(moveOf(before?.public.payload)).not.toHaveProperty('package');
     expect(moveOf(before?.public.payload)?.name).toBe('a package in `pnpm-lock.yaml`');
-    expect(moveOf(after?.payload)?.pullRequest).toEqual({ number: 77, version: '1.0.1' });
-    expect(moveOf(after?.public.payload)?.package).toEqual({
-      name: 'example-parser',
-      from: '1.0.0',
-      to: '1.0.1',
-      pins: [{ file: 'pnpm-lock.yaml', line: 120 }],
-    });
     // The view of a view is the view.
     const view = { summary: 's', payload: PAYLOADS['patching.read'].parse(before?.payload), artifacts: [] };
     expect(publicView('patching.read', publicView('patching.read', view))).toEqual(publicView('patching.read', view));
@@ -197,7 +176,7 @@ describe('the dependency sense', () => {
     );
     for (const change of [
       { moves: async () => Promise.reject(refused) },
-      { dependencyPulls: async () => Promise.reject(new Error('GitHub failed')) },
+      { moves: async (repo: string) => (repo === APP ? Promise.reject(new Error('GitHub failed')) : factoryMoves()) },
       { running: async () => Promise.reject(new Error('GET /api/v1/pods answered 403: forbidden')) },
     ] satisfies Partial<Senses>[]) {
       const result = await sense(senses(change)).pass();
@@ -285,24 +264,17 @@ describe('the dependency sense', () => {
     const door = Object.assign(new Error('connect ECONNREFUSED 10.43.117.70:8083'), { code: 'ECONNREFUSED' });
     // As `fetch` gives it: its own error, the refusal its cause.
     const fetched = new TypeError('fetch failed', { cause: door });
-    const s = sense(
-      senses({ moves: async () => Promise.reject(door), dependencyPulls: async () => Promise.reject(fetched) }),
-    );
+    const s = sense(senses({ moves: async (repo) => Promise.reject(repo === FACTORY ? door : fetched) }));
     const passes: Pass[] = [];
     for (let i = 0; i < MOST_REFUSED; i++) passes.push(await s.pass());
     expect(passes.map((p) => p.pass)).toEqual([...Array(MOST_REFUSED - 1).fill('refused'), 'failed']);
     expect(passes[0]).toEqual({
       pass: 'refused',
-      why: [
-        `the moves of ${FACTORY}: connect ECONNREFUSED 10.43.117.70:8083`,
-        `the Dependabot pull requests of ${FACTORY}: fetch failed`,
-        `the moves of ${APP}: connect ECONNREFUSED 10.43.117.70:8083`,
-        `the Dependabot pull requests of ${APP}: fetch failed`,
-      ],
+      why: [`the moves of ${FACTORY}: connect ECONNREFUSED 10.43.117.70:8083`, `the moves of ${APP}: fetch failed`],
     });
     expect(await days()).toEqual([]);
     expect(logged.filter((l) => l.level === 50).map((l) => l.msg)).toEqual([
-      `patching: 4 of the reads failed, refused by the GitHub worker's door ${MOST_REFUSED} times in a row, so the day is not appended`,
+      `patching: 2 of the reads failed, refused by the GitHub worker's door ${MOST_REFUSED} times in a row, so the day is not appended`,
     ]);
   });
 
@@ -310,8 +282,7 @@ describe('the dependency sense', () => {
     const door = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6443'), { code: 'ECONNREFUSED' });
     for (const change of [
       {
-        moves: async () => Promise.reject(door),
-        dependencyPulls: async () => Promise.reject(new Error('GitHub failed')),
+        moves: async (repo: string) => Promise.reject(repo === FACTORY ? door : new Error('GitHub failed')),
       },
       { running: async () => Promise.reject(door) },
     ] satisfies Partial<Senses>[])
@@ -342,7 +313,11 @@ describe('the dependency sense', () => {
   it('starts the count of refused passes anew after any other pass, on the same sense', async () => {
     const door = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
     let listening = false;
-    const s = sense(senses({ dependencyPulls: async () => (listening ? [] : Promise.reject(door)) }));
+    const s = sense(
+      senses({
+        moves: async (repo) => (listening ? (repo === FACTORY ? factoryMoves() : appMoves()) : Promise.reject(door)),
+      }),
+    );
     for (let i = 0; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
     listening = true;
     expect((await s.pass()).pass).toBe('appended');
@@ -368,7 +343,6 @@ describe('the dependency sense', () => {
     const s = sense(
       senses({
         moves: (repo) => new GitHubWorker(url).read('moves', repo, {}),
-        dependencyPulls: (repo) => new GitHubWorker(url).read('dependencyPulls', repo, {}),
       }),
     );
     const started = Date.now();
@@ -401,10 +375,7 @@ describe("the event's lanes", () => {
 });
 
 describe('the day, made from the reads', () => {
-  const read = (moves = factoryMoves(), pulls: DependencyPull[] = []) => [
-    { moves, pulls },
-    { moves: appMoves(), pulls: [] },
-  ];
+  const read = (moves = factoryMoves()) => [{ moves }, { moves: appMoves() }];
   const withMove = (change: Partial<ReadMove>) => {
     const moves = factoryMoves();
     return { ...moves, moves: [{ ...(moves.moves[0] as ReadMove), ...change }] };
@@ -430,80 +401,6 @@ describe('the day, made from the reads', () => {
       moves: [{ ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), to: '' } }],
     };
     expect(PAYLOADS['patching.read'].safeParse(dayOf(read(none), 0, [])).success).toBe(true);
-  });
-
-  it('names the Dependabot pull request of the same ecosystem, dependency and directory, with a version', () => {
-    const pull = (change: Partial<DependencyPull>): DependencyPull => ({ ...PULL, ...change });
-    const workflow = withMove({
-      name: 'actions/checkout',
-      pins: [{ file: '.github/workflows/check.yml', line: 20 }],
-    });
-    const of = (moves: Moves, pulls: DependencyPull[]) =>
-      dayOf(read(moves, pulls), 0, []).repositories[0]?.moves[0]?.pullRequest;
-    const actions = pull({
-      number: 81,
-      ecosystem: 'github-actions',
-      directory: '/',
-      dependency: 'actions/checkout',
-      version: '5',
-    });
-    expect(of(workflow, [actions])).toEqual({ number: 81, version: '5' });
-    const image = withMove({ name: 'node', pins: [{ file: 'apps/x/Dockerfile', line: 1 }] });
-    const npmNode = pull({ number: 82, ecosystem: 'npm', directory: '/apps/x', dependency: 'node', version: '24.1.0' });
-    const dockerNode = pull({
-      number: 83,
-      ecosystem: 'docker',
-      directory: '/apps/x',
-      dependency: 'node',
-      version: '24.2.0',
-    });
-    const unversioned = pull({
-      number: 84,
-      ecosystem: 'docker',
-      directory: '/apps/x',
-      dependency: 'node',
-      version: null,
-    });
-    expect(of(image, [npmNode, unversioned, dockerNode])).toEqual({ number: 83, version: '24.2.0' });
-    expect(of(image, [npmNode])).toBeUndefined();
-  });
-
-  it('names the Dependabot pull request of an image outside Docker Hub, which its branch names without the registry', () => {
-    const image = withMove({
-      name: 'gcr.io/distroless/nodejs24-debian13',
-      pins: [{ file: 'apps/x/Dockerfile', line: 1 }],
-    });
-    const pull: DependencyPull = {
-      ...PULL,
-      number: 91,
-      ecosystem: 'docker',
-      directory: '/apps/x',
-      dependency: 'distroless/nodejs24-debian13',
-      version: '1.2.3',
-    };
-    expect(dayOf(read(image, [pull]), 0, []).repositories[0]?.moves[0]?.pullRequest).toEqual({
-      number: 91,
-      version: '1.2.3',
-    });
-  });
-
-  it('names the Dependabot pull request of an Action used by a subpath', () => {
-    const action = withMove({
-      name: 'github/codeql-action/upload-sarif',
-      pins: [{ file: '.github/workflows/scan.yml', line: 40 }],
-    });
-    const pull: DependencyPull = {
-      ...PULL,
-      number: 92,
-      ecosystem: 'github-actions',
-      directory: '/',
-      dependency: 'github/codeql-action',
-      version: '4.31.0',
-    };
-    expect(dayOf(read(action, [pull]), 0, []).repositories[0]?.moves[0]?.pullRequest).toEqual({
-      number: 92,
-      version: '4.31.0',
-    });
   });
 
   it('is the same day whatever copies of a row run: a Deployment scaled appends nothing', () => {
@@ -562,20 +459,6 @@ describe('the day, made from the reads', () => {
     }
   });
 
-  it('matches a lockfile move only by its package, and one without its package to nothing', () => {
-    const moves = factoryMoves();
-    const lockfile = moves.moves[1] as ReadMove;
-    const scoped = (dependency: string): DependencyPull => ({ ...PULL, number: 95, dependency });
-    const of = (move: ReadMove, pulls: DependencyPull[]) =>
-      dayOf(read({ ...moves, moves: [move] }, pulls), 0, []).repositories[0]?.moves[0]?.pullRequest;
-    expect(of({ ...lockfile, withheld: undefined }, [scoped('@scope/a'), scoped('@scope/b')])).toBeUndefined();
-    const withPackage = {
-      ...lockfile,
-      withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), package: '@scope/b' },
-    };
-    expect(of(withPackage, [scoped('@scope/a'), scoped('@scope/b')])).toEqual({ number: 95, version: PULL.version });
-  });
-
   it('keeps the same rows past its cap whatever the pods are called', () => {
     const rows = (prefix: string) =>
       Array.from({ length: MOST_ROWS + 40 }, (_, i) => ({
@@ -617,6 +500,7 @@ describe("the sense's sends to triage", () => {
       {
         advisory: 'CVE-2026-1001',
         severity: 'HIGH',
+        type: 'pnpm',
         package: 'left-pad',
         installed: '1.2.3',
         file: 'pnpm-lock.yaml',

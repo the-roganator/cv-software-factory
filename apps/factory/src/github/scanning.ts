@@ -8,6 +8,10 @@
  * (vulnerabilities/state.ts, ADR 0021), for what `moves.json` withholds: a lockfile move's package and versions, and
  * each move's findings. It reads no alert: code scanning is where findings are shown, not where the worker learns them.
  *
+ * A third, `pins`, sealed the same way, holds the moves the run made with the pin step (github/made.ts), where it
+ * made any: in the factory for the pin watch to commit, in the app for the line's pin step to make again as the scan
+ * made them. Absent, there are none; there and not opening for that run and its commit, the read fails.
+ *
  * Both are the scan's by where they are, one run's, and each is held to the other: a state that does not open with
  * the repository's key for that run, a finding in a move past the list, or a count that differs from `moves.json`'s,
  * fails the whole read, and nothing of it is returned. A run that left `moves.json` and no state fails it too: there
@@ -47,6 +51,7 @@ import {
 } from '../vulnerabilities/state.ts';
 import { type ZipError, zipEntry } from '../vulnerabilities/zip.ts';
 import { type GitHub, GitHubError } from './client.ts';
+import { MADE_ARTIFACT, MADE_FILE, type Made, openMade } from './made.ts';
 import { DIGEST } from './registry.ts';
 
 export { SCAN_EVENTS, SCAN_WORKFLOW };
@@ -76,8 +81,13 @@ export interface ScanRun {
 /** One finding a move clears, as the scan's state gives it. */
 export interface MoveFinding {
   advisory: string;
-  /** As the scan rated the result; the move's counts are by the higher of this and the publisher's (deadlines.ts). */
+  /**
+   * Trivy's rating of the result, or Node's of its own advisory; the move's counts are by the higher of this and the
+   * publisher's (deadlines.ts).
+   */
   severity: Severity;
+  /** Trivy's type of the result it was in (`pnpm`, `debian`…), or `node` for Node's own advisory (scan.ts). */
+  type: string;
   package: string;
   installed: string;
   file: string;
@@ -119,6 +129,12 @@ export interface Moves {
    */
   file: Omit<MovesFile, 'moves'> | null;
   moves: ReadMove[];
+  /**
+   * The moves the run made with the pin step (github/made.ts): in the factory for the pin watch to commit, in the app
+   * for the time and the answers its line's pin step makes them again with. Absent where it made none, or for a run
+   * before it did.
+   */
+  made?: Made | undefined;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -234,7 +250,7 @@ const ALL_COUNTS: Exclude<keyof DayCounts, keyof typeof DAY_COUNTS> extends neve
 void ALL_COUNTS;
 
 /** `moves.json`, as moves.ts writes it: a reader refuses a version it does not know. */
-const MOVES_FILE_SCHEMA = z.strictObject({
+export const MOVES_FILE_SCHEMA = z.strictObject({
   version: z.literal(MOVES_VERSION),
   repository: z.string(),
   judged: DAY,
@@ -364,9 +380,10 @@ export class ScanReads {
 
   /** One whole read: the run's `moves.json` and its state, each held to the other, and when the first of them expires. */
   async #read(repo: string, run: ScanRun): Promise<{ until: number; moves: Moves }> {
-    const [moves, sealed] = await Promise.all([
+    const [moves, sealed, made] = await Promise.all([
       this.#artifact(repo, run, MOVES_ARTIFACT, MOVES_FILE, MAX_FILE_BYTES),
       this.#artifact(repo, run, STATE_ARTIFACT, STATE_FILE, MAX_SEALED_BYTES),
+      this.#artifact(repo, run, MADE_ARTIFACT, MADE_FILE, MAX_SEALED_BYTES),
     ]);
     if (!moves) {
       if (run.conclusion === 'success') throw disagrees(repo, `run ${run.id} succeeded and left no ${MOVES_FILE}`);
@@ -389,7 +406,23 @@ export class ScanReads {
     }
     const read = joined(repo, run, file, state);
     for (const move of read.moves) if (move.withheld) move.mark = markOf(key, repo, move.withheld);
-    return { until: Math.min(moves.until, sealed.until), moves: { repository: repo, run, ...read } };
+    // What the run made, held to the run as its state is: a file that does not open fails the read.
+    let opened: Made | undefined;
+    if (made) {
+      try {
+        opened = openMade(made.bytes, key, repo, String(run.id));
+      } catch (error) {
+        if (error instanceof StateError)
+          throw disagrees(repo, `run ${run.id}'s made moves cannot be read: ${error.message}`);
+        throw error;
+      }
+      if (opened.commit !== run.headSha) throw disagrees(repo, `run ${run.id} made its moves on another commit`);
+      const known = (index: number) => index >= 1 && index <= read.moves.length;
+      if (!opened.groups.every((g) => [...g.moves, ...g.refused.map((r) => r.move)].every(known)))
+        throw disagrees(repo, `run ${run.id} made a move past its list`);
+    }
+    const until = Math.min(moves.until, sealed.until, made?.until ?? Number.POSITIVE_INFINITY);
+    return { until, moves: { repository: repo, run, ...read, ...(opened ? { made: opened } : {}) } };
   }
 
   /** The last finished run of the scan on the default branch, by schedule, push or hand. */
@@ -511,6 +544,7 @@ export function joined(
     list.push({
       advisory: each.advisory,
       severity: each.severity,
+      type: each.type,
       package: each.package,
       installed: each.installed,
       file: each.file,

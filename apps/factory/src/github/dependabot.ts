@@ -1,6 +1,6 @@
 /**
- * The repository's open Dependabot pull requests, each with the pin and version its branch names, so a move can tell
- * whether Dependabot is already moving its pin (task 33's pin watch does not fight it).
+ * The repository's open Dependabot pull requests, each with the pin and version its branch names, so the line's move
+ * can name the one it replaces (`line/moves.ts`).
  *
  * Dependabot names a branch `dependabot/<ecosystem>/<directory>/<dependency>-<version>`, the directory left out at the
  * root, and a scoped npm package without its `@`: `dependabot/npm_and_yarn/grpc/grpc-js-1.14.7` is `@grpc/grpc-js`

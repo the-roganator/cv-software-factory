@@ -9,14 +9,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readPinScope } from '../../src/github/pins.ts';
 import type { ReadMove } from '../../src/github/scanning.ts';
 import { heldByMartin, labelledByApp, worker } from './pin-worker-harness6.ts';
-import { day, FakeRepo, FILES, factoryMoves } from './pins-harness.ts';
+import { day, FakeRepo, FILES, factoryMoves, pinBranchOf } from './pins-harness.ts';
 
 const closing: (() => void)[] = [];
 afterEach(() => {
   for (const close of closing.splice(0)) close();
 });
 
-const BRANCH = 'factory/pin/example-dashboards';
+const BRANCH = pinBranchOf('example-dashboards');
 const movesTo = (version: string | null): ReadMove[] =>
   factoryMoves()
     .filter((m) => version !== null || m.name !== 'example-dashboards')

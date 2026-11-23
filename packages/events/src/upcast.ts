@@ -45,6 +45,20 @@ function attackNamed(words: string): Attack {
   return 'report';
 }
 
+/**
+ * A gate's rule as the gate names it now. Before it judged every move by whether it is exactly what the scan asked for
+ * (`move`), it passed one pin moved forward on its line in this repository as `pin-move`, never across a major, and a
+ * Critical finding's fix in the app's as `critical-fix`: each is the scan's move, and reads as `move`.
+ */
+function ruleNow(rule: unknown): unknown {
+  return rule === 'pin-move' || rule === 'critical-fix' ? 'move' : rule;
+}
+
+/** A payload with its gate's rule as the gate names it now, where it names one. */
+function withRuleNow(payload: Record<string, unknown>): Record<string, unknown> {
+  return 'rule' in payload ? { ...payload, rule: ruleNow(payload.rule) } : payload;
+}
+
 export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 1 recorded each call, with its cassette; version 2 records an agent's step, with how many calls it made.
   'model.called': { 1: ({ cassette: _, ...payload }) => ({ ...payload, calls: 1 }) },
@@ -83,6 +97,12 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
     10: (payload) => payload,
     // Version 12 adds a visitor's report's ticket that waits for Martin to describe it; a version 11 hold reads as it was.
     11: (payload) => payload,
+    // Version 13 names a merge hold's rule as the gate does now: a version 12 hold's `pin-move` or `critical-fix` reads
+    // as `move`.
+    12: (payload) =>
+      payload.merge && typeof payload.merge === 'object'
+        ? { ...payload, merge: withRuleNow(payload.merge as Record<string, unknown>) }
+        : payload,
   },
   // Version 2 names the hold it answers, and says when its words stay Martin's; a version 1 answer said neither.
   // Version 3 adds sending the work back to the planner to the decisions; a version 2 answer reads as it was.
@@ -252,7 +272,12 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   },
   // Version 2 adds the line adding a deploy pull request to the merge queue, the queue taking it out, and why one
   // whose checks passed waits for Martin; a version 1 record reads as it was.
-  'deploy.changed': { 1: (payload) => payload },
+  // Version 3 names the gate's rule as the gate does now: a version 2 record's `pin-move` or `critical-fix` reads as
+  // `move`.
+  'deploy.changed': { 1: (payload) => payload, 2: withRuleNow },
+  // Version 2 names the gate's rule as the gate does now: a version 1 record's `pin-move` or `critical-fix` reads as
+  // `move`.
+  'pull-request.enqueued': { 1: withRuleNow },
   // Version 1 counted a review's comments; version 2 carries each finding. What a version 1 comment said was never
   // recorded, so a version 1 review reads as one with no findings.
   // Version 3 lets a finding cite the ticket; a version 2 review cited none.
@@ -279,7 +304,41 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   },
   // Version 2 adds each repository's open findings by severity to its totals, which a scan made before it counted them
   // never wrote: a version 1 day reads as it was, with none.
-  'patching.read': { 1: (payload) => payload },
+  'patching.read': {
+    1: (payload) => payload,
+    // Version 3 has no `approval` lane: a major, what judges a move and one chart at two Applications are moves as any
+    // other, which the GitHub worker opens. A version 2 day's moves there read as the worker's, and are counted there.
+    2: (payload) => ({
+      ...payload,
+      repositories: (payload.repositories as Record<string, unknown>[]).map((repository) => {
+        const totals = repository.totals as { lanes: Record<string, number> } | null;
+        const { approval = 0, ...lanes } = totals?.lanes ?? {};
+        return {
+          ...repository,
+          moves: (repository.moves as Record<string, unknown>[]).map((move) =>
+            move.lane === 'approval' ? { ...move, lane: 'worker' } : move,
+          ),
+          totals: totals && { ...totals, lanes: { ...lanes, worker: (lanes.worker ?? 0) + approval } },
+        };
+      }),
+    }),
+    // Version 4 has no `dependabot` lane and names no pull request of Dependabot's: the App makes every move. A version 3
+    // day's moves there read as the worker's, and are counted there, and the pull request each named is left out.
+    3: (payload) => ({
+      ...payload,
+      repositories: (payload.repositories as Record<string, unknown>[]).map((repository) => {
+        const totals = repository.totals as { lanes: Record<string, number> } | null;
+        const { dependabot = 0, ...lanes } = totals?.lanes ?? {};
+        return {
+          ...repository,
+          moves: (repository.moves as Record<string, unknown>[]).map(({ pullRequest: _, ...move }) =>
+            move.lane === 'dependabot' ? { ...move, lane: 'worker' } : move,
+          ),
+          totals: totals && { ...totals, lanes: { ...lanes, worker: (lanes.worker ?? 0) + dependabot } },
+        };
+      }),
+    }),
+  },
 };
 
 export const CATALOGUE: Catalogue = { versions: VERSIONS, upcasters: UPCASTERS };

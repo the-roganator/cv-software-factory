@@ -34,6 +34,7 @@ import {
 } from '../../../policy/store-grants.ts';
 import { DiskArtifacts } from '../src/artifacts.ts';
 import type { JSONValue } from '../src/client.ts';
+import { latestControls } from '../src/commands.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
 import { migrate } from '../src/migrate.ts';
@@ -203,6 +204,7 @@ describe('the grants', () => {
       factory_proofs: true,
       factory_redteam: true,
       factory_patching: true,
+      factory_github: true,
     });
     for (const worker of WORKERS) {
       const [me] = await db.as[worker]<{ me: string }[]>`select current_user as me`;
@@ -665,6 +667,7 @@ describe("a guardrail's proof", () => {
         ['factory_enrol', real.enrol],
         ['factory_redteam', real.redteam],
         ['factory_patching', real.patching],
+        ['factory_github', real.github],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
         ['metrics_reader', real.metrics],
@@ -777,6 +780,7 @@ describe("the day's moves", () => {
         ['factory_enrol', real.enrol],
         ['factory_proofs', real.proofs],
         ['factory_redteam', real.redteam],
+        ['factory_github', real.github],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
         ['metrics_reader', real.metrics],
@@ -857,6 +861,43 @@ describe("the day's moves", () => {
   });
 });
 
+describe('the autonomy level', () => {
+  it('is all the GitHub worker reads: Martin’s latest controls, as the line reads them, and nothing else', async () => {
+    const real = await freshDatabase('github_reads_level');
+    try {
+      await writer(real.operator).append(opened('3201'));
+      await writer(real.admin).append(command('line.started'));
+      await writer(real.admin).append(command('controls.changed'));
+      await writer(real.as.line).append({ ...opened('3202'), summary: 'Another' });
+      // The same read the line makes, and the same answer.
+      expect(await latestControls(real.github)).toEqual(await latestControls(real.as.line));
+      expect(await latestControls(real.github)).toMatchObject({ autonomy: 'guarded' });
+      // No other event, and only the columns the read needs.
+      expect(await real.github`select type from events`).toEqual([{ type: 'controls.changed' }]);
+      await expect(real.github`select summary from events`).rejects.toThrow('permission denied');
+      await expect(real.github`select id, ts, work_item, actor from events`).rejects.toThrow('permission denied');
+      // It appends nothing, and changes nothing.
+      await expect(writer(real.github).append(command('controls.changed'))).rejects.toThrow('permission denied');
+      await expect(real.github`
+        insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public)
+        values (${crypto.randomUUID()}, now(), null, 'spend.cleared', 1, 'factory', 'Cleared', '{}', '[]', '{}')`).rejects.toThrow(
+        'permission denied',
+      );
+      await expect(real.github`update events set payload = '{}'`).rejects.toThrow('permission denied');
+      await expect(real.github`delete from events`).rejects.toThrow('permission denied');
+      // No other table.
+      for (const table of ['store', 'inbox', 'line', 'job_tokens', 'model_calls', 'passkeys', 'sessions']) {
+        await expect(real.github.unsafe(`select 1 from ${table}`), table).rejects.toThrow('permission denied');
+      }
+      // Nor may another role take its name, nor it another's.
+      await expect(real.as.line`set role factory_github`).rejects.toThrow('permission denied');
+      await expect(real.github`set role factory_admin`).rejects.toThrow('permission denied');
+    } finally {
+      await real.end();
+    }
+  });
+});
+
 describe("an attack's end", () => {
   /** An event of a type, inserted as it stands on a work item, real or a sample, as any client could try. */
   const insert = (sql: Sql, type: string, workItem: string, sample = false, payload: object = {}) => sql`
@@ -879,6 +920,7 @@ describe("an attack's end", () => {
         ['factory_enrol', real.enrol],
         ['factory_proofs', real.proofs],
         ['factory_patching', real.patching],
+        ['factory_github', real.github],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
         ['metrics_reader', real.metrics],
@@ -1229,6 +1271,7 @@ describe('a refusal', () => {
         ['factory_proofs', real.proofs],
         ['factory_redteam', real.redteam],
         ['factory_patching', real.patching],
+        ['factory_github', real.github],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
       ];

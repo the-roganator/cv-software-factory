@@ -131,6 +131,13 @@ spec:
                   name: postgres-patching
                   key: password
                   optional: true
+            # The GitHub worker's (0054_github-reads-the-level.sql), made by `make up`. Optional for the same reason.
+            - name: FACTORY_GITHUB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-github
+                  key: password
+                  optional: true
           resources:
             requests:
               cpu: 20m

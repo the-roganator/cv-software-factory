@@ -13,14 +13,13 @@ import { DiskArtifacts } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import { APP_LOGIN, LiveActions } from '../../src/github/actions.ts';
 import { WatchedHeads } from '../../src/github/branches.ts';
-import { dependencyPulls } from '../../src/github/dependabot.ts';
 import { type DeployQueueDependencies, type LabelEvents, pinQueueWatch } from '../../src/github/deploy-queue.ts';
 import { APP_USER, IssueGuard, MARTIN, openedBy } from '../../src/github/issues.ts';
 import { PASS_MS, type PinScope, pinWatch, readPinScope } from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import type { Moves } from '../../src/github/scanning.ts';
 import { client, quiet, type Route } from './fake.ts';
-import { day, FACTORY, FakeRepo, FILES, factoryMoves } from './pins-harness.ts';
+import { day, FACTORY, FakeRepo, FILES, factoryMoves, pinBranchOf } from './pins-harness.ts';
 
 const REQUIRED = ['lint, types, tests', 'image builds', 'review'];
 
@@ -90,7 +89,6 @@ function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
       github,
       reads: {
         moves: async () => today(),
-        dependencyPulls: (r: string) => dependencyPulls(github, r, async () => 'version: 2\nupdates: []\n'),
       },
       actions,
       recorder,
@@ -109,7 +107,7 @@ function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
       head: head(number),
       check: null,
       verdict: null,
-      judged: { number, head: head(number), rule: 'pin-move', tags: [] },
+      judged: { number, head: head(number), rule: 'move', tags: [] },
       problem: null,
     }),
     checkRuns: async () =>
@@ -146,6 +144,7 @@ function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
         },
       },
       heads,
+      level: async () => ({ autonomy: 'guarded', autoMerge: true }) as const,
       log: quiet,
     },
     FACTORY,
@@ -170,7 +169,7 @@ describe('Martin’s hold of a pin move, by its label', () => {
     let moves = factoryMoves();
     const only = readPinScope('example-dashboards');
     const w = worker(repo, only, () => day(scanned, moves));
-    const open = () => repo.pulls.filter((p) => p.head === 'factory/pin/example-dashboards' && p.state === 'open');
+    const open = () => repo.pulls.filter((p) => p.head === pinBranchOf('example-dashboards') && p.state === 'open');
 
     // Martin takes the label off the watch's pull request before the queue's first pass.
     await pinFirst(repo, only, scanned);
@@ -216,7 +215,6 @@ async function pinFirst(repo: FakeRepo, only: PinScope, scanned: string) {
       github,
       reads: {
         moves: async () => day(scanned, factoryMoves()),
-        dependencyPulls: (r: string) => dependencyPulls(github, r, async () => 'version: 2\nupdates: []\n'),
       },
       actions: new LiveActions(github, { guard }),
       recorder,

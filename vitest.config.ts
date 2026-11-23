@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { COPY_LIMIT_MS } from './packages/store/test/postgres.ts';
 
 export default defineConfig({
   test: {
@@ -36,6 +37,10 @@ export default defineConfig({
           ],
           exclude: ['apps/factory/test/browser/**'],
           globalSetup: ['packages/store/test/postgres.ts'],
+          // Most of these tests make a database of their own, many in the test and not in a hook: a copy of the run's
+          // template, which a busy machine takes seconds over, and which fails, naming its cause, past COPY_LIMIT_MS.
+          // Each test has that, and vitest's five seconds for its own work, so a slow copy never times it out first.
+          testTimeout: COPY_LIMIT_MS + 5_000,
         },
       },
       {

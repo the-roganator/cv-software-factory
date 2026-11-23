@@ -1,14 +1,16 @@
 /**
- * The pin watch's guard (`pins.ts`): what lets a commit onto `factory/pin/<move>` replace the version or digest at each
- * of a move's pins, and refuses everything else. It is the guard, not the watch's good behaviour, that holds "nothing
+ * The pin watch's guard (`pins.ts`): what lets a commit onto `factory/pin/<files>` replace the version or digest at each
+ * pin of the moves it carries, and write the files the scan's pin step made for them where a move writes them, and
+ * refuses everything else. It is the guard, not the watch's good behaviour, that holds "nothing
  * else": `commitPins` is the one action that writes a pin branch (`branches.ts`), and it writes only what this gives
  * back, worked out here from the repository itself, never from the file text its caller read.
  *
  * A commit is let through only when all of these hold, and refused, before GitHub is asked to write, otherwise:
  *
- * - **Its branch** is `factory/pin/<move>`, the move's name made one plain segment: nothing that could reach outside it.
+ * - **Its branch** is `factory/pin/<files>`, one plain segment made from the files its moves pin (`pinBranchFor`):
+ *   nothing that could reach outside it.
  * - **Its pins** are at most `MAX_PINS`, no two at one line, each in a plain path (`plainPath`), none under `.github/` or
- *   `policy/`, in a lockfile, or in mise's files, which move only when someone upgrades the toolchain.
+ *   `policy/`, in a lockfile, or in mise's files, which only the pin step writes (below).
  * - **Each pin's file** is an ordinary file in the tree of `main`'s head, as git's own tree names it (a symbolic link,
  *   a submodule or a folder is refused), and of the commit the scan read.
  * - **Each pin's line** is the same at `main`'s head as at the commit the scan read: a line that has changed since
@@ -18,16 +20,40 @@
  * - **The line** holds what it pins before exactly once, as a word of its own, and the commit's line is that line with
  *   that span alone replaced.
  *
+ * A move no pin's line writes (a lockfile's package, what mise pins) is made by the pin step in the scan's run, and
+ * its commit carries the files that step wrote, whole (github/made.ts). The guard cannot make them itself, and holds
+ * each to what a move writes in it:
+ *
+ * - **Each such file** is one the step writes (`madeFile`): a pnpm lockfile, a manifest, mise's two files, or a
+ *   Dockerfile whose `FROM`s an image's move writes with what it brings; of the files CODEOWNERS gives a person, only
+ *   mise's and a pin's place (`ownedPinPlace`); never under `.github/` or `policy/`, and never a file the commit's edits
+ *   also write.
+ * - **It is the same** at `main`'s head as at the commit the scan made it on, an ordinary file in both, and the commit
+ *   changes it.
+ * - **What changes** is what a move writes there (`madeRefusal`), and nothing that runs: a Dockerfile's `FROM`s, a
+ *   manifest's ranges, a lockfile's registry packages, `mise.toml`'s Node, `mise.lock`'s tools' entries. Which
+ *   versions they move to is the scan's, which the review gate makes again on main and compares, byte for byte,
+ *   before anything merges.
+ *
  * `main`'s head is read here, and a commit is made on it alone: one that moved since the watch read it is no refusal,
  * the watch tries again on its next pass.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { readTarget } from '../vulnerabilities/fixes.ts';
 import { DIGEST, splitReference } from '../vulnerabilities/reference.ts';
 import { BranchRefused, PIN_NEXT_PREFIX, PIN_PREFIX } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { PatchRefused } from './patches.ts';
-import { CODEOWNERS_PATHS, inScope, LOCKFILES, plainPath, protectedFrom } from './paths.ts';
+import {
+  CODEOWNERS_PATHS,
+  inScope,
+  LOCKFILES,
+  manifestRefusals,
+  notFromRegistry,
+  plainPath,
+  protectedFrom,
+} from './paths.ts';
 
 /** One pin a commit moves: where it is, and the text it pins before and after (`2.14.2@sha256:…`, `13.7.0`). */
 export interface PinEdit {
@@ -37,9 +63,9 @@ export interface PinEdit {
   to: string;
 }
 
-/** A pin move's commit, as the watch asks for it. */
+/** A pin pull request's commit, as the watch asks for it: every pin of the moves it carries. */
 export interface PinCommit {
-  /** `factory/pin/<move>`. */
+  /** `factory/pin/<files>`. */
   branch: string;
   /** `main`'s head as the watch read it: the commit is made on it, and refused as stale if `main` has moved. */
   base: string;
@@ -47,6 +73,140 @@ export interface PinCommit {
   scanned: string;
   message: string;
   pins: PinEdit[];
+  /**
+   * The files the scan's pin step wrote for the moves it carries that no pin's line writes (github/made.ts), whole: a
+   * lockfile, a manifest whose range moved, mise's two files. None for a pull request of edits alone.
+   */
+  files?: { path: string; text: string }[] | undefined;
+}
+
+const DOCKERFILE = /(^|\/)(Dockerfile(\.(?!dockerignore$)[a-z]+)?|[^/]+\.Dockerfile)$/;
+
+/**
+ * Whether a file is one the scan's pin step writes for a move: a pnpm lockfile, a manifest whose range a package's move
+ * moves, mise's `mise.toml` and `mise.lock` at the root, which a move of what mise pins writes (the App may write
+ * them for a move, and nothing else does but `mise upgrade`), or a Dockerfile, whose `FROM`s an image's move writes
+ * with the Node or the library it brings.
+ */
+export const madeFile = (path: string): boolean =>
+  /(^|\/)(pnpm-lock\.yaml|package\.json)$/.test(path) ||
+  path === 'mise.toml' ||
+  path === 'mise.lock' ||
+  DOCKERFILE.test(path);
+
+/** A Dockerfile's `FROM` that pins an image by its tag and digest, in parts, as the pin step reads one. */
+const FROM =
+  /^(\s*FROM\s+(?:--platform=\S+\s+)?)([^\s:@/]+(?::\d+)?(?:\/[^\s:@/]+)*):([\w][\w.-]{0,127})@(sha256:[0-9a-f]{64})(.*)$/i;
+
+/** `mise.toml`'s pin of Node, the one line of it a move writes: an exact release. */
+const NODE_PIN = /^node\s*=\s*"\d+\.\d+\.\d+"\s*$/;
+
+/** The lines two texts of one file differ at, each line of one against the same line of the other, by place; or why not. */
+function changedLines(before: string, after: string): [number, string, string][] | string {
+  const [was, now] = [before.split('\n'), after.split('\n')];
+  if (was.length !== now.length) return 'adds or removes a line';
+  return was.flatMap((line, i) => (line === now[i] ? [] : [[i, line, now[i] as string] as [number, string, string]]));
+}
+
+/** The table of a TOML file a line is in: the nearest header at or above it, or none at the top. */
+const tableAt = (lines: readonly string[], at: number): string | undefined => {
+  for (let i = at; i >= 0; i--) if (/^\s*\[/.test(lines[i] ?? '')) return (lines[i] as string).trim();
+  return undefined;
+};
+
+/** `mise.lock` in its entries: what comes before the first, and each tool's, by the header that starts it. */
+function entriesOf(lock: string): { head: string; entries: { header: string; text: string }[] } {
+  // A split before the text's first character makes no part, so an entry at the top has nothing before it.
+  const [head = '', ...rest] = `\n${lock}`.split(/^(?=\[\[)/m);
+  return { head: head.slice(1), entries: rest.map((text) => ({ header: text.split('\n')[0] as string, text })) };
+}
+
+/**
+ * Where a tool's entry downloads from: each address in it as a client reads it (`..` resolved, the host in lower
+ * case), up to what names the release, its version, or for an address that names none (an asset's number) its last
+ * part. So a move may change the release an address names, never the repository or the place it is fetched from.
+ */
+const sources = (entry: string) => {
+  const version = /^version\s*=\s*"([^"]+)"/m.exec(entry)?.[1];
+  return new Set(
+    [...entry.matchAll(/\bhttps?:\/\/[^\s"']+/g)].map(([address]) => {
+      if (!URL.canParse(address)) return address;
+      const { href } = new URL(address);
+      const at = version ? href.indexOf(version) : -1;
+      return at >= 0 ? href.slice(0, at) : href.slice(0, href.lastIndexOf('/') + 1);
+    }),
+  );
+};
+
+/**
+ * Why a change to `mise.lock` is not a move of what it pins, or nothing: every entry is a tool's, the same tools in
+ * the same order, and what is before them as it was; each entry that changes keeps its tool's own sections, its
+ * backend, and its downloads where they were.
+ */
+function miseLockRefusal(before: string, after: string): string | undefined {
+  const [was, now] = [entriesOf(before), entriesOf(after)];
+  if (was.head !== now.head) return 'changes what is before its tools’ entries';
+  const headers = (lock: typeof was) => JSON.stringify(lock.entries.map((entry) => entry.header));
+  if (headers(was) !== headers(now)) return 'adds, removes or reorders a tool’s entry';
+  for (const [i, entry] of now.entries.entries()) {
+    const old = was.entries[i] as (typeof was.entries)[number];
+    if (old.text === entry.text) continue;
+    const tool = /^\[\[tools\.((?:"[^"]+"|[\w.-]+?))\]\]$/.exec(entry.header)?.[1];
+    if (!tool) return `changes ${JSON.stringify(entry.header)}, which is no tool’s entry`;
+    const header = entry.text
+      .split('\n')
+      .slice(1)
+      .find((line) => /^\s*\[/.test(line) && !line.startsWith(`[tools.${tool}.`));
+    if (header) return `gives ${tool}’s entry ${JSON.stringify(header.trim())}, which is not its own`;
+    const backend = (text: string) => text.split('\n').filter((line) => /^\s*backend\s*=/.test(line));
+    if (JSON.stringify(backend(old.text)) !== JSON.stringify(backend(entry.text))) return `changes ${tool}’s backend`;
+    const from = sources(old.text);
+    const elsewhere = [...sources(entry.text)].find((source) => !from.has(source));
+    if (elsewhere) return `downloads ${tool} from ${elsewhere}, where it did not`;
+  }
+  return undefined;
+}
+
+/**
+ * Why a file the pin step wrote is not what a move writes in it, or nothing: in a Dockerfile, a `FROM`'s tag and digest
+ * alone; in a manifest, its dependencies' ranges (`manifestRefusals`); in a pnpm lockfile, no line added that resolves
+ * anything but a registry's package; in `mise.toml`, its pin of Node; in `mise.lock`, what each tool's entry pins. A
+ * script, a `RUN`, an `[env]` or a hook, each of which runs, is none of them.
+ */
+export function madeRefusal(path: string, before: string, after: string): string | undefined {
+  if (DOCKERFILE.test(path)) {
+    const changed = changedLines(before, after);
+    if (typeof changed === 'string') return changed;
+    for (const [, was, now] of changed) {
+      const [a, b] = [FROM.exec(was), FROM.exec(now)];
+      if (!a || !b || a[1] !== b[1] || a[2] !== b[2] || a[5] !== b[5])
+        return `changes ${JSON.stringify(was.trim())}, which is not an image’s tag and digest at a FROM`;
+    }
+    return undefined;
+  }
+  if (/(^|\/)package\.json$/.test(path)) return manifestRefusals(path, before, after)[0];
+  if (/(^|\/)pnpm-lock\.yaml$/.test(path)) {
+    const had = new Map<string, number>();
+    for (const line of before.split('\n')) had.set(line, (had.get(line) ?? 0) + 1);
+    for (const line of after.split('\n')) {
+      const left = had.get(line) ?? 0;
+      if (left) had.set(line, left - 1);
+      else if (notFromRegistry(line)) return `resolves ${JSON.stringify(line.trim())}, not a registry’s package`;
+    }
+    return undefined;
+  }
+  if (path === 'mise.toml') {
+    const changed = changedLines(before, after);
+    if (typeof changed === 'string') return changed;
+    const lines = after.split('\n');
+    for (const [at, was, now] of changed) {
+      if (!NODE_PIN.test(was) || !NODE_PIN.test(now) || tableAt(lines, at) !== '[tools]')
+        return `changes ${JSON.stringify(was.trim())}, which is not its pin of Node`;
+    }
+    return undefined;
+  }
+  if (path === 'mise.lock') return miseLockRefusal(before, after);
+  return 'is not a file the scan’s pin step writes';
 }
 
 /** A file as git's tree has it at a commit: its mode, and its text. */
@@ -61,31 +221,43 @@ export interface PinSource {
   file(repo: string, ref: string, path: string): Promise<TreeFile | null>;
 }
 
-/** The most pins one move writes: one image in every Dockerfile that runs it. */
-export const MAX_PINS = 20;
+/** The most pins one pull request writes: a few images, each in every Dockerfile that runs it. */
+export const MAX_PINS = 40;
 
-/** A move's branch: its name made one segment, lower case, of letters, digits, dots and dashes. */
+/** A pin branch's one segment: lower case, of letters, digits, dots and dashes. */
 const SEGMENT = /^[a-z0-9](?:[a-z0-9-]|\.(?!\.))*[a-z0-9]$|^[a-z0-9]$/;
 const MAX_SEGMENT = 80;
 
-/** The branch a move's pull request is on, from its name: `docker.io/library/postgres` is `factory/pin/docker-io-library-postgres`. */
-export function pinBranchFor(name: string): string {
-  const segment = name
+/** A text made a plain segment of at most `most` characters: `docker.io/library/postgres` is `docker.io-library-postgres`. */
+export function segmentOf(text: string, most = MAX_SEGMENT): string {
+  return text
     .toLowerCase()
     .replace(/[^a-z0-9.]+/g, '-')
     .replace(/\.{2,}/g, '-')
     .replace(/-+/g, '-')
     .replace(/^[-.]+|[-.]+$/g, '')
-    .slice(0, MAX_SEGMENT)
+    .slice(0, most)
     .replace(/[-.]+$/, '');
-  // A ref may not end `.lock`: the segment ends in a word of its own instead, within the length the guard takes.
-  return `${PIN_PREFIX}${segment.endsWith('.lock') ? `${segment.slice(0, MAX_SEGMENT - 4)}-pin` : segment}`;
+}
+
+/**
+ * The branch of the pull request that carries the day's moves at these files: the first file's path, for whoever reads
+ * it, and a digest of them all, so no two sets of files share a branch whatever their paths fold or are cut to.
+ * `deploy/base/postgres/statefulset.yaml` is `factory/pin/deploy-base-postgres-statefulset.yaml-<8 hex>`. The moves the
+ * review gate names `major` are on a branch of their own, marked so.
+ */
+export function pinBranchFor(files: readonly string[], major = false): string {
+  const sorted = [...new Set(files)].sort();
+  const digest = createHash('sha256').update(JSON.stringify(sorted)).digest('hex').slice(0, 8);
+  // The path is cut so the whole is one segment the guard takes, with `-major-` and the digest after it.
+  const path = segmentOf(sorted[0] ?? '', MAX_SEGMENT - 15);
+  return `${PIN_PREFIX}${[path, ...(major ? ['major'] : []), digest].filter(Boolean).join('-')}`;
 }
 
 /** Where a pin branch's commit is made before the branch moves to it. */
 export const pinNextBranch = (branch: string) => `${PIN_NEXT_PREFIX}${branch.slice(PIN_PREFIX.length)}`;
 
-/** Throws `BranchRefused` unless a branch is a pin move's own: `factory/pin/` and one plain segment. */
+/** Throws `BranchRefused` unless a branch is a pin pull request's own: `factory/pin/` and one plain segment. */
 export function guardPinBranch(branch: string): void {
   const segment = branch.startsWith(PIN_PREFIX) ? branch.slice(PIN_PREFIX.length) : undefined;
   if (segment === undefined || segment.length > MAX_SEGMENT || !SEGMENT.test(segment) || segment.endsWith('.lock')) {
@@ -101,8 +273,8 @@ export function forbiddenPin(file: string): string | undefined {
   if (file.startsWith('policy/')) return 'policy/ holds the rules of the line, which no pin move writes';
   if (file === 'Makefile') return 'the Makefile’s pins move with the toolchain, by hand';
   if (/(^|\/)\.?mise(\.[\w-]+)?\.(toml|lock)$/.test(file))
-    return 'mise’s files move only when someone upgrades the toolchain';
-  if (inScope(file, LOCKFILES)) return 'a lockfile moves by its package manager, and the App writes none';
+    return 'mise’s files are written by the scan’s pin step, whole, never edited at a line';
+  if (inScope(file, LOCKFILES)) return 'a lockfile is written by the scan’s pin step, whole, never edited at a line';
   return undefined;
 }
 
@@ -172,8 +344,19 @@ export async function pinChanges(
 ): Promise<{ path: string; contents: Uint8Array }[]> {
   guardPinBranch(commit.branch);
   const { pins } = commit;
-  if (!pins.length) refuse('A pin move with no pins moves nothing.');
-  if (pins.length > MAX_PINS) refuse(`A pin move of ${pins.length} pins is more than one move writes (${MAX_PINS}).`);
+  const made = commit.files ?? [];
+  if (!pins.length && !made.length) refuse('A pin move with no pins moves nothing.');
+  const madePaths = new Set<string>();
+  for (const file of made) {
+    if (!plainPath(file.path)) refuse(`${JSON.stringify(file.path)} is not a plain path in the repository.`);
+    if (file.path.startsWith('.github/') || file.path.startsWith('policy/') || !madeFile(file.path))
+      refuse(`${file.path} is not a file the scan’s pin step writes: a lockfile, a manifest, mise’s or a Dockerfile.`);
+    if (madePaths.has(file.path)) refuse(`${file.path} is written twice in one pin move.`);
+    if (pins.some((pin) => pin.file === file.path)) refuse(`${file.path} is both edited and written whole.`);
+    madePaths.add(file.path);
+  }
+  if (pins.length > MAX_PINS)
+    refuse(`A commit of ${pins.length} pins is more than one pull request writes (${MAX_PINS}).`);
   const places = new Set<string>();
   for (const pin of pins) {
     const place = `${pin.file}:${pin.line}`;
@@ -220,8 +403,35 @@ export async function pinChanges(
   for (const pin of pins)
     if (inScope(pin.file, owned) && !ownedPinPlace(pin.file))
       refuse(`${pin.file} is a rule of the line CODEOWNERS gives a person, and holds no pin the watch moves.`);
+  // mise's files are Martin's, and a move may write them (the scan's pin step, for what mise pins), as it may a
+  // Dockerfile's FROMs, a pin's place; no other.
+  for (const path of madePaths)
+    if (inScope(path, owned) && path !== 'mise.toml' && path !== 'mise.lock' && !ownedPinPlace(path))
+      refuse(`${path} is a rule of the line CODEOWNERS gives a person, and the scan’s pin step writes no such file.`);
 
   const out: { path: string; contents: Uint8Array }[] = [];
+  // A file the scan's pin step wrote: the same at main's head as at the commit it was made on, so what it made is
+  // made on main's file, and different from it. Its bytes are the scan's; the review gate makes them again on main.
+  for (const file of made) {
+    const [now, then] = await Promise.all([
+      source.file(repo, commit.base, file.path),
+      source.file(repo, commit.scanned, file.path),
+    ]);
+    for (const [at, found] of [
+      ['main', now],
+      ['the commit the scan read', then],
+    ] as const) {
+      if (!found) refuse(`${file.path} is not a file in ${at}.`);
+      else if (found.mode !== '100644' && found.mode !== '100755')
+        refuse(`${file.path} is not an ordinary file in ${at} (mode ${found.mode}).`);
+    }
+    if ((now as TreeFile).text !== (then as TreeFile).text)
+      refuse(`${file.path} has changed since the scan made its moves: they are not made on main’s file.`);
+    if ((now as TreeFile).text === file.text) refuse(`${file.path} would be written as it is.`);
+    const why = madeRefusal(file.path, (now as TreeFile).text, file.text);
+    if (why) refuse(`${file.path} is not what a move writes in it: it ${why}.`);
+    out.push({ path: file.path, contents: new TextEncoder().encode(file.text) });
+  }
   for (const file of [...new Set(pins.map((pin) => pin.file))]) {
     const [now, then] = await Promise.all([
       source.file(repo, commit.base, file),

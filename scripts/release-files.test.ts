@@ -54,6 +54,10 @@ describe('the files a release changes', () => {
       'apps/factory/src/line/bench/fixtures.ts',
       // A move's pins before and after, which take the package's range in package.json from the diff.
       'apps/factory/src/line/moves.ts',
+      // The pin guard's tests, which give it a manifest the scan's pin step wrote, whole.
+      'apps/factory/test/github/pin-guard.test.ts',
+      // The moves the scan made, Playwright's image with its library among them, and the ranges it moved in a manifest.
+      'apps/factory/test/github/pin-made.test.ts',
       // The pin step's guard and the bench's, on invented manifests' dependency ranges.
       'apps/factory/test/github/pin-step.test.ts',
       'apps/factory/test/line/bench.test.ts',
@@ -88,16 +92,12 @@ describe('the files a release changes', () => {
       // own, written for a scratch repository to try it on.
       'scripts/check-kind.sh',
       'scripts/check-kind.test.ts',
-      // The review gate's Critical fix, which has the pin step write package.json on the base and compares the head's
-      // with it, and its tests.
-      'scripts/critical-fix-readers.ts',
-      'scripts/critical-fix.adversarial.test.ts',
-      'scripts/critical-fix.read-2.test.ts',
-      'scripts/critical-fix.read-3.test.ts',
-      'scripts/critical-fix.test.ts',
-      'scripts/critical-fix.ts',
+      // The pin step's derivation's tests, on an invented manifest's range.
+      'scripts/derive.test.ts',
       // flagd's evaluation library's own package.json, as for the test above.
       'scripts/flagd-sides.ts',
+      // The move rule's tests, whose pin step writes a package.json of their own, and a package's version in it.
+      'scripts/move.test.ts',
       // The review gate's tests, which tag a change to package.json, and read its verdict's version.
       'scripts/review-routing.test.ts',
       // package.json's packageManager, beside mise.lock's pnpm, and not its version line.

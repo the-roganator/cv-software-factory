@@ -728,8 +728,8 @@ describe('the classes a cluster is not made from', () => {
   });
 });
 
-// A pin move of the App's (scripts/pin-move.ts) passes only once the job that runs its pin succeeded at its head, never
-// skipped: so each pin it can pass is `code`, which runs them all.
+// A move of a pin outside deploy/ (scripts/move.ts) merges only once the job that runs its pin succeeded, never skipped:
+// so each such pin is `code`, which runs them all.
 describe('a pin move', () => {
   const ZAP = 'apps/console/zap/scan.ts';
   const pins: [string, string, string, string][] = [

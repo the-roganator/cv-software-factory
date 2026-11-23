@@ -1,6 +1,6 @@
 /**
  * `factory patching`: the dependency sense (apps/factory/src/patching). As it starts, and each day after the scan, it
- * asks the GitHub worker for both repositories' moves and open Dependabot pull requests, compares the images the
+ * asks the GitHub worker for both repositories' moves, compares the images the
  * cluster's pods run with the scan's list, and appends the day as `patching.read` when it differs from the last; and it
  * sends each of the app's moves for the line to triage's inbox (`patching/sends.ts`). It connects to the store as its
  * own role, `factory_patching`, which alone may append that event, and may send only its own signals.
@@ -13,7 +13,7 @@
  *
  *     PGHOST, PGDATABASE, PGUSER, PGPASSWORD   the store, as factory_patching
  *     GITHUB_URL                               the GitHub worker's reads door (its PATCHING_PORT), which serves the
- *                                              sense's two reads and nothing else
+ *                                              sense's one read and nothing else
  *     KUBE_API_URL                             on a host, what `kubectl proxy` serves; in the cluster the pod's account
  *     PATCHING_AT                              the day's read, HH:MM in UTC (05:30, once the scan has finished)
  *     PATCHING_REPOSITORIES                    the repositories, comma-separated (both public ones)
@@ -67,7 +67,6 @@ export async function run(args: string[]): Promise<number> {
     log,
     senses: {
       moves: (repo) => github.read('moves', repo, {}),
-      dependencyPulls: (repo) => github.read('dependencyPulls', repo, {}),
       running: () => runningContainers(kube, namespaces),
     },
   });

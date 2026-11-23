@@ -74,6 +74,8 @@ export const PASSWORDS = {
   redteam: { role: 'factory_redteam', variable: 'REDTEAM_PASSWORD' },
   // The dependency sense's (0050_patching.sql), which is no member of the workers' role either.
   patching: { role: 'factory_patching', variable: 'PATCHING_PASSWORD' },
+  // The GitHub worker's (0054_github-reads-the-level.sql), which reads Martin's controls and nothing else.
+  github: { role: 'factory_github', variable: 'FACTORY_GITHUB_PASSWORD' },
 } as const;
 
 export type Passwords = { [name in keyof typeof PASSWORDS]?: string | undefined };
@@ -107,6 +109,9 @@ const codeOf = (error: unknown) => {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' ? code : 'unknown';
 };
+
+/** Whether an error is one of a store away for now, restarting or still coming up (`COMING_UP`), rather than a fault. */
+export const storeAway = (error: unknown): boolean => COMING_UP.has(codeOf(error));
 
 export interface WaitOptions {
   /** How long to keep trying, from the first attempt. */

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { PLATFORM_CHECK } from './pin-move-ran.ts';
+import { PLATFORM_CHECK } from './github-settings.ts';
 
 /*
  * platform.yml in the merge queue makes no cluster when one made from the same inputs passed at the pull request's head

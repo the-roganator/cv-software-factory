@@ -65,6 +65,8 @@ import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../repositories.ts';
 import type { Actions } from './actions.ts';
 import type { WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
+import { isOwnCommit } from './own-commit.ts';
+import { type PinSource, treeSource } from './pin-guard.ts';
 import type { Watch } from './poller.ts';
 import { outcomeOf } from './reads.ts';
 import type { Registry } from './registry.ts';
@@ -621,9 +623,12 @@ interface Dependencies {
   proposals?: DeployProposals;
   /**
    * Where the watch records the commit it wrote to its branch, for its queue (`deploy-queue.ts`). Given, the watch also
-   * reads its branch each pass, and writes its commit again when the branch is at any other.
+   * reads its branch each pass, and writes its commit again when the branch is at any other; one this worker has not
+   * yet written is recorded as it is when its head is already the commit the watch would write (`own-commit.ts`).
    */
   heads?: WatchedHeads;
+  /** What the watch reads of git's trees to know a head it did not write as its own: git's trees by default. */
+  source?: PinSource;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -836,6 +841,7 @@ const runsOf = ({ pin, proposal }: Pick<Move, 'pin' | 'proposal'>): Runs => ({ p
  */
 export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
   const { github, signatures, actions, log, now = Date.now, proposals = new DeployProposals(), heads } = deps;
+  const source = deps.source ?? treeSource(github);
   const { repo } = target;
   const label = deployLabel(target);
   // What this worker last proposed, from which newer builds, and at which head of main: a pass does nothing more until
@@ -978,14 +984,35 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     return pins;
   };
 
+  /**
+   * Whether the deploy branch, which this worker has not written since it started, is already the commit `write` would
+   * make of these moves on main's head: one commit of the App's on main, writing each pin file as `repin` writes it
+   * from main's head and nothing else (`own-commit.ts`). Then it is recorded as the watch's, for its queue, and
+   * nothing is written: a restart costs the deploy pull request no new head, and no round of its checks.
+   */
+  const keeps = async (head: string, moves: readonly Move[]): Promise<boolean> => {
+    if (heads === undefined || heads.get(repo, target.branch) !== undefined) return false;
+    const at = await branchHead();
+    if (at === undefined) return false;
+    const files = moves.map(({ pin, proposal, pinFile }) => ({ path: pin.file, text: repin(pinFile, proposal) }));
+    if (!(await isOwnCommit(github, source, repo, head, at, files))) return false;
+    heads.set(repo, target.branch, at);
+    log.info(
+      { repo, branch: target.branch, commit: at },
+      'the deploy branch is already the commit the watch would write: the watch takes it as its own',
+    );
+    return true;
+  };
+
   /** What the watch said last of an open pull request it could not write again, so it says each once. */
   let unwritten: string | undefined;
 
   /**
    * Where the open pull request stays as it is (a build of one of its pins still being signed, or refused), but its
    * branch is not at the commit this worker wrote (moved, or a restart): the watch writes the builds its title runs
-   * again, each pin at the commit it names, each still signed by its pipeline, so the queue can add it; or, when it
-   * cannot, records nothing and says why, once.
+   * again, each pin at the commit it names, each still signed by its pipeline, so the queue can add it, unless the
+   * branch, not yet written by this worker, is already that commit (`keeps`); or, when it cannot, records nothing and
+   * says why, once.
    */
   const keepAsIs = async (
     head: string,
@@ -1044,6 +1071,7 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       }
       return;
     }
+    if (await keeps(head, moves)) return;
     const commit = await write(head, existing.title, moves);
     log.info({ repo, number: existing.number, commit }, 'wrote the deploy pull request’s own builds again on main');
   };
@@ -1080,8 +1108,9 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     const [check] = checks;
     if (target.pins.length === 1 && only && check) proposals.setBuild(target, await buildOf(only, check));
     // Its branch at any commit but the one it wrote (moved by anyone, or not yet written by this worker): written again,
-    // even where the pull request stays as it is below, so the queue never waits on a record a restart lost.
-    const moved = heads !== undefined && (await branchHead()) !== heads.get(repo, target.branch);
+    // even where the pull request stays as it is below, so the queue never waits on a record a restart lost; unless,
+    // not yet written by this worker, it is already the commit the watch would write (`keeps`).
+    let moved = heads !== undefined && (await branchHead()) !== heads.get(repo, target.branch);
     if (states.includes('waiting')) return moved ? keepAsIs(head, commits, files) : undefined;
     const ready = found.filter((_, i) => states[i] === 'signed');
     const refused = found.filter((_, i) => states[i] === 'refused');
@@ -1138,6 +1167,8 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       proposals.set(target, open(existing.number));
       // Opened by a pass whose read of what it brings failed, or before the body listed them.
       if (!bringsIn(existing.body)) listed = await list(existing.number, existing.body, moves, commits);
+      // Not yet written by this worker, and already the commit it would write: its own, and only a conflict is left.
+      if (moved && (await keeps(head, moves))) moved = false;
       if (moved) {
         log.warn(
           { repo, number: existing.number, branch: target.branch },

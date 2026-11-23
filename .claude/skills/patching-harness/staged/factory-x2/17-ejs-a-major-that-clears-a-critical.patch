@@ -1,0 +1,58 @@
+# Test X2, a major that clears a Critical by Trivy's own rating: ejs back to 2.7.4 as an exact development dependency, under CVE-2022-29078 (GitHub's advisory GHSA-phwq-j96m-2c2q, Critical, fixed only in 3.1.7, on the next major) and CVE-2024-33883 (Moderate, fixed in 3.1.10), its postinstall not allowed to run. A baseline of its own: it joins the day's lockfile moves.
+diff --git a/package.json b/package.json
+index e62efe4..17c14d1 100644
+--- a/package.json
++++ b/package.json
+@@ -18,6 +18,7 @@
+     "@software-factory/testing": "workspace:*",
+     "@types/node": "^24.19.2",
+     "@types/pngjs": "^6.0.5",
++    "ejs": "2.7.4",
+     "fast-check": "^4.10.2",
+     "lefthook": "^2.2.1",
+     "pixelmatch": "^8.0.0",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 4efe2f0..2455040 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -182,6 +182,9 @@ importers:
+       '@types/pngjs':
+         specifier: ^6.0.5
+         version: 6.0.5
++      ejs:
++        specifier: 2.7.4
++        version: 2.7.4
+       fast-check:
+         specifier: ^4.10.2
+         version: 4.10.2
+@@ -1722,6 +1725,10 @@ packages:
+   ee-first@1.1.1:
+     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
+ 
++  ejs@2.7.4:
++    resolution: {integrity: sha512-7vmuyh5+kuUyJKePhQfRQBhXV5Ce+RnaeeQArKu1EAMpL3WbgMt5WG6uQZpEVvYSSsxMXRKOewtDk9RaTKXRlA==}
++    engines: {node: '>=0.10.0'}
++
+   emoji-regex@8.0.0:
+     resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
+ 
+@@ -4006,6 +4013,8 @@ snapshots:
+ 
+   ee-first@1.1.1: {}
+ 
++  ejs@2.7.4: {}
++
+   emoji-regex@8.0.0: {}
+ 
+   encodeurl@2.0.0: {}
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index a4851b5..dd65a86 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -26,5 +26,6 @@ overrides:
+   '@google-automations/git-file-utils>minimatch@<11.0.1': ^11.0.1
+   '@tufjs/models>minimatch@<11.0.1': ^11.0.1
+ allowBuilds:
++  ejs: false # its postinstall only prints a thank-you
+   lefthook: false # its postinstall only installs the git hooks, which `prepare` does
+   protobufjs: false # its postinstall only prints a version-scheme warning

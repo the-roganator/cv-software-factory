@@ -448,4 +448,12 @@ describe('reading a pin', () => {
     expect(['docs/x.md', 'apps/a/test/f.json', 'scripts/x.test.ts', 'a/fixtures/b.yaml'].every(isFixture)).toBe(true);
     expect(['deploy/base/a.yaml', 'scripts/x.ts', 'Dockerfile'].some(isFixture)).toBe(false);
   });
+
+  it("takes the patching harness's set-ups as pinning nothing, and no other patch or harness file", () => {
+    // A set-up is a diff that puts an old pin back in a scratch copy, which that copy's own scan then reads.
+    expect(isFixture('.claude/skills/patching-harness/staged/app/11-node-24.22.0.patch')).toBe(true);
+    expect(isFixture('.claude/skills/patching-harness/staged/factory-x2/17-ejs.patch')).toBe(true);
+    // pnpm applies a patch of a dependency at every install, and the harness's own scripts run.
+    expect(['patches/a@1.0.0.patch', '.claude/skills/patching-harness/bin/copies.sh'].some(isFixture)).toBe(false);
+  });
 });

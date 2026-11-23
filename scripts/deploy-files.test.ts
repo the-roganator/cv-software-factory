@@ -26,6 +26,11 @@ describe('the files a deploy changes', () => {
     expect(
       named('overlays/local/(console|factory|\\*)-image', ':!*.md', ':!deploy/', ':!scripts/deploy-files.test.ts'),
     ).toEqual([
+      // The patching harness, which writes a scratch copy's pins and names them for its tests, in its own clone of that
+      // copy: never this checkout's.
+      '.claude/skills/patching-harness/bin/catalogue.ts',
+      '.claude/skills/patching-harness/bin/copies.sh',
+      '.claude/skills/patching-harness/bin/forge.ts',
       // The app's gates, which run the journeys on the factory's browser at the digest pinned here; called from the
       // app's repository at a pinned commit, and never by this repository's checks.
       '.github/workflows/app-gates.yml',

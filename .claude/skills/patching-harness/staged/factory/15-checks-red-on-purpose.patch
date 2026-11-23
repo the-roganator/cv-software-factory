@@ -1,0 +1,51 @@
+# Tests W1 and W2, a required check that fails on purpose: the title check fails on a pull request whose title a repository variable names (SCRATCH_RED_UNTIL_CHECKS_RUN, SCRATCH_RED_ALWAYS on the pull request; SCRATCH_RED_FIRST_QUEUE on the merge queue's commit), so the worker's and the line's recovery from a failed check is seen live; with none set it passes at once.
+diff --git a/.github/workflows/pull-request.yml b/.github/workflows/pull-request.yml
+index 958ffc9..6bb4246 100644
+--- a/.github/workflows/pull-request.yml
++++ b/.github/workflows/pull-request.yml
+@@ -81,6 +81,45 @@ jobs:
+           any_length=()
+           if [ "$AUTHOR" = 'dependabot[bot]' ]; then any_length=(--any-length); fi
+           node scripts/commit-msg.ts --title "$TITLE" "${any_length[@]}"
++      # The scratch copies alone, for the patching tests W1 and W2: the check fails on purpose on a pull request whose
++      # title a repository variable of the caller's names, so the factory's recovery from a failed required check is
++      # seen end to end. With none set, as at every other time, it passes at once. Each is an extended regular
++      # expression over the title:
++      #   SCRATCH_RED_UNTIL_CHECKS_RUN  on the pull request, until its head's message has a `Checks-run:` line
++      #   SCRATCH_RED_ALWAYS            on the pull request, every time
++      #   SCRATCH_RED_FIRST_QUEUE       on the merge queue's commit, until the queue has taken it out once since its
++      #                                 head was made, as the GitHub worker and the line count it
++      - name: Fail on purpose for the patching tests
++        env:
++          UNTIL_CHECKS_RUN: ${{ vars.SCRATCH_RED_UNTIL_CHECKS_RUN }}
++          ALWAYS: ${{ vars.SCRATCH_RED_ALWAYS }}
++          FIRST_QUEUE: ${{ vars.SCRATCH_RED_FIRST_QUEUE }}
++          TITLE: ${{ github.event.pull_request.title }}
++          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
++          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          red() { echo "::error::Failed on purpose for the patching tests ($1): $TITLE"; exit 1; }
++          if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
++            [ -n "$FIRST_QUEUE" ] || exit 0
++            [[ "$QUEUE_BRANCH" =~ ^(refs/heads/)?gh-readonly-queue/main/pr-([0-9]+)-[0-9a-f]{7,40}$ ]] || exit 0
++            # Its title, and how often the queue took it out since its head was made: `<count> <title>`.
++            said=$(gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F n="${BASH_REMATCH[2]}" \
++              --jq '.data.repository.pullRequest | .commits.nodes[0].commit.committedDate as $at
++                | "\([.timelineItems.nodes[] | select(.createdAt >= $at)] | length) \(.title)"' \
++              -f query='query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) {
++                pullRequest(number: $n) { title commits(last: 1) { nodes { commit { committedDate } } }
++                  timelineItems(last: 100, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
++                    nodes { ... on RemovedFromMergeQueueEvent { createdAt } } } } } }')
++            TITLE=${said#* }
++            if [[ "$TITLE" =~ $FIRST_QUEUE ]] && [ "${said%% *}" = 0 ]; then red 'the first time in the merge queue at this head'; fi
++            exit 0
++          fi
++          if [ -n "$ALWAYS" ] && [[ "$TITLE" =~ $ALWAYS ]]; then red 'every time'; fi
++          if [ -n "$UNTIL_CHECKS_RUN" ] && [[ "$TITLE" =~ $UNTIL_CHECKS_RUN ]]; then
++            message=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" --jq .commit.message)
++            grep -qE '^Checks-run: [0-9]+$' <<< "$message" || red 'until its head is written again with a Checks-run line'
++          fi
+ 
+   requested:
+     name: review requested

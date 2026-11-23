@@ -49,22 +49,22 @@ baseline() { # <tests> <log>
       return 1
     }
   done
-  local state
-  for _ in $(seq 1 60); do
+  # The app's release of its baseline goes through the full canary, which no test judges, and one that takes the app
+  # back past an ordinary fix (a work item run between campaigns) is rightly aborted: the baseline is the tests'
+  # starting point, so while it is in flight or aborted it is promoted whole (a full promotion asked twice is one),
+  # and root is waited for until Synced and Healthy, the Rollout with it.
+  local state app_main synced phase
+  app_main=$(gh api "repos/$APP_COPY/commits/main" -q .sha)
+  for _ in $(seq 1 90); do
     state=$(k -n argocd get app root -o jsonpath='{.status.sync.status} {.status.health.status}')
     [ "$state" = "Synced Healthy" ] && break
+    synced=$(k -n argocd get app website -o jsonpath='{.status.sync.revision}')
+    phase=$(k -n website get rollout website -o jsonpath='{.status.phase}')
+    if [ "$synced" = "$app_main" ] && [ -n "$phase" ] && [ "$phase" != Healthy ]; then
+      kubectl argo rollouts --context k3d-software-factory-scratch -n website promote --full website >/dev/null
+    fi
     sleep 20
   done
-  # A reset that takes the app back past an ordinary fix (a work item run between campaigns) is a release the canary
-  # rightly aborts: the baseline is the tests' starting point, so it is promoted whole, or every app test's deploy fails.
-  if [ "$(k -n website get rollout website -o jsonpath='{.status.abort}')" = true ]; then
-    kubectl argo rollouts --context k3d-software-factory-scratch -n website promote --full website
-    for _ in $(seq 1 30); do
-      state=$(k -n argocd get app root -o jsonpath='{.status.sync.status} {.status.health.status}')
-      [ "$state" = "Synced Healthy" ] && break
-      sleep 20
-    done
-  fi
   echo "root: $state $(date -u +%H:%MZ)"
 }
 campaign() { (cd "$H" && mise exec -- node harness.ts factory "$@" --limit "${LIMIT:-60}" 2>&1 | tail -22 | cut -c1-520); }

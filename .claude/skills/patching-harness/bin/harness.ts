@@ -119,12 +119,14 @@ function preflight(state: State) {
     wrong.push(
       `the store is at migration ${applied}, and the baseline's newest is ${newest}: ./copies.sh store-restore`,
     );
-  // The app's release whole, on the copy's main: a reset takes the app back to its baseline, which is a release, and
-  // one the canary may abort (back past an ordinary fix, its journeys fail; during a store restore the traffic
-  // generator is stopped, and it has too few requests). The baseline is the tests' starting point, so the run waits for
-  // that release and promotes an aborted one whole, before the clock starts.
+  // The app's release whole, on the copy's main: a reset takes the app back to its baseline, which is a release through
+  // the full canary, and one the canary may abort (back past an ordinary fix, its journeys fail; during a store restore
+  // the traffic generator is stopped, and it has too few requests). No test judges that release: the baseline is the
+  // tests' starting point. So the run promotes it whole while it is in flight or aborted, and waits for the Rollout
+  // to be Healthy on main before the clock starts. A test's own release comes after the scan, and is never promoted.
   const appMain = sh('gh', ['api', `repos/${APP}/commits/main`, '-q', '.sha']).trim();
   let rollout = '';
+  let promoted = false;
   for (let i = 0; i < 60; i++) {
     const synced = kubectl(['-n', 'argocd', 'get', 'app', 'website', '-o', 'jsonpath={.status.sync.revision}']).trim();
     rollout = kubectl([
@@ -136,11 +138,13 @@ function preflight(state: State) {
       '-o',
       'jsonpath={.status.phase} {.status.abort}',
     ]).trim();
-    if (synced === appMain && rollout.endsWith('true')) {
-      say(state, `pre-flight: the app's release of its baseline was aborted (${rollout}); promoting it whole`);
+    if (synced === appMain && rollout.startsWith('Healthy')) break;
+    if (synced === appMain && rollout) {
+      // Again on each look while it is not Healthy: a full promotion asked twice is the same promotion.
+      if (!promoted) say(state, `pre-flight: the app's release of its baseline is ${rollout}; promoting it whole`);
       sh('kubectl', ['argo', 'rollouts', '--context', CONTEXT, '-n', 'website', 'promote', '--full', 'website']);
-    } else if (synced === appMain && rollout.startsWith('Healthy')) break;
-    else if (i === 0) say(state, `pre-flight: waiting for the app's release of main (${rollout || 'no rollout'})`);
+      promoted = true;
+    } else if (i === 0) say(state, `pre-flight: waiting for the app's release of main (${rollout || 'no rollout'})`);
     sleep(20_000);
   }
   if (!rollout.startsWith('Healthy') || rollout.endsWith('true'))

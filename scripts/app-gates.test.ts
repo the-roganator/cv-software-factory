@@ -32,6 +32,7 @@ describe("the app's gates (ADR 0014)", () => {
       'journeys',
       'lockfile-scan',
       'test-integrity',
+      'tests-changed',
       'tests-first',
     ]);
     for (const job of Object.values(jobs)) {
@@ -52,6 +53,7 @@ describe("the app's gates (ADR 0014)", () => {
     expect(withBase.map(([id]) => id)).toEqual([
       'journeys',
       'test-integrity',
+      'tests-changed',
       'tests-first',
       'image-scan',
       'lockfile-scan',
@@ -97,6 +99,7 @@ describe("the app's gates (ADR 0014)", () => {
       ...both,
       ...both,
       ...both,
+      ...both,
     ]);
     expect(jobs['test-integrity']).toMatch(
       /^ {10}PR_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}\n {10}MERGE_GROUP_HEAD_REF: \$\{\{ github\.event\.merge_group\.head_ref \}\}\n(?: {10}#.*\n)* {10}PR_BASE_REF: \$\{\{ github\.event\.pull_request\.base\.ref \}\}$/m,
@@ -117,5 +120,24 @@ describe("the app's gates (ADR 0014)", () => {
     expect(workflow.match(/github\.token/g)).toHaveLength(2);
     expect(jobs['dependency-review']).not.toMatch(/path: change|context: change/);
     expect(workflow).not.toMatch(/secrets\./);
+  });
+});
+
+describe('tests first, for a change that adds or changes no test', () => {
+  it('is skipped on the word of `tests changed` alone, and runs when that read failed', () => {
+    expect(jobs['tests-first']).toContain('\n    needs: tests-changed\n');
+    expect(jobs['tests-first']).toContain(
+      `if: \${{ !cancelled() && !inputs.skip && github.event_name != 'merge_group' && (needs.tests-changed.result != 'success' || needs.tests-changed.outputs.tests != 'false') }}`,
+    );
+    // The read is tests first's own, of the same trees.
+    expect(jobs['tests-changed']).toContain('node factory/apps/factory/src/gates/tests-first.ts prepare base change');
+  });
+
+  it('is read by a job whose name nothing takes for tests first, which the console finds by its name', () => {
+    const name = /^ {4}name: (.+)$/m.exec(jobs['tests-changed'] ?? '')?.[1];
+    expect(name).toBe('tests changed');
+    // apps/console/web/src/projection/fixing.ts, `isTestsFirst`.
+    expect(/tests[ -]first$/i.test(`gates / ${name}`)).toBe(false);
+    expect(/tests[ -]first$/i.test('gates / tests first')).toBe(true);
   });
 });

@@ -1,7 +1,8 @@
 /**
  * The tests-first gate: did the change's tests fail before its fix? Its new and changed tests are run against the
  * base's source. A fix whose tests all pass there proves nothing it claims to fix, and the line holds it for Martin.
- * This check is not required: it is a signal the line reads, not a rule for merging.
+ * This check is not required: it is a signal the line reads, not a rule for merging. A change that adds or changes no
+ * test, a move of pins among them, has nothing to run, and the workflow skips the check (`tests changed`).
  *
  *     node apps/factory/src/gates/tests-first.ts prepare <base> <change> <manifest.json>
  *     node apps/factory/src/gates/tests-first.ts report <manifest.json> <vitest results.json>

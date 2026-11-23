@@ -172,7 +172,29 @@ queued_base || echo "the queued base FAILED: the deploy pin's verdict below is n
 (cd "$H" && ./copies.sh worker 1)
 k -n factory rollout restart deploy/patching >/dev/null
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-sleep 2100
+# Done once the deploy pin's pull request has merged, and each move's pull request the App opened since has every check
+# completed and the worker's word, at its head, on why it waits to be queued (at Supervised, for Martin); or at 35
+# minutes, whatever stands then.
+d_settled() {
+  local merged moves logs n head pending
+  merged=$(gh pr list -R "$R" --state merged -L 20 --json title,createdAt \
+    -q "[.[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(deploy): \"))]|length")
+  [ "${merged:-0}" -gt 0 ] || return 1
+  moves=$(gh pr list -R "$R" --state open -L 50 --json number,title,headRefOid,createdAt \
+    -q ".[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(pin): \"))|\"\(.number) \(.headRefOid)\"")
+  [ -n "$moves" ] || return 1
+  logs=$(k -n factory logs deploy/github --since-time="$since")
+  while read -r n head; do
+    pending=$(gh pr checks "$n" -R "$R" --json bucket -q '[.[]|select(.bucket=="pending")]|length' 2>/dev/null || true)
+    [ "$pending" = 0 ] || return 1
+    grep -F "\"number\":$n," <<<"$logs" | grep -F "\"head\":\"$head\"" | grep -qF 'pull request waits to be queued' || return 1
+  done <<<"$moves"
+}
+until_d=$(($(date +%s) + 2100))
+while [ "$(date +%s)" -lt "$until_d" ]; do
+  d_settled && { echo "settled $(date -u +%H:%MZ)"; break; }
+  sleep 60
+done
 deploy=$(gh pr list -R "$R" --state all -L 20 --json number,title,mergedAt,createdAt \
   -q "[.[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(deploy): \"))][0]|\"#\(.number) merged=\(.mergedAt)\"")
 case "$deploy" in
@@ -186,10 +208,12 @@ k -n factory logs deploy/github --since-time="$since" | grep -o '"why":"[^"]*"' 
 (cd "$H" && ./level.sh guarded | grep '|')
 fi
 
+# The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.
 if want apps && [ -n "$based" ]; then
 for test in 8a 10 11 12 13 N1; do
   echo "##### app $test $(date -u +%H:%MZ)"
-  (cd "$H" && mise exec -- node harness.ts app "$test" --limit "${LIMIT:-60}" 2>&1 | tail -9 | cut -c1-700)
+  with=(); [ "$test" = 13 ] && with=(--with X1a,X1b)
+  (cd "$H" && mise exec -- node harness.ts app "$test" ${with[@]+"${with[@]}"} --limit "${LIMIT:-60}" 2>&1 | tail -12 | cut -c1-700)
 done
 fi
 
@@ -218,15 +242,10 @@ fi
 fi
 fi
 
-# The security tests X1 and X2; X3 cannot be staged, and X4 is a step of its own (below). Not in the default STEPS:
-# STEPS=X ./confirm.sh <dir>. Guarded.
+# The security test X2; X1 rides beside test 13 in the apps step, X3 cannot be staged, and X4 is a step of its own
+# (below). Not in the default STEPS: STEPS=X ./confirm.sh <dir>. Guarded.
 if want X; then
 (cd "$H" && ./level.sh guarded >/dev/null)
-# X1: two forged app moves the gate must hold, on any baseline that carries no staged extra. Alone (about 30 minutes,
-# the line parked), or X_BESIDE=<app test> rides them beside that test's scan and its ticket.
-echo "##### X1: two forged app moves, held by the gate $(date -u +%H:%MZ)"
-if [ -n "${X_BESIDE:-}" ]; then x1=("$X_BESIDE" --with X1a,X1b); else x1=(X1a --with X1b); fi
-(cd "$H" && mise exec -- node harness.ts app "${x1[@]}" --limit "${LIMIT:-60}" 2>&1 | tail -12 | cut -c1-700)
 # X2: a baseline of its own, with staged/factory-x2/ (copies.sh's STAGED_EXTRA, in batch.env), the day's lockfile
 # moves and ejs's major. The line is taken out of batch.env after, and the next baseline is built without it (the
 # harness refuses any other test on this one).

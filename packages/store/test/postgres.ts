@@ -127,14 +127,19 @@ export async function startPostgres(): Promise<{ url: string; stop: () => void }
     ...['-c', 'fsync=off', '-c', 'synchronous_commit=off', '-c', 'full_page_writes=off'],
   );
   const port = docker('port', name, '5432/tcp').split(':').at(-1);
-  // pg_isready answers before the server takes connections from outside; a query proves it does.
-  for (let tries = 0; ; tries++) {
+  // pg_isready answers before the server takes connections from outside; a query proves it does. A minute by the
+  // clock, since a slow runner's first initdb takes a while, each query given ten seconds of it: a count of tries
+  // would wait as long as each try took.
+  const until = Date.now() + 60_000;
+  for (;;) {
     try {
-      docker('exec', name, 'psql', '-U', 'factory', '-h', '127.0.0.1', '-c', 'select 1');
+      execFileSync('docker', ['exec', name, 'psql', '-U', 'factory', '-h', '127.0.0.1', '-c', 'select 1'], {
+        stdio: 'pipe',
+        timeout: 10_000,
+      });
       break;
     } catch (error) {
-      // A minute: a slow runner's first initdb takes a while.
-      if (tries > 240) throw error;
+      if (Date.now() > until) throw error;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }

@@ -61,6 +61,7 @@ interface Step {
   id?: string;
   name?: string;
   uses?: string;
+  'timeout-minutes'?: number;
   env?: Record<string, unknown>;
   run?: string;
   with?: Record<string, unknown>;
@@ -147,6 +148,19 @@ describe('every workflow', () => {
       expect(triggers(workflow).length, file).toBeGreaterThan(0);
       expect(Object.keys(workflow.jobs ?? {}).length, file).toBeGreaterThan(0);
     }
+  });
+
+  it('gives every upload, download and code scanning step a limit of its own, short of its job’s', () => {
+    // Each is a call to GitHub's own services, which have stopped answering mid-call; without a limit of its own, a
+    // step that hangs holds its job to the job's whole limit, two hours in the scan's.
+    const outside = /^(actions\/(upload|download)-artifact|github\/codeql-action\/[\w-]+)@/;
+    const unlimited: string[] = [];
+    for (const { file, workflow } of workflows)
+      for (const [id, job] of Object.entries(workflow.jobs))
+        for (const step of job.steps ?? [])
+          if (outside.test(step.uses ?? '') && !(Number(step['timeout-minutes']) > 0))
+            unlimited.push(`${file} ${id}: ${step.name ?? step.uses}`);
+    expect(unlimited).toEqual([]);
   });
 
   it('never runs on pull_request_target, which runs with secrets on a pull request’s behalf', () => {

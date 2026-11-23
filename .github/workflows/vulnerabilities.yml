@@ -322,6 +322,7 @@ jobs:
           key: vulnerabilities-lookups-${{ steps.day.outputs.day }}
       # The moves, as the log printed them: what the GitHub worker reads, from the default branch's last finished run.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         with:
           name: moves
@@ -330,6 +331,7 @@ jobs:
       # The state the next run and the GitHub worker read (state.ts), sealed: uploaded before the results, so no upload
       # is without one. Kept as long as GitHub keeps an artifact; a scan that finds none reads the alerts.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         with:
           name: state
@@ -352,6 +354,7 @@ jobs:
             *) exit 1 ;;
           esac
       - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        timeout-minutes: 10
         if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
         with:
           # No `category`: each run names its own (`automationDetails.id`), which the action keeps.
@@ -432,10 +435,12 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
         working-directory: factory
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 5
         with:
           name: moves
           path: ${{ runner.temp }}/moves
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 5
         with:
           name: state
           path: ${{ runner.temp }}/state
@@ -449,6 +454,7 @@ jobs:
           SCAN_STATE_KEY: ${{ secrets.SCAN_STATE_KEY }}
         run: node scripts/pins.ts "$RUNNER_TEMP/moves/moves.json" "$RUNNER_TEMP/state/state.sealed" "$GITHUB_WORKSPACE/scanned" "$RUNNER_TEMP/pins.sealed"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         with:
           name: pins
           path: ${{ runner.temp }}/pins.sealed
@@ -571,6 +577,7 @@ jobs:
             --trivy-pin factory/deploy/images/trivy/Dockerfile --prove --memo "$RUNNER_TEMP/lookups/deadlines.json" \
             --memo-day "$LOOKUPS_DAY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         with:
           name: moves
           path: ${{ runner.temp }}/scan/moves.json

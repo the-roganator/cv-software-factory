@@ -369,6 +369,7 @@ jobs:
           TESTS: ${{ matrix.tests }}
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         with:
           # One for each part, numbered from 0 in the order above.
           name: browser-test-report-${{ strategy.job-index }}
@@ -447,6 +448,7 @@ jobs:
       - run: node apps/console/zap/scan.ts
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         with:
           name: zap-report
           path: apps/console/zap-report

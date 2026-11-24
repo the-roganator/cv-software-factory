@@ -949,7 +949,11 @@ describe('an exact pin of the factory’s workflows', () => {
       return 'behind';
     },
     calls: async () =>
-      CALLERS.map((caller, i) => ({ file: `.github/workflows/${caller}.yml`, line: call(WORKFLOWS[i] ?? '', NEW) })),
+      CALLERS.map((caller, i) => ({
+        file: `.github/workflows/${caller}.yml`,
+        number: 25,
+        line: call(WORKFLOWS[i] ?? '', NEW),
+      })),
     declared: async () => DECLARES,
     ...over,
   });
@@ -1132,20 +1136,24 @@ jobs:
     // Five of the six: the sixth, which the pull request does not change, is still at the old commit at its head.
     const left = checks({
       calls: async () => [
-        { file: '.github/workflows/gates.yml', line: call('app-gates', NEW) },
-        { file: '.github/workflows/codeql.yml', line: call('codeql', OLD) },
+        { file: '.github/workflows/gates.yml', number: 70, line: call('app-gates', NEW) },
+        { file: '.github/workflows/codeql.yml', number: 25, line: call('codeql', OLD) },
       ],
     });
     expect(await refused(bump().slice(1), { checks: left })).toBe(
       '.github/workflows/codeql.yml at its head still calls the factory at 1111111: every call moves together',
     );
     // One left at a tag, which no bump of a commit moves.
-    const tagged = checks({
-      calls: async () => [{ file: '.github/workflows/codeql.yml', line: call('codeql', NEW, 'v1') }],
-    });
-    expect(await refused(bump(), { checks: tagged })).toBe(
-      ".github/workflows/codeql.yml at its head calls the factory's workflows by something other than a commit of main",
-    );
+    const naming = (line: string) =>
+      refused(bump(), {
+        checks: checks({ calls: async () => [{ file: '.github/workflows/codeql.yml', number: 25, line }] }),
+      });
+    const held = (line: string) =>
+      `.github/workflows/codeql.yml:25 at its head names the factory's workflows in a line that is not a call of one at a commit of main (\`${line}\`), which holds every bump of them until it is one, or does not name them`;
+    expect(await naming(call('codeql', NEW, 'v1'))).toBe(held(call('codeql', NEW, 'v1').trim()));
+    // A comment that names the path holds every bump too: the words say which line of which file, whole.
+    const comment = `# See ${FACTORY_REPO}/.github/workflows/codeql.yml for what this runs.`;
+    expect(await naming(`    ${comment}`)).toBe(held(comment));
   });
 
   it('refuses a commit not on the factory’s main, one behind the old, the same, and one that has diverged', async () => {
@@ -1276,6 +1284,144 @@ jobs:
       expect(await between(listed, listed)).toHaveProperty('moved');
       const braces = 'on: { workflow_call: { inputs: { skip: { type: boolean } } } }\njobs: {}\n';
       expect(await refusedBetween(DECLARES, braces)).toContain('which the gate does not read');
+    });
+
+    it('takes a name a file gives as a key like any other: __proto__, constructor, toString, hasOwnProperty', async () => {
+      for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+        const input = DECLARES.replace(
+          '    secrets:',
+          `      ${name}:\n        type: string\n        required: true\n    secrets:`,
+        );
+        expect(await refusedBetween(DECLARES, input), name).toBe(otherwise(`the input ${name} is added`));
+        expect(await refusedBetween(input, DECLARES), name).toBe(otherwise(`the input ${name} is removed`));
+        const secret = DECLARES.replace('    outputs:', `      ${name}:\n        required: true\n    outputs:`);
+        expect(await refusedBetween(DECLARES, secret), name).toBe(otherwise(`the secret ${name} is added`));
+        expect(
+          await refusedBetween(
+            secret,
+            secret.replace(`${name}:\n        required: true`, `${name}:\n        required: false`),
+          ),
+          name,
+        ).toBe(otherwise(`the secret ${name} is declared otherwise`));
+        // A part of the declaration named so is a part too.
+        const part = DECLARES.replace('    outputs:', `    ${name}:\n      x:\n        required: true\n    outputs:`);
+        expect(await refusedBetween(DECLARES, part), name).toBe(otherwise(`the ${name} x is added`));
+      }
+    });
+
+    it('refuses a declaration written with an anchor, an alias or a merge key, the same lines at both commits or not', async () => {
+      const elsewhere = (at: string) =>
+        `the factory's app-gates.yml declares its workflow_call at ${at} with an anchor, an alias or a merge key, so what it declares is outside the lines the gate compares: ${MARTINS}`;
+      // The inputs are written under another event, and a required one is added there: the declaration's lines are the same.
+      const aliased = (more = '') =>
+        `on:\n  workflow_dispatch:\n    inputs: &i\n      skip:\n        type: boolean\n${more}  workflow_call:\n    inputs: *i\njobs: {}\n`;
+      expect(await refusedBetween(aliased(), aliased('      ref:\n        required: true\n'))).toBe(
+        elsewhere('1111111'),
+      );
+      expect(await refusedBetween(aliased(), aliased())).toBe(elsewhere('1111111'));
+      expect(await refusedBetween(DECLARES, aliased())).toBe(elsewhere('2222222'));
+      for (const written of [
+        'on:\n  workflow_call: *c\njobs: {}\n',
+        'on:\n  workflow_call: &c\n    inputs:\n      skip:\n        type: boolean\njobs: {}\n',
+        'on:\n  workflow_call:\n    <<: *c\n    inputs:\n      skip:\n        type: boolean\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      skip: &s\n        type: boolean\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      skip:\n        <<: *s\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      skip:\n        default: *d\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs: { skip: *s }\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      *k :\n        type: boolean\njobs: {}\n',
+      ])
+        expect(await refusedBetween(written, written), written).toBe(elsewhere('1111111'));
+      // An expression that multiplies or ands is none of them.
+      const expression = DECLARES.replace(
+        'jobs.kind.outputs.kind }}',
+        "jobs.kind.result == 'success' && inputs.skip }}",
+      );
+      expect(await between(expression, expression)).toHaveProperty('moved');
+      expect(
+        await between(DECLARES, DECLARES.replace('What the change is.', 'What the change is, a*b && *c.')),
+      ).toHaveProperty('moved');
+    });
+
+    it('never takes two numbers written otherwise for one, nor a number for its text', async () => {
+      const withDefault = (value: string) => DECLARES.replace('default: false', `default: ${value}`);
+      for (const [was, now] of [
+        ['20.10', '20.1'],
+        ['010', '10'],
+        ['1e2', '100'],
+        ['0x10', '16'],
+        ['0x10', '"0x10"'],
+        ['20', '"20"'],
+        ['+5', '5'],
+        ['.5', '0.5'],
+        ['1.0', '1'],
+        ['20', '21'],
+      ] as const) {
+        expect(await refusedBetween(withDefault(was), withDefault(now)), `${was} ${now}`).toContain(MARTINS);
+        expect(await refusedBetween(withDefault(now), withDefault(was)), `${now} ${was}`).toContain(MARTINS);
+      }
+      // The same number written the same, and one read whole, pass.
+      expect(await between(withDefault('20.10'), withDefault('20.10'))).toHaveProperty('moved');
+      expect(await between(withDefault('20'), withDefault('20 # minutes'))).toHaveProperty('moved');
+    });
+
+    it('refuses wherever YAML itself reads two declarations as different', () => {
+      /** A declaration as YAML reads it, less what tells a reader alone, its keys in order. */
+      const canonical = (value: unknown): unknown =>
+        typeof value !== 'object' || value === null
+          ? value
+          : Object.entries(value)
+              .filter(([key]) => key !== 'description')
+              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+              .map(([key, each]) => [key, canonical(each)]);
+      const asYaml = (text: string) =>
+        JSON.stringify(canonical((parse(text) as { on?: { workflow_call?: unknown } }).on?.workflow_call ?? {}));
+      const input = (name: string, more = '') =>
+        DECLARES.replace(
+          '    secrets:',
+          `      ${name}:\n        type: string\n        required: true\n${more}    secrets:`,
+        );
+      const aliased = (more = '') =>
+        `on:\n  workflow_dispatch:\n    inputs: &i\n      skip:\n        type: boolean\n${more}  workflow_call:\n    inputs: *i\njobs: {}\n`;
+      const withDefault = (value: string) => DECLARES.replace('default: false', `default: ${value}`);
+      const shapes = [
+        DECLARES,
+        ...['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'ref'].map((name) => input(name)),
+        input('__proto__', '        default: x\n'),
+        aliased(),
+        aliased('      ref:\n        required: true\n'),
+        aliased('      __proto__:\n        required: true\n'),
+        ...[
+          '20.10',
+          '20.1',
+          '010',
+          '10',
+          '1e2',
+          '100',
+          '0x10',
+          '16',
+          '"0x10"',
+          '"20"',
+          '20',
+          'true',
+          '"true"',
+          '~',
+          "''",
+        ].map(withDefault),
+        DECLARES.replace('required: false', 'required: true'),
+        DECLARES.replace('Whether the change is one the gates do not judge.', 'Whether to judge nothing.'),
+        DECLARES.replace(
+          '        type: boolean\n        default: false',
+          '        default: false\n        type: boolean',
+        ),
+      ];
+      let differing = 0;
+      for (const was of shapes)
+        for (const now of shapes) {
+          if (asYaml(was) === asYaml(now)) continue;
+          differing++;
+          expect(declaresOtherwise('x.yml', { from: OLD, to: NEW }, was, now), `${was}\n---\n${now}`).toBeDefined();
+        }
+      expect(differing).toBeGreaterThan(500);
     });
 
     it('comes after the commits’ own reasons: a commit that is not on main is refused for that', async () => {

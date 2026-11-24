@@ -87,7 +87,7 @@ import type { Autonomy } from '@software-factory/events';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { ACTIONS_APP } from '../gates/counts.ts';
-import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../repositories.ts';
+import { FACTORY_REPOSITORY } from '../repositories.ts';
 import type { Actions } from './actions.ts';
 import { APP_LOGIN, checksRunOf } from './actions.ts';
 import {
@@ -99,7 +99,7 @@ import {
 } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
-import { APP_USER, DEPENDABOT_USER, IssueRefused } from './issues.ts';
+import { APP_USER, DEPENDABOT_USER, IssueRefused, WORKFLOW_PIN_REPOS } from './issues.ts';
 import { type LevelReader, type Merging, mergingWait } from './level.ts';
 import {
   failedChecks,
@@ -191,11 +191,7 @@ export function pinPullWait(repo: string, pull: QueuePull): QueueWait | undefine
   return undefined;
 }
 
-/**
- * The repositories whose pull requests of Dependabot's for the factory's workflows the worker queues: the app's, which
- * calls them at a commit. The factory's own calls none of its workflows by commit, and the gate passes none there.
- */
-export const WORKFLOW_PIN_REPOS: readonly string[] = [APP_REPOSITORY];
+export { WORKFLOW_PIN_REPOS };
 
 /**
  * Whether a pull request is one of Dependabot's the worker may queue in a repository, by what GitHub's list shows of

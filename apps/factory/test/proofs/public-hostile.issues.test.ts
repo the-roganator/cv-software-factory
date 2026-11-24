@@ -17,11 +17,21 @@ import { MARTIN as REVIEW_GATE_MARTIN } from '../../../../scripts/review-gate.ts
 import { DEPENDABOT as REVIEW_GATE_DEPENDABOT } from '../../../../scripts/review-routing.ts';
 import { DRY_RUN_NUMBERS_FROM, DryRunActions, LiveActions } from '../../src/github/actions.ts';
 import { BranchRefused } from '../../src/github/branches.ts';
-import { DEPENDABOT_USER, IssueGuard, IssueRefused, MARTIN, OUTSIDE_REPLY, openedBy } from '../../src/github/issues.ts';
+import {
+  DEPENDABOT_USER,
+  IssueGuard,
+  IssueRefused,
+  MARTIN,
+  OUTSIDE_REPLY,
+  openedBy,
+  WORKFLOW_PIN_REPOS,
+} from '../../src/github/issues.ts';
+import { guardQueue } from '../../src/github/merging.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker, type GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { closeIssue } from '../../src/line/issues.ts';
+import { FACTORY_REPOSITORY } from '../../src/repositories.ts';
 import { verifyRefusal } from '../../src/signed-refusals.ts';
 import { doorReads } from '../github/door-reads.ts';
 import { calls, quiet, REPO, type Route, type Sent } from '../github/fake.ts';
@@ -337,6 +347,35 @@ describe('Dependabot’s pull request, which the App did not open', () => {
     const actions = new LiveActions(gh);
     await expect(actions.enqueuePullRequest(REPO, 150, HEAD, WATCH)).rejects.toBeInstanceOf(BranchRefused);
     expect(queues(sent)).toEqual([]);
+  });
+
+  it('is never added in a repository that does not call the factory’s workflows, the factory’s own among them', async () => {
+    expect(WORKFLOW_PIN_REPOS).toEqual([REPO]);
+    const dir = await mkdtemp(join(tmpdir(), 'issues-'));
+    for (const other of [FACTORY_REPOSITORY, 'the-roganator/another']) {
+      const here: Route = { ...pull(150), path: `/repos/${other}/pulls/150` };
+      const { github: gh, sent } = github([here, queued]);
+      const guard = new IssueGuard({
+        openedBy: openedBy(gh),
+        recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), log: quiet, now: AT }),
+      });
+      const actions = new LiveActions(gh, { guard });
+      const refused = await actions.enqueuePullRequest(other, 150, HEAD, WATCH).catch((error: unknown) => error);
+      expect(refused, other).toBeInstanceOf(IssueRefused);
+      expect((refused as Error).message).toContain(
+        `${other} is not a repository where the factory adds one of Dependabot's to the merge queue`,
+      );
+      // Refused on the repository, before the pull request is read.
+      expect(calls(sent).map((s) => s.path)).toEqual([`/repos/${other}/issues/150`]);
+      // The queue's guard holds the same of its own, whatever it is told of who opened it.
+      const candidate = { state: 'open', draft: false, head: { ref: BUMP, sha: HEAD, repo: other }, base: 'main' };
+      expect(() => guardQueue(other, 150, candidate, HEAD, 'dependabot')).toThrow(BranchRefused);
+    }
+    expect((await records(dir)).map((r) => r.repo).sort()).toEqual(
+      [FACTORY_REPOSITORY, 'the-roganator/another'].sort(),
+    );
+    const candidate = { state: 'open', draft: false, head: { ref: BUMP, sha: HEAD, repo: REPO }, base: 'main' };
+    expect(() => guardQueue(REPO, 150, candidate, HEAD, 'dependabot')).not.toThrow();
   });
 
   it('opens the queue to nobody else: a stranger’s or Martin’s from a branch of that name, or an issue of Dependabot’s', async () => {

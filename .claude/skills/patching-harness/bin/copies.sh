@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # The scratch copies of the factory and the app, for the patching tests (../TESTS.md).
 #
-#   ./copies.sh build        build both baselines locally from ../baseline.env (work/factory, work/app)
-#   ./copies.sh check        `make check` in both baselines, as each copy's CI will run it
-#   ./copies.sh create       once: make the two repositories, push, apply the real ones' settings, keys and variables
-#   ./copies.sh pin-images   once per baseline: pin each copy's deploy overlays to the images its own build made
-#   ./copies.sh settings     the real ones' settings, rulesets and environments again, from the baseline built (after a baseline that moves them)
-#   ./copies.sh reset        put both copies back to their baseline, with nothing left open, for the next run
+# Every baseline, in this order:
+#   ./copies.sh build        both baselines, locally, from ../baseline.env (work/factory, work/app); about 4 minutes
+#   ./copies.sh check        `make check` in both baselines, as each copy's CI will run it; about 2 minutes
+#   ./copies.sh reset        both copies back to their baseline, nothing left open (also before each run); about 5
+#   ./copies.sh pin-images   each copy's overlays pinned to the images its own build made, a new baseline; about 9
+# Once:
+#   ./copies.sh create       make the two repositories, push, apply the real ones' settings, keys and variables
+#   ./copies.sh app          make the scratch cluster's own GitHub App (app.ts), for Martin to create and install
+#   ./copies.sh up           make the scratch cluster (k3d software-factory-scratch); Argo CD deploys each copy's main
+#   ./copies.sh store-save   at a clean point: the scratch store, Martin's passkey and controls in it
+# As needed:
+#   ./copies.sh settings     the real ones' settings, rulesets and environments again (after a baseline that moves them)
 #   ./copies.sh status       what each copy holds now
-#   ./copies.sh store-save   once, at a clean point: the scratch store, Martin's passkey and controls in it
 #   ./copies.sh store-restore  the scratch store back to that point, its migrations run, its workers restarted
 #   ./copies.sh forget-closed  make the watches forget the pull requests a reset closed (reset does this itself)
 #   ./copies.sh dependabot   close the copies' Dependabot pull requests the real ones closed, or no test needs
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
-#   ./copies.sh app          once: make the scratch cluster's own GitHub App (app.ts), for Martin to create and install
-#   ./copies.sh up           make the scratch cluster (k3d software-factory-scratch); Argo CD deploys each copy's main
 #   ./copies.sh down         delete the scratch cluster and its state
 #
 # The scratch cluster is the copies' alone: its own k3d name and kube context (k3d-software-factory-scratch), ports
@@ -127,6 +130,7 @@ revert_all() { # <dir> <commits…>
 # on the real one's main would. Its first line, a `# ` comment, is the commit's subject; `git apply` skips it.
 # The committed ones (../staged/<side>/) and the state folder's (a set-up being tried, or a local diagnostic) are one
 # list in name order; a name in both is refused.
+LOCAL_STAGED=''
 apply_staged() { # <side> <dir>
   local side=$1 dir=$2 p
   local patches=()
@@ -140,6 +144,13 @@ apply_staged() { # <side> <dir>
   [[ -n ${STAGED_EXTRA:-} && -d "$SKILL/staged/$side-$STAGED_EXTRA" ]] && patches+=("$SKILL/staged/$side-$STAGED_EXTRA"/*.patch)
   for p in ${patches[@]+"${patches[@]}"}; do
     [[ -e "$p" ]] || continue
+    # The state folder's are no commit's: each is said, and named again in build's last line.
+    if [[ $p == "$STATE/"* ]]; then
+      echo "  staged: $side/$(basename "$p")  (local, from $STATE/staged/$side/)"
+      LOCAL_STAGED+=" $side/$(basename "$p")"
+    else
+      echo "  staged: ${p#"$SKILL/staged/"}"
+    fi
     git -C "$dir" apply --index "$p" || die "$p does not apply"
     git -C "$dir" -c commit.gpgsign=false commit -q \
       -m "chore(scratch): staged, $(basename "$p" .patch)" -m "$(sed -n '1s/^# //p' "$p")"
@@ -198,7 +209,7 @@ build() {
 
   git -C "$WORK/factory" rev-parse HEAD >"$WORK/factory.sha"
   git -C "$WORK/app" rev-parse HEAD >"$WORK/app.sha"
-  say "built: factory $(cat "$WORK/factory.sha"), app $(cat "$WORK/app.sha")"
+  say "built: factory $(cat "$WORK/factory.sha"), app $(cat "$WORK/app.sha")${LOCAL_STAGED:+; with local patches:$LOCAL_STAGED}"
 }
 
 check() {
@@ -713,5 +724,5 @@ case "${1:-}" in
   forget-closed) forget_closed "$FACTORY_COPY"; forget_closed "$APP_COPY" ;;
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
-  *) sed -n '2,29p' "$0"; exit 2 ;;
+  *) sed -n '2,32p' "$0"; exit 2 ;;
 esac

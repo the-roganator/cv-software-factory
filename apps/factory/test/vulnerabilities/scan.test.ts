@@ -230,7 +230,7 @@ describe('an item it cannot read', () => {
       TRACKED,
     );
     expect(outcome.unreadable.map((entry) => [entry.name, entry.why])).toEqual([
-      [POSTGRES, 'could not be pulled: Trivy gave no image it analysed'],
+      [POSTGRES, 'could not be read: Trivy gave no image it analysed'],
       ['grafana', 'a values file it names is not a file the checkout tracks: ../../.docker/config.json'],
       ['grafana', 'a values file it names is not a file the checkout tracks: deploy/values/untracked.yaml'],
     ]);
@@ -240,8 +240,8 @@ describe('an item it cannot read', () => {
     const read = await scan(t, checkout(), [outside(['deploy/values/grafana.yaml'])], [], DB, TRACKED);
     expect(rendered).toBe(1);
     expect(read.unreadable).toEqual([]);
-    expect(read.targets.map((target) => [targetName(target), target.unpulled])).toEqual([
-      ['grafana: busybox', 'could not be pulled: MANIFEST_UNKNOWN: busybox'],
+    expect(read.targets.map((target) => [targetName(target), target.unread])).toEqual([
+      ['grafana: busybox', 'could not be read: MANIFEST_UNKNOWN: busybox'],
     ]);
   });
 
@@ -289,31 +289,31 @@ describe('an item it cannot read', () => {
 });
 
 describe('another’s image the registry does not serve', () => {
-  const WHY = `could not be pulled: MANIFEST_UNKNOWN: ${POSTGRES}`;
+  const WHY = `could not be read: MANIFEST_UNKNOWN: ${POSTGRES}`;
   const unserved = async () => {
     const fake = everything();
     delete fake.images?.[POSTGRES];
     return scan(tools(fake).tools, checkout(), items(), [], DB, TRACKED);
   };
 
-  it('costs that image alone on a run that uploads: it stays on the list, not pulled, and the rest is read', async () => {
+  it('costs that image alone on a run that uploads: it stays on the list, not read, and the rest is read', async () => {
     const outcome = await unserved();
     const whole = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
     expect(outcome.unreadable).toEqual([]);
     expect(outcome.read).toBe(2);
     // The same target a read gives, in the same place on the list, so what is carried for it has its item's pins.
     expect(outcome.targets).toEqual(
-      whole.targets.map((target) => (target.label === POSTGRES ? { ...target, unpulled: WHY } : target)),
+      whole.targets.map((target) => (target.label === POSTGRES ? { ...target, unread: WHY } : target)),
     );
     expect(outcome.findings).toEqual(whole.findings.filter((finding) => finding.label !== POSTGRES));
-    const { lines, passes, unpulled } = report(outcome, true);
+    const { lines, passes, unread } = report(outcome, true);
     expect(passes).toBe(true);
-    expect(unpulled.map(targetName)).toEqual([POSTGRES]);
-    expect(lines).toContain('Not pulled (1):');
+    expect(unread.map(targetName)).toEqual([POSTGRES]);
+    expect(lines).toContain('Image not read (1):');
     expect(lines).toContain(`  ${POSTGRES}: ${WHY}`);
     expect(lines).not.toContain('Every item was read.');
     expect(lines.at(-1)).toBe(
-      "Every other item was read: the results are written for upload once the last run's findings of the image not pulled are carried into them, and the run fails after it.",
+      "Every other item was read: the results are written for upload once the last run's findings of the image not read are carried into them, and the run fails after it.",
     );
   });
 
@@ -346,7 +346,7 @@ describe('another’s image the registry does not serve', () => {
     if (fake.images) fake.images[POSTGRES] = { SchemaVersion: 2, ArtifactName: POSTGRES };
     const outcome = await scan(tools(fake).tools, checkout(), items(), [], DB, TRACKED);
     expect(outcome.unreadable.map((entry) => entry.name)).toEqual([OURS, POSTGRES]);
-    expect(outcome.targets.some((target) => target.unpulled !== undefined)).toBe(false);
+    expect(outcome.targets.some((target) => target.unread !== undefined)).toBe(false);
     expect(report(outcome, true).passes).toBe(false);
   });
 });
@@ -961,7 +961,7 @@ describe('trying again', () => {
       // A 404 logged on the way to another failure is not the answer: the failure's own line is.
       stderr('GET https://ghcr.io/v2/x/y/referrers/sha256:ab: 404 Not Found\nFATAL\tdial tcp: i/o timeout'),
       // A database's pull is tried again whatever it says: its tag may be mid-push.
-      new Fault('the database could not be pulled: MANIFEST_UNKNOWN: manifest unknown'),
+      new Fault('the database could not be read: MANIFEST_UNKNOWN: manifest unknown'),
     ];
     for (const error of faults) {
       waited.length = 0;

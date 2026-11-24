@@ -11,6 +11,7 @@ import {
   DAYS,
   main as deadlines,
   dockerfileOf,
+  ending,
   firstFixed,
   k3sLine,
   k3sReleaseOf,
@@ -220,7 +221,7 @@ async function judge(world: World, now = NOW) {
   };
   const { sources, asked } = sourcesOf(world);
   const lines: string[] = [];
-  const { rows, fixes, judged, looked, unpulled, excepted } = await assess(
+  const { rows, fixes, judged, looked, unread, excepted, missed } = await assess(
     handoff,
     sources,
     now,
@@ -235,7 +236,10 @@ async function judge(world: World, now = NOW) {
       rows,
       judged.map((each) => each.finding),
     );
-  return { rows, fixes, judged, looked, unpulled, excepted, asked, lines, kept, verdict: verdict(rows) };
+  const judgement = verdict(rows);
+  /** How the run ends after its upload: its last lines and its exit code. */
+  const ends = () => ending({ passes: judgement.passes, lines: judgement.lines.slice(3), unread, missed });
+  return { rows, fixes, judged, looked, unread, excepted, missed, asked, lines, kept, ends, verdict: judgement };
 }
 
 /** A Trivy report of an image made at the time given, with the findings given. */
@@ -683,6 +687,37 @@ describe('an image’s fix', () => {
       '::warning::The image node:24.23.0-trixie-slim could not be read (node:24.23.0-trixie-slim: no such image): 1 result keeps the fix the last run gave, and one with none has none today.',
     ]);
     expect(warnings.join('\n')).not.toMatch(/libexample|CVE-/);
+    // Everything was judged and is kept, and the run does not pass: it ends failed on the source, by its name.
+    expect(first.missed).toEqual([]);
+    expect(second.ends().code).toBe(1);
+    expect(second.ends().lines.at(-1)).toBe(
+      '::error::Source not read: The image node:24.23.0-trixie-slim (node:24.23.0-trixie-slim: no such image): 1 result was judged without it, and keeps the fix the last run gave.',
+    );
+  });
+
+  it('fails the day a new high or critical could not be dated, which no later day would fail as new', async () => {
+    const fresh = os({ severity: 'CRITICAL' });
+    // Day 1: first seen, and the registry gives no newest image: no fix, so the deadlines fail nothing.
+    const first = await judge({ findings: [fresh], tags, images: {} });
+    expect(first.rows[0]).toMatchObject({ firstSeenToday: true, bucket: 'none' });
+    expect(first.verdict.passes).toBe(true);
+    expect(first.ends().code).toBe(1);
+    expect(first.ends().lines.at(-1)).toBe(
+      '::error::Source not read: The image node:24.23.0-trixie-slim (node:24.23.0-trixie-slim: no such image): 1 result was judged without it, and keeps the fix the last run gave.',
+    );
+    // Day 2: the registry answers, and the finding is no longer new: day 1's red was the one day it could fail as new.
+    const second = await judge(
+      {
+        findings: [fresh],
+        tags,
+        images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
+        state: first.kept(),
+      },
+      NOW + DAY,
+    );
+    expect(second.rows[0]?.firstSeenToday).toBe(false);
+    expect(second.verdict.fresh).toBe(0);
+    expect(second.missed).toEqual([]);
   });
 
   it('gives a finding new today no fix when its source cannot be read, so it fails nothing that day, and counts it', async () => {
@@ -712,6 +747,18 @@ describe('an image’s fix', () => {
     const judged = await assess(handoff, unlisted, NOW, (line) => lines.push(line));
     expect(judged.fixes).toEqual([undefined, undefined, undefined]);
     expect(judged.looked.unanswered).toEqual({ sources: 2, results: 3 });
+    expect([...judged.missed].sort((a, b) => a.source.localeCompare(b.source))).toEqual([
+      { source: "npm's registry", why: "npm's registry answered 503", results: 1 },
+      { source: 'The tags of node', why: 'TOOMANYREQUESTS', results: 2 },
+    ]);
+    expect(
+      ending({ passes: true, lines: [], missed: [{ source: "npm's registry", why: 'answered 503', results: 2 }] }),
+    ).toEqual({
+      lines: [
+        "::error::Source not read: npm's registry (answered 503): 2 results were judged without it, and keep the fix the last run gave.",
+      ],
+      code: 1,
+    });
     expect(lines.filter((line) => line.startsWith('::warning::')).sort()).toEqual([
       '::warning::The tags of node could not be read (TOOMANYREQUESTS): 2 results keep the fix the last run gave, and one with none has none today.',
       "::warning::npm's registry could not be read (npm's registry answered 503): 1 result keeps the fix the last run gave, and one with none has none today.",
@@ -2049,7 +2096,7 @@ describe('an image the registry did not serve', () => {
     name: REDIS,
     line: 21,
   };
-  const WHY = 'could not be pulled: TOOMANYREQUESTS';
+  const WHY = 'could not be read: TOOMANYREQUESTS';
   const inRedis = (over: Partial<Finding> = {}) =>
     os({ item: redis.key, listed: REDIS, label: LABEL, file: redis.file, line: 21, ...over });
   const fixable = inRedis({
@@ -2065,7 +2112,7 @@ describe('an image the registry did not serve', () => {
   const unfixed = inRedis({ package: 'busybox', advisory: 'CVE-2099-20041', fixed: undefined, path: 'bin/busybox' });
   const first = npm({ description: 'The lockfile’s own.' });
   const last = os({ description: 'The other image’s own.' });
-  // The list's order: the lockfile, the image not pulled, then another image.
+  // The list's order: the lockfile, the image not read, then another image.
   const targets = [LOCKFILE, redis, IMAGE];
   const sources = {
     published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z' },
@@ -2081,7 +2128,7 @@ describe('an image the registry did not serve', () => {
   /** The handoff's findings as the scan writes them where every image was read: without their descriptions. */
   const short = (findings: Finding[]) => findings.map(({ description: _, ...finding }) => finding);
   const read = { ...sources, findings: short([first, fixable, unfixed, last]), targets };
-  const unpulled = { ...sources, findings: [first, last], targets: [LOCKFILE, { ...redis, unpulled: WHY }, IMAGE] };
+  const unread = { ...sources, findings: [first, last], targets: [LOCKFILE, { ...redis, unread: WHY }, IMAGE] };
   const context = (now: number) => ({ repository: REPOSITORY, app: false, now });
   /** What a run uploads and keeps, as deadlines.ts's `main` makes it: the SARIF, each alert's key, the moves, the state. */
   const kept = (day: Awaited<ReturnType<typeof judge>>, now: number, written?: Finding[]) => {
@@ -2090,7 +2137,7 @@ describe('an image the registry did not serve', () => {
       const at = list.findIndex((move) => move.results.includes(fingerprint(each.finding)));
       return { ...each.finding, move: at < 0 ? undefined : { index: at + 1, run: '1' } };
     });
-    // The scan's own file with each message ended; or, with an image not pulled, the file made of every finding.
+    // The scan's own file with each message ended; or, with an image not read, the file made of every finding.
     const file = rewrite(sarif(written ?? tagged, '0.70.0'), Object.fromEntries(day.excepted), tagged);
     return {
       file: file.file,
@@ -2106,13 +2153,13 @@ describe('an image the registry did not serve', () => {
     const state = JSON.parse(kept(yesterday, NOW).state) as State;
     const now = NOW + DAY;
     const whole = kept(await judge({ ...read, state }, now), now, [first, fixable, unfixed, last]);
-    const day = await judge({ ...unpulled, state }, now);
+    const day = await judge({ ...unread, state }, now);
     const carried = kept(day, now);
     // In the list's order, between the lockfile's and the other image's.
     expect(day.judged.map((each) => each.finding.item)).toEqual([LOCKFILE.key, redis.key, redis.key, IMAGE.key]);
-    expect(day.unpulled).toEqual([{ name: REDIS, why: WHY, carried: 2 }]);
+    expect(day.unread).toEqual([{ name: REDIS, why: WHY, carried: 2 }]);
     expect(day.lines).toContain(
-      `Not pulled: ${REDIS}: its 2 findings are carried from the state run 1 kept, as that run judged them.`,
+      `Image not read: ${REDIS}: its 2 findings are carried from the state run 1 kept, as that run judged them.`,
     );
     // Every result, byte for byte: its message with its fix, its day and its move, its line, its level, its fingerprints.
     expect(carried.file.runs.map((run) => JSON.stringify(run.results))).toEqual(
@@ -2152,12 +2199,12 @@ describe('an image the registry did not serve', () => {
       reason: 'busybox’s applet is never run.',
       expires: '2026-12-31',
     };
-    const day = await judge({ ...unpulled, state, policy: { ...policy, EXCEPTIONS: [entry] } }, NOW + DAY);
+    const day = await judge({ ...unread, state, policy: { ...policy, EXCEPTIONS: [entry] } }, NOW + DAY);
     expect(day.rows.map((row) => row.excepted)).toEqual([false, false, true, false]);
     expect([...day.excepted]).toEqual([[alertKey(short([unfixed])[0] as Finding), policy.dismissal(entry)]]);
     // An entry for another item excepts nothing carried.
     const other = await judge(
-      { ...unpulled, state, policy: { ...policy, EXCEPTIONS: [{ ...entry, item: NODE_IMAGE }] } },
+      { ...unread, state, policy: { ...policy, EXCEPTIONS: [{ ...entry, item: NODE_IMAGE }] } },
       NOW + DAY,
     );
     expect(other.rows.some((row) => row.excepted)).toBe(false);
@@ -2165,11 +2212,11 @@ describe('an image the registry did not serve', () => {
 
   it('has nothing to carry for an image the last run found nothing in: no finding is made, and it is named', async () => {
     const yesterday = await judge({ ...sources, findings: short([first, last]), targets, alerts: [] });
-    const day = await judge({ ...unpulled, state: yesterday.kept() }, NOW + DAY);
+    const day = await judge({ ...unread, state: yesterday.kept() }, NOW + DAY);
     expect(day.judged.map((each) => each.finding.item)).toEqual([LOCKFILE.key, IMAGE.key]);
-    expect(day.unpulled).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
+    expect(day.unread).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
     expect(day.lines).toContain(
-      `Not pulled: ${REDIS}: the state run 1 kept has no finding of it, so there is none to carry and no alert of it to close.`,
+      `Image not read: ${REDIS}: the state run 1 kept has no finding of it, so there is none to carry and no alert of it to close.`,
     );
   });
 
@@ -2180,12 +2227,12 @@ describe('an image the registry did not serve', () => {
       alertOf(last, '2026-10-01T00:00:00Z'),
       alertOf(fixable, '2026-09-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-09-10T04:30:00Z' }),
     ];
-    const day = await judge({ ...unpulled, alerts }, NOW + DAY);
+    const day = await judge({ ...unread, alerts }, NOW + DAY);
     expect(day.judged.map((each) => each.finding.item)).toEqual([LOCKFILE.key, IMAGE.key]);
     expect(day.rows.map((row) => row.seen)).toEqual([at('2026-10-01T00:00:00Z'), at('2026-10-01T00:00:00Z')]);
-    expect(day.unpulled).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
+    expect(day.unread).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
     expect(day.lines).toContain(
-      `Not pulled: ${REDIS}: there is no state, and it has no alert, so there is none to carry and none to close.`,
+      `Image not read: ${REDIS}: there is no state, and it has no alert, so there is none to carry and none to close.`,
     );
   });
 
@@ -2194,13 +2241,13 @@ describe('an image the registry did not serve', () => {
     const state = yesterday.kept();
     // No state to read, and an alert of the image's, open or dismissed: an alert holds its message, and not
     // everything a result is made of.
-    const none = judge({ ...unpulled, alerts: [alertOf(fixable, '2026-11-01T00:00:00Z')] }, NOW + DAY);
+    const none = judge({ ...unread, alerts: [alertOf(fixable, '2026-11-01T00:00:00Z')] }, NOW + DAY);
     await expect(none).rejects.toThrow(NotCarried);
     await expect(none).rejects.toThrow(
-      `Not pulled: ${REDIS}. It has alerts, and this run has no state to carry the last run's findings from`,
+      `Image not read: ${REDIS}. It has alerts, and this run has no state to carry the last run's findings from`,
     );
     await expect(
-      judge({ ...unpulled, alerts: [alertOf(unfixed, '2026-11-01T00:00:00Z', { state: 'dismissed' })] }, NOW + DAY),
+      judge({ ...unread, alerts: [alertOf(unfixed, '2026-11-01T00:00:00Z', { state: 'dismissed' })] }, NOW + DAY),
     ).rejects.toThrow(NotCarried);
     // A state written before the scan kept what carries a finding.
     const before: State = {
@@ -2209,12 +2256,12 @@ describe('an image the registry did not serve', () => {
         ({ item: _i, listed: _l, label: _b, publisher: _p, score: _s, path: _a, title: _t, url: _u, ...each }) => each,
       ),
     };
-    await expect(judge({ ...unpulled, state: before }, NOW + DAY)).rejects.toThrow(
+    await expect(judge({ ...unread, state: before }, NOW + DAY)).rejects.toThrow(
       /The state run 1 kept holds its findings without what carries them/,
     );
     // The pin moved since the last run: what that run found in one image is not what is in the next.
-    const moved = { ...redis, label: NEWER, image: NEWER, name: NEWER, unpulled: WHY };
-    await expect(judge({ ...unpulled, targets: [LOCKFILE, moved, IMAGE], state }, NOW + DAY)).rejects.toThrow(
+    const moved = { ...redis, label: NEWER, image: NEWER, name: NEWER, unread: WHY };
+    await expect(judge({ ...unread, targets: [LOCKFILE, moved, IMAGE], state }, NOW + DAY)).rejects.toThrow(
       /holds findings of its item at another pin, which are not this image's to carry/,
     );
     // Nothing of a finding is in what it says.
@@ -2233,25 +2280,25 @@ describe('an image the registry did not serve', () => {
       const passing =
         'Nothing new at high or critical has a fix to install, and nothing is due within a day or past its deadline.';
       expect((await ends({ passes: true, lines: [passing] })).code).toBe(0);
-      expect((await ends({ passes: true, lines: [passing], unpulled: [] })).code).toBe(0);
-      const carried = await ends({ passes: true, lines: [passing], unpulled: [{ name: REDIS, why: WHY, carried: 2 }] });
+      expect((await ends({ passes: true, lines: [passing], unread: [] })).code).toBe(0);
+      const carried = await ends({ passes: true, lines: [passing], unread: [{ name: REDIS, why: WHY, carried: 2 }] });
       expect(carried.code).toBe(1);
       expect(carried.lines).toEqual([
         passing,
-        `::error::Not pulled: ${REDIS}: ${WHY}. Its 2 findings are the last run's.`,
+        `::error::Image not read: ${REDIS}: ${WHY}. Its 2 findings are the last run's.`,
       ]);
-      const none = await ends({ passes: true, lines: [passing], unpulled: [{ name: REDIS, why: WHY, carried: 0 }] });
+      const none = await ends({ passes: true, lines: [passing], unread: [{ name: REDIS, why: WHY, carried: 0 }] });
       expect(none.code).toBe(1);
       expect(none.lines.at(-1)).toBe(
-        `::error::Not pulled: ${REDIS}: ${WHY}. It has no finding to carry, so no alert of it closes.`,
+        `::error::Image not read: ${REDIS}: ${WHY}. It has no finding to carry, so no alert of it closes.`,
       );
       const failing = 'The run fails: 0 new high or critical with a fix, 0 due within a day, 1 past their deadline.';
-      const both = await ends({ passes: false, lines: [failing], unpulled: [{ name: REDIS, why: WHY, carried: 1 }] });
+      const both = await ends({ passes: false, lines: [failing], unread: [{ name: REDIS, why: WHY, carried: 1 }] });
       expect(both.code).toBe(1);
       expect(both.lines).toEqual([
         failing,
         `::error::${failing}`,
-        `::error::Not pulled: ${REDIS}: ${WHY}. Its 1 finding is the last run's.`,
+        `::error::Image not read: ${REDIS}: ${WHY}. Its 1 finding is the last run's.`,
       ]);
       expect((await ends({ passes: false, lines: [failing] })).code).toBe(1);
     } finally {
@@ -2260,23 +2307,89 @@ describe('an image the registry did not serve', () => {
     }
   });
 
-  it('is not among the images scanned in moves.json, nor is one whose digests the registry does not give', async () => {
-    const lines: string[] = [];
+  it('is not among the images scanned in moves.json, nor is one whose digests the registry does not give, which fails the run at its end', async () => {
+    const missed: { source: string; why: string }[] = [];
     const node = { ...IMAGE, line: 2, name: NODE_IMAGE };
     const scanned = await scannedImages(
-      [LOCKFILE, { ...redis, unpulled: WHY }, node, { ...redis, key: 'other', image: NEWER, label: NEWER }],
+      [LOCKFILE, { ...redis, unread: WHY }, node, { ...redis, key: 'other', image: NEWER, label: NEWER }],
       {
         async manifests(reference) {
           if (reference === NEWER) throw new Error('TOOMANYREQUESTS');
           return { digest: `sha256:${'f'.repeat(64)}`, platforms: [] };
         },
       },
-      (line) => lines.push(line),
+      (image, why) => missed.push({ source: `The digests of ${image}`, why }),
     );
     expect(scanned.map((each) => each.image)).toEqual([NODE_IMAGE]);
-    expect(lines).toEqual([
-      `::warning::The digests of ${NEWER} could not be read (TOOMANYREQUESTS): it is left out of the images scanned in moves.json.`,
-    ]);
+    expect(missed).toEqual([{ source: `The digests of ${NEWER}`, why: 'TOOMANYREQUESTS' }]);
+    expect(ending({ passes: true, lines: [], missed })).toEqual({
+      lines: [
+        `::error::Source not read: The digests of ${NEWER} (TOOMANYREQUESTS): the image is left out of those scanned in moves.json.`,
+      ],
+      code: 1,
+    });
+  });
+
+  describe('that is new to the list the day a place of its repository leaves it', () => {
+    // The pin moved from deploy/base/redis.yaml to deploy/base/cache.yaml, and the registry does not serve it that day.
+    const moved: ReadTarget = {
+      ...redis,
+      key: 'deploy/base/cache.yaml ecr-public.aws.com/docker/library/redis',
+      file: 'deploy/base/cache.yaml',
+      unread: WHY,
+    };
+    const day = { ...sources, findings: [first, last], targets: [LOCKFILE, moved, IMAGE] };
+    const inCache = (finding: Finding) => ({ ...finding, item: moved.key, file: moved.file });
+
+    it('fails with nothing uploaded, so the old place’s alerts stay open and the state keeps its days', async () => {
+      const yesterday = await judge({ ...read, alerts: [alertOf(fixable, '2026-10-01T00:00:00Z')] });
+      const state = yesterday.kept();
+      const refused = judge({ ...day, state }, NOW + DAY);
+      await expect(refused).rejects.toThrow(NotCarried);
+      await expect(refused).rejects.toThrow(
+        `Image not read: ${REDIS}. It is new to the list, and the state run 1 kept holds findings of ecr-public.aws.com/docker/library/redis at a place no longer on it, whose days its findings could not be given`,
+      );
+      // The day after, read, with the state that run left untouched: the rename rule gives the finding its day.
+      const { unread: _, ...pulled } = moved;
+      const next = await judge(
+        {
+          ...sources,
+          findings: short([first, inCache(fixable), inCache(unfixed), last]),
+          targets: [LOCKFILE, pulled, IMAGE],
+          state,
+        },
+        NOW + 2 * DAY,
+      );
+      expect(next.rows[1]).toMatchObject({ seen: at('2026-10-01T00:00:00Z'), firstSeenToday: false });
+    });
+
+    it('fails the same with no state to read, by the old place’s alerts', async () => {
+      const alerts = [alertOf(first, '2026-10-01T00:00:00Z'), alertOf(fixable, '2026-10-01T00:00:00Z')];
+      await expect(judge({ ...day, alerts }, NOW + DAY)).rejects.toThrow(
+        `Image not read: ${REDIS}. It is new to the list, and ecr-public.aws.com/docker/library/redis has alerts at a place no longer on it, whose days its findings could not be given`,
+      );
+    });
+
+    it('goes on, not read, where the place that left is another repository’s, or is still on the list', async () => {
+      // Another image left the list: no rename could give its days to redis.
+      const gone = os({ item: 'Dockerfile example/old', label: 'example/old:1', file: 'Dockerfile' });
+      const other = await judge({ ...day, alerts: [alertOf(gone, '2026-10-01T00:00:00Z')] }, NOW + DAY);
+      expect(other.unread).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
+      const before = await judge({ ...sources, findings: short([first, gone, last]), targets, alerts: [] });
+      const kept = await judge({ ...day, state: before.kept() }, NOW + DAY);
+      expect(kept.unread).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
+      // Redis in both files, the old one read today: its findings are its own, and the new item inherits none.
+      const both = await judge(
+        {
+          ...sources,
+          findings: [first, fixable, unfixed, last],
+          targets: [LOCKFILE, redis, moved, IMAGE],
+          state: (await judge({ ...read, alerts: [] })).kept(),
+        },
+        NOW + DAY,
+      );
+      expect(both.unread).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
+    });
   });
 });
 

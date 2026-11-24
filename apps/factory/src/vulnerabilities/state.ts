@@ -12,7 +12,7 @@
  *
  * Losing it resets no deadline: a scan that finds no state it can open reads the alerts, as a proving run always does
  * (deadlines.ts's `seen` and `stated`), and writes the next. The alerts hold every day; what they do not hold is a
- * finding whole, so only a state carries an image's findings into a run that could not pull it (deadlines.ts's
+ * finding whole, so only a state carries an image's findings into a run that could not read it (deadlines.ts's
  * `carried`).
  *
  *     node apps/factory/src/vulnerabilities/state.ts new        a key, base64, for SCAN_STATE_KEY

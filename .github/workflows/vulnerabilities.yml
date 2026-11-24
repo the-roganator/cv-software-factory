@@ -17,7 +17,7 @@
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
 #   fails and uploads nothing, so no alert closes because its item went unread. One item is contained: another's
-#   image the registry does not serve costs that image alone, its findings carried into the upload from the last
+#   image Trivy could not read (the registry did not serve it, or its read failed) costs that image alone, its findings carried into the upload from the last
 #   run's state, so none of its alerts closes (deadlines.ts's `carried`), or the run fails as for any other where
 #   they cannot be. Before the upload, deadlines.ts finds
 #   what fixes each finding and since when, reading the state the last run kept for each finding's days (state.ts, ADR
@@ -32,7 +32,7 @@
 #   categories' alerts to policy/vulnerabilities.ts, read from this repository's main alone: each excepted result's
 #   alert dismissed as won't fix, and any dismissed with no exception in force reopened (alerts.ts). Then the run
 #   fails on a new High or Critical with a fix, one due within a day, or one past its deadline, its last lines naming
-#   the moves that hold them, and on an image not pulled, naming it. One scan at a time uploads, so no two uploads'
+#   the moves that hold them, and on an image not read, naming it. One scan at a time uploads, so no two uploads'
 #   alerts interleave.
 # - pins: needs scan. The moves no pin's line writes (a lockfile's package, what mise pins, an image that brings another
 #   pin with it), made by the pin step on the commit the scan read and sealed with the scan's key, the artifact `pins`
@@ -41,7 +41,7 @@
 #   main from what it sealed.
 # - scan proof: on a pull request that changes the scan or the graph, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
-#   not showing CVE-2026-111497, and on an image not pulled, which it has no state to carry, and its log carries the counts, the deadlines' and the moves' too, read against the
+#   not showing CVE-2026-111497, and on an image not read, which it has no state to carry, and its log carries the counts, the deadlines' and the moves' too, read against the
 #   repository's alerts, as a scan with no state reads them (it holds no key), and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job
 #   that writes refuses any event but a push to the default branch, the schedule or a run by hand there; this one writes
 #   nothing, and runs on a pull request alone, from a branch of this repository: its first step refuses a fork's, whose
@@ -284,7 +284,7 @@ jobs:
           TOKEN: ${{ github.token }}
         run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
       # It passes, and says the results are for upload (`sarif`), when every item was read, or every item but an image
-      # of another's the registry did not serve: that one it hands to the next step, which carries its findings from
+      # of another's Trivy could not read: that one it hands to the next step, which carries its findings from
       # the last run's state, and the job's last step fails on it once everything is uploaded and kept.
       - name: Scan
         id: scan
@@ -301,7 +301,7 @@ jobs:
       # releases, and the newer images on each line with a fixed finding (crane for the tags and the index digests,
       # Trivy on the scan's database): one that does not answer costs the results that asked it, which keep the last
       # run's fix. It fails, and nothing is uploaded, when the state and the alerts cannot be read, or an image was
-      # not pulled and its findings cannot be carried from the state.
+      # not read and its findings cannot be carried from the state.
       - name: Deadlines and moves
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         env:
@@ -352,7 +352,7 @@ jobs:
       - id: kept
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         run: echo "kept=true" >> "$GITHUB_OUTPUT"
-      # The file is written only when every item was read, or an image not pulled has the last run's findings in it, and
+      # The file is written only when every item was read, or an image not read has the last run's findings in it, and
       # it is within code scanning's limits: no run over 5,000 results, and no more than 20 runs.
       - name: Refuse to upload from anything but the default branch's push, the schedule or a run by hand
         if: ${{ steps.scan.outputs.sarif == 'true' }}
@@ -389,7 +389,7 @@ jobs:
         run: node factory/apps/factory/src/vulnerabilities/alerts.ts "$RUNNER_TEMP/scan/exceptions.json"
       # The verdict judged before the upload, once each new finding's alert exists: fails on a new High or Critical with
       # a fix, one due within a day, or one past its deadline, naming the moves that hold them; and on an image the
-      # registry did not serve, naming it and why, with its findings the last run's.
+      # scan could not read, naming it and why, with its findings the last run's.
       - name: Deadlines
         if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
         env:

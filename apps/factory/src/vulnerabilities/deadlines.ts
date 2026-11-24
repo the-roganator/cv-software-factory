@@ -45,11 +45,11 @@
  *   proving run's, which uploads nothing, fails on none of them. The state and code scanning not read fail either, as
  *   an unread item fails the scan.
  * - **A source that does not answer** (npm, Node's index, an image line's tags, its newest image or its digest, a
- *   chart's versions, a tool's releases, a k3s release) costs the results that asked it, and no others: each keeps the
- *   fix the last run gave it, and one with none has none that day, so a new High or Critical among them fails
- *   nothing until its source answers. The log warns once for each such source, by its name, and counts the results
- *   judged without one.
- * - **An image the registry did not serve** (scan.ts's `unpulled`) has the last run's findings, carried from the state
+ *   chart's versions, a tool's releases, a k3s release, an image's manifest) costs the results that asked it, and no
+ *   others: each keeps the fix the last run gave it, and one with none has none that day, so a new High or Critical
+ *   among them is not failed as new. So the run fails on the source itself, after the upload, naming it and counting
+ *   the results judged without it (`ending`): everything is judged, uploaded and kept, and the day is still red.
+ * - **An image Trivy could not read** (scan.ts's `unread`) has the last run's findings, carried from the state
  *   as that run judged them (`carried`), in the upload, the state and the moves; the run fails on it after the
  *   upload, naming it. Where they cannot be carried exactly, the run fails before anything is uploaded.
  *
@@ -1045,9 +1045,11 @@ export async function installable(
       }
     }),
   );
+  const missed: Missed[] = [];
   for (const [source, { why, results }] of unanswered) {
     lines.unanswered.sources++;
     lines.unanswered.results += results;
+    missed.push({ source, why, results });
     log(
       `::warning::${source} could not be read (${why}): ${results} ${results === 1 ? 'result keeps' : 'results keep'} the fix the last run gave, and one with none has none today.`,
     );
@@ -1070,7 +1072,7 @@ export async function installable(
     rendered,
     k3s: k3sRelease,
   };
-  return { at, fixes, places, looked: lines, lookups };
+  return { at, fixes, places, looked: lines, lookups, missed };
 }
 
 /**
@@ -1206,20 +1208,30 @@ function clocked(
   });
 }
 
+/**
+ * A source that did not answer, as the run's end names it: why, and how many results were judged without it. A
+ * registry that did not give an image's digests has none: it cost that image its place among those scanned.
+ */
+export interface Missed {
+  source: string;
+  why: string;
+  results?: number | undefined;
+}
+
 /** Why an image's findings cannot be carried: the run fails before anything is uploaded, as for any item not read. */
 export class NotCarried extends Error {
   override name = 'NotCarried';
 }
 
-/** An image the registry did not serve, as the run's end names it: why, and how many findings the last run's state gave. */
-export interface Unpulled {
+/** An image Trivy could not read, as the run's end names it: why, and how many findings the last run's state gave. */
+export interface Unread {
   name: string;
   why: string;
   carried: number;
 }
 
 /**
- * A run's findings where the registry did not serve an image (`ReadTarget.unpulled`): the scan's own, and that image's
+ * A run's findings where Trivy could not read an image (`ReadTarget.unread`): the scan's own, and that image's
  * as the last run judged them, from its state, each in its item's place in the list's order, so the upload holds a
  * result for every alert the image has and none closes. A carried finding is the state's (`StateFinding`), at the
  * line its item is pinned on now; its clock and its fix are read from the state as any finding's are, and its target
@@ -1231,8 +1243,11 @@ export interface Unpulled {
  * findings in the state are another pin's, since what the last run found in one image is not what is in the next;
  * and, with no state to read, for an image that has an alert of the scan's, open or dismissed, at its place (its
  * file and its repository, as `alertPlace` reads one), since an alert holds its message and not everything a result
- * is made of. An image with no finding in the state, or with no state and no such alert, has nothing to carry and no
- * alert an upload could close: it is not read, and the run's end says so.
+ * is made of. And for an image new to the list while the state, or with none the alerts, holds findings of the same
+ * repository at a place no longer on it: a pin moved to another file, whose findings would take those days by the
+ * rename rule were they read, and would lose them for good once this upload closed the old alerts. Only an image
+ * with no finding of its own and none it could inherit has nothing to carry and no alert an upload could close: it is
+ * not read, and the run's end says so.
  */
 export function carried(
   handoff: Handoff,
@@ -1240,9 +1255,18 @@ export function carried(
   policy: Policy,
   log: (line: string) => void = () => {},
   now = Date.now(),
-): { findings: Finding[]; excepted: Map<string, string>; unpulled: Unpulled[] } {
-  const targets = handoff.targets.filter((target) => target.unpulled !== undefined);
-  if (!targets.length) return { findings: handoff.findings, excepted: new Map(), unpulled: [] };
+): { findings: Finding[]; excepted: Map<string, string>; unread: Unread[] } {
+  const targets = handoff.targets.filter((target) => target.unread !== undefined);
+  if (!targets.length) return { findings: handoff.findings, excepted: new Map(), unread: [] };
+  /**
+   * Whether a place the list no longer has is one the rename rule (`renameKey`) could give this target's findings the
+   * days of: an image of the same repository under another file. Unread, its findings are not known, so any is taken
+   * for one; with nothing of the target's own carried, the upload would close that place's alerts and the state would
+   * drop its findings, and the day the image is read again its findings would be first seen then.
+   */
+  const onList = new Set(handoff.targets.map((each) => itemKey({ file: each.file, repository: itemOf(each.label) })));
+  const inherits = (target: ReadTarget, place: Pick<Place, 'file' | 'repository'>) =>
+    place.repository !== place.file && place.repository === itemOf(target.label) && !onList.has(itemKey(place));
   const state = last.state;
   if (!state) {
     // With no state, the alerts say whether an upload without the image's results would close anything.
@@ -1251,36 +1275,47 @@ export function carried(
       const place = alert.state === 'fixed' ? undefined : alertPlace(alert);
       if (place) places.add(itemKey(place));
     }
-    const unpulled = targets.map((target) => {
+    const live = (last.ours ?? []).flatMap((alert) => (alert.state === 'fixed' ? [] : (alertPlace(alert) ?? [])));
+    const unread = targets.map((target) => {
       const name = targetName(target);
       if (places.has(itemKey({ file: target.file, repository: itemOf(target.label) })))
         throw new NotCarried(
-          `Not pulled: ${name}. It has alerts, and this run has no state to carry the last run's findings from`,
+          `Image not read: ${name}. It has alerts, and this run has no state to carry the last run's findings from`,
         );
-      log(`Not pulled: ${name}: there is no state, and it has no alert, so there is none to carry and none to close.`);
-      return { name, why: target.unpulled ?? '', carried: 0 };
+      if (live.some((place) => inherits(target, place)))
+        throw new NotCarried(
+          `Image not read: ${name}. It is new to the list, and ${itemOf(target.label)} has alerts at a place no longer on it, whose days its findings could not be given`,
+        );
+      log(
+        `Image not read: ${name}: there is no state, and it has no alert, so there is none to carry and none to close.`,
+      );
+      return { name, why: target.unread ?? '', carried: 0 };
     });
-    return { findings: handoff.findings, excepted: new Map(), unpulled };
+    return { findings: handoff.findings, excepted: new Map(), unread };
   }
   const reference = (label: string | undefined) => (label ?? '').replace(LABEL_DIGEST, '');
   // Each item's images on the list today: a finding the state has of another is of a pin since moved.
   const listed = new Map<string, Set<string>>();
   for (const target of handoff.targets) listed.set(target.key, (listed.get(target.key) ?? new Set()).add(target.label));
   const added: Finding[] = [];
-  const unpulled: Unpulled[] = [];
+  const unread: Unread[] = [];
   for (const target of targets) {
     const name = targetName(target);
     const place = itemKey({ file: target.file, repository: itemOf(target.label) });
     if (state.findings.some((each) => each.item === undefined && itemKey(each) === place))
       throw new NotCarried(
-        `Not pulled: ${name}. The state run ${state.run} kept holds its findings without what carries them, as a state written before the scan kept that does`,
+        `Image not read: ${name}. The state run ${state.run} kept holds its findings without what carries them, as a state written before the scan kept that does`,
       );
     const own = state.findings.filter((each) => each.item === target.key);
     if (own.some((each) => !listed.get(target.key)?.has(reference(each.label))))
       throw new NotCarried(
-        `Not pulled: ${name}. The state run ${state.run} kept holds findings of its item at another pin, which are not this image's to carry`,
+        `Image not read: ${name}. The state run ${state.run} kept holds findings of its item at another pin, which are not this image's to carry`,
       );
     const same = own.filter((each) => reference(each.label) === target.label);
+    if (!own.length && state.findings.some((each) => inherits(target, each)))
+      throw new NotCarried(
+        `Image not read: ${name}. It is new to the list, and the state run ${state.run} kept holds findings of ${itemOf(target.label)} at a place no longer on it, whose days its findings could not be given`,
+      );
     for (const each of same)
       added.push({
         item: target.key,
@@ -1300,11 +1335,11 @@ export function carried(
         score: each.score,
         ...(each.path === undefined ? {} : { path: each.path }),
       });
-    unpulled.push({ name, why: target.unpulled ?? '', carried: same.length });
+    unread.push({ name, why: target.unread ?? '', carried: same.length });
     log(
       same.length
-        ? `Not pulled: ${name}: its ${same.length} findings are carried from the state run ${state.run} kept, as that run judged them.`
-        : `Not pulled: ${name}: the state run ${state.run} kept has no finding of it, so there is none to carry and no alert of it to close.`,
+        ? `Image not read: ${name}: its ${same.length} findings are carried from the state run ${state.run} kept, as that run judged them.`
+        : `Image not read: ${name}: the state run ${state.run} kept has no finding of it, so there is none to carry and no alert of it to close.`,
     );
   }
   // In the list's order, as a run that read every image has them, so each result is in the run it would be in.
@@ -1315,7 +1350,7 @@ export function carried(
   return {
     findings,
     excepted: excepting(policy, handoff.repository, [], added, undefined, new Date(now)).excepted,
-    unpulled,
+    unread,
   };
 }
 
@@ -1507,9 +1542,9 @@ export async function assess(
     log(`No state to read (${answer.none}): each day is read from the alerts.`);
     return { ours: (await sources.alerts()).filter(isOurs) };
   });
-  // With an image not pulled, the last run's findings of it, which only the state holds whole, before anything is
+  // With an image not read, the last run's findings of it, which only the state holds whole, before anything is
   // judged; otherwise the scan's own, and the state is read while the sources are.
-  const carry = handoff.targets.some((target) => target.unpulled !== undefined)
+  const carry = handoff.targets.some((target) => target.unread !== undefined)
     ? carried(handoff, await kept, policy, log, now)
     : carried(handoff, {}, policy);
   const findings = carry.findings;
@@ -1564,9 +1599,10 @@ export async function assess(
     fixes,
     judged,
     looked: found.looked,
+    missed: found.missed,
     lookups: found.lookups,
     state: read.state,
-    unpulled: carry.unpulled,
+    unread: carry.unread,
     excepted: carry.excepted,
   };
 }
@@ -1964,27 +2000,25 @@ export function manifestDigests(raw: Buffer) {
 /**
  * Every image target the scan read, with its digests and its pin, for `moves.json`'s `scanned`. An image that was not
  * pulled was not scanned, and is not listed; nor is one whose manifest the registry does not give, which costs that
- * image its place and no other, with a warning. Either way a pod that runs it is, to a reader of the file, one the
- * scan did not read that day.
+ * image its place and no other, and is handed to `missed`, once an image, for the run to fail on at its end. Either
+ * way a pod that runs it is, to a reader of the file, one the scan did not read that day.
  */
 export async function scannedImages(
   targets: ReadTarget[],
   sources: Pick<Sources, 'manifests'>,
-  log: (line: string) => void = () => {},
+  missed: (image: string, why: string) => void = () => {},
 ): Promise<ScannedImage[]> {
   const read = new Map<string, Promise<{ digest: string; platforms: string[] } | undefined>>();
   const out: ScannedImage[] = [];
   await pool(
     targets
-      .filter((target) => target.image && target.unpulled === undefined)
+      .filter((target) => target.image && target.unread === undefined)
       .map((target) => async () => {
         const image = target.image ?? '';
         let once = read.get(image);
         if (!once) {
           once = sources.manifests(image).catch((error: unknown) => {
-            log(
-              `::warning::The digests of ${image} could not be read (${firstLine(error)}): it is left out of the images scanned in moves.json.`,
-            );
+            missed(image, firstLine(error) ?? '');
             return undefined;
           });
           read.set(image, once);
@@ -2134,16 +2168,41 @@ export function stateOf(
 }
 
 /** The verdict a scan's step after the upload fails on: written before it, read after. */
-interface Saved {
+export interface Saved {
   passes: boolean;
   lines: string[];
-  /** Each image the registry did not serve, which fails the run whatever the deadlines say. */
-  unpulled?: Unpulled[];
+  /** Each image not read, which fails the run whatever the deadlines say. */
+  unread?: Unread[];
+  /** Each source that did not answer, which fails it too: what was judged without one may be judged wrongly. */
+  missed?: Missed[];
 }
 
-/** An image not pulled, as the log names it once its findings are settled. */
-const unpulledLine = (each: Unpulled) =>
-  `Not pulled: ${each.name}: ${each.why}. ${each.carried ? `Its ${each.carried} ${each.carried === 1 ? 'finding is' : 'findings are'} the last run's.` : 'It has no finding to carry, so no alert of it closes.'}`;
+/** A source that did not answer, as the log names it: never what was asked of npm. */
+const missedLine = (each: Missed) =>
+  `Source not read: ${each.source} (${each.why}): ${each.results === undefined ? 'the image is left out of those scanned in moves.json' : `${each.results} ${each.results === 1 ? 'result was' : 'results were'} judged without it, and ${each.results === 1 ? 'keeps' : 'keep'} the fix the last run gave`}.`;
+
+/**
+ * How a run that uploaded ends: the verdict's last lines, an error for each reason it fails, and its exit code. It
+ * fails on the deadlines' verdict, on an image not read, and on a source that did not answer: everything was judged,
+ * uploaded and kept, and the run is red so that what was not read is seen and read again.
+ */
+export function ending(saved: Saved): { lines: string[]; code: number } {
+  const unread = saved.unread ?? [];
+  const missed = saved.missed ?? [];
+  return {
+    lines: [
+      ...saved.lines,
+      ...(saved.passes ? [] : [`::error::${saved.lines.find((line) => line.startsWith('The run fails')) ?? ''}`]),
+      ...unread.map((each) => `::error::${unreadLine(each)}`),
+      ...missed.map((each) => `::error::${missedLine(each)}`),
+    ],
+    code: saved.passes && !unread.length && !missed.length ? 0 : 1,
+  };
+}
+
+/** An image not read, as the log names it once its findings are settled. */
+const unreadLine = (each: Unread) =>
+  `Image not read: ${each.name}: ${each.why}. ${each.carried ? `Its ${each.carried} ${each.carried === 1 ? 'finding is' : 'findings are'} the last run's.` : 'It has no finding to carry, so no alert of it closes.'}`;
 
 const USAGE =
   'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write [--state <branch>] | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]\n' +
@@ -2158,12 +2217,9 @@ export async function main(args: string[]): Promise<number> {
   const after = option('--verdict');
   if (after) {
     const saved = JSON.parse(readFileSync(join(after, 'verdict.json'), 'utf-8')) as Saved;
-    for (const line of saved.lines) console.log(line);
-    if (!saved.passes) console.log(`::error::${saved.lines.find((line) => line.startsWith('The run fails')) ?? ''}`);
-    // An image not pulled fails the run here, once everything else is uploaded and kept, so it is seen.
-    const unpulled = saved.unpulled ?? [];
-    for (const each of unpulled) console.log(`::error::${unpulledLine(each)}`);
-    return saved.passes && !unpulled.length ? 0 : 1;
+    const end = ending(saved);
+    for (const line of end.lines) console.log(line);
+    return end.code;
   }
   const [dir] = args.filter(
     (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin|memo|memo-day|state)$/),
@@ -2270,10 +2326,14 @@ export async function main(args: string[]): Promise<number> {
     kept: asked.kept - lookedBefore.kept,
   });
   const list = moves(judged.judged, context, listing.behind);
+  // Each source that did not answer: the run fails on them after the upload, and a proving run only says so.
+  const missed: Missed[] = [...judged.missed];
   // Each result in a move names its place in moves.json and the run, after its fix (fixes.ts), so the alerts tie to it.
   let scanned: ScannedImage[];
   try {
-    scanned = await scannedImages(handoff.targets, sources, (line) => console.log(line));
+    scanned = await scannedImages(handoff.targets, sources, (image, why) =>
+      missed.push({ source: `The digests of ${image}`, why }),
+    );
   } catch (error) {
     console.error(
       `::error::The images scanned could not be listed with their digests: ${firstLine(error)}. The run fails${write ? ', and nothing is uploaded' : ''}.`,
@@ -2296,8 +2356,9 @@ export async function main(args: string[]): Promise<number> {
   const table = movesTable(file);
   const images = `Images scanned, each in moves.json with its digests and pin: ${file.scanned.length} (${new Set(file.scanned.map((each) => each.image)).size} references).`;
   for (const line of [looked, routineLine, images, ...table, '', ...lines]) console.log(line);
-  for (const each of judged.unpulled)
-    console.log(`::warning::${unpulledLine(each)} The run fails on it after the upload.`);
+  for (const each of judged.unread) console.log(`::warning::${unreadLine(each)} The run fails on it after the upload.`);
+  for (const each of missed.filter((one) => one.results === undefined))
+    console.log(`::warning::${missedLine(each)}${write ? ' The run fails on it after the upload.' : ''}`);
   writeFileSync(join(dir, 'moves.json'), `${JSON.stringify(file, null, 2)}\n`);
   if (write) {
     // What is uploaded carries each fix: the SARIF's messages, and the excepted alerts' keys, which name them.
@@ -2308,9 +2369,9 @@ export async function main(args: string[]): Promise<number> {
       excepted: Record<string, string>;
     };
     const findings = judged.judged.map((each) => ({ ...each.finding, move: tags.get(fingerprint(each.finding)) }));
-    // The scan's own file, or, where an image was not pulled and it wrote none, the same file made of every finding,
+    // The scan's own file, or, where an image was not read and it wrote none, the same file made of every finding,
     // the carried among them, with the comment each carried result an exception excepts is dismissed with.
-    const results = judged.unpulled.length
+    const results = judged.unread.length
       ? sarif(findings, pin[2])
       : (JSON.parse(readFileSync(sarifPath, 'utf-8')) as Sarif);
     const rewritten = rewrite(results, { ...exceptions.excepted, ...Object.fromEntries(judged.excepted) }, findings);
@@ -2325,7 +2386,7 @@ export async function main(args: string[]): Promise<number> {
     writeFileSync(exceptionsPath, JSON.stringify({ ...exceptions, excepted: rewritten.excepted }));
     writeFileSync(
       join(dir, 'verdict.json'),
-      JSON.stringify({ passes, lines: lines.slice(3), unpulled: judged.unpulled } satisfies Saved),
+      JSON.stringify({ passes, lines: lines.slice(3), unread: judged.unread, missed } satisfies Saved),
     );
     // The state the next scan and the worker read, sealed: what was judged, as it is uploaded.
     if (keeps) {
@@ -2351,7 +2412,8 @@ export async function main(args: string[]): Promise<number> {
         `| all | ${Object.values(bySeverity).reduce((a, b) => a + b, 0)} | ${BUCKETS.map(([b]) => byBucket[b]).join(' | ')} |`,
         '',
         ...lines.slice(2),
-        ...judged.unpulled.map((each) => `- ${unpulledLine(each)}`),
+        ...judged.unread.map((each) => `- ${unreadLine(each)}`),
+        ...missed.map((each) => `- ${missedLine(each)}`),
         '',
         '### Moves',
         '',

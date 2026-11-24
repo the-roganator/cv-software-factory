@@ -41,7 +41,7 @@ deploy and the next real scan. A local run is a filter before that, never the pr
 | 19 | The scan, with one image the registry will not serve | none; a registry's limit on pulls has failed a whole run | the run failed, with no moves |
 | 20 | App: Dependabot's pull request that moves only the app's pins of the factory's workflows | the six `uses:` lines, to the factory's `main` | Dependabot's, with Martin's approval |
 
-15 to 20 were added on 24 November 2026. 19 is proven end to end for an image the scan has never read; an image it
+15 to 20 are Martin's word, 24 November 2026. 19 is proven end to end for an image the scan has never read; an image it
 read the day before and the registry then refuses, whose findings are carried so that no alert of it closes, is proven
 by the scan's unit tests alone, as no public registry refuses an image on demand. 15 and 16 merge and deploy, nobody touching them. 17 merges as the App's move,
 not an issue. 18 is held at Guarded and merges at Lights-out, as 4a and 4b. In 19 the scan still lists every other

@@ -84,11 +84,12 @@ export function memoised(
     }
     return pending;
   };
-  const { versions, created } = sources;
+  const { versions, created, served } = sources;
   return {
     ...sources,
     published: (name, version) => once(`published ${name} ${version}`, () => sources.published(name, version)),
     ...(versions && { versions: (name) => once(`versions ${name}`, () => versions(name)) }),
+    ...(served && { served: (reference) => once(`served ${reference}`, () => served(reference)) }),
     ...(created && { created: (reference) => once(`created ${reference}`, () => created(reference)) }),
     releases: () => once('releases', () => sources.releases()),
     tags: (repository) => once(`tags ${repository}`, () => sources.tags(repository)),
@@ -132,6 +133,7 @@ const LOOKUPS = [
   'image',
   'digest',
   'manifests',
+  'served',
   'created',
   'chartVersions',
   'render',

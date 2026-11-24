@@ -39,17 +39,29 @@ export const ADVISORY = /^(CVE-\d{4}-\d{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})
 
 export const EXCEPTIONS: Exception[] = [];
 
-/** A package the scan lists no routine move for (apps/factory/src/vulnerabilities/routine.ts), and why. */
-export interface Left {
+/**
+ * A package or an image the scan lists no routine move for (apps/factory/src/vulnerabilities/routine.ts), and why: it
+ * names one or the other. A finding's move of it is made as any other.
+ */
+export type Left = {
   /** The repository it is left alone in, `owner/name`, or `all` for both. */
   repository: string;
-  /** The package, as its lockfile names it. */
-  package: string;
-  /** Set where only a move its manifest's range does not admit is left, and one within the range is listed. */
+  /** Set, for a package, where only a move its manifest's range does not admit is left, and one within it is listed. */
   major?: true;
   /** Why the scan leaves it. */
   reason: string;
-}
+} & (
+  | {
+      /** The package, as its lockfile names it. */
+      package: string;
+      image?: never;
+    }
+  | {
+      /** The image's repository, as its pin writes it, with neither tag nor digest (`ghcr.io/open-feature/flagd`). */
+      image: string;
+      package?: never;
+    }
+);
 
 /** The wait before a pin that is merely behind is listed as a move, and what is never listed so. */
 export interface Routine {
@@ -81,6 +93,12 @@ export const ROUTINE: Routine = {
     { repository: 'all', package: 'playwright', reason: "It moves with Playwright's image, which brings it." },
     { repository: 'all', package: 'playwright-core', reason: "It moves with Playwright's image, which brings it." },
     { repository: 'all', package: '@playwright/test', reason: "It moves with Playwright's image, which brings it." },
+    {
+      repository: 'all',
+      image: 'ghcr.io/open-feature/flagd',
+      reason:
+        "The FeatureFlag kind's definition beside its Deployment is vendored at the version of OpenFeature's operator API flagd builds against, so a release that moves that moves the definition too, by hand, and Martin holds a bump until its release is two weeks old.",
+    },
     {
       repository: 'all',
       package: '@anthropic-ai/claude-agent-sdk',

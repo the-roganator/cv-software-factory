@@ -71,6 +71,10 @@ function sourcesOf(world: World) {
     async image(reference) {
       throw new Error(`${reference} was scanned for a routine move`);
     },
+    async served(reference) {
+      ask(`served ${reference}`);
+      return world.digests?.[reference] ?? digest('d');
+    },
     async digest(reference) {
       ask(`digest ${reference}`);
       return world.digests?.[reference] ?? digest('d');
@@ -184,7 +188,7 @@ describe('an image’s pin that is behind', () => {
     ]);
     expect(asked).toEqual([
       'tags example/image',
-      'digest example/image:2.18.1',
+      'served example/image:2.18.1',
       `created example/image@${digest('b')}`,
     ]);
   });
@@ -207,18 +211,120 @@ describe('an image’s pin that is behind', () => {
     const rebuilt = {
       tags: { 'example/image': ['2.17.0'] },
       digests: { 'example/image:2.17.0': digest('c'), 'example/base:stable': digest('c') },
-      created: { [`example/image@${digest('c')}`]: ago(4), [`example/base@${digest('c')}`]: ago(4) },
     };
-    expect((await listed({ targets: [PINNED], ...rebuilt })).routine[0]?.to).toEqual({
-      kind: 'image',
-      tag: '2.17.0',
-      digest: digest('c'),
-    });
+    const first = await listed({ targets: [PINNED], ...rebuilt });
+    expect(first.routine).toEqual([]);
+    expect(first.records).toEqual([
+      expect.objectContaining({ to: `image 2.17.0@${digest('c')}`, seen: '2026-11-10T04:30:00Z' }),
+    ]);
+    const later = await listed({ targets: [PINNED], ...rebuilt, last: first.records }, NOW + 3 * DAY);
+    expect(later.routine[0]?.to).toEqual({ kind: 'image', tag: '2.17.0', digest: digest('c') });
+    // The digest alone is asked, with the request no registry counts as a pull: no manifest, and no configuration.
+    expect(later.asked).toEqual(['tags example/image', 'served example/image:2.17.0']);
     const named = image(`example/base:stable@${digest('a')}`);
-    const { routine: found, asked } = await listed({ targets: [named], ...rebuilt });
+    const seen = await listed({ targets: [named], ...rebuilt });
+    const { routine: found, asked } = await listed({ targets: [named], ...rebuilt, last: seen.records }, NOW + 3 * DAY);
     expect(found[0]).toMatchObject({ from: 'stable', to: { kind: 'image', tag: 'stable', digest: digest('c') } });
     // A tag that is not a version has no line to list.
-    expect(asked).not.toContain('tags example/base');
+    expect(asked).toEqual(['served example/base:stable']);
+  });
+
+  it('lists a tag rebuilt every day on the third day, at the digest it serves that day', async () => {
+    const rolling = image(`gcr.io/distroless/static:nonroot@${digest('a')}`);
+    const serving = (letter: string, last?: StateRoutine[]): World => ({
+      targets: [rolling],
+      digests: { 'gcr.io/distroless/static:nonroot': digest(letter) },
+      ...(last ? { last } : {}),
+    });
+    const day0 = await listed(serving('b'));
+    const day1 = await listed(serving('c', day0.records), NOW + DAY);
+    const day2 = await listed(serving('d', day1.records), NOW + 2 * DAY);
+    expect([day0, day1, day2].map((day) => day.routine.length)).toEqual([0, 0, 0]);
+    // One record a day, of that day's digest, with the day the pin was first seen behind its tag.
+    expect(day2.records).toEqual([
+      {
+        name: 'gcr.io/distroless/static',
+        from: 'nonroot',
+        to: `image nonroot@${digest('d')}`,
+        pins: [{ file: 'deploy/x.yaml', line: 12 }],
+        seen: '2026-11-10T04:30:00Z',
+      },
+    ]);
+    const day3 = await listed(serving('e', day2.records), NOW + 3 * DAY);
+    expect(day3.routine[0]).toMatchObject({ to: { kind: 'image', tag: 'nonroot', digest: digest('e') } });
+    expect(day3.records).toEqual([{ move: 1, ...day2.records[0], to: `image nonroot@${digest('e')}` }]);
+    // Still listed the next day, at that day's digest, while the pin has not moved.
+    const day4 = await listed(serving('f', day3.records), NOW + 4 * DAY);
+    expect(day4.routine[0]?.to).toMatchObject({ digest: digest('f') });
+  });
+
+  it('starts a rebuilt tag’s wait again only once the pin has moved', async () => {
+    const at = (pin: string, serves: string, last: StateRoutine[] = []): World => ({
+      targets: [image(`gcr.io/distroless/static:nonroot@${digest(pin)}`)],
+      digests: { 'gcr.io/distroless/static:nonroot': digest(serves) },
+      last,
+    });
+    const old: StateRoutine[] = [
+      {
+        move: 1,
+        name: 'gcr.io/distroless/static',
+        from: 'nonroot',
+        to: `image nonroot@${digest('e')}`,
+        pins: [{ file: 'deploy/x.yaml', line: 12 }],
+        seen: ago(3),
+      },
+    ];
+    // The pin moved to what was listed, and the tag serves that: nothing behind, and no record kept.
+    const moved = await listed(at('e', 'e', old));
+    expect(moved.listing.counts.current).toBe(1);
+    expect(moved.records).toEqual([]);
+    // Built again the day it moved: the record of the move made gives the new digest no day, and the wait is whole.
+    const again = await listed(at('e', 'f', old));
+    expect(again.routine).toEqual([]);
+    expect(again.records[0]).toMatchObject({ to: `image nonroot@${digest('f')}`, seen: '2026-11-10T04:30:00Z' });
+    expect((await listed(at('e', '1', again.records), NOW + 3 * DAY)).routine).toHaveLength(1);
+    // A newer tag is a release of its own, and takes no day from the tag it replaces.
+    const tagged = await listed({
+      targets: [PINNED],
+      ...newer(1),
+      last: [{ ...old[0], name: 'example/image', from: '2.17.0', to: `image 2.17.0@${digest('c')}` } as StateRoutine],
+    });
+    expect(tagged.routine).toEqual([]);
+  });
+
+  it('never crosses a major: a line keeps its first number, so Node’s and Postgres’s majors are no routine move', async () => {
+    const node = image(`node:24.22.3-alpine3.24@${digest('a')}`, { kind: 'dockerfile', file: 'Dockerfile', line: 1 });
+    const postgres = image(`postgres:18.7-alpine3.24@${digest('a')}`, { key: 'deploy/x.yaml postgres', line: 30 });
+    const { routine: found, listing } = await listed({
+      targets: [node, postgres],
+      tags: {
+        node: ['24.22.3-alpine3.24', '25.1.0-alpine3.24', '26.0.0-alpine3.24', '24.22.3-alpine3.25'],
+        postgres: ['18.7-alpine3.24', '19.0-alpine3.24', '19.1-alpine3.24'],
+      },
+      digests: { 'node:24.22.3-alpine3.24': digest('a'), 'postgres:18.7-alpine3.24': digest('a') },
+    });
+    expect(found).toEqual([]);
+    expect(listing.counts).toMatchObject({ pins: 2, current: 2 });
+  });
+
+  it('leaves an image the policy leaves, by its repository’s name, and asks nothing for it', async () => {
+    const leave: Routine['leave'] = [
+      { repository: 'all', image: 'example/image', reason: 'Its release moves a definition beside it, by hand.' },
+    ];
+    const {
+      routine: found,
+      asked,
+      listing,
+    } = await listed({
+      targets: [PINNED],
+      ...newer(9),
+      policy: { ...POLICY, leave },
+    });
+    expect(found).toEqual([]);
+    expect(asked).toEqual([]);
+    expect(listing.counts.left).toBe(1);
+    // A package of the same name is another thing.
+    expect(leftAlone({ ...POLICY, leave }, REPOSITORY, { package: 'example/image' }, false)).toBeUndefined();
   });
 
   it('waits until the image is three days old', async () => {
@@ -775,7 +881,8 @@ describe('a lockfile’s package that is behind', () => {
     expect(never.asked).toEqual([]);
     // Another repository's entry leaves nothing here.
     expect((await listed({ ...within, policy: whole, repository: APP })).routine).toHaveLength(1);
-    expect(leftAlone(whole, REPOSITORY, 'example-b', true)).toBeUndefined();
+    expect(leftAlone(whole, REPOSITORY, { package: 'example-b' }, true)).toBeUndefined();
+    expect(leftAlone(whole, REPOSITORY, { image: 'example-a' }, true)).toBeUndefined();
   });
 
   it('names nothing of it in moves.json, the table or the log, and keeps what is withheld in the state', async () => {
@@ -945,24 +1052,29 @@ describe('the policy’s wait, and what it leaves alone', () => {
     expect(Number.isInteger(majorDays) && majorDays >= days).toBe(true);
     for (const entry of leave) {
       expect(['all', ...REPOSITORIES]).toContain(entry.repository);
-      expect(entry.package).toMatch(/^(@[a-z0-9._-]+\/)?[a-z0-9._-]+$/);
+      // A package, or an image's repository with neither tag nor digest: one or the other.
+      expect([typeof entry.package, typeof entry.image].sort()).toEqual(['string', 'undefined']);
+      if (entry.package !== undefined) expect(entry.package).toMatch(/^(@[a-z0-9._-]+\/)?[a-z0-9._-]+$/);
+      else expect(entry.image).toMatch(/^[a-z0-9.-]+(\/[a-z0-9._-]+)+$/);
       expect(entry.reason.trim().length).toBeGreaterThan(20);
-      expect(Object.keys(entry).filter((key) => !['repository', 'package', 'major', 'reason'].includes(key))).toEqual(
-        [],
-      );
-      if ('major' in entry) expect(entry.major).toBe(true);
+      expect(
+        Object.keys(entry).filter((key) => !['repository', 'package', 'image', 'major', 'reason'].includes(key)),
+      ).toEqual([]);
+      if ('major' in entry) expect(entry.major === true && entry.package !== undefined).toBe(true);
     }
-    const keys = leave.map((entry) => `${entry.repository} ${entry.package}`);
+    const keys = leave.map((entry) => `${entry.repository} ${entry.package ?? ''} ${entry.image ?? ''}`);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
   it('is three days and seven, and leaves Node’s types at a major and what Playwright’s image brings', () => {
     expect(policy.ROUTINE).toMatchObject({ days: 3, majorDays: 7 });
     for (const repository of REPOSITORIES) {
-      expect(leftAlone(policy.ROUTINE, repository, '@types/node', true)).toBeDefined();
-      expect(leftAlone(policy.ROUTINE, repository, '@types/node', false)).toBeUndefined();
-      for (const library of ['playwright', 'playwright-core', '@playwright/test'])
-        expect(leftAlone(policy.ROUTINE, repository, library, false)).toBeDefined();
+      expect(leftAlone(policy.ROUTINE, repository, { package: '@types/node' }, true)).toBeDefined();
+      expect(leftAlone(policy.ROUTINE, repository, { package: '@types/node' }, false)).toBeUndefined();
+      for (const library of ['playwright', 'playwright-core', '@playwright/test', '@anthropic-ai/claude-agent-sdk'])
+        expect(leftAlone(policy.ROUTINE, repository, { package: library }, false)).toBeDefined();
+      // flagd, whose FeatureFlag definition moves with it by hand.
+      expect(leftAlone(policy.ROUTINE, repository, { image: 'ghcr.io/open-feature/flagd' }, false)).toBeDefined();
     }
   });
 });

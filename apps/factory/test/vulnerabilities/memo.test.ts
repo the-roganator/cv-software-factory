@@ -156,6 +156,10 @@ describe('the day’s lookups', () => {
           calls.push(`created ${reference}`);
           return undefined;
         },
+        served: async (reference: string) => {
+          calls.push(`served ${reference}`);
+          return 'sha256:abc';
+        },
       }) as Sources;
     const memo = readMemo(file, dayOf(NOON));
     const asked: MemoCount = { kept: 0, asked: 0 };
@@ -164,19 +168,27 @@ describe('the day’s lookups', () => {
     expect(await sources.versions?.('left-pad')).toEqual({ latest: '1.0.1', versions: [] });
     expect(await sources.versions?.('none-such')).toBeUndefined();
     expect(await sources.created?.('postgres@sha256:abc')).toBeUndefined();
+    expect(await sources.served?.('postgres:18')).toBe('sha256:abc');
     writeMemo(file, memo);
     const again = counted(memoised(routine(), readMemo(file, dayOf(NOON)), asked), made);
     expect(await again.versions?.('left-pad')).toEqual({ latest: '1.0.1', versions: [] });
     expect(await again.created?.('postgres@sha256:abc')).toBeUndefined();
-    expect(calls).toEqual(['versions left-pad', 'versions none-such', 'created postgres@sha256:abc']);
+    expect(await again.served?.('postgres:18')).toBe('sha256:abc');
+    expect(calls).toEqual([
+      'versions left-pad',
+      'versions none-such',
+      'created postgres@sha256:abc',
+      'served postgres:18',
+    ]);
     // Every lookup made is counted, whatever answered it; a file of the checkout's is none.
     again.file('mise.toml');
-    expect(made).toEqual({ made: 5 });
-    expect(asked).toEqual({ kept: 2, asked: 3 });
+    expect(made).toEqual({ made: 7 });
+    expect(asked).toEqual({ kept: 3, asked: 4 });
     // Sources that give neither are given neither.
     const plain = counted(memoised(counting().sources, memo), made);
     expect(plain.versions).toBeUndefined();
     expect(plain.created).toBeUndefined();
+    expect(plain.served).toBeUndefined();
   });
 
   it('never keeps what the advisory database or code scanning answers', async () => {

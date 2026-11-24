@@ -191,6 +191,11 @@ export interface Sources {
   /** An image's index digest, and every platform manifest it lists (none for a single manifest). */
   manifests(reference: string): Promise<{ digest: string; platforms: string[] }>;
   /**
+   * An image's index digest, as `digest` gives it, asked with a HEAD, which no registry counts as a pull: for the
+   * routine listing, which wants the digest alone. Absent, `digest` is asked.
+   */
+  served?(reference: string): Promise<string>;
+  /**
    * When an image was made, as its configuration says, read from the registry with no layer pulled and no scan, for a
    * routine move's wait; undefined where it says none. Absent, no image is listed as behind.
    */
@@ -1470,6 +1475,15 @@ function realSources(
     },
     async versions(name) {
       return (await packument(name)).releases;
+    },
+    async served(reference) {
+      // crane's `digest` asks with a HEAD, and with a GET only where a registry answers a HEAD with no digest.
+      const { stdout } = await tools.retry(() =>
+        run('crane', ['digest', registryName(reference)], { env: anonymous, timeout: 5 * 60 * 1000 }),
+      );
+      const digest = stdout.trim();
+      if (!DIGEST.test(digest)) throw new Error(`crane gave no digest for ${reference}`);
+      return digest;
     },
     async created(reference) {
       // The image's configuration alone, for the platform the scan falls back to: no layer is pulled, and nothing scanned.

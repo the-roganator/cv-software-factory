@@ -14,8 +14,9 @@
  * - **An image's pin** (a third-party image under `deploy/`, a Dockerfile's stage, the runtime stage of an image of
  *   ours, a value's pin in a chart's values file, an image a workflow names): the newest tag on its line (`newestOf`),
  *   or for a tag that is not a version the image it names now. Behind when the tag differs, or the tag is the same and
- *   a pin's digest is not the index digest the registry serves. An image that runs Node waits for mise as a fix does
- *   (`nodeReady`).
+ *   a pin's digest is not the index digest the registry serves, which is asked with a request no registry counts as
+ *   a pull. An image that runs Node waits for mise as a fix does (`nodeReady`). A newer tag on the line is never
+ *   another major: the line keeps its first number, so Node's and Postgres's majors are no routine move.
  * - **A chart** (an Application's, and the Makefile's): the newest version on the pinned major that renders with our
  *   values; only when that major has nothing newer, the newest of the next major there is, a major.
  * - **k3s**: the newest published release on its line (`k3sLine`).
@@ -38,7 +39,9 @@
  * that target for that pin, which the state keeps (`StateRoutine.seen`), so an image that gives no day (a reproducible
  * build says 1970) and an index that dates every chart afresh still come due. Where the newest release is too young
  * and an older one is not, a package, a chart or k3s takes the newest that has waited; an image's line has one
- * newest, and it waits.
+ * newest, and it waits. A tag built again (the same tag at another digest) waits from the first day the scan saw the
+ * pin behind it, whatever digest it served then, and moves to the digest it serves the day it lists: a tag rebuilt
+ * every day comes due all the same, and the wait starts again only once the pin has moved.
  *
  * **It never fails the run.** A lookup that fails costs that pin's routine move for the day, with one warning for each
  * source, which never names a lockfile's package: the log is public.
@@ -59,7 +62,7 @@ import {
   type Sources,
   type Where,
 } from './deadlines.ts';
-import { dayText, type Target, targetText, writable } from './fixes.ts';
+import { dayText, readTarget, type Target, targetText, writable } from './fixes.ts';
 import { type Chart, isFixture } from './inventory.ts';
 import { type Behind, isMajor, isRoutine, type Move, type Pin, pinKey } from './moves.ts';
 import { satisfies } from './node.ts';
@@ -97,7 +100,7 @@ export interface Lookups {
 export interface Asked {
   repository: string;
   targets: ReadTarget[];
-  sources: Pick<Sources, 'file' | 'versions' | 'created'>;
+  sources: Pick<Sources, 'file' | 'versions' | 'created' | 'served'>;
   lookups: Lookups;
   /** The wait and what is left alone, or none, and then nothing is listed. */
   policy: Routine | undefined;
@@ -168,12 +171,20 @@ function lockedAt(lockfile: string, name: string) {
   return new Set([...lockfile.matchAll(key)].map((m) => m[1] ?? ''));
 }
 
-/** The entry that leaves a package alone in a repository: every move of it, or with `major` only its majors. */
-export function leftAlone(policy: Routine, repository: string, name: string, major: boolean) {
+/**
+ * The entry that leaves a package, or an image by its repository's name, alone in a repository: every move of it, or
+ * with `major` only its majors.
+ */
+export function leftAlone(
+  policy: Routine,
+  repository: string,
+  what: { package: string } | { image: string },
+  major: boolean,
+) {
   return policy.leave.find(
     (entry) =>
       (entry.repository === 'all' || entry.repository === repository) &&
-      entry.package === name &&
+      ('image' in what ? entry.image === what.image : entry.package === what.package) &&
       (!entry.major || major),
   );
 }
@@ -300,10 +311,10 @@ export async function routine(asked: Asked): Promise<Listing> {
    * Whether a release has waited its days, and whatever else it waits for: its record is kept either way, with the
    * day the scan first saw it, which its own day is never taken to be later than.
    */
-  const waited = (group: Pinned, target: Target, own: number, days: number, also = 0) => {
+  const waited = (group: Pinned, target: Target, own: number, days: number, also = 0, first?: number) => {
     const to = targetText(target);
     const key = JSON.stringify([group.name, group.from, to]);
-    const last = before.get(key);
+    const last = first ?? before.get(key);
     const seen = last !== undefined && last < now ? last : now;
     const day = Number.isFinite(own) && own >= EARLIEST && own < seen ? own : seen;
     records.set(key, { name: group.name, from: group.from, to, pins: pinsOf(group), seen: dayText(seen) });
@@ -320,18 +331,34 @@ export async function routine(asked: Asked): Promise<Listing> {
   const image = async (group: Pinned): Promise<Outcome> => {
     const [reference = ''] = group.references;
     const { repository: name, tag = '' } = splitReference(reference);
+    if (leftAlone(policy, repository, { image: name }, false)) return 'left';
     const latest = await newestOf(reference, lookups.tags);
     // A registry that lists nothing as new as the pin moves nothing back.
     if (!latest || (latest.version && compareVersions(latest.tag, tag) < 0)) return 'current';
-    const digest = await lookups.digest(latest.reference);
-    const stale = [...group.references].some((each) => {
-      const pin = splitReference(each).digest;
-      return pin !== undefined && pin !== digest;
-    });
-    if (latest.tag === tag && !stale) return 'current';
+    // The digest alone is wanted: asked with a request a registry does not count as a pull, where the sources have one.
+    const digest = await (sources.served ?? lookups.digest)(latest.reference);
+    const pins = new Set([...group.references].map((each) => splitReference(each).digest));
+    pins.delete(undefined);
+    const rebuilt = latest.tag === tag;
+    if (rebuilt && (!pins.size || [...pins].every((pin) => pin === digest))) return 'current';
     const target: Target = { kind: 'image', tag: latest.tag, digest };
-    if (!usable(target) || !sources.created) return 'current';
-    if (!waited(group, target, time(await sources.created(`${name}@${digest}`)), policy.days)) return 'waiting';
+    if (!usable(target)) return 'current';
+    if (rebuilt) {
+      // The same tag, built again: the wait counts from the first day the pin was seen behind its tag, whatever
+      // digest the tag served then, so a tag rebuilt every day still comes due, and moves to what it serves that day.
+      // A record whose target is a digest the pin has is of a move since made: the wait starts again after it.
+      let first: number | undefined;
+      for (const each of asked.last ?? []) {
+        const was = each.name === group.name && each.from === group.from ? readTarget(each.to) : undefined;
+        const seen = Date.parse(each.seen);
+        if (was?.kind !== 'image' || was.tag !== tag || pins.has(was.digest) || Number.isNaN(seen)) continue;
+        first = Math.min(first ?? seen, seen);
+      }
+      if (!waited(group, target, Number.NaN, policy.days, 0, first)) return 'waiting';
+    } else {
+      if (!sources.created) return 'current';
+      if (!waited(group, target, time(await sources.created(`${name}@${digest}`)), policy.days)) return 'waiting';
+    }
     // An image that runs Node brings its Node, which waits for mise as Node's own move does.
     const ready = await lookups.nodeReady(latest.reference);
     return ready !== undefined && ready <= now ? list(group, target) : 'waiting';
@@ -378,7 +405,7 @@ export async function routine(asked: Asked): Promise<Listing> {
   const packuments = new Map<string, Promise<PackageVersions | undefined>>();
   const npm = async (group: Pinned): Promise<Outcome> => {
     if (!sources.versions) return 'current';
-    if (leftAlone(policy, repository, group.name, false)) return 'left';
+    if (leftAlone(policy, repository, { package: group.name }, false)) return 'left';
     let once = packuments.get(group.name);
     if (!once) {
       once = sources.versions(group.name);
@@ -399,7 +426,7 @@ export async function routine(asked: Asked): Promise<Listing> {
     const admitted = newer.filter((each) => [...group.specifiers].every((range) => satisfies(each.version, range)));
     // What the range admits; only when it admits nothing newer, the newest outside it, a major.
     const outside = !admitted.length;
-    if (outside && leftAlone(policy, repository, group.name, true)) return 'left';
+    if (outside && leftAlone(policy, repository, { package: group.name }, true)) return 'left';
     for (const candidate of outside ? newer : admitted) {
       const target: Target = { kind: 'version', versions: [candidate.version] };
       const days = outside || isMajor(target, group.from) ? policy.majorDays : policy.days;

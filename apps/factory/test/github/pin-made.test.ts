@@ -276,7 +276,11 @@ describe('the moves the scan made with the pin step', () => {
     expect(fixed.asked).toEqual([[{ ecosystem: 'npm', name: 'example-a', from: '1.0.0', to: '1.0.1' }]]);
     expect(fixed.result).toMatchObject({ rule: 'move' });
     const updated = await gate(repo, ROUTINE_BRANCH, day, () => new Map([['pnpm-lock.yaml', UPDATED]]));
-    expect(updated.asked).toEqual([[{ ecosystem: 'npm', name: 'example-b', from: '2.0.0', to: '2.0.3' }]]);
+    // The routine update is asked of the step as one, which holds it to exactly its target (apps/runner/src/pins.ts).
+    expect(updated.asked).toEqual([
+      [{ ecosystem: 'npm', name: 'example-b', from: '2.0.0', to: '2.0.3', routine: true }],
+    ]);
+    expect(stepOf(behind, undefined)).toEqual(updated.asked[0]?.[0]);
     expect(updated.result).toMatchObject({ rule: 'move' });
     expect(JSON.stringify([fixed.result, updated.result])).not.toMatch(/example-a|example-b/);
   });

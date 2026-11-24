@@ -26,7 +26,7 @@
  * moves to, whether it crosses a major, and what it clears. Who opened the pull request decides nothing here.
  */
 
-import { madeByLine, madeByStep, namedMajor, stepOf } from '../apps/factory/src/github/made.ts';
+import { madeByLine, madeByStep, namedMajor, routineStep, stepOf } from '../apps/factory/src/github/made.ts';
 import { spans } from '../apps/factory/src/github/pin-guard.ts';
 import { editAt } from '../apps/factory/src/github/pins.ts';
 import type { ReadMove } from '../apps/factory/src/github/scanning.ts';
@@ -134,7 +134,8 @@ function stepMove(move: ScanMove, app: boolean, base: MoveIO['base']): PinStepMo
   if (!madeByLine(move)) return undefined;
   const made = moveOf(move.repository, move);
   if (typeof made === 'string') return made;
-  return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to };
+  // A routine update is made as the line's pin step makes it: to exactly its target.
+  return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to, ...routineStep(move) };
 }
 
 /** Why the gate will not make a move by an edit, or nothing when it will. */

@@ -317,13 +317,15 @@ describe('a dependency’s move on the line', () => {
 
   it('titles a routine update’s commit a chore of the dependencies, never a fix', async () => {
     const workItem = await grpcTicket(GRPC_BEHIND);
-    const { pass, github } = line({
+    const { pass, steps, github } = line({
       planner: gatesOnly,
       coder: () => ({ kind: 'handed-back', handback: handback(CODED, PATCH), pins: GRPC_PINS }),
     });
     await justOne(workItem);
     await pass(); // the issue, and the planner
     await pass(); // Build: the pin step alone
+    // The pin step is told it is one, and holds the package to exactly its target.
+    expect(steps.requests[1]).toMatchObject({ agent: 'coder', move: { ...GRPC, routine: true }, pinsOnly: true });
     const [applied] = github.acts.filter((a) => a.action === 'applyPatch');
     const { message } = (applied?.args ?? { message: '' }) as { message: string };
     expect(message.split('\n')[0]).toBe('chore(deps): move @grpc/grpc-js to 1.14.7');

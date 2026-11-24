@@ -80,6 +80,11 @@ export interface Move {
   name: string;
   from: string;
   to: string;
+  /**
+   * Whether it is a routine update, which no finding asks for: a package's then moves to exactly `to`, the release the
+   * scan waited for, where a finding's fix takes `to` as a floor. Nothing to any other move, whose target is exact.
+   */
+  routine?: boolean | undefined;
 }
 
 /** The move needs a file only Martin may change: the work item waits for him, told the file and why. */
@@ -329,6 +334,12 @@ export const movedRange = (spec: string, version: string): string =>
  * under the app's own policy. A copy the parents' ranges hold below the target holds the work item for an override:
  * the copy the move names, and any on the target's line (its major, or below 1.0 its minor); one on another line is no
  * part of the move.
+ *
+ * A fix's target is a floor: pnpm takes the newest release the range admits at or above it. A routine update's is
+ * exact (`pnpm update <name>@<target>`): the scan listed that release once it had waited its days, and a newer one
+ * inside the range has not. pnpm takes a version only for a package a manifest names, writes its range there as the
+ * target with the range's operator kept, and moves every copy the target satisfies with it; so a routine update of a
+ * package no manifest names is refused, and one that ends anywhere but the target is too.
  */
 export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<void> {
   // A package at two versions: each copy to the target on its own line, the older line first.
@@ -358,6 +369,14 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
     throw new PinsRefused(`The lockfile has ${move.name} at ${versions.join(', ')}, not at ${move.from}.`);
   }
   const manifests = await manifestsOf(dir);
+  const named = manifests.some(({ json }) =>
+    PINNED_FIELDS.some((field) => typeof json[field]?.[move.name] === 'string'),
+  );
+  if (move.routine && !named) {
+    throw new PinsRefused(
+      `No manifest names ${move.name}, and pnpm moves a package to an exact version only where one does: a routine update of it cannot be held to ${move.to}.`,
+    );
+  }
   for (const { path, json } of manifests) {
     let moved = false;
     // A peer's range says what the package works with, and pins nothing: it is never moved.
@@ -371,8 +390,15 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   }
   // Every project of a workspace, when the checkout is one, so a nested project's copy moves too.
   const workspace = /^packages:/m.test(await readFile(join(dir, 'pnpm-workspace.yaml'), 'utf8').catch(() => ''));
-  await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), move.name, '--depth', 'Infinity']);
+  const what = move.routine ? `${move.name}@${move.to}` : move.name;
+  await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), what, '--depth', 'Infinity']);
   const after = await readFile(lockPath, 'utf8');
+  const past = lockedVersions(after, move.name).filter((v) => itsOwn(v) && compareVersions(v, move.to) > 0);
+  if (move.routine && past.length) {
+    throw new PinsRefused(
+      `${move.name} resolves to ${past.join(', ')}, past ${move.to}: a routine update moves to the release the scan listed, and no further.`,
+    );
+  }
   const below = lockedVersions(after, move.name).filter((v) => itsOwn(v) && compareVersions(v, move.to) < 0);
   if (below.length) {
     const parents = below.flatMap((v) => parentsAt(after, move.name, v));

@@ -181,6 +181,38 @@ describe('a package’s move', () => {
     expect(JSON.parse(read(dir, 'package.json')).devDependencies.vitest).toBe('^5.0.5');
   });
 
+  it('asks pnpm for exactly the target of a routine update, and refuses one that ends past it or that no manifest names', async () => {
+    const routine = { ecosystem: 'npm' as const, name: 'vitest', from: '5.0.5', to: '5.1.0', routine: true };
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
+    const { pnpm, runs } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.0', '4.2.1')));
+    await writePins(dir, routine, tools(pnpm));
+    expect(runs).toEqual([['update', 'vitest@5.1.0', '--depth', 'Infinity']]);
+    // A pnpm that resolved a newer release all the same: the wait the scan gave the target is not that release's.
+    const past = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
+    const newer = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.1', '4.2.1')));
+    await expect(writePins(past, routine, tools(newer.pnpm))).rejects.toThrow(
+      'vitest resolves to 5.1.1, past 5.1.0: a routine update moves to the release the scan listed, and no further.',
+    );
+    // The same lockfile is a fix's move made: its target is a floor.
+    await writePins(
+      checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') }),
+      { ...routine, routine: false },
+      tools(newer.pnpm),
+    );
+    // sonic-boom is pino's, named by no manifest: pnpm takes no version for it, and the step does not ask.
+    const indirect = fakePnpm(() => {});
+    await expect(
+      writePins(
+        checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') }),
+        { ecosystem: 'npm', name: 'sonic-boom', from: '4.2.1', to: '4.2.2', routine: true },
+        tools(indirect.pnpm),
+      ),
+    ).rejects.toThrow(
+      /^No manifest names sonic-boom, and pnpm moves a package to an exact version only where one does/,
+    );
+    expect(indirect.runs).toEqual([]);
+  });
+
   it('moves the range first when it does not admit the target', async () => {
     const dir = checkout({ 'package.json': MANIFEST('~5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
     let range = '';

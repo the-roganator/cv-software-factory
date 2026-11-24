@@ -354,7 +354,12 @@ describe('a routine update: a move no finding asks for, made and compared as any
       title:
         'The scan’s move of a package in `pnpm-lock.yaml`, made by the gate on main and the same as the pull request',
     });
-    expect(asked).toEqual([[{ ecosystem: 'npm', name: '@grpc/grpc-js', from: '1.14.5', to: '1.14.7' }]]);
+    // Asked as the line's pin step is: a routine update, held to exactly its target.
+    expect(asked).toEqual([[{ ecosystem: 'npm', name: '@grpc/grpc-js', from: '1.14.5', to: '1.14.7', routine: true }]]);
+    // A fix of the same package is asked for with its target a floor, as it is made.
+    const fixes: PinStepMove[][] = [];
+    await proveApp(change({ [LOCK]: lockfile('1.14.7', '7.6.5') }), step(fixes));
+    expect(fixes).toEqual([[{ ecosystem: 'npm', name: '@grpc/grpc-js', from: '1.14.5', to: '1.14.7' }]]);
   });
 });
 

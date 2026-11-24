@@ -1863,19 +1863,24 @@ export class Line {
   /**
    * The move a dependency's work item names, for the pin step: its newest target, from the last signal triage joined
    * to it (a target that changed since the work item opened joins as a later signal), or as it was opened when no
-   * signal names one. None for any other work item.
+   * signal names one. None for any other work item. A routine update, as that signal says of it (an outdated
+   * dependency, where a vulnerable one's names what the scan found), is marked so: the pin step moves it to exactly
+   * its target, as the review gate makes it again (scripts/move.ts).
    */
   async #moveOf(workItem: string): Promise<Step['move']> {
     type Named = { name: string; ecosystem: Ecosystem; from: string; to: string };
-    const [row] = await this.#o.sql<{ moved: Named | null; dependency: Named | null }[]>`
+    const [row] = await this.#o.sql<{ moved: Named | null; symptom: string | null; dependency: Named | null }[]>`
       select (select payload->'move' from events
                where work_item = ${workItem} and type = 'signal.received' and payload ? 'move'
                order by seq desc limit 1) as moved,
+             (select payload->>'symptom' from events
+               where work_item = ${workItem} and type = 'signal.received' and payload ? 'move'
+               order by seq desc limit 1) as symptom,
              (select payload->'dependency' from events
                where work_item = ${workItem} and type = 'work-item.opened' order by seq limit 1) as dependency`;
     if (!row?.dependency) return undefined;
     const { ecosystem, name, from, to } = row.moved ?? row.dependency;
-    return { ecosystem, name, from, to };
+    return { ecosystem, name, from, to, ...(row.symptom === 'outdated-dependency' ? { routine: true } : {}) };
   }
 
   /**

@@ -187,14 +187,14 @@ export function toolAt(lock: string, line: number): string | undefined {
  * what the state withholds; Node, where mise pins it, or Node's image to a tag of another release; an image that brings
  * another pin, to the scan's tag and digest; any other tool mise pins, at the entry its pin is in, moved to the scan's
  * target (a tool's release, or the image's tag for an image mise's tool pins, k3d's), read from `mise.lock` as it is
- * where the move is made.
+ * where the move is made. A routine update's says so (`routineStep`).
  */
 export function stepOf(move: ReadMove, lock: string | undefined): PinStepMove | string {
   const image = readTarget(move.to)?.kind === 'image' && !move.pins.some((pin) => MISE.test(pin.file));
   if (move.lockfile || move.name === 'node' || (image && bringsPins(move.name))) {
     const made = moveOf(move.repository, move);
     if (typeof made === 'string') return made;
-    return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to };
+    return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to, ...routineStep(move) };
   }
   const pin = move.pins.find((each) => each.file === 'mise.lock');
   if (!pin) return `${move.name} is pinned in no entry of mise.lock`;
@@ -204,8 +204,16 @@ export function stepOf(move: ReadMove, lock: string | undefined): PinStepMove | 
   const to =
     target?.kind === 'tool' ? target.version : target?.kind === 'image' ? target.tag.replace(/^v/, '') : undefined;
   if (!to) return `${move.name} moves to ${move.to || 'nothing'}, which is no release of ${tool}`;
-  return { ecosystem: 'tool', name: tool, from: move.from.replace(/^v/, ''), to };
+  return { ecosystem: 'tool', name: tool, from: move.from.replace(/^v/, ''), to, ...routineStep(move) };
 }
+
+/**
+ * What tells the pin step a move is a routine update (`isRoutine`), which it holds to exactly its target; nothing for
+ * a finding's. The scan's pins job, the pin watch and the review gate each make a step from the scan's move with this,
+ * so each asks pnpm the same.
+ */
+export const routineStep = (move: Pick<ReadMove, 'clears' | 'lane'>): Pick<PinStepMove, 'routine'> =>
+  isRoutine(move) ? { routine: true } : {};
 
 /** What a seal of the moves made binds besides its bytes. */
 const bound = (repository: string, run: string) => Buffer.from(`scan pins ${MADE_VERSION}\n${repository}\n${run}`);

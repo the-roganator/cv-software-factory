@@ -4,7 +4,9 @@
  * watches each move to the end or to wherever it stops, reading only GitHub and the scratch cluster. One line a test.
  *
  * Its only acts: `./copies.sh reset`, dispatching `vulnerabilities.yml` on a copy's main, restarting the scratch
- * cluster's GitHub worker and dependency sense so their passes come now and not on the hour, and, for an app test,
+ * cluster's GitHub worker and dependency sense so their passes come now and not on the hour, asking Argo CD to look at
+ * git now once a watched pull request has merged (a refresh, which hastens its poll and changes nothing in the
+ * cluster), `./copies.sh summon-dependabot` for the test of Dependabot's own pull request (20), and, for an app test,
  * telling the line which ticket it takes (W3 turns it to a second ticket and back). It never approves, queues, re-runs
  * a check, answers a hold or sets a variable (a test's `variables` are read, and confirm.sh sets them). Everything else
  * is a read.
@@ -22,8 +24,10 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { join } from 'node:path';
 import { APP, FACTORY, TESTS, type Test } from './catalogue.ts';
 import {
+  branchFits,
   certainFail,
   isRoutine,
+  moveFits,
   pinsFault,
   printOf,
   probeQuery,
@@ -109,7 +113,9 @@ function pinWatchNames(tests: Test[]): string[] {
     ...new Set(
       tests.flatMap((t) =>
         t.pr.by === 'forged'
-          ? ['postgres']
+          ? ['N3a', 'N3b', 'N4'].includes(t.pr.forge)
+            ? ['postgres']
+            : []
           : t.pr.by === 'pin' || t.pr.by === 'lockfile'
             ? [...t.moves, ...(t.alsoTakes ?? [])]
             : [],
@@ -284,6 +290,8 @@ interface Move {
   to: string;
   pins: { file: string }[];
   lockfile?: boolean;
+  /** Whether its target is on another major than its pin. */
+  major?: boolean;
   clears?: Record<string, number>;
 }
 interface Pull {
@@ -391,6 +399,8 @@ interface State {
   reset?: { startedAt: string; before: string; after: string } | undefined;
   scan1?: Scan | undefined;
   kickedAt?: string;
+  /** When the run summoned Dependabot (test 20). */
+  summonedAt?: string;
   /** The scratch GitHub worker's poll, in seconds, as its Deployment sets it (60 when it sets none). */
   workerPollS?: number;
   pods0?: Record<string, number>;
@@ -745,6 +755,28 @@ function cluster(): Cluster {
 }
 /** What GitHub said of two commits: one never comes to be before or after another, so each pair is asked once. */
 const pasts = new Map<string, boolean>();
+/**
+ * Asks Argo CD to look at git now, for root and the app, at most twice a minute: it would look within its own two or
+ * three minutes anyway, and a refresh reads git and each resource's health again and changes nothing in the cluster.
+ */
+let refreshedAt = 0;
+function refresh() {
+  if (Date.now() - refreshedAt < 30_000) return;
+  refreshedAt = Date.now();
+  try {
+    kubectl([
+      '-n',
+      'argocd',
+      'annotate',
+      'application',
+      'root',
+      'website',
+      'argocd.argoproj.io/refresh=normal',
+      '--overwrite',
+    ]);
+  } catch {}
+}
+
 /** Whether `later` is `commit` or comes after it on main. */
 function past(repo: string, commit: string, later?: string): boolean {
   if (!later) return false;
@@ -920,9 +952,9 @@ function unreadOf(state: State, test: Test, kept: Seen['unread'], final: boolean
         if (String(note.message ?? '').includes(unread.image))
           seen.said.push(`${note.annotation_level}: ${String(note.message).slice(0, 200)}`);
     }
-    seen.alertsBefore = openAlertsAt(test.repo, unread.file);
+    if (unread.alerts) seen.alertsBefore = openAlertsAt(test.repo, unread.file);
   }
-  if (final) seen.alertsAfter = openAlertsAt(test.repo, unread.file);
+  if (final && unread.alerts) seen.alertsAfter = openAlertsAt(test.repo, unread.file);
   return seen;
 }
 
@@ -944,7 +976,7 @@ function observe(state: State, tests: Test[], final = false) {
     let nth = 0;
     for (const name of test.moves) {
       // A routine move and a finding's may share a name (a lockfile's names no package): a test stands on one kind.
-      const named = all.filter((m) => m.name === name && isRoutine(m) === Boolean(test.routine));
+      const named = all.filter((m) => m.name === name && moveFits(m, test));
       const want = test.clears;
       const move = want
         ? named.find((m) =>
@@ -996,7 +1028,7 @@ function observe(state: State, tests: Test[], final = false) {
         (p) =>
           p.user.login === APP_BOT &&
           pinMoves(p).some((name) => test.moves.includes(name)) &&
-          routineBranch(p.head?.ref) === Boolean(test.routine) &&
+          branchFits(p.head?.ref, test) &&
           !forgedNumbers.has(p.number),
       );
       seen.issues = issues()
@@ -1028,7 +1060,7 @@ function observe(state: State, tests: Test[], final = false) {
           (p) =>
             p.user.login === APP_BOT &&
             !/^chore\((deploy|main)\)/.test(p.title) &&
-            routineBranch(p.head?.ref) === Boolean(test.routine) &&
+            branchFits(p.head?.ref, test) &&
             !forgedNumbers.has(p.number),
         )
         .map((p) => ({ p, pull: readPull(test.repo, p) }))
@@ -1057,6 +1089,7 @@ function observe(state: State, tests: Test[], final = false) {
 
     const merged = seen.pulls.length === 1 && seen.pulls[0]?.mergedAt ? seen.pulls[0] : undefined;
     if (merged && !seen.deployedAt) {
+      if (!final && test.deployed.kind !== 'none') refresh();
       now ??= cluster();
       seen.notDeployed = notDeployed(test, seen, merged, now, listed);
       if (!seen.notDeployed) seen.deployedAt = new Date().toISOString();
@@ -1330,13 +1363,13 @@ function unreadVerdict(state: State, test: Test): { pass: boolean; why: string }
   const others = TESTS.filter((t) => inRun(state, t) && t !== test && !t.mustNot && !t.issue && standsOnMove(t));
   const merged = others.filter((t) => state.seen[t.id]?.pulls.some((p) => p.mergedAt));
   if (!merged.length) return fail(`scan ${scan.id} said so and listed ${scan.moves.length} moves; none has merged`);
+  const so = `scan ${scan.id} red, ${seen.said[0]?.slice(0, 90)}; ${scan.moves.length} moves listed, ${merged.length} of this run's merged`;
+  // An image the scan has never read has no alert to close; one it read before (`alerts`) is counted before and after.
+  if (!test.unread?.alerts) return { pass: true, why: `${so}; the image was never read, so it has no alert to close` };
   if (seen.alertsAfter === undefined) return fail('its alerts have not been counted at the end');
   if (seen.alertsAfter < (seen.alertsBefore ?? 0))
     return fail(`${(seen.alertsBefore ?? 0) - seen.alertsAfter} alerts at ${test.unread?.file} closed`);
-  return {
-    pass: true,
-    why: `scan ${scan.id} red, ${seen.said[0]?.slice(0, 90)}; ${scan.moves.length} moves listed, ${merged.length} of this run's merged; ${seen.alertsAfter} alerts open at its file, ${seen.alertsBefore ?? 0} before`,
-  };
+  return { pass: true, why: `${so}; ${seen.alertsAfter} alerts open at its file, ${seen.alertsBefore ?? 0} before` };
 }
 
 function verdict(state: State, test: Test): { pass: boolean; why: string } {
@@ -1453,8 +1486,7 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
   const scanned = standsOnMove(test);
   if (scanned && !state.scan2?.moves) return fail(`${so}; the next scan has not run`);
   // The test's own kind of move: a routine update and a finding's move may share a name, and each test is one kind.
-  const mine = (m: Move) =>
-    test.lockfile ? appLockfile(m, test) : test.moves.includes(m.name) && isRoutine(m) === Boolean(test.routine);
+  const mine = (m: Move) => (test.lockfile ? appLockfile(m, test) : test.moves.includes(m.name) && moveFits(m, test));
   const before = (state.scan1.moves ?? []).filter(mine).length;
   const after = (state.scan2?.moves ?? []).filter(mine).length;
   // Moves that share a name (a lockfile's names no package) are told apart by what they clear, or, routine, counted.
@@ -1703,6 +1735,15 @@ function run(state: State) {
     ]).trim();
     state.workerPollS = Number(poll) > 0 ? Number(poll) : 60;
     say(state, 'restarted the GitHub worker and the dependency sense, for their passes now');
+    save(state);
+  }
+
+  // Dependabot is summoned for the test of its own pull request (20), once the forgeries stand on the main it will
+  // leave: a commit of Martin's on the copy's main that changes dependabot.yml starts its run within a minute.
+  if (tests.some((t) => t.summons) && !state.summonedAt) {
+    const out = sh(join(BIN, 'copies.sh'), ['summon-dependabot'], { cwd: BIN, timeout: 10 * 60_000 });
+    state.summonedAt = new Date().toISOString();
+    say(state, `summoned Dependabot: ${out.trim().split('\n').at(-1)}`);
     save(state);
   }
 

@@ -108,7 +108,9 @@ export interface Test {
    * The scan with one image the registry will not serve: the image as the run's annotation names it, and the file
    * that pins it, whose open alerts must not fall.
    */
-  unread?: { image: string; file: string };
+  unread?: { image: string; file: string; alerts?: boolean };
+  /** Its pull request is Dependabot's own, which the run summons (`./copies.sh summon-dependabot`). */
+  summons?: boolean;
 }
 
 const LOCKFILE = 'a package in `deploy/overlays/local/factory-image/kustomization.yaml` and `pnpm-lock.yaml`';
@@ -332,16 +334,19 @@ export const TESTS: Test[] = [
     deployed: { kind: 'none' },
   },
   {
+    // lefthook, a development dependency staged at 1.13.6, the last release of its first major
+    // (staged/factory/18-…), with 2.x out since October 2025 and no advisory: the lockfile's routine update across a
+    // major, on a branch of its own, which writes the manifest's range too.
     id: '18',
-    title: 'a routine update across a major',
+    title: 'a routine update across a major (lefthook)',
     repo: FACTORY,
     campaign: 'factory',
-    moves: [],
+    moves: [FACTORY_DEV_LOCKFILE],
     routine: true,
     major: true,
-    pr: { by: 'pin' },
+    pr: { by: 'lockfile' },
+    removes: { file: 'package.json', lines: ['    "lefthook": "^1.13.6"'] },
     deployed: { kind: 'none' },
-    notRun: 'no pin is chosen for it yet (SKILL.md, "The tests that wait")',
   },
   {
     id: '19',
@@ -350,9 +355,12 @@ export const TESTS: Test[] = [
     campaign: 'factory',
     moves: [],
     pr: { by: 'none' },
-    unread: { image: 'ghcr.io/the-roganator/cv-software-factory-scratch/unread', file: 'deploy/unread/Dockerfile' },
+    // The pin of staged/factory/19-…: a real, public repository at a tag and a digest it never had, which the
+    // registry answers at once. `image` is what the run's annotation must name; change it here if the scan words
+    // its line otherwise. With `alerts: true` the open alerts at `file` are counted before and after, for an image
+    // the scan read before.
+    unread: { image: 'ghcr.io/anchore/grype', file: 'scripts/unread/Dockerfile' },
     deployed: { kind: 'none' },
-    notRun: 'no image is staged that the registry stops serving between two scans (SKILL.md, "The tests that wait")',
   },
   {
     // Dependabot's pull request for the group `factory` of the app's dependabot.yml (staged/app/20-…): the six
@@ -374,18 +382,20 @@ export const TESTS: Test[] = [
       '.github/workflows/vulnerabilities.yml',
     ],
     calls: { repo: FACTORY, count: 6 },
+    summons: true,
     deployed: { kind: 'none' },
   },
   {
+    // The Postgres exporter one release back, as a service of a workflow run only by hand
+    // (staged/factory/16-a-workflow-pin.patch), with findings its next release clears.
     id: 'N6',
     title: 'a workflow pin stays an issue for Martin',
     repo: FACTORY,
     campaign: 'factory',
-    moves: [],
+    moves: ['quay.io/prometheuscommunity/postgres-exporter'],
     issue: true,
     pr: { by: 'pin' },
     deployed: { kind: 'none' },
-    notRun: 'the baseline has no pin in a workflow file for the scan to read (SKILL.md, "The tests that wait")',
   },
   {
     // The pin watch's title and label on a branch of the App's that moves an image a workflow names.

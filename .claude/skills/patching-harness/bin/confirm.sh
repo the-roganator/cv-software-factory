@@ -127,26 +127,29 @@ if want A || want B || want C || want D || want apps || want W; then
 fi
 
 if want A && [ -n "$based" ]; then
-# With them the routine update (15), the Makefile's pin (17) and the forged workflow pin (N7). N6 and 19 join this
-# batch, and 18 joins B and C beside the majors, once each has its set-up (SKILL.md, "The tests that wait").
-echo "##### A: 1,2,3,5,14a,15,17 and the forgeries, Guarded $(date -u +%H:%MZ)"
+# With them the routine update (15), the Makefile's pin (17), the workflow's pin that stays an issue (N6) and its
+# forgery (N7). Test 19, the image no registry serves, is on the baseline, so every factory batch's scan has it and
+# each batch judges it.
+echo "##### A: 1,2,3,5,14a,15,17,N6,19 and the forgeries, Guarded $(date -u +%H:%MZ)"
 level guarded
-batch 1,2,3,5,14a,15,17 && campaign --only 1,2,3,5,14a,15,17,N3a,N3b,N4,N5,N7
+batch 1,2,3,5,14a,15,17,N6 && campaign --only 1,2,3,5,14a,15,17,N6,19,N3a,N3b,N4,N5,N7
 watches
 why
 fi
 
 if want B && [ -n "$based" ]; then
-echo "##### B: 4a,4b,6,7a,7b,9,14b, Guarded $(date -u +%H:%MZ)"
-batch 4a,4b,6,7a,7b,9,14b && campaign --only 4a,4b,6,7a,7b,9,14b --no-forge
+# 18, the routine update across a major, is held here beside 4a and 4b.
+echo "##### B: 4a,4b,6,7a,7b,9,14b,18,19, Guarded $(date -u +%H:%MZ)"
+batch 4a,4b,6,7a,7b,9,14b,18 && campaign --only 4a,4b,6,7a,7b,9,14b,18,19 --no-forge
 watches
 why
 fi
 
 if want C && [ -n "$based" ]; then
-echo "##### C: 4a,4b at Lights-out $(date -u +%H:%MZ)"
-batch 2,4a,4b && {
-  level lights-out show && campaign --only 2,4a,4b --no-forge --lights-out
+# At Lights-out the majors merge, 18 among them; a workflow's pin is still an issue (N6) and its forgery still held (N7).
+echo "##### C: 4a,4b,18 at Lights-out, with N6, N7 and 19 $(date -u +%H:%MZ)"
+batch 2,4a,4b,18,N6 && {
+  level lights-out show && campaign --only 2,4a,4b,18,N6,N7,19 --lights-out
 }
 fi
 

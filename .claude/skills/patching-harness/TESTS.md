@@ -37,11 +37,13 @@ deploy and the next real scan. A local run is a filter before that, never the pr
 | 15 | Factory: a routine update, a pin behind with no advisory | the argo-rollouts chart, 2.43.6 with 2.43.12 out | not listed by the scan |
 | 16 | App: a routine update, made by the line | `vitest` 5.1.0 to 5.1.1, in Dependabot's app #74 | left to Dependabot |
 | 17 | Factory: a Makefile pin with a finding | Argo CD's chart, `ARGOCD_CHART` 10.15.0 to 10.18.3 | an issue |
-| 18 | Either: a routine update that crosses a major | none chosen | not listed by the scan |
+| 18 | Either: a routine update that crosses a major | none real; lefthook staged at 1.13.6, with 2.x out | not listed by the scan |
 | 19 | The scan, with one image the registry will not serve | none; a registry's limit on pulls has failed a whole run | the run failed, with no moves |
 | 20 | App: Dependabot's pull request that moves only the app's pins of the factory's workflows | the six `uses:` lines, to the factory's `main` | Dependabot's, with Martin's approval |
 
-15 to 20 were added on 24 November 2026. 15 and 16 merge and deploy, nobody touching them. 17 merges as the App's move,
+15 to 20 were added on 24 November 2026. 19 is proven end to end for an image the scan has never read; an image it
+read the day before and the registry then refuses, whose findings are carried so that no alert of it closes, is proven
+by the scan's unit tests alone, as no public registry refuses an image on demand. 15 and 16 merge and deploy, nobody touching them. 17 merges as the App's move,
 not an issue. 18 is held at Guarded and merges at Lights-out, as 4a and 4b. In 19 the scan still lists every other
 move, and they merge. 20 passes the gate as an exact pin, is queued by the worker, and merges with nobody touching it.
 

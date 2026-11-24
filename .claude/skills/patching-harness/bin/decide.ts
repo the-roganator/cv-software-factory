@@ -29,6 +29,23 @@ export const isRoutine = (move: Pick<ListedMove, 'clears' | 'lane'>) => cleared(
  */
 export const routineBranch = (branch: string | undefined) =>
   /^factory\/pin\/.*-routine(-major)?-[0-9a-f]{8}$/.test(branch ?? '');
+/** Whether a pin branch is one of routine updates across a major, which the level may hold apart from the rest. */
+export const routineMajorBranch = (branch: string | undefined) =>
+  /^factory\/pin\/.*-routine-major-[0-9a-f]{8}$/.test(branch ?? '');
+/**
+ * Whether a pin branch is the kind a test stands on: a finding's moves (any branch that is not of routine updates), or
+ * routine updates, and then across a major or not as the test is.
+ */
+export const branchFits = (branch: string | undefined, test: { routine?: boolean; major?: boolean }) =>
+  test.routine ? routineBranch(branch) && routineMajorBranch(branch) === Boolean(test.major) : !routineBranch(branch);
+/**
+ * Whether a scan's move is the kind a test stands on. A routine update and a finding's move may share a name (a
+ * lockfile's names no package), and so may a routine update across a major and one within it.
+ */
+export const moveFits = (
+  move: Pick<ListedMove, 'clears' | 'lane'> & { major?: boolean },
+  test: { routine?: boolean; major?: boolean },
+) => (test.routine ? isRoutine(move) && Boolean(move.major) === Boolean(test.major) : !isRoutine(move));
 
 /** The version a move's target names, as a pin pull request's title writes it: a chart's, an image's tag, k3s's. */
 export function targetOf(to: string): string | undefined {

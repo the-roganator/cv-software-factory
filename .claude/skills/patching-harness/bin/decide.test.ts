@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  branchFits,
   certainFail,
   isRoutine,
+  moveFits,
   type PullFacts,
   pinsFault,
   printOf,
   probeQuery,
   routineBranch,
+  routineMajorBranch,
   settleMs,
   staleTarget,
   targetOf,
@@ -30,6 +33,49 @@ describe('a routine move', () => {
     expect(routineBranch('factory/pin/deploy-base-postgres-statefulset.yaml-0a1b2c3d')).toBe(false);
     expect(routineBranch('forged/routine-0a1b2c3d')).toBe(false);
     expect(routineBranch(undefined)).toBe(false);
+  });
+});
+
+describe('the kind of move a test stands on', () => {
+  const finding = { lane: 'worker', clears: { ...none, HIGH: 1 } };
+  const routine = { lane: 'worker', clears: none };
+  const major = { lane: 'worker', clears: none, major: true };
+
+  it("is a finding's for a test that is not of a routine update, major or not", () => {
+    expect(moveFits(finding, {})).toBe(true);
+    expect(moveFits({ ...finding, major: true }, { major: true })).toBe(true);
+    expect(moveFits(routine, {})).toBe(false);
+    expect(moveFits(major, { major: true })).toBe(false);
+  });
+
+  it('is a routine update within its major, or across one, as the test is', () => {
+    expect(moveFits(routine, { routine: true })).toBe(true);
+    expect(moveFits(major, { routine: true })).toBe(false);
+    expect(moveFits(major, { routine: true, major: true })).toBe(true);
+    expect(moveFits(routine, { routine: true, major: true })).toBe(false);
+    expect(moveFits(finding, { routine: true })).toBe(false);
+  });
+
+  it('has a branch of the same kind', () => {
+    const plain = 'factory/pin/pnpm-lock.yaml-0a1b2c3d';
+    const held = 'factory/pin/pnpm-lock.yaml-major-0a1b2c3d';
+    const behind = 'factory/pin/pnpm-lock.yaml-routine-0a1b2c3d';
+    const across = 'factory/pin/pnpm-lock.yaml-routine-major-0a1b2c3d';
+    expect([plain, held, behind, across].map((b) => branchFits(b, {}))).toEqual([true, true, false, false]);
+    expect([plain, held, behind, across].map((b) => branchFits(b, { routine: true }))).toEqual([
+      false,
+      false,
+      true,
+      false,
+    ]);
+    expect([plain, held, behind, across].map((b) => branchFits(b, { routine: true, major: true }))).toEqual([
+      false,
+      false,
+      false,
+      true,
+    ]);
+    expect(routineMajorBranch(across)).toBe(true);
+    expect(branchFits(undefined, {})).toBe(true);
   });
 });
 

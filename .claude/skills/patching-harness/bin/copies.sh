@@ -18,6 +18,7 @@
 #   ./copies.sh forget-closed  make the watches forget the pull requests a reset closed (reset does this itself)
 #   ./copies.sh dependabot   close the copies' Dependabot pull requests the real ones closed, or no test needs
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
+#   ./copies.sh summon-dependabot  have Dependabot look at the app copy now (test 20; the harness calls it)
 #   ./copies.sh down         delete the scratch cluster and its state
 #
 # The scratch cluster is the copies' alone: its own k3d name and kube context (k3d-software-factory-scratch), ports
@@ -602,6 +603,28 @@ reset_one() { # <copy> <dir>
   forget_closed "$copy"
 }
 
+# Dependabot looks at a repository on its own day of the week, and at once when a push to main changes
+# .github/dependabot.yml. So, for the test of its own pull request (20), one commit on the app copy's main that
+# rewrites a last comment line of that file: Martin's, made by git under his signing configuration, as the copy's
+# ruleset wants verified signatures and the contents API's commits are not his; pushed with the ruleset off for the
+# push alone, as a baseline is. Its run is the Actions run "github_actions in /. - Update #…", within the minute.
+summon_dependabot() {
+  local dir="$WORK/app" copy=$APP_COPY file=.github/dependabot.yml pushed=0
+  git -C "$dir" fetch -q "https://github.com/$copy" main
+  git -C "$dir" checkout -q -f --detach FETCH_HEAD
+  perl -ni -e 'print unless /^# Dependabot was last asked to look on /' "$dir/$file"
+  echo "# Dependabot was last asked to look on $(date -u +%FT%TZ)." >>"$dir/$file"
+  git -C "$dir" add "$file"
+  git -C "$dir" -c commit.gpgsign=true commit -q -m "chore(scratch): ask Dependabot to look now" \
+    -m "Scratch copy for the patching tests: not the real repository." ||
+    die "the commit that summons Dependabot was not made (is a signing key set?)"
+  ruleset "$copy" disabled
+  git -C "$dir" push -q "https://github.com/$copy" HEAD:refs/heads/main || pushed=1
+  ruleset "$copy" active
+  [[ $pushed == 0 ]] || die "could not push the commit that summons Dependabot to $copy"
+  say "summoned Dependabot on $copy at $(git -C "$dir" rev-parse --short HEAD)"
+}
+
 # reset [factory|app] [--store]: both copies unless one is named; --store also puts the scratch store back to its clean
 # point (store-restore).
 reset() {
@@ -753,5 +776,6 @@ case "${1:-}" in
   forget-closed) forget_closed "$FACTORY_COPY"; forget_closed "$APP_COPY" ;;
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
+  summon-dependabot) summon_dependabot ;;
   *) sed -n '2,32p' "$0"; exit 2 ;;
 esac

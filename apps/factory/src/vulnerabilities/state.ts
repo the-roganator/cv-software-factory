@@ -101,6 +101,8 @@ export interface StateRoutine {
   /** Its target, as fixes.ts writes one (`targetText`). */
   to: string;
   pins: { file: string; line: number }[];
+  /** Whether it crosses a major, as the scan said of the move: true on a routine major's record, absent otherwise. */
+  major?: boolean | undefined;
   /**
    * When the scan first saw this target for this pin, UTC to the second: the wait counts from the release's own day,
    * and from this where the registry gives none (an image that says 1970) or a later one.

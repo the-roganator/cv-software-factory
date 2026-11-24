@@ -268,6 +268,8 @@ export const MOVES_FILE_SCHEMA = z.strictObject({
     open: COUNTS.optional(),
     // How many of the moves are routine: a scan that lists none of them writes no count, and its file reads as it did.
     routine: z.number().int().nonnegative().optional(),
+    // The pins its routine listing could not read: a scan that made no routine listing writes none.
+    routineUnread: z.number().int().nonnegative().optional(),
     lanes: z.strictObject(
       Object.fromEntries(LANES.map((lane) => [lane, z.number().int().nonnegative()])) as Record<
         (typeof LANES)[number],
@@ -522,7 +524,7 @@ function movesFileOf(repo: string, run: ScanRun, bytes: Buffer): MovesFile {
  * `moves.json`'s moves with their findings from the state, each checked against the other: every move has as many
  * findings as it clears, none names a move past the list, and the total is `moves.json`'s. A routine move clears
  * nothing and has no finding; the state's record of one (`routine`) is held to the move it names (`routineOf`), and a
- * lockfile's routine move, which the artifact names by its file alone, must have one.
+ * routine move, a lockfile's or any other, must have one: none is read from the public artifact alone.
  */
 export function joined(
   repo: string,
@@ -594,7 +596,8 @@ const filesOf = (pins: readonly { file: string }[]) => [...new Set(pins.map((pin
  * names no move is a release the scan saw and still waits on, or passed over: it is no move of the day, and is left
  * out. One that names a move names a move
  * of the list, once, that is routine (one with findings has them, and no record), to a target the grammar reads; a
- * move the artifact names whole is the same move there, by its name, what it pins, its target and its pins; and the
+ * move the artifact names whole is the same move there, by its name, what it pins, its target and its pins, and each
+ * agrees with its record on whether it crosses a major; every routine move of the list has a record; and the
  * artifact's count of routine moves, where it gives one, is the list's.
  */
 function routineOf(repo: string, file: MovesFile, state: State): Map<number, StateRoutine> {
@@ -610,6 +613,9 @@ function routineOf(repo: string, file: MovesFile, state: State): Map<number, Sta
     if (out.has(each.move)) throw disagrees(repo, `${where} names move ${each.move}, which another names too`);
     if (!isRoutine(move)) throw disagrees(repo, `${where} names move ${each.move}, which is no routine move`);
     if (!readTarget(each.to)) throw disagrees(repo, `${where} has a target the grammar does not read`);
+    // Whether it crosses a major is the scan's word, which the level acts on: the sealed record's, and the same.
+    if ((each.major === true) !== move.major)
+      throw disagrees(repo, `${where} and move ${each.move} of ${MOVES_FILE} do not agree on whether it is a major`);
     if (!move.lockfile) {
       const same =
         each.name === move.name &&
@@ -620,6 +626,13 @@ function routineOf(repo: string, file: MovesFile, state: State): Map<number, Sta
     }
     out.set(each.move, each);
   }
+  // Every routine move is one the scan sealed: the public artifact alone moves no pin the worker writes unattended.
+  for (const [i, move] of file.moves.entries())
+    if (isRoutine(move) && !out.has(i + 1))
+      throw disagrees(
+        repo,
+        `move ${i + 1}, ${move.lockfile ? "a lockfile's routine move" : 'a routine move'}, has no record in the state`,
+      );
   return out;
 }
 
@@ -628,8 +641,7 @@ function routineOf(repo: string, file: MovesFile, state: State): Map<number, Sta
  * it is at, its target and its pins, in the files the artifact names. Nothing for any other routine move.
  */
 function routineLockfileOf(repo: string, move: PublicMove, i: number, record: StateRoutine | undefined) {
-  if (!move.lockfile) return {};
-  if (!record) throw disagrees(repo, `move ${i + 1}, a lockfile's routine move, has no record in the state`);
+  if (!move.lockfile || !record) return {};
   if (!record.pins.length || filesOf(move.pins) !== filesOf(record.pins))
     throw disagrees(repo, `move ${i + 1}, a lockfile's routine move, is recorded outside the files it names`);
   const pins = record.pins.map((pin) => ({ file: pin.file, line: pin.line })).sort(byPin);

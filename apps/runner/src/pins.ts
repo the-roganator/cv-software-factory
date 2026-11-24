@@ -244,6 +244,28 @@ export function lockedVersions(lock: string, name: string): string[] {
   return [...new Set([...lock.matchAll(key)].map((m) => m[1] as string))].sort(compareVersions);
 }
 
+/**
+ * Where a pnpm lockfile's `importers:` resolve a package, each with its line (from 1) and the version there: the copy
+ * a manifest that names the package gets, as apart from a copy only another package's range brings.
+ */
+export function importedVersions(lock: string, name: string): { line: number; version: string }[] {
+  const lines = lock.split('\n');
+  const entry = new RegExp(`^ {6}'?${escaped(name)}'?:\\s*$`);
+  const out: { line: number; version: string }[] = [];
+  let importers = false;
+  for (const [at, line] of lines.entries()) {
+    if (/^\S/.test(line)) importers = line.trimEnd() === 'importers:';
+    if (!importers || !entry.test(line)) continue;
+    for (const next of [at + 1, at + 2]) {
+      const version = /^ {8}version:\s*'?([^\s'(]+)/.exec(lines[next] ?? '')?.[1];
+      if (!version) continue;
+      out.push({ line: next + 1, version });
+      break;
+    }
+  }
+  return out;
+}
+
 /** The packages whose dependencies resolve `name` at `version`, from a pnpm lockfile's `snapshots:`: its parents. */
 export function parentsAt(lock: string, name: string, version: string): string[] {
   const snapshots = lock
@@ -303,7 +325,10 @@ export const movedRange = (spec: string, version: string): string =>
  * exact (`pnpm update <name>@<target>`): the scan listed that release once it had waited its days, and a newer one
  * inside the range has not. pnpm takes a version only for a package a manifest names, writes its range there as the
  * target with the range's operator kept, and moves every copy the target satisfies with it; so a routine update of a
- * package no manifest names is refused, and one that ends anywhere but the target is too.
+ * package no manifest names is refused, and so is one whose manifests' copy (`importedVersions`) ends anywhere but
+ * the target. A copy only a parent brings stays where that parent's range puts it, and is no part of a routine
+ * update: nothing is wrong with the version it is at, so nothing asks for an override. A fix holds for one, since
+ * every copy must leave the version its advisory names.
  */
 export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<void> {
   // A package at two versions: each copy to the target on its own line, the older line first.
@@ -329,6 +354,9 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   // Already made: every copy is at the target or past it, or every copy of the move's own is, and there is one.
   const there = (list: string[]) => list.every((v) => compareVersions(v, move.to) >= 0);
   if (there(versions) || (own.length > 0 && there(own))) return;
+  // A routine update is made once each manifest that names the package resolves the target, whatever a parent keeps.
+  const imported = importedVersions(before, move.name);
+  if (move.routine && imported.length > 0 && imported.every((each) => each.version === move.to)) return;
   if (!versions.includes(move.from)) {
     throw new PinsRefused(`The lockfile has ${move.name} at ${versions.join(', ')}, not at ${move.from}.`);
   }
@@ -357,11 +385,21 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   const what = move.routine ? `${move.name}@${move.to}` : move.name;
   await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), what, '--depth', 'Infinity']);
   const after = await readFile(lockPath, 'utf8');
-  const past = lockedVersions(after, move.name).filter((v) => itsOwn(v) && compareVersions(v, move.to) > 0);
-  if (move.routine && past.length) {
-    throw new PinsRefused(
-      `${move.name} resolves to ${past.join(', ')}, past ${move.to}: a routine update moves to the release the scan listed, and no further.`,
-    );
+  if (move.routine) {
+    // The manifests' copy alone is the move's: exactly the target, and a parent's copy where its range puts it.
+    const got = [...new Set(importedVersions(after, move.name).map((each) => each.version))];
+    const past = got.filter((v) => compareVersions(v, move.to) > 0);
+    if (past.length) {
+      throw new PinsRefused(
+        `${move.name} resolves to ${past.join(', ')}, past ${move.to}: a routine update moves to the release the scan listed, and no further.`,
+      );
+    }
+    if (got.length !== 1 || got[0] !== move.to) {
+      throw new PinsRefused(
+        `${move.name} resolves to ${got.join(', ') || 'no version'} where a manifest names it, not to ${move.to}: a routine update moves to exactly the release the scan listed.`,
+      );
+    }
+    return;
   }
   const below = lockedVersions(after, move.name).filter((v) => itsOwn(v) && compareVersions(v, move.to) < 0);
   if (below.length) {

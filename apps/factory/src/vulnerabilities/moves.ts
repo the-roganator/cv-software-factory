@@ -381,7 +381,15 @@ export interface MovesFile {
    * built before it refuses a file that has it, so the worker reads this repository's moves again once it is deployed.
    * `routine` is how many of the moves are routine, written only on a day that has one, optional as `open` is.
    */
-  totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts; routine?: number } & DayCounts;
+  totals: {
+    fixed: number;
+    moves: number;
+    lanes: Record<Lane, number>;
+    open?: Counts;
+    routine?: number;
+    /** The pins the routine listing could not read that day; absent where the scan made no routine listing at all. */
+    routineUnread?: number;
+  } & DayCounts;
   moves: PublicMove[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];

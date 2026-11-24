@@ -363,6 +363,78 @@ describe('a routine update: a move no finding asks for, made and compared as any
   });
 });
 
+describe('a routine update of a package whose old entry a parent keeps', () => {
+  const NONE = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+  /** A lockfile that resolves zod for the manifest, and for `holder`, which pins it at 4.2.0 exactly. */
+  const lock = (direct: string) =>
+    [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      '      zod:',
+      `        specifier: ^${direct}`,
+      `        version: ${direct}`,
+      'packages:',
+      '  holder@1.0.0:',
+      '    resolution: {integrity: sha512-h}',
+      '  zod@4.2.0:',
+      '    resolution: {integrity: sha512-z4}',
+      ...(direct === '4.2.0' ? [] : [`  zod@${direct}:`, '    resolution: {integrity: sha512-z5}']),
+      'snapshots:',
+      '  holder@1.0.0:',
+      '    dependencies:',
+      '      zod: 4.2.0',
+      '',
+    ].join('\n');
+  const [BASE, MOVED] = [lock('4.2.0'), lock('5.1.0')];
+  const manifest = (range: string) => `{ "dependencies": { "holder": "^1.0.0", "zod": "${range}" } }\n`;
+  /** The scan's move: pinned at the package's entry, line 11, which the lockfile keeps for `holder`. */
+  const zod: ScanMove = {
+    ...packageMove('zod', '4.2.0', '5.1.0', 11),
+    major: true,
+    clears: NONE,
+    leaves: NONE,
+  };
+  /** The change as git gives it: the importer's two lines rewritten, and the new entry inserted after the old one's. */
+  const changed = (head = MOVED): Changed[] => [
+    { ...modified(LOCK, BASE, head), rewrites: [6, 7, 12] },
+    modified('package.json', manifest('^4.2.0'), manifest('^5.1.0')),
+  ];
+  const made = (asked: PinStepMove[][] = []): MoveIO => ({
+    base: (path) => (path === LOCK ? BASE : path === 'package.json' ? manifest('^4.2.0') : undefined),
+    derive: async (moves) => {
+      asked.push([...moves]);
+      return new Map([
+        [LOCK, MOVED],
+        ['package.json', manifest('^5.1.0')],
+      ]);
+    },
+  });
+
+  it('is carried by the change that rewrites where main’s lockfile resolves it for the manifest, and passes as made', async () => {
+    expect(BASE.split('\n')[10]).toBe('  zod@4.2.0:');
+    expect(MOVED.split('\n')[10]).toBe('  zod@4.2.0:');
+    const asked: PinStepMove[][] = [];
+    expect(await proveMove(changed(), [zod], made(asked), true)).toEqual({
+      rule: 'major',
+      title: expect.stringContaining('a routine update across a major, with no finding behind it'),
+    });
+    expect(asked).toEqual([[{ ecosystem: 'npm', name: 'zod', from: '4.2.0', to: '5.1.0', routine: true }]]);
+    // Held to the step's bytes as any move: the manifest's copy at another version is refused, by its line alone.
+    const other = await proveMove(changed(MOVED.replaceAll('5.1.0', '5.1.1')), [zod], made(), true);
+    expect(other).toEqual({ reason: 'pnpm-lock.yaml:6 is not what the pin step writes for the moves it carries' });
+  });
+
+  it('carries no fix by that line: a fix’s entry always moves, and a change that leaves it is no move of it', async () => {
+    const fix: ScanMove = { ...zod, clears: counts() };
+    expect(await proveMove(changed(), [fix], made(), true)).toHaveProperty('none');
+    // A change that rewrites the importer of another package carries no move of this one.
+    const elsewhere: Changed[] = [{ ...modified(LOCK, BASE, BASE.replace('sha512-h', 'sha512-i')), rewrites: [10] }];
+    expect(await proveMove(elsewhere, [zod], made(), true)).toHaveProperty('none');
+  });
+});
+
 describe('the Makefile’s pin of Argo CD’s chart, which the App writes', () => {
   const MAKEFILE = ['CLUSTER := software-factory', 'ARGOCD_CHART := 10.15.0', 'up:', '\thelm upgrade argocd', ''].join(
     '\n',

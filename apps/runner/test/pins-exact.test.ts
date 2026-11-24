@@ -15,6 +15,7 @@ import { listenLocal } from '@software-factory/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { madeRefusal } from '../../factory/src/github/pin-guard.ts';
 import {
+  importedVersions,
   lockedVersions,
   type Move,
   movePackage,
@@ -42,6 +43,8 @@ const RELEASES: Record<string, Record<string, { needs?: Record<string, string>; 
     '2.0.1': { days: 2 },
   },
   'demo-parent': { '1.0.0': { needs: { 'demo-pkg': '^1.0.0' }, days: 40 } },
+  // A parent that pins the package exactly, where it was: no release of the package moves its copy.
+  'demo-holder': { '1.0.0': { needs: { 'demo-pkg': '1.0.0' }, days: 40 } },
 };
 
 /** A package's tarball: its manifest alone, as `npm pack` lays one out. */
@@ -203,9 +206,53 @@ describe('a routine update of a package, made by pnpm itself', { timeout: 120_00
     expect(rangeIn(dir)).toBe('^2.0.0');
   });
 
-  it('holds a routine major for an override, as a fix’s, where a parent’s range keeps a copy at the old version', async () => {
+  const HELD = { 'package.json': manifest('shop', { 'demo-holder': '^1.0.0', 'demo-pkg': '^1.0.0' }) };
+
+  it('leaves the copy a parent pins exactly where that parent wants it: the manifest’s copy at the target is the move made', async () => {
+    const dir = await checkout(HELD);
+    const before = read(dir, 'pnpm-lock.yaml');
+    await movePackage(dir, update('1.0.1'), pnpm());
+    expect(importedVersions(read(dir, 'pnpm-lock.yaml'), 'demo-pkg').map((each) => each.version)).toEqual(['1.0.1']);
+    expect(rangeIn(dir)).toBe('^1.0.1');
+    // The parent's copy is as it was, beside the manifest's: the package at two versions, and no younger one.
+    expect(lockedIn(dir)).toEqual(['1.0.0', '1.0.1']);
+    expect(read(dir, 'pnpm-lock.yaml')).toMatch(
+      /^ {2}demo-holder@1\.0\.0:\n {4}dependencies:\n {6}demo-pkg: 1\.0\.0$/m,
+    );
+    // The entry the scan found the package at is a line the lockfile still has, for the parent.
+    expect(read(dir, 'pnpm-lock.yaml')).toContain('\n  demo-pkg@1.0.0:\n');
+    // The worker's guard takes a lockfile that holds the package twice, each a registry's package.
+    const after = read(dir, 'pnpm-lock.yaml').replaceAll(registry, 'https://r.test/');
+    expect(madeRefusal('pnpm-lock.yaml', before, after)).toBeUndefined();
+    // Made, it is made: again writes nothing, though a copy is still at the version it moved from.
+    const made = read(dir, 'pnpm-lock.yaml');
+    await movePackage(dir, update('1.0.1'), pnpm());
+    expect(read(dir, 'pnpm-lock.yaml')).toBe(made);
+    // The same bytes on another checkout, as the review gate makes it.
+    const again = await checkout(HELD);
+    await movePackage(again, update('1.0.1'), pnpm());
+    for (const path of ['package.json', 'pnpm-lock.yaml']) expect(read(again, path)).toBe(read(dir, path));
+  });
+
+  it('makes a routine major where a parent stays on the old major: no override is asked of Martin', async () => {
     const dir = await checkout(SHOP);
-    await expect(movePackage(dir, update('2.0.0'), pnpm())).rejects.toThrow(PinsHeld);
+    await movePackage(dir, update('2.0.0'), pnpm());
+    expect(importedVersions(read(dir, 'pnpm-lock.yaml'), 'demo-pkg').map((each) => each.version)).toEqual(['2.0.0']);
+    expect(rangeIn(dir)).toBe('^2.0.0');
+    // `demo-parent` asks for `^1.0.0`, which admits no 2.0.0: its copy is on the old major still.
+    const kept = lockedIn(dir).filter((version) => version !== '2.0.0');
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatch(/^1\.0\./);
+    expect(lockedIn(dir)).not.toContain('2.0.1');
+  });
+
+  it('still holds a fix for an override where a parent keeps a copy at the version its advisory names', async () => {
+    const dir = await checkout(HELD);
+    const error = await movePackage(dir, update('1.0.1', false), pnpm()).catch((e) => e);
+    expect(error).toBeInstanceOf(PinsHeld);
+    expect(error.message).toBe(
+      'demo-pkg stays at 1.0.0: demo-holder@1.0.0 admit no 1.0.1, so it needs an override in pnpm-workspace.yaml',
+    );
   });
 
   it('refuses a routine update of a package no manifest names, before pnpm runs: pnpm holds only a direct one to a version', async () => {

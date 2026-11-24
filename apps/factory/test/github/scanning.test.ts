@@ -492,9 +492,52 @@ describe('the scan’s moves', () => {
     expect((await read(none)).moves).toEqual((await read()).moves);
   });
 
-  it('read a day whose state records no routine move for one the artifact names whole', async () => {
-    const day = recorded((routine) => routine.shift());
-    expect((await read(day)).moves[2]).toMatchObject({ name: 'ghcr.io/example/tool', findings: [] });
+  it('fail on a routine move the artifact names whole that the state has no record of: none is read from moves.json alone', async () => {
+    await fails(
+      recorded((routine) => routine.shift()),
+      /move 3, a routine move, has no record in the state/,
+    );
+    // A record of it that names no move is a release still waiting, and no record of the move.
+    await fails(
+      recorded((routine) => delete (routine[0] as StateRoutine).move),
+      /move 3, a routine move, has no record in the state/,
+    );
+  });
+
+  it('fail when a routine move and its record do not agree on whether it crosses a major', async () => {
+    const said = /the state's routine move 1 and move 3 of moves\.json do not agree on whether it is a major/;
+    // The artifact says it is no major, and the sealed record that it is: the level would queue what it must hold.
+    await fails(
+      recorded((routine) => Object.assign(routine[0] as StateRoutine, { major: true })),
+      said,
+    );
+    const major = routineDay();
+    major.moves.moves[2].major = true;
+    await fails(major, said);
+    await fails(
+      {
+        ...major,
+        state: { ...major.state, routine: major.state.routine.map((r, n) => (n ? r : { ...r, major: false })) },
+      },
+      said,
+    );
+    // Both saying so, it is read as one; a lockfile's is held to its record the same way.
+    (major.state.routine[0] as StateRoutine).major = true;
+    expect((await read(major)).moves[2]).toMatchObject({ major: true, findings: [] });
+    major.moves.moves[3].major = true;
+    await fails(major, /the state's routine move 2 and move 4 of moves\.json do not agree on whether it is a major/);
+  });
+
+  it('pass on how many pins the routine listing could not read, where the scan made one', async () => {
+    expect((await read(routineDay())).file?.totals).not.toHaveProperty('routineUnread');
+    const day = routineDay();
+    day.moves.totals.routineUnread = 2;
+    expect((await read(day)).file?.totals).toMatchObject({ routine: 2, routineUnread: 2 });
+    for (const bad of [-1, 1.5, '2']) {
+      const wrong = routineDay();
+      wrong.moves.totals.routineUnread = bad;
+      await fails(wrong, /not the shape this worker reads \(totals\.routineUnread\)/);
+    }
   });
 
   it('fail on a routine lockfile move the state has no record of, or one recorded outside the files it names', async () => {
@@ -504,7 +547,7 @@ describe('the scan’s moves', () => {
     );
     const day = routineDay();
     const { routine: _, ...before } = day.state;
-    await fails({ ...day, state: before }, /move 4, a lockfile's routine move, has no record in the state/);
+    await fails({ ...day, state: before }, /move 3, a routine move, has no record in the state/);
     await fails(
       recorded((routine) =>
         Object.assign(routine[1] as StateRoutine, { pins: [{ file: 'other/pnpm-lock.yaml', line: 9 }] }),

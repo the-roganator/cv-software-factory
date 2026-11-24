@@ -269,7 +269,10 @@ function countedBefore(scan: SignalScan): Required<ScanCounts> {
  *
  * A routine update's signal (`outdated-dependency`) lists no finding: no advisory asked for the move. Its proof is the
  * same scan, waited for the same way, no longer listing the move: no move of the signal's name and ecosystem from a
- * version the signal moved from (`stillListed`), with the journeys passed. Still listed there, it persists. A
+ * version the signal moved from (`stillListed`), with the journeys passed. Still listed there, it persists. Only a
+ * whole routine listing shows a move gone: a scan that made none (`totals.routine` or `routineUnread` absent), or
+ * could not read some pin for it (`routineUnread` above none), is waited past as one that has not read the release
+ * is, and held for Martin by the same wait, told why. A
  * vulnerable dependency's signal that lists no finding with a fix has nothing for the scan to show closed, and holds
  * for Martin.
  */
@@ -314,6 +317,24 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
   if (!digest) return { kind: 'hold', reason: `No image is recorded for ${short(target.version)}: Martin judges it` };
   if (!read.file.scanned.some((image) => image.digests.includes(digest))) {
     return { kind: 'wait', why: `the image running, ${digest.slice(0, 19)}, is not one the scan of ${of} read` };
+  }
+  if (routine) {
+    // A routine update is shown made by the scan's routine listing no longer having it, which only a whole listing
+    // shows: a scan that made none, or could not read some pin for it, lists no move of a pin it did not read.
+    const { totals } = read.file;
+    if (totals.routine === undefined || totals.routineUnread === undefined) {
+      return {
+        kind: 'wait',
+        why: `the scan of ${of} listed no routine updates at all, so it cannot show this one made (${read.run.url})`,
+      };
+    }
+    if (totals.routineUnread > 0) {
+      const pins = `${totals.routineUnread} ${totals.routineUnread === 1 ? 'pin' : 'pins'}`;
+      return {
+        kind: 'wait',
+        why: `the scan of ${of} could not read ${pins} for its routine updates, so a move it does not list may be one it could not read (${read.run.url})`,
+      };
+    }
   }
   const isFixed = (each: { advisory: string; package: string }) =>
     fixed.some((finding) => finding.advisory === each.advisory && finding.package === each.package);
@@ -374,7 +395,9 @@ function stillListed(read: Moves, move: NonNullable<FirstSignal['move']>): boole
   }
   return read.moves.some((each) => {
     const listed = moveOf(read.repository, each);
-    if (typeof listed === 'string') return false;
+    // A move of the name the sense could not name as a signal does (no target, no ecosystem) cannot be told from
+    // this one: it is still listed, never taken for gone.
+    if (typeof listed === 'string') return (each.withheld?.package ?? each.name) === move.name;
     return (
       listed.name === move.name &&
       listed.ecosystem === move.ecosystem &&

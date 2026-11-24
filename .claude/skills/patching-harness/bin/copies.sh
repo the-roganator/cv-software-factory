@@ -332,12 +332,19 @@ push_baseline() { # <copy> <dir>
   ruleset "$copy" active
 }
 
+# scripts/github-settings.ts from the factory baseline, told the copies by name (policy/repositories.ts) as well as
+# naming them in its renamed code, so it writes to them and nowhere else.
+copy_settings() {
+  [[ $FACTORY_COPY == the-roganator/*-scratch && $APP_COPY == the-roganator/*-scratch ]] ||
+    die "the settings go only to the scratch copies, not $FACTORY_COPY and $APP_COPY"
+  (cd "$WORK/factory" && FACTORY_REPOSITORY=$FACTORY_COPY APP_REPOSITORY=$APP_COPY mise exec -- node scripts/github-settings.ts)
+}
+
 settings() {
-  # The real two's settings, rulesets and environments (scripts/github-settings.ts), from the factory baseline, whose
-  # code names the copies.
+  # The real two's settings, rulesets and environments, as the copies' (copy_settings).
   # Its first pass makes the environments and stops at the ruleset, which waits for the review App's key; the second,
   # with the keys in place, applies the ruleset.
-  (cd "$WORK/factory" && mise exec -- node scripts/github-settings.ts) || true
+  copy_settings || true
   for copy in "$FACTORY_COPY" "$APP_COPY"; do
     gh repo edit "$copy" --description "Scratch copy for the patching tests. Reset often; nothing here is real." >/dev/null
     gh variable set FACTORY_REPOSITORY -R "$copy" -b "$FACTORY_COPY"
@@ -350,7 +357,7 @@ settings() {
       gh secret set REVIEW_APP_PRIVATE_KEY --env review -R "$copy"
   done
   scan_state_keys
-  (cd "$WORK/factory" && mise exec -- node scripts/github-settings.ts)
+  copy_settings
   # The drift check is the real cluster's, and its App is not installed on the copy.
   gh workflow disable drift-check.yml -R "$FACTORY_COPY" 2>/dev/null || true
   # CI's image copies are the real factory's (real_mirror), which a copy cannot write. caches.yml holds both the image

@@ -146,6 +146,8 @@ export const TESTS: Test[] = [
     title: "Kyverno's four images",
     repo: FACTORY,
     campaign: 'factory',
+    // One pull request for the file's four moves: the pin watch opens one for each set of files, its description
+    // marking every move it carries (`pinMoves`), and the test's verdict wants exactly one.
     moves: [
       'kyverno: ghcr.io/kyverno/readiness-checker',
       'kyverno: reg.kyverno.io/kyverno/kyverno',

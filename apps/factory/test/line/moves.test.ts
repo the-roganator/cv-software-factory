@@ -13,6 +13,7 @@ import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import { commitTitle } from '../../src/line/agents/agent.ts';
 import {
   compareVersions,
+  disclosedMove,
   moveIssue,
   moveNote,
   moveSection,
@@ -721,6 +722,45 @@ describe('what the line says of a move', () => {
     const { body } = moveIssue('7', TICKET, TICKET, signal('2.0.1'));
     expect(body).toContain('- Pinned at: `pnpm-lock.yaml:41`');
     expect(body).not.toContain('undefined');
+  });
+
+  it('says of a routine update’s issue that it is one: a newer release, no advisory, and nothing the scan found', () => {
+    const { evidence: _, ...bare } = signal('2.0.1');
+    const routine: PayloadOf<'signal.received'> = { ...bare, symptom: 'outdated-dependency' };
+    const rated = { category: 'dependency' as const, severity: 'cosmetic' as const };
+    const { title, body } = moveIssue('7', { ...TICKET, ...rated }, rated, routine);
+    expect(title).toBe(TICKET.title);
+    expect(body).toBe(
+      [
+        'The factory’s ticket #7: the move of `invented-pkg`, in npm, from `2.0.0` to `2.0.1` or later, in the-roganator/cv-worlds-worst-website.',
+        '',
+        '- Category: dependency',
+        '- Severity: cosmetic',
+        '- Pinned at: `pnpm-lock.yaml:41`',
+        '- A routine update: the scan lists a newer release, with no advisory behind it and no deadline.',
+        '',
+        'The factory is working on it: its move will come as a pull request that refers here. The issue closes when the move is verified in production, by the scan of the release.',
+      ].join('\n'),
+    );
+    // A vulnerable dependency's says what the scan found, and nothing of a routine update.
+    const found = moveIssue('7', TICKET, TICKET, signal('2.0.1')).body;
+    expect(found).toContain('- What the scan found on it:');
+    expect(found).not.toContain('routine');
+    // What it discloses is the move alone: there is no finding to name.
+    expect(disclosedMove({ name: 'invented-pkg', ecosystem: 'npm' }, routine)).toEqual({
+      name: 'invented-pkg',
+      ecosystem: 'npm',
+      from: '2.0.0',
+      to: '2.0.1',
+      pins: PINS,
+    });
+  });
+
+  it('titles a move’s commit `fix(deps)`, the one type of a dependency’s that the line’s own title rule takes', () => {
+    expect(moveTitle('invented-pkg', '2.0.1')).toBe('fix(deps): move invented-pkg to 2.0.1');
+    expect(commitTitle.safeParse('fix(deps): move invented-pkg to 2.0.1').success).toBe(true);
+    // The app's own check takes `chore`; the line's rule for a work item's pull request does not.
+    expect(commitTitle.safeParse('chore(deps): move invented-pkg to 2.0.1').success).toBe(false);
   });
 });
 

@@ -94,6 +94,14 @@ export interface Move {
   results: string[];
 }
 
+/**
+ * Whether a move is a routine update: a pin that is merely behind, which no finding asks for. Derived, never a field:
+ * it clears nothing and has somewhere to go. Read from the lane, not the target, so it holds for a `PublicMove` too,
+ * whose target a lockfile's withholds: only a line no longer built has no lane (`none`), and that is a finding's.
+ */
+export const isRoutine = (move: Pick<Move | PublicMove, 'clears' | 'lane'>): boolean =>
+  SEVERITIES.every((severity) => move.clears[severity] === 0) && move.lane !== 'none';
+
 /** What the lanes are worked out from, besides the results. */
 export interface Context {
   repository: string;
@@ -316,7 +324,7 @@ export interface MovesFile {
    * so a file from a scan that predates it (the app's, at an older commit of the workflow) reads as it did; a reader
    * built before it refuses a file that has it, so the worker reads this repository's moves again once it is deployed.
    */
-  totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts } & DayCounts;
+  totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts; routine?: number } & DayCounts;
   moves: PublicMove[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];

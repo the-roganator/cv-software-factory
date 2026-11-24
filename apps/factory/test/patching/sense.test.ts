@@ -403,6 +403,38 @@ describe('the day, made from the reads', () => {
     expect(PAYLOADS['patching.read'].safeParse(dayOf(read(none), 0, [])).success).toBe(true);
   });
 
+  it('holds a routine update, which clears nothing and has no deadline, and a lockfile’s with its package apart', () => {
+    const none = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+    const moves = factoryMoves();
+    const [image, lockfile] = moves.moves as [ReadMove, ReadMove];
+    const { deadline: _, ...undated } = { ...lockfile, clears: none, leaves: none, findings: [] };
+    const routine = {
+      ...moves,
+      moves: [{ ...image, clears: none, leaves: none, deadline: undefined, newToday: 0, findings: [] }, undated],
+    };
+    const day = dayOf(read(routine), 0, []);
+    const parsed = PAYLOADS['patching.read'].parse(day).repositories.find((each) => each.repository === FACTORY);
+    expect(parsed?.moves.map((move) => [move.clears, move.deadline])).toEqual([
+      [{ critical: 0, high: 0, medium: 0, low: 0, unknown: 0 }, undefined],
+      [{ critical: 0, high: 0, medium: 0, low: 0, unknown: 0 }, undefined],
+    ]);
+    expect(parsed?.moves[1]?.package).toEqual({
+      name: lockfile.withheld?.package,
+      from: lockfile.withheld?.from,
+      to: lockfile.withheld?.to,
+      pins: lockfile.withheld?.pins,
+    });
+    // The public view withholds a routine lockfile move's package as it does a finding's.
+    const view = publicView('patching.read', {
+      summary: 's',
+      payload: PAYLOADS['patching.read'].parse(day),
+      artifacts: [],
+    });
+    expect(JSON.stringify(view)).not.toContain(lockfile.withheld?.package);
+    // A move that is a fix one day and merely behind the next is another day.
+    expect(sameDay(day, dayOf(read(), 0, []))).toBe(false);
+  });
+
   it('is the same day whatever copies of a row run: a Deployment scaled appends nothing', () => {
     const row = (pod: string) =>
       ({

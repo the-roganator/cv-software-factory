@@ -19,10 +19,10 @@ import { joined, markOf, type ScanRun } from '../../src/github/scanning.ts';
 import { sendsOf } from '../../src/patching/sends.ts';
 import { assess, type Sources, stateOf, verdict } from '../../src/vulnerabilities/deadlines.ts';
 import { type MoveTag, targetText } from '../../src/vulnerabilities/fixes.ts';
-import { APP, type Context, type MovesFile, moves, movesFile } from '../../src/vulnerabilities/moves.ts';
+import { APP, type Context, type Move, type MovesFile, moves, movesFile } from '../../src/vulnerabilities/moves.ts';
 import { type Finding, fingerprint } from '../../src/vulnerabilities/sarif.ts';
 import type { Handoff, ReadTarget, TrivyReport } from '../../src/vulnerabilities/scan.ts';
-import { newKey, open, readKey, seal } from '../../src/vulnerabilities/state.ts';
+import { newKey, open, readKey, type StateRoutine, seal } from '../../src/vulnerabilities/state.ts';
 import { FILES } from './app-checkout.ts';
 
 /** The app's checkout the path runs on, written once to a folder of its own (app-checkout.ts). */
@@ -192,8 +192,8 @@ function checkedOut(): string {
 export interface Carried {
   /** The scan's move, as `moves.json` gives it to anyone. */
   move: { name: string; from: string; to: string; lane: string; pins: string[] };
-  /** The sense's signal's move, or why it sent none. */
-  sent?: { ecosystem: string; name: string; from: string; to: string };
+  /** The sense's signal's move, with the symptom it was sent as, or why it sent none. */
+  sent?: { ecosystem: string; name: string; from: string; to: string; symptom?: string | undefined };
   notSent?: string;
   /** The pin step: the files it wrote, or why it wrote none. */
   wrote?: string[];
@@ -212,8 +212,19 @@ export interface Carried {
   ends: 'not the line’s' | 'never sent' | 'pin step' | 'guard' | 'pull request';
 }
 
-/** The scan's findings, carried: one entry for each move the scan makes of them, in `moves.json`'s order. */
-export async function carry(findings: Finding[], targets: ReadTarget[], world: World): Promise<Carried[]> {
+/**
+ * The scan's findings, carried: one entry for each move the scan makes of them, in `moves.json`'s order.
+ *
+ * `routine` is the day's routine updates, each a move written by hand to the scan's shape for one (no result, nothing
+ * cleared, no deadline, a target): they are listed after the findings' moves, as the scan lists them, each with its
+ * record in the state, and carried from there on by each step's own code as a finding's move is.
+ */
+export async function carry(
+  findings: Finding[],
+  targets: ReadTarget[],
+  world: World,
+  routine: Move[] = [],
+): Promise<Carried[]> {
   // The scan: its judgement, its moves, `moves.json` and the state, sealed and opened as the worker opens it.
   const handoff: Handoff = {
     repository: APP,
@@ -230,8 +241,9 @@ export async function carry(findings: Finding[], targets: ReadTarget[], world: W
     app: true,
     now: NOW,
   };
-  const list = moves(judged.judged, context);
-  const { counts, bySeverity } = verdict(judged.rows, false, list);
+  const found = moves(judged.judged, context);
+  const list = [...found, ...routine];
+  const { counts, bySeverity } = verdict(judged.rows, false, found);
   const run = String(RUN.id);
   const written = movesFile(list, context, run, [], counts, bySeverity);
   const tags = new Map<string, MoveTag>();
@@ -243,6 +255,16 @@ export async function carry(findings: Finding[], targets: ReadTarget[], world: W
     judged.rows,
     judged.judged.map((each) => ({ ...each.finding, move: tags.get(fingerprint(each.finding)) })),
   );
+  // The state's record of each routine update, by its place in the list: what `moves.json` withholds of a lockfile's.
+  const records: StateRoutine[] = routine.map((move, i) => ({
+    move: found.length + i + 1,
+    name: move.name,
+    from: move.from,
+    to: move.to ? targetText(move.to) : '',
+    pins: move.pins,
+    seen: new Date(NOW - 4 * 24 * 3_600_000).toISOString().replace(/\.\d+Z$/, 'Z'),
+  }));
+  if (records.length) state.routine = records;
   const key = readKey(newKey());
   const file = JSON.parse(JSON.stringify(written)) as MovesFile;
   const read = joined(APP, RUN, file, open(seal(state, key), key, APP, run));
@@ -286,7 +308,13 @@ export async function carry(findings: Finding[], targets: ReadTarget[], world: W
         each.move.lane === 'line' && (list[index]?.pins ?? []).some((pin) => pinned.has(`${pin.file}:${pin.line}`)),
     );
     const step: Partial<Carried> & Pick<Carried, 'ends'> = {
-      sent: { ecosystem: sent.ecosystem, name: sent.name, from: sent.from, to: sent.to },
+      sent: {
+        ecosystem: sent.ecosystem,
+        name: sent.name,
+        from: sent.from,
+        to: sent.to,
+        symptom: send.signal.symptom,
+      },
       ends: 'pin step',
     };
     const dir = checkedOut();

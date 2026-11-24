@@ -1,12 +1,14 @@
 /**
  * The moves Martin hears of, counted from the dependency sense's days (`patching.read`) and the line's merges, for the
  * alerts that reach his phone (docs/COMPONENTS/ALERTING.md). He hears of a move, never of a finding: a finding with no
- * fix is nothing he can act on, and no move carries one, so nothing here counts it. Each kind is counted once for each
+ * fix is nothing he can act on, and no move carries one, so nothing here counts it. Nor does he hear of a routine
+ * update, a pin merely behind that no finding asks to move (`routine`): nothing is due, whoever's lane it is in, and
+ * its pull request or its issue is where it waits. Each kind is counted once for each
  * move, ever, so nothing repeats on a timer, and a day has at most a message or two for a move:
  *
  * - `move-fix`: a move first clears a High or a Critical, which a fix the scan found has given it;
- * - `move-waits`: a move first waits on him: its lane is his cluster's own command or an issue, or it is a
- *   row the sense made of what the cluster runs;
+ * - `move-waits`: a move a finding asks for first waits on him: its lane is his cluster's own command or an issue, or
+ *   it is a row the sense made of what the cluster runs (a k3s the cluster has not moved to, a routine update's too);
  * - `move-due-soon`: a move still in the sense's last day comes within a day of its deadline. One first seen within a
  *   day of it, or past it, is told by `move-fix` alone, which says it is due; one that passes its deadline unjudged
  *   before (the line was down) is counted here as it is counted overdue, so a line that reads the store again counts
@@ -41,6 +43,12 @@ const DAY = 24 * 3_600_000;
 
 /** The lanes only Martin moves: his cluster's own command, and what no pull request of the App's can write. */
 const HIS: readonly Move['lane'][] = ['cluster', 'issue'];
+
+/**
+ * Whether a day's move is a routine update, as moves.ts's `isRoutine` says of the scan's own: it clears nothing and has
+ * a lane. A move with no lane (`none`) is a line no longer built, which a finding found.
+ */
+const routine = (move: Move) => Object.values(move.clears).every((count) => count === 0) && move.lane !== 'none';
 
 /** The counts so far, what each has counted, and the deadlines of the last day's moves, by move. */
 export interface PatchingTally {
@@ -114,7 +122,7 @@ export function addDay(tally: PatchingTally, day: Day, at: number): void {
       const key = moveKey(repository.repository, move, move.lockfile ? ++lockfiles : lockfiles);
       const first = !tally.counted['move-fix'].has(key);
       if (move.clears.critical + move.clears.high > 0) once(tally, 'move-fix', key);
-      if (HIS.includes(move.lane)) once(tally, 'move-waits', key);
+      if (HIS.includes(move.lane) && !routine(move)) once(tally, 'move-waits', key);
       if (move.deadline === undefined) continue;
       const deadline = Date.parse(move.deadline);
       // A move first seen within a day of its deadline, or past it, is told of by its fix, which says when it is due.

@@ -1904,7 +1904,7 @@ export class Line {
       route: string | null;
       symptom: SymptomClass | null;
       evidence: Evidence[] | null;
-      move: { repository: string; name: string } | null;
+      move: { repository: string; name: string; ecosystem?: string; from?: string; to?: string } | null;
     };
     const read = (newest: boolean) => this.#o.sql<Row[]>`
       select payload->>'sense' as sense, payload->>'check' as check, payload->>'route' as route,
@@ -1925,7 +1925,18 @@ export class Line {
         route: row.route ?? '*',
         ...(row.symptom ? { symptom: row.symptom } : {}),
         evidence: row.evidence ?? [],
-        ...(row.move ? { move: { repository: row.move.repository, name: row.move.name } } : {}),
+        ...(row.move
+          ? {
+              move: {
+                repository: row.move.repository,
+                name: row.move.name,
+                // What a routine update's is looked for by in the scan of the release (verify.ts's `byScan`).
+                ...(row.move.ecosystem ? { ecosystem: row.move.ecosystem } : {}),
+                ...(row.move.from ? { from: row.move.from } : {}),
+                ...(row.move.to ? { to: row.move.to } : {}),
+              },
+            }
+          : {}),
       }
     );
   }

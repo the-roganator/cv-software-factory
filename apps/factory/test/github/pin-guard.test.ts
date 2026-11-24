@@ -163,21 +163,35 @@ describe('the pin guard', () => {
     await refuses(repo, { branch }, BranchRefused, /not a pin move's branch/);
   });
 
-  it('makes of any files a branch under factory/pin/, of one segment the guard takes, the majors’ apart', () => {
+  it('makes of any files a branch under factory/pin/, of one segment the guard takes, the majors’ and the routine updates’ apart', () => {
     fc.assert(
       fc.property(
         fc.array(fc.string({ maxLength: 200 }), { minLength: 1, maxLength: 4 }),
         fc.boolean(),
-        (files, major) => {
-          const branch = pinBranchFor(files, major);
+        fc.boolean(),
+        (files, major, routine) => {
+          const branch = pinBranchFor(files, major, routine);
           expect(branch.startsWith(PIN_PREFIX)).toBe(true);
           expect(() => guardPinBranch(branch)).not.toThrow();
-          // The same files give the same branch in any order, and the majors' is another.
-          expect(pinBranchFor([...files].reverse(), major)).toBe(branch);
-          expect(pinBranchFor(files, !major)).not.toBe(branch);
+          // The same files give the same branch in any order, and the majors' is another, and the routine updates'.
+          expect(pinBranchFor([...files].reverse(), major, routine)).toBe(branch);
+          expect(pinBranchFor(files, !major, routine)).not.toBe(branch);
+          expect(pinBranchFor(files, major, !routine)).not.toBe(branch);
+          expect(pinBranchFor(files, !major, !routine)).not.toBe(branch);
         },
       ),
     );
+    // Four branches for one file: its moves, its majors, its routine updates, and its routine majors.
+    const one = ['deploy/base/telemetry/logs.yaml'];
+    expect(pinBranchFor(one, false, true)).toMatch(
+      /^factory\/pin\/deploy-base-telemetry-logs\.yaml-routine-[0-9a-f]{8}$/,
+    );
+    expect(pinBranchFor(one, true, true)).toMatch(
+      /^factory\/pin\/deploy-base-telemetry-logs\.yaml-routine-major-[0-9a-f]{8}$/,
+    );
+    // A file whose own path ends as a mark does keeps its moves' branch apart from another's routine updates.
+    expect(pinBranchFor(['a-routine'])).not.toBe(pinBranchFor(['a'], false, true));
+    expect(pinBranchFor(one)).toBe(pinBranchFor(one, false, false));
     expect(pinBranchFor(['../../main'])).toMatch(/^factory\/pin\/main-[0-9a-f]{8}$/);
     expect(pinBranchFor(['deploy/base/postgres/statefulset.yaml'])).toMatch(
       /^factory\/pin\/deploy-base-postgres-statefulset\.yaml-[0-9a-f]{8}$/,
@@ -631,13 +645,101 @@ describe('the pin guard, as review found it', () => {
     );
   });
 
-  it('refuses the Makefile by its name', async () => {
-    const repo = new FakeRepo(FILES);
+  /** A Makefile as the factory's is: Argo CD's chart pinned on a line of its own, among variables and recipes. */
+  const MAKEFILE = [
+    'CLUSTER := software-factory',
+    '# mise.toml holds Argo CD’s CLI to the minor release this chart runs.',
+    'ARGOCD_CHART := 10.15.0',
+    'OTHER_CHART := 10.15.0',
+    'up:',
+    '\thelm upgrade --install argocd argo-cd --version $(ARGOCD_CHART) --set tag=10.15.0',
+    '\thelm upgrade --install other other --version 10.15.0',
+    '',
+  ].join('\n');
+  const OWNERS = '/.github/ @mrogan\n/deploy/ @mrogan\n/Makefile @mrogan\n/mise.toml @mrogan\n';
+  const makefile = (text = MAKEFILE) => new FakeRepo({ ...FILES, Makefile: text, '.github/CODEOWNERS': OWNERS });
+  const chart = (line: number, from = '10.15.0', to = '10.16.2') => ({
+    branch: 'factory/pin/makefile',
+    pins: [{ file: 'Makefile', line, from, to }],
+  });
+
+  it('writes the Makefile’s pin of Argo CD’s chart, its version alone, though CODEOWNERS gives Martin the Makefile', async () => {
+    const repo = makefile();
+    const sha = await live(repo).actions.commitPins(REPO, asked(repo, chart(3)));
+    expect(repo.file(sha, 'Makefile')).toBe(MAKEFILE.replace('ARGOCD_CHART := 10.15.0', 'ARGOCD_CHART := 10.16.2'));
+    for (const [path, text] of Object.entries(FILES)) if (path !== 'Makefile') expect(repo.file(sha, path)).toBe(text);
+    // As make reads an assignment, with `=` or `:=`, spaced or not: the line inventory.ts reads the chart from.
+    for (const line of ['ARGOCD_CHART = 10.15.0', 'ARGOCD_CHART:=10.15.0']) {
+      const other = makefile(MAKEFILE.replace('ARGOCD_CHART := 10.15.0', line));
+      const made = await live(other).actions.commitPins(REPO, asked(other, chart(3)));
+      expect(repo.file(sha, 'Makefile')?.split('\n')[2]).toBe('ARGOCD_CHART := 10.16.2');
+      expect(other.file(made, 'Makefile')?.split('\n')[2]).toBe(line.replace('10.15.0', '10.16.2'));
+    }
+  });
+
+  it.each([
+    ['another variable that holds the same version', 4],
+    ['a recipe that names the chart’s variable and a version', 6],
+    ['a recipe that holds the version', 7],
+  ])('refuses any other line of the Makefile: %s', async (_, line) => {
+    await refuses(makefile(), chart(line), PatchRefused, /is not the Makefile’s pin of Argo CD’s chart/);
+  });
+
+  it('refuses the chart’s line when it holds more than its version, pins another, or would pin no version', async () => {
+    for (const line of [
+      'ARGOCD_CHART := 10.15.0 --set evil=10.15.0',
+      'ARGOCD_CHART := 10.15.0 # 10.15.0',
+      'ARGOCD_CHART := $(shell echo 10.15.0)',
+      'export ARGOCD_CHART := 10.15.0',
+      '\tARGOCD_CHART := 10.15.0',
+      'ARGOCD_CHART += 10.15.0',
+      'ARGOCD_CHART := 10.15.0 ',
+    ])
+      await refuses(
+        makefile(MAKEFILE.replace('ARGOCD_CHART := 10.15.0', line)),
+        chart(3),
+        PatchRefused,
+        /is not the Makefile’s pin of Argo CD’s chart/,
+      );
+    // What it pins before is the scan's, to the character; what it pins after is a version, never a word or a flag.
+    await refuses(makefile(), chart(3, '10.15', '10.16'), PatchRefused, /is not the Makefile’s pin of Argo CD’s chart/);
+    await refuses(
+      makefile(),
+      chart(3, '10.15.0', '$(shell id)'),
+      PatchRefused,
+      /not a version or a tag with its digest/,
+    );
+    await refuses(makefile(), chart(3, '10.15.0', '10.16.2 --set x=1'), PatchRefused, /not a version/);
+    await refuses(
+      makefile(),
+      chart(3, '10.15.0', `10.16.2@${digest('chart')}`),
+      PatchRefused,
+      /would pin a digest where it pinned a version alone/,
+    );
+    // A Makefile elsewhere that CODEOWNERS gives a person is a rule of the line, as any other file of his.
+    const nested = new FakeRepo({
+      ...FILES,
+      'apps/Makefile': 'ARGOCD_CHART := 10.15.0\n',
+      '.github/CODEOWNERS': '/apps/ @mrogan\n',
+    });
+    await refuses(
+      nested,
+      { pins: [{ file: 'apps/Makefile', line: 1, from: '10.15.0', to: '10.16.2' }] },
+      PatchRefused,
+      /a rule of the line CODEOWNERS gives a person/,
+    );
+  });
+
+  it('writes no Makefile whole, as a file the scan’s pin step made', async () => {
+    const repo = makefile();
     await refuses(
       repo,
-      { pins: [{ file: 'Makefile', line: 1, from: '10.9.5', to: '10.9.6' }] },
+      {
+        pins: [],
+        files: [{ path: 'Makefile', text: MAKEFILE.replace('ARGOCD_CHART := 10.15.0', 'ARGOCD_CHART := 10.16.2') }],
+      },
       PatchRefused,
-      /Makefile/,
+      /Makefile is not a file the scan’s pin step writes/,
     );
   });
 

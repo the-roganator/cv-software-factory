@@ -67,6 +67,21 @@ export interface State {
   /** The run that wrote it (GITHUB_RUN_ID), which its seal binds. */
   run: string;
   findings: StateFinding[];
+  /** The day's routine moves, which no finding carries: what `moves.json` withholds of a lockfile's, and each one's day. */
+  routine?: StateRoutine[];
+}
+export interface StateRoutine {
+  /** Its place in the run's `moves.json`, from 1. */
+  move: number;
+  /** What moves: a package, an image's repository, a chart's name, `k3s`. */
+  name: string;
+  from: string;
+  /** Its target, as fixes.ts writes one (`targetText`). */
+  to: string;
+  pins: { file: string; line: number }[];
+  /** When the scan first saw this target for this pin, UTC to the second: the wait counts from the later of this
+   *  and the release's own day where the registry gives none (an image that says 1970). */
+  seen: string;
 }
 
 /** A state that cannot be read: sealed with another key, for another run or repository, or not a state at all. */

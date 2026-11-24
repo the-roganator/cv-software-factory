@@ -1,7 +1,9 @@
 /**
  * What the dependency sense sends triage (milestone 7, task 35): one `dependency` signal for each of the app's moves in
  * the lane `line` that has a target, which triage makes a ticket of. A move with no target sends nothing, and nor does
- * any other lane's: those are the GitHub worker's or Martin's.
+ * any other lane's: those are the GitHub worker's or Martin's. A move a finding asks for is a vulnerable dependency's,
+ * with the scan's findings as its evidence; a routine update (`isRoutine`), a pin merely behind, is an outdated
+ * dependency's, and carries no evidence: the scan found nothing on it.
  *
  * A pure function of the read, the same read always giving the same signals under the same ids. **The same send** is
  * one move of one repository from one run of the scan: its id is derived from those three (`sendId`), so a sense
@@ -23,6 +25,7 @@ import { uuidFrom } from '@software-factory/triage/events';
 import type { MoveFinding, Moves, ReadMove } from '../github/scanning.ts';
 import { compareVersions } from '../vulnerabilities/deadlines.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
+import { isRoutine } from '../vulnerabilities/moves.ts';
 import type { Severity } from '../vulnerabilities/sarif.ts';
 
 /** A signal for the inbox, with the id that makes a send the same send. */
@@ -182,8 +185,10 @@ export interface Sends {
 /**
  * The signals one repository's read sends: its moves in the lane `line` with a target, one for each name and
  * ecosystem, as triage keeps one ticket for each. A name the scan moves from two versions or tags, as two moves, is
- * one signal with both: their versions joined, their pins and findings together. A move that cannot be sent, a pin
- * with no line, and a finding that does not fit the signal's shape are each said, never dropped unsaid.
+ * one signal with both: their versions joined, their pins and findings together. A name whose moves are all routine
+ * updates is an outdated dependency's signal, with no evidence; with a finding's move among them it is a vulnerable
+ * dependency's, the findings its evidence. A move that cannot be sent, a pin with no line, and a finding that does not
+ * fit the signal's shape are each said, never dropped unsaid.
  */
 export function sendsOf(moves: Moves, observedAt: string): Sends {
   const skipped: string[] = [];
@@ -216,15 +221,23 @@ export function sendsOf(moves: Moves, observedAt: string): Sends {
     const pins = move.pins.filter((pin) => pin.line >= 1).slice(0, MOST_PINS);
     const lineless = move.pins.filter((pin) => pin.line < 1).length;
     if (lineless) skipped.push(`${where}: ${lineless} pins with no line, not sent`);
+    // Every move of the name a routine update: no finding asks for it, and the signal says so.
+    const routine = reads.every((read) => isRoutine(read));
     const base = {
       sense: 'dependency',
       check: 'the vulnerability scan',
       version: moves.run.headSha,
-      symptom: 'vulnerable-dependency',
+      symptom: routine ? 'outdated-dependency' : 'vulnerable-dependency',
       move: { ...move, pins },
       observedAt,
       artifacts: [],
     } satisfies InboxSignal;
+    if (routine) {
+      const whole = validateSignal(base);
+      if (whole.ok) sends.push({ id: sendId(moves.repository, moves.run.id, move), signal: base });
+      else skipped.push(`${where}: does not fit a signal (${whole.problems.join('; ')})`);
+      continue;
+    }
     const signalWith = (findings: Scan['findings']): InboxSignal => ({
       ...base,
       evidence: [{ kind: 'scan', findings, rest: none }],

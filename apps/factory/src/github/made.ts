@@ -12,7 +12,8 @@
  * given, so the line makes them as the scan did.
  *
  * The moves are made in groups, by the files they write, as the pin watch keeps one pull request for a file's moves:
- * every lockfile move of the day in one, every move of mise's in another. Each group's moves are made in the order of
+ * every lockfile move of the day in one, every move of mise's in another, a file's routine updates (`isRoutine`) apart
+ * from the moves a finding asks for, so that none of them can hold up a fix. Each group's moves are made in the order of
  * `moves.json`, each on what the ones before it wrote, and a move the step refuses is undone and named with the step's
  * words, which may name its package; the rest of its group go on. The review gate makes the same moves in the same
  * order again on main's tip (scripts/move.ts), with the same step, as of the scan's time and with the digests the
@@ -24,6 +25,7 @@
 import type { Move as PinStepMove } from '../../../runner/src/pins.ts';
 import { moveOf } from '../patching/sends.ts';
 import { readTarget } from '../vulnerabilities/fixes.ts';
+import { isRoutine } from '../vulnerabilities/moves.ts';
 import { bringsPins, libraryOf } from '../vulnerabilities/registry.ts';
 import { openJson, StateError, sealJson } from '../vulnerabilities/state.ts';
 import type { MoveFinding, ReadMove } from './scanning.ts';
@@ -34,12 +36,17 @@ export const MADE_FILE = 'pins.sealed';
 /** The shape of the file: a reader refuses a version it does not know. */
 export const MADE_VERSION = 1;
 
-/** One group of moves the scan made: those that write the same files, and are named `major` or not alike. */
+/**
+ * One group of moves the scan made: those that write the same files, are named `major` or not alike, and are routine
+ * updates or not alike.
+ */
 export interface MadeGroup {
   /** The files its moves write, sorted: the pin watch's branch is named for them. */
   files: string[];
   /** Whether its moves are those the review gate will name `major` (`namedMajor`), which ride apart. */
   major: boolean;
+  /** Whether its moves are routine updates (`isRoutine`), which ride apart from a finding's; absent where they are not. */
+  routine?: boolean | undefined;
   /** The moves made, by their place in `moves.json` (from 1), in the order they were made. */
   moves: number[];
   /** The moves the step refused, by their place, with its words, which may name a package. */
@@ -95,7 +102,7 @@ export const trivysCritical = (finding: Pick<MoveFinding, 'severity' | 'type'>):
 
 /**
  * Whether the review gate names a move `major` (scripts/move.ts): across a major, clearing no Critical by Trivy's own
- * rating (`trivysCritical`).
+ * rating (`trivysCritical`). A routine update across a major clears nothing, and is one.
  */
 export const namedMajor = (move: Pick<ReadMove, 'major' | 'findings'>): boolean =>
   move.major && !move.findings.some(trivysCritical);
@@ -114,15 +121,22 @@ export function askedIn(made: Pick<Made, 'groups'>): Asked[] {
   return [...asked.values()];
 }
 
-/** The group a move the step makes is in: the files it writes, and whether it is named `major`. */
-export const groupOf = (move: Pick<ReadMove, 'lockfile' | 'pins' | 'major' | 'findings' | 'name'>) => ({
+/** What says which of its files' pull requests a move is in: whether it is named `major`, and whether it is routine. */
+export type Apart = Pick<ReadMove, 'major' | 'findings' | 'clears' | 'lane'>;
+
+/**
+ * The group a move the step makes is in: the files it writes, whether it is named `major`, and whether it is a routine
+ * update.
+ */
+export const groupOf = (move: Pick<ReadMove, 'lockfile' | 'pins' | 'name'> & Apart) => ({
   files: writtenBy(move),
   major: namedMajor(move),
+  routine: isRoutine(move),
 });
 
 /** One key for a group, the same for its moves and for what the scan made of them. */
-export const groupKey = (group: { files: readonly string[]; major: boolean }) =>
-  JSON.stringify([[...group.files].sort(), group.major]);
+export const groupKey = (group: { files: readonly string[]; major: boolean; routine?: boolean | undefined }) =>
+  JSON.stringify([[...group.files].sort(), group.major, group.routine === true]);
 
 const MISE = /(^|\/)mise\.(toml|lock)$/;
 const LOCKFILE = /(^|\/)pnpm-lock\.yaml$/;
@@ -228,6 +242,7 @@ function problemOf(made: unknown, repository: string, run: string): string | und
     if (!Array.isArray(g.files) || !g.files.length || !g.files.every((f) => isText(f, 512) && PATH.test(f)))
       return `give ${at} no files`;
     if (typeof g.major !== 'boolean') return `do not say whether ${at} is named major`;
+    if (g.routine !== undefined && typeof g.routine !== 'boolean') return `do not say whether ${at} is routine`;
     if (!Array.isArray(g.moves) || !g.moves.every(isPlace)) return `give ${at} no moves`;
     if (!Array.isArray(g.refused) || !g.refused.every((r) => isPlace(r?.move) && isText(r?.reason, 8192)))
       return `give ${at} a refusal that is not one`;

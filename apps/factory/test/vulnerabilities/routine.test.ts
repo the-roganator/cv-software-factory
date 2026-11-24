@@ -986,7 +986,7 @@ describe('the listing never fails the run', () => {
     expect(down.listing.counts).toMatchObject({ listed: 1, unread: 2 });
     expect(down.lines.filter((line) => line.startsWith('::warning::'))).toEqual([
       "::warning::npm's registry could not be read for 1 pin: no routine move is listed for it today.",
-      '::warning::the registry of example/other could not be read for 1 pin (tags example/other: 503 for example-secret): no routine move is listed for it today.',
+      '::warning::the registry of example/other could not be read for 1 pin (The tags of example/other could not be read): no routine move is listed for it today.',
     ]);
     // What the run judged is what it judges with nothing listed.
     expect(verdict(down.judged.rows, false, down.list)).toEqual(verdict(whole.judged.rows));

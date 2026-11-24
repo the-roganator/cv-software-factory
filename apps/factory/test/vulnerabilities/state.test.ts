@@ -120,6 +120,27 @@ describe('a state’s shape', () => {
     ],
     ['a move with no fix', (s) => Object.assign(finding(s), { fix: undefined }), 'a move that is not one'],
     ['a move that is no place', (s) => Object.assign(finding(s), { move: 0 }), 'a move that is not one'],
+    [
+      'an item’s key that is not text',
+      (s) => Object.assign(finding(s), { item: 7 }),
+      'gives finding 1 a value for item that is not text',
+    ],
+    [
+      'a control character in a label',
+      (s) => Object.assign(finding(s), { label: 'pnpm-lock.yaml\n' }),
+      'gives finding 1 a value for label that is not text',
+    ],
+    [
+      'a title that is not text',
+      (s) => Object.assign(finding(s), { title: ['a', 'list'] }),
+      'gives finding 1 a value for title that is not text',
+    ],
+    [
+      'a publisher’s rating that is none',
+      (s) => Object.assign(finding(s), { publisher: 'SEVERE' }),
+      "gives finding 1 a publisher's rating that is not one",
+    ],
+    ['a score that is no number', (s) => Object.assign(finding(s), { score: '7.5' }), 'a score that is not one'],
   ])('refuses %s, naming the finding by its place alone', (_name, change, message) => {
     expect(() => open(sealedWith(change), KEY, REPOSITORY, STATE.run)).toThrow(message);
   });
@@ -129,6 +150,22 @@ describe('a state the scan wrote', () => {
   it('opens with a finding Trivy gave no installed version, as the scan writes it', () => {
     const sealed = sealedWith((s) => Object.assign(finding(s), { installed: '' }));
     expect(open(sealed, KEY, REPOSITORY, STATE.run).findings[0]?.installed).toBe('');
+  });
+
+  it('opens with what carries a finding, whatever an advisory’s own words hold, and without it, as one written before', () => {
+    const carries = {
+      item: 'lockfile pnpm-lock.yaml',
+      listed: 'pnpm-lock.yaml',
+      label: 'pnpm-lock.yaml',
+      publisher: 'CRITICAL',
+      score: 9.8,
+      path: 'opt/pnpm/dist/node_modules/example-a',
+      title: 'example-a: a title\twith a tab, and “quotes”',
+      url: 'https://example.test/CVE-2099-20001',
+    };
+    const sealed = sealedWith((s) => Object.assign(finding(s), carries));
+    expect(open(sealed, KEY, REPOSITORY, STATE.run).findings[0]).toEqual({ ...STATE.findings[0], ...carries });
+    expect(open(seal(STATE, KEY), KEY, REPOSITORY, STATE.run).findings[0]).not.toHaveProperty('item');
   });
 });
 

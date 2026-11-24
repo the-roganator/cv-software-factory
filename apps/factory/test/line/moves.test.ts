@@ -12,7 +12,6 @@ import type { DependencyPull } from '../../src/github/dependabot.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import { commitTitle } from '../../src/line/agents/agent.ts';
 import {
-  compareVersions,
   moveIssue,
   moveNote,
   moveSection,
@@ -237,15 +236,6 @@ describe('a move that needs no coder', () => {
       '',
     ].join('\n');
     expect(writtenVersion(GRPC, pins)).toBe('1.14.7');
-  });
-
-  it('orders versions as semver does, a pre-release’s numbers as numbers', () => {
-    expect(compareVersions('2.0.0-rc.10', '2.0.0-rc.9')).toBe(1);
-    expect(compareVersions('2.0.0-rc.9', '2.0.0')).toBe(-1);
-    expect(compareVersions('2.0.0-rc.1', '2.0.0-beta.2')).toBe(1);
-    expect(compareVersions('1.14.7', '1.14.5')).toBe(1);
-    expect(compareVersions('1.14.5', '1.14.5')).toBe(0);
-    expect(compareVersions('2.0.0-alpha', '2.0.0-alpha.1')).toBe(-1);
   });
 
   it('reads a package no importer names from the versions its patch adds to the lockfile’s packages', () => {

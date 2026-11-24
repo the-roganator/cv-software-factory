@@ -39,6 +39,7 @@ import { APP_REPOSITORY } from '../repositories.ts';
 import { dayText, type Target, targetText } from './fixes.ts';
 import type { Kind } from './inventory.ts';
 import { type Finding, fingerprint, SEVERITIES, type Severity } from './sarif.ts';
+import { compareTags, compareVersions, majorOf } from './versions.ts';
 
 /** The app's repository, whose moves its line makes. */
 export const APP = APP_REPOSITORY;
@@ -130,8 +131,8 @@ export function laneOf(move: Pick<Move, 'to' | 'pins'>, kinds: Set<Kind>, contex
 export function isMajor(target: Target, from: string) {
   if (target.kind === 'chart') return target.major;
   if (target.kind !== 'version') return false;
-  const pinnedMajors = new Set(from.split(', ').map((version) => numbers(version)[0]));
-  return target.versions.some((version) => !pinnedMajors.has(numbers(version)[0]));
+  const pinnedMajors = new Set(from.split(', ').map(majorOf));
+  return target.versions.some((version) => !pinnedMajors.has(majorOf(version)));
 }
 
 /** A target's version, for telling which of two on one pin is further. */
@@ -151,17 +152,17 @@ const versionOf = (target: Target) => {
   }
 };
 
-const numbers = (version: string) => (version.match(/\d+/g) ?? []).map(Number);
+/** Which of two versions is later (versions.ts); two that compare the same, by their text, so the order is whole. */
+const later = (a: string, b: string) => compareVersions(a, b) || order(a, b);
 
-/** Which of two versions is later, by their numbers in order. */
-const later = (a: string, b: string) => {
-  const x = numbers(a);
-  const y = numbers(b);
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0);
-    if (d) return d;
-  }
-  return order(a, b);
+/**
+ * Which of two targets of one pin is further. An image's tag and k3s's release are tags, whose ending orders them
+ * (`+k3s2` after `+k3s1`); a chart's and a tool's are versions, where a pre-release is before its release.
+ */
+const further = (a: Target, b: Target) => {
+  const tags = (target: Target) => target.kind === 'image' || target.kind === 'k3s';
+  const compare = tags(a) && tags(b) ? compareTags : compareVersions;
+  return compare(versionOf(a), versionOf(b)) || order(versionOf(a), versionOf(b));
 };
 
 /**
@@ -171,12 +172,12 @@ const later = (a: string, b: string) => {
  */
 export function furthest(targets: Target[]): Target | undefined {
   const pinned = targets.filter((target) => target.kind !== 'version');
-  if (pinned.length) return [...pinned].sort((a, b) => later(versionOf(a), versionOf(b))).at(-1);
+  if (pinned.length) return [...pinned].sort(further).at(-1);
   const byMajor = new Map<string, string>();
   for (const target of targets)
     if (target.kind === 'version')
       for (const version of target.versions) {
-        const major = String(numbers(version)[0] ?? version);
+        const major = majorOf(version) ?? version;
         const seen = byMajor.get(major);
         if (seen === undefined || later(version, seen) > 0) byMajor.set(major, version);
       }

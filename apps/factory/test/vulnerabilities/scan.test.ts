@@ -33,6 +33,7 @@ import {
   databaseAge,
   databases,
   Fault,
+  handoff,
   imagesIn,
   isAnswer,
   itemKey,
@@ -47,6 +48,7 @@ import {
   scan,
   type Tools,
   type TrivyReport,
+  targetName,
   withPaths,
 } from '../../src/vulnerabilities/scan.ts';
 
@@ -183,9 +185,9 @@ const everything = (): Fake => ({
 describe('an item it cannot read', () => {
   it('fails the run, is named, and nothing is uploaded', async () => {
     const fake = everything();
-    delete fake.images?.[POSTGRES];
+    delete fake.sboms?.[OURS];
     const outcome = await scan(tools(fake).tools, checkout(), items(), [], DB, TRACKED);
-    expect(outcome.unreadable).toEqual([{ name: POSTGRES, why: `could not be pulled: MANIFEST_UNKNOWN: ${POSTGRES}` }]);
+    expect(outcome.unreadable).toEqual([{ name: OURS, why: 'no SBOM attestation verified: no matching attestations' }]);
     const { lines, passes } = report(outcome, true);
     expect(passes).toBe(false);
     expect(lines.at(-1)).toBe('The run fails, and nothing is uploaded.');
@@ -237,8 +239,9 @@ describe('an item it cannot read', () => {
     // A tracked one renders, and its bare image is scanned, not passed over.
     const read = await scan(t, checkout(), [outside(['deploy/values/grafana.yaml'])], [], DB, TRACKED);
     expect(rendered).toBe(1);
-    expect(read.unreadable).toEqual([
-      { name: 'grafana: busybox', why: 'could not be pulled: MANIFEST_UNKNOWN: busybox' },
+    expect(read.unreadable).toEqual([]);
+    expect(read.targets.map((target) => [targetName(target), target.unpulled])).toEqual([
+      ['grafana: busybox', 'could not be pulled: MANIFEST_UNKNOWN: busybox'],
     ]);
   });
 
@@ -282,6 +285,69 @@ describe('an item it cannot read', () => {
       'GHSA-g3hv-75wg-m249',
     ]);
     expect(JSON.stringify(results)).not.toContain(PROOF.image);
+  });
+});
+
+describe('another’s image the registry does not serve', () => {
+  const WHY = `could not be pulled: MANIFEST_UNKNOWN: ${POSTGRES}`;
+  const unserved = async () => {
+    const fake = everything();
+    delete fake.images?.[POSTGRES];
+    return scan(tools(fake).tools, checkout(), items(), [], DB, TRACKED);
+  };
+
+  it('costs that image alone on a run that uploads: it stays on the list, not pulled, and the rest is read', async () => {
+    const outcome = await unserved();
+    const whole = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
+    expect(outcome.unreadable).toEqual([]);
+    expect(outcome.read).toBe(2);
+    // The same target a read gives, in the same place on the list, so what is carried for it has its item's pins.
+    expect(outcome.targets).toEqual(
+      whole.targets.map((target) => (target.label === POSTGRES ? { ...target, unpulled: WHY } : target)),
+    );
+    expect(outcome.findings).toEqual(whole.findings.filter((finding) => finding.label !== POSTGRES));
+    const { lines, passes, unpulled } = report(outcome, true);
+    expect(passes).toBe(true);
+    expect(unpulled.map(targetName)).toEqual([POSTGRES]);
+    expect(lines).toContain('Not pulled (1):');
+    expect(lines).toContain(`  ${POSTGRES}: ${WHY}`);
+    expect(lines).not.toContain('Every item was read.');
+    expect(lines.at(-1)).toBe(
+      "Every other item was read: the results are written for upload once the last run's findings of the image not pulled are carried into them, and the run fails after it.",
+    );
+  });
+
+  it('fails a proving run, which reads no state to carry its findings from', async () => {
+    const { lines, passes } = report(await unserved(), false);
+    expect(passes).toBe(false);
+    expect(lines.at(-1)).toBe('The run fails, and nothing is uploaded.');
+  });
+
+  it('hands deadlines.ts every finding whole, description and all, since that step then writes the SARIF', async () => {
+    const root = checkout();
+    const handed = (outcome: Awaited<ReturnType<typeof unserved>>) =>
+      handoff('the-roganator/cv-software-factory', '2026-11-10T04:20:00Z', '/cache', root, outcome, new Map()).findings;
+    // Every image read: each title, which the state keeps, and no description.
+    const whole = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
+    expect(handed(whole).map((finding) => finding.title)).toEqual(
+      merge(whole.findings).map((finding) => finding.title),
+    );
+    expect(handed(whole).every((finding) => finding.description === undefined)).toBe(true);
+    const outcome = await unserved();
+    expect(handed(outcome)).toEqual(merge(outcome.findings));
+    expect(handed(outcome).some((finding) => finding.description !== undefined)).toBe(true);
+  });
+
+  it('is never an image of ours, whose read is its signed SBOM, nor a report that names no image', async () => {
+    const fake = everything();
+    // Ours, with no Node in its SBOM and an image that cannot be pulled: an item not read, as it was.
+    delete fake.node;
+    delete fake.images?.[OURS];
+    if (fake.images) fake.images[POSTGRES] = { SchemaVersion: 2, ArtifactName: POSTGRES };
+    const outcome = await scan(tools(fake).tools, checkout(), items(), [], DB, TRACKED);
+    expect(outcome.unreadable.map((entry) => entry.name)).toEqual([OURS, POSTGRES]);
+    expect(outcome.targets.some((target) => target.unpulled !== undefined)).toBe(false);
+    expect(report(outcome, true).passes).toBe(false);
   });
 });
 

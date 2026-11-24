@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest';
 import {
   admits,
   changesManifest,
-  compareVersions,
   digestOf,
   type Get,
   lockedVersions,
@@ -1053,14 +1052,6 @@ describe('the lockfile after a coder’s step', () => {
 
 describe('what the review sent back', () => {
   const tools = (pnpm: Pnpm, get: Get = noRegistry) => ({ pnpm, get, aside: mkdtempSync(join(tmpdir(), 'aside-')) });
-
-  it('orders pre-releases as semver does, identifier by identifier', () => {
-    expect(compareVersions('1.0.0-beta.2', '1.0.0-beta.10')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-rc-1', '1.0.0-rc-2')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-alpha', '1.0.0-alpha.1')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-1', '1.0.0-alpha')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-rc.1', '1.0.0')).toBeLessThan(0);
-  });
 
   it('leaves a peer’s range alone, whatever shape it has: it pins nothing', async () => {
     const manifest = `${JSON.stringify({ devDependencies: { vitest: '^5.0.5' }, peerDependencies: { vitest: '>=4 || ^5' } }, null, 2)}\n`;

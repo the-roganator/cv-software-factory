@@ -424,20 +424,16 @@ describe('the samples’ move of the app’s lockfile, #1335', () => {
     expect(after?.issue).toEqual({ repository: 'the-roganator/cv-worlds-worst-website', number: 1336 });
   });
 
-  it('says nothing of tests first, which it skipped for a move with no test, and shows it skipped among the signals', () => {
+  it('says nothing of tests first, which it skipped for a move with no test, not even among the signals', () => {
     const sheet = projectSheet(project(SAMPLES, END), '1335');
     // Not “tests pass on base” in the round: the check ran nothing.
     expect(sheet?.rounds.at(-1)?.gates?.testsFirst).toBeUndefined();
     // Its waiting picture is the scan's, which shows no tests first; a merge picture takes the round's, undefined.
     expect(project(SAMPLES, END).cards.find((c) => c.number === '1335')?.picture.type).toBe('scan');
-    // Drawn as the console draws any skipped check, beside the signals, with no words of its own.
-    expect(sheet?.signals.find((g) => g.check === 'Tests first')).toEqual({
-      check: 'Tests first',
-      conclusion: 'skipped',
-      durationMs: 0,
-      summary: undefined,
-      required: false,
-    });
+    // Left out of the signals, where a tick would read as a pass; the required checks are counted as they were.
+    expect(sheet?.signals.map((g) => g.check)).toEqual(['factory review']);
+    expect(sheet?.gates.every((g) => g.required)).toBe(true);
+    expect(sheet?.gates).toHaveLength(13);
   });
 
   it('reads a failed tests first as its tests passing on the base, as before', () => {

@@ -107,7 +107,7 @@ export interface Finding {
 }
 
 /** The tests-first check, by the name its workflow gives it. It is a signal, not a required check. */
-const isTestsFirst = (check: string) => /tests[ -]first$/i.test(check);
+export const isTestsFirst = (check: string) => /tests[ -]first$/i.test(check);
 
 /** "2 of 2": the figure in a check's summary, where it gives one. */
 const figureIn = (summary: string | undefined) => summary?.match(/\d+ of \d+/)?.[0];

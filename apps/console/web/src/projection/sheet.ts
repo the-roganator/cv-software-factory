@@ -25,6 +25,7 @@ import {
   attempts,
   builds,
   deployPicture,
+  isTestsFirst,
   type RoundsNow,
   reviewThread,
   roundsNow,
@@ -1186,7 +1187,11 @@ export function sheet(
     agents: agents(item),
     noModel: noModel(item),
     gates: latestGates.filter((g) => g.required),
-    signals: [...latestGates.filter((g) => !g.required), ...(coded && signal ? [signal] : [])],
+    // Tests first skipped, for a change that adds or changes no test, ran nothing: listed, its tick would read as a pass.
+    signals: [
+      ...latestGates.filter((g) => !g.required && !(g.conclusion === 'skipped' && isTestsFirst(g.check))),
+      ...(coded && signal ? [signal] : []),
+    ],
     gatesAttempt: tried.length > 1 ? tried.at(-1)?.attempt : undefined,
     earlier: earlierAttempts(tried),
   };

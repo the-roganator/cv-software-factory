@@ -40,4 +40,4 @@ Test integrity names each one in its summary.
 
 ## Tests first
 
-Not required. The change's new and changed tests, with what changed in its test folders, run against the base's source. The check fails unless at least one fails there. A change that adds or changes no test, a move of pins among them, has nothing to run there, and the check is skipped: the job before it, `tests changed`, makes the same read of the two trees, and tests first runs whenever that read did not succeed.
+Not required. The change's new and changed tests, with what changed in its test folders, run against the base's source. The check fails unless at least one fails there. A change that adds or changes no test, a move of pins among them, has nothing to run there, and the check is skipped: the job before it, `tests changed`, makes the same read of the two trees, and tests first runs whenever that read did not succeed. The console says nothing of a skipped tests first beyond its row among the signals: no round says its tests pass or fail on the base.

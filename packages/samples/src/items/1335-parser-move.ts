@@ -117,6 +117,8 @@ export default new Item('1335', '2026-10-06T06:13:00+01:00')
   .gates('5:10', {
     pullRequest: 1337,
     more: [['Lockfile scan', 30]],
+    // The move adds and changes no test, so tests first has nothing to run on the base.
+    testsFirst: 'skipped',
     details: {
       'Lockfile scan': { summary: 'No critical findings; one critical and one low fewer', findings: LOCKFILE },
     },

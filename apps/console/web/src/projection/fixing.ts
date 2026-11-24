@@ -64,7 +64,10 @@ interface AttemptGates {
   passed: number;
   total: number;
   failed: string[];
-  /** The tests-first signal, not required: whether its tests failed on the base, and the figure its summary gives. */
+  /**
+   * The tests-first signal, not required: whether its tests failed on the base, and the figure its summary gives.
+   * Undefined when it did not run, or was skipped for a change that adds or changes no test.
+   */
   testsFirst: { failedOnBase: boolean; figure: string | undefined } | undefined;
   /** Every check's latest result on the attempt's commit. */
   runs: GateRun[];
@@ -128,8 +131,12 @@ export function attempts(item: ItemState): Attempt[] {
       total: required.length,
       failed: required.filter((run) => run.conclusion === 'failure').map((run) => run.check),
       // The check passes when the change's new tests fail on the base, as a test written before its fix must: its
-      // success is their failure there.
-      testsFirst: tests && { failedOnBase: tests.conclusion === 'success', figure: figureIn(tests.summary) },
+      // success is their failure there. Skipped, for a change that adds or changes no test, it ran nothing and says
+      // nothing either way.
+      testsFirst:
+        tests && tests.conclusion !== 'skipped'
+          ? { failedOnBase: tests.conclusion === 'success', figure: figureIn(tests.summary) }
+          : undefined,
       runs: all,
     };
   };

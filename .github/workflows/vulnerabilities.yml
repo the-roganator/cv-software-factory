@@ -23,7 +23,9 @@
 #   what fixes each finding and since when, reading the state the last run kept for each finding's days (state.ts, ADR
 #   0021: the artifact `state` of the newest earlier run on the default branch, sealed with the key in the environment
 #   `scan-state`, which only main may use), or the alerts where there is none it can open, ends each result's message
-#   with its fix (`Fixed by <target>, first seen <day>.`), judges each deadline and groups the results into moves:
+#   with its fix (`Fixed by <target>, first seen <day>.`), judges each deadline and groups the results into moves,
+#   and after them lists each pin that is merely behind as a routine update, once its release has waited
+#   (routine.ts), which changes no verdict and fails no run:
 #   their table is in the log and the step summary, and `moves.json`, the artifact `moves`, holds the same. It seals
 #   the state the next run reads, uploaded before the results, so every upload has its state. A registry or a release
 #   index that does not answer costs the results that asked it, which keep the fix the last run gave them, with a
@@ -301,7 +303,9 @@ jobs:
       # releases, and the newer images on each line with a fixed finding (crane for the tags and the index digests,
       # Trivy on the scan's database): one that does not answer costs the results that asked it, which keep the last
       # run's fix. It fails, and nothing is uploaded, when the state and the alerts cannot be read, or an image was
-      # not read and its findings cannot be carried from the state.
+      # not read and its findings cannot be carried from the state. For the pins that are merely behind (routine.ts)
+      # it reads the same, and a package's releases and a tag's digest, with no layer pulled: one of those that does
+      # not answer costs that pin's routine update for the day.
       - name: Deadlines and moves
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         env:

@@ -25,7 +25,7 @@ A time to the microsecond, such as `storeClock`'s, is bound as text (``${t}::tex
 
 What it lacks is telemetry of OpenTelemetry's own, which instruments `pg` and not postgres.js. So `connect()` reads the queries and connections postgres.js publishes on Node's diagnostics channels, once in the process, and counts them ([telemetry](TELEMETRY.md#what-each-client-of-the-store-sees)):
 
-- **It is on a caret range, not pinned,** so its fixes arrive through Dependabot's pull requests like any other dependency's.
+- **It is on a caret range, not pinned,** so its fixes arrive as the scan's moves, like any other dependency's.
 - **A release that changes what it publishes fails `make check`,** and so its pull request. The client's tests run against the Postgres image the cluster runs, and require every query, transaction, cursor and connection to be counted.
 
 ## Roles

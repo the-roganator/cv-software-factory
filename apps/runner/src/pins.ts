@@ -57,6 +57,7 @@ import {
   releasedAt,
   runsNode,
 } from '../../factory/src/vulnerabilities/registry.ts';
+import { compareVersions, numbersOf } from '../../factory/src/vulnerabilities/versions.ts';
 import { git, gitInput } from './git.ts';
 
 export {
@@ -257,45 +258,6 @@ export function parentsAt(lock: string, name: string, version: string): string[]
 
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** A version's release and its pre-release, split at its first hyphen, as semver reads it. */
-const parts = (version: string): [string, string | undefined] => {
-  const at = version.indexOf('-');
-  return at < 0 ? [version, undefined] : [version.slice(0, at), version.slice(at + 1)];
-};
-
-/**
- * Orders two versions as semver does: by release, then a pre-release before its release, its identifiers compared
- * one by one, a number's as a number and before any word.
- */
-export function compareVersions(a: string, b: string): number {
-  const [mainA, preA] = parts(a);
-  const [mainB, preB] = parts(b);
-  const partsA = mainA.split('.').map(Number);
-  const partsB = mainB.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const d = (partsA[i] ?? 0) - (partsB[i] ?? 0);
-    if (d) return d;
-  }
-  if (preA === preB) return 0;
-  if (preA === undefined) return 1;
-  if (preB === undefined) return -1;
-  const idsA = preA.split('.');
-  const idsB = preB.split('.');
-  for (let i = 0; i < Math.max(idsA.length, idsB.length); i++) {
-    const x = idsA[i];
-    const y = idsB[i];
-    if (x === undefined) return -1;
-    if (y === undefined) return 1;
-    if (x === y) continue;
-    const numeric = /^\d+$/;
-    if (numeric.test(x) && numeric.test(y)) return Number(x) - Number(y);
-    if (numeric.test(x)) return -1;
-    if (numeric.test(y)) return 1;
-    return x < y ? -1 : 1;
-  }
-  return 0;
-}
-
 /**
  * Whether a manifest's range admits a version, for the ranges the step moves: `^`, `~` or an exact version. Any other
  * range is not one the step moves, and says so.
@@ -307,16 +269,18 @@ export function admits(spec: string, version: string): boolean {
   const base = `${floor[0]}.${floor[1]}.${floor[2]}${floor[3] ?? ''}`;
   if (op === '') return compareVersions(version, base) === 0;
   if (compareVersions(version, base) < 0) return false;
-  const [major, minor] = version.split('.').map(Number);
-  if (op === '~') return major === Number(floor[0]) && minor === Number(floor[1]);
-  if (Number(floor[0]) > 0) return major === Number(floor[0]);
-  if (Number(floor[1]) > 0) return major === 0 && minor === Number(floor[1]);
+  // Each number as its digits (versions.ts), so none is rounded.
+  const [major, minor] = numbersOf(version);
+  const [floorMajor, floorMinor] = numbersOf(base);
+  if (op === '~') return major === floorMajor && minor === floorMinor;
+  if (floorMajor !== '0') return major === floorMajor;
+  if (floorMinor !== '0') return major === '0' && minor === floorMinor;
   return compareVersions(version, base) === 0;
 }
 
 /** The line a caret range keeps a version on: its major, or below 1.0 its minor. */
 const lineOf = (version: string) => {
-  const [major, minor] = version.split('.');
+  const [major, minor] = numbersOf(version);
   return major === '0' ? `0.${minor}` : major;
 };
 

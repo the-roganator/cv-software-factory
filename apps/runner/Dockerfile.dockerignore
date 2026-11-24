@@ -9,3 +9,4 @@
 !apps/runner/src
 !apps/runner/plugin
 !apps/factory/src/vulnerabilities/registry.ts
+!apps/factory/src/vulnerabilities/versions.ts

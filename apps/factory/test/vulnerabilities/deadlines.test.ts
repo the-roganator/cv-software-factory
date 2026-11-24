@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import * as policy from '../../../../policy/vulnerabilities.ts';
 import type { Alert } from '../../src/vulnerabilities/alerts.ts';
 import {
   aquaRepository,
   assess,
   byDigest,
   DAYS,
+  main as deadlines,
   dockerfileOf,
   firstFixed,
   k3sLine,
@@ -12,6 +17,7 @@ import {
   manifestDigests,
   miseRange,
   miseTools,
+  NotCarried,
   newestOnLine,
   npmUrl,
   registryName,
@@ -26,10 +32,11 @@ import {
   UNBUILT_DAYS,
   verdict,
 } from '../../src/vulnerabilities/deadlines.ts';
+import type { Policy } from '../../src/vulnerabilities/exceptions.ts';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
 import { moves, movesFile } from '../../src/vulnerabilities/moves.ts';
 import { releasedAt } from '../../src/vulnerabilities/registry.ts';
-import { alertKey, type Finding, merge, messageOf, sarif } from '../../src/vulnerabilities/sarif.ts';
+import { alertKey, type Finding, fingerprint, merge, messageOf, sarif } from '../../src/vulnerabilities/sarif.ts';
 import {
   type Handoff,
   minimumReleaseAge,
@@ -134,6 +141,8 @@ interface World {
   kubeVersion?: string;
   /** The Node release each image at `<repository>@<digest>` runs. */
   runs?: Record<string, string>;
+  /** The exceptions a carried finding is judged by; the repository's own where none is given. */
+  policy?: Policy;
 }
 
 /** The sources as the world has them, and what was asked of them. */
@@ -211,7 +220,13 @@ async function judge(world: World, now = NOW) {
   };
   const { sources, asked } = sourcesOf(world);
   const lines: string[] = [];
-  const { rows, fixes, judged } = await assess(handoff, sources, now, (line) => lines.push(line));
+  const { rows, fixes, judged, looked, unpulled, excepted } = await assess(
+    handoff,
+    sources,
+    now,
+    (line) => lines.push(line),
+    world.policy,
+  );
   /** The state this run would keep, as run 1's. */
   const kept = () =>
     stateOf(
@@ -220,7 +235,7 @@ async function judge(world: World, now = NOW) {
       rows,
       judged.map((each) => each.finding),
     );
-  return { rows, fixes, judged, asked, lines, kept, verdict: verdict(rows) };
+  return { rows, fixes, judged, looked, unpulled, excepted, asked, lines, kept, verdict: verdict(rows) };
 }
 
 /** A Trivy report of an image made at the time given, with the findings given. */
@@ -647,8 +662,77 @@ describe('an image’s fix', () => {
     });
   });
 
-  it('fails the read when the newest image cannot be scanned', async () => {
-    await expect(judge({ findings: [finding], alerts, tags, images: {} })).rejects.toThrow(/no such image/);
+  it('keeps the fix the last run gave when the newest image cannot be pulled, and judges every other result', async () => {
+    const other = npm();
+    const world = { findings: [finding, other], tags, published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z' } };
+    const first = await judge({
+      ...world,
+      alerts,
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
+    });
+    expect(first.fixes[0]?.day).toBe(at('2026-11-01T00:00:00Z'));
+    expect(first.looked.unanswered).toEqual({ sources: 0, results: 0 });
+    // The next day the registry does not serve the newest image: that fix stands, with its day and its deadline.
+    const second = await judge({ ...world, state: first.kept(), images: {} }, NOW + DAY);
+    expect(second.fixes).toEqual(first.fixes);
+    expect(second.rows.map((row) => row.due)).toEqual(first.rows.map((row) => row.due));
+    expect(second.looked.unanswered).toEqual({ sources: 1, results: 1 });
+    // One warning for the source, which names the image and never a package or an advisory.
+    const warnings = second.lines.filter((line) => line.startsWith('::warning::'));
+    expect(warnings).toEqual([
+      '::warning::The image node:24.23.0-trixie-slim could not be read (node:24.23.0-trixie-slim: no such image): 1 result keeps the fix the last run gave, and one with none has none today.',
+    ]);
+    expect(warnings.join('\n')).not.toMatch(/libexample|CVE-/);
+  });
+
+  it('gives a finding new today no fix when its source cannot be read, so it fails nothing that day, and counts it', async () => {
+    const fresh = os({ severity: 'CRITICAL' });
+    const failing = { findings: [fresh], images: {} };
+    // The tags are read and the newest image is not; then neither: each is one source, named once.
+    const pulled = await judge({ ...failing, tags });
+    expect(pulled.rows[0]).toMatchObject({ firstSeenToday: true, bucket: 'none' });
+    expect(pulled.verdict.passes).toBe(true);
+    expect(pulled.verdict.waiting).toBe(1);
+    expect(pulled.looked.unanswered).toEqual({ sources: 1, results: 1 });
+    const { sources } = sourcesOf({ ...failing, tags });
+    const handoff: Handoff = {
+      repository: REPOSITORY,
+      started: new Date(NOW - 600_000).toISOString(),
+      cache: '/nowhere',
+      findings: [fresh, os({ advisory: 'CVE-2099-20003' }), npm()],
+      excepted: [],
+      targets: [LOCKFILE, IMAGE],
+    };
+    const lines: string[] = [];
+    const unlisted = {
+      ...sources,
+      tags: async () => Promise.reject(new Error('TOOMANYREQUESTS')),
+      published: async () => Promise.reject(new Error("npm's registry answered 503")),
+    };
+    const judged = await assess(handoff, unlisted, NOW, (line) => lines.push(line));
+    expect(judged.fixes).toEqual([undefined, undefined, undefined]);
+    expect(judged.looked.unanswered).toEqual({ sources: 2, results: 3 });
+    expect(lines.filter((line) => line.startsWith('::warning::')).sort()).toEqual([
+      '::warning::The tags of node could not be read (TOOMANYREQUESTS): 2 results keep the fix the last run gave, and one with none has none today.',
+      "::warning::npm's registry could not be read (npm's registry answered 503): 1 result keeps the fix the last run gave, and one with none has none today.",
+    ]);
+  });
+
+  it('still fails the read on anything that is not a source’s answer', async () => {
+    const { sources } = sourcesOf({ findings: [finding], alerts, tags });
+    const handoff: Handoff = {
+      repository: REPOSITORY,
+      started: 'not a time',
+      cache: '/nowhere',
+      findings: [finding],
+      excepted: [],
+      targets: [IMAGE],
+    };
+    await expect(assess(handoff, sources, NOW)).rejects.toThrow(/gave no time it started/);
+    const noAlerts = { ...sources, alerts: async () => Promise.reject(new Error('code scanning answered 503')) };
+    await expect(assess({ ...handoff, started: new Date(NOW).toISOString() }, noAlerts, NOW)).rejects.toThrow(
+      /code scanning answered 503/,
+    );
   });
 });
 
@@ -1045,6 +1129,9 @@ describe('the clock, from the state the last scan kept', () => {
         seen: '2026-10-01T00:00:00Z',
         fix: { target: 'version 1.0.1', day: '2026-11-03T00:00:00Z' },
         move: 2,
+        item: 'lockfile pnpm-lock.yaml',
+        listed: 'pnpm-lock.yaml',
+        label: 'pnpm-lock.yaml',
       },
       expect.objectContaining({ package: 'example-b', fix: { target: 'version 1.0.1', day: '2026-11-03T00:00:00Z' } }),
       expect.not.objectContaining({ fix: expect.anything() }),
@@ -1874,5 +1961,418 @@ describe('the day’s counts, in moves.json’s totals', () => {
 
   it('writes no open count by severity when it is not given one', () => {
     expect(movesFile([], { repository: REPOSITORY, now: NOW }).totals).not.toHaveProperty('open');
+  });
+});
+
+describe('a renamed item’s clock, read from the alerts', () => {
+  const published = { 'example-a@1.0.1': '2025-01-01T00:00:00Z' };
+  const target = (file: string): ReadTarget => ({ key: `lockfile ${file}`, kind: 'lockfile', file, label: file });
+  const lockfile = (file: string, over: Partial<Finding> = {}) =>
+    npm({ item: `lockfile ${file}`, label: file, file, ...over });
+  const old = lockfile('apps/old/pnpm-lock.yaml');
+  const moved = lockfile('apps/new/pnpm-lock.yaml');
+  // The upload of the 10th, at 04:25, closed the old item's alert and made the new item's.
+  const RENAME = '2026-11-10T04:25:00Z';
+  const renamed = [
+    alertOf(old, '2026-10-01T00:00:00Z', { state: 'fixed', fixed_at: RENAME, updated_at: RENAME }),
+    alertOf(moved, RENAME),
+  ];
+  const world = { findings: [moved], targets: [target('apps/new/pnpm-lock.yaml')], published };
+
+  it('is the old item’s on the day of the rename, before the upload and after it', async () => {
+    const before = await judge({ ...world, alerts: [alertOf(old, '2026-10-01T00:00:00Z')] });
+    expect(before.rows[0]).toMatchObject({ seen: at('2026-10-01T00:00:00Z'), firstSeenToday: false });
+    const after = await judge({ ...world, alerts: renamed });
+    expect(after.rows[0]).toMatchObject({ seen: at('2026-10-01T00:00:00Z'), firstSeenToday: false });
+  });
+
+  it('is the old item’s on every day after, as it is from the state', async () => {
+    for (const days of [1, 2, 30]) {
+      const later = await judge({ ...world, alerts: renamed }, NOW + days * DAY);
+      expect(later.rows[0]).toMatchObject({ seen: at('2026-10-01T00:00:00Z'), firstSeenToday: false });
+      expect(later.rows[0]?.due).toBe(at('2026-10-08T00:00:00Z'));
+    }
+  });
+
+  it('is carried across a re-pin of the new item, and back across one of the old', async () => {
+    const REPIN = '2026-11-12T08:00:00Z';
+    const alerts = [
+      alertOf(old, '2026-09-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-10-01T00:00:30Z' }),
+      alertOf(old, '2026-10-01T00:00:00Z', { state: 'fixed', fixed_at: RENAME }),
+      alertOf(moved, RENAME, { state: 'fixed', fixed_at: REPIN }),
+      alertOf(moved, REPIN),
+    ];
+    const { rows } = await judge({ ...world, alerts }, NOW + 3 * DAY);
+    expect(rows[0]?.seen).toBe(at('2026-09-01T00:00:00Z'));
+  });
+
+  it('starts afresh for a finding really fixed in the old item that returns in the new', async () => {
+    const alerts = [
+      alertOf(old, '2026-09-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-09-10T04:30:00Z' }),
+      alertOf(moved, '2026-11-08T04:30:00Z'),
+    ];
+    const { rows } = await judge({ ...world, alerts }, NOW + DAY);
+    expect(rows[0]).toMatchObject({ seen: at('2026-11-08T04:30:00Z'), firstSeenToday: false });
+  });
+
+  it('is its own in an item that was on the list before the old one left it: no rename', async () => {
+    const other = lockfile('apps/other/pnpm-lock.yaml');
+    const others = lockfile('apps/other/pnpm-lock.yaml', { package: 'example-z', advisory: 'CVE-2099-20009' });
+    const { rows } = await judge(
+      {
+        findings: [other, others],
+        targets: [target('apps/other/pnpm-lock.yaml')],
+        published,
+        alerts: [
+          alertOf(old, '2026-10-01T00:00:00Z', { state: 'fixed', fixed_at: RENAME, updated_at: RENAME }),
+          alertOf(others, '2026-09-01T00:00:00Z'),
+          alertOf(other, RENAME),
+        ],
+      },
+      NOW + DAY,
+    );
+    expect(rows[0]?.seen).toBe(at(RENAME));
+  });
+});
+
+describe('an image the registry did not serve', () => {
+  const REDIS = 'ecr-public.aws.com/docker/library/redis:8.6.4-alpine';
+  const NEWER = 'ecr-public.aws.com/docker/library/redis:8.6.5-alpine';
+  // A reference with no digest, as a chart renders one: the label carries the digest that was read.
+  const LABEL = `${REDIS} (sha256:${'e'.repeat(64)})`;
+  const redis: ReadTarget = {
+    key: 'deploy/base/redis.yaml ecr-public.aws.com/docker/library/redis',
+    kind: 'third-party',
+    file: 'deploy/base/redis.yaml',
+    label: REDIS,
+    image: REDIS,
+    name: REDIS,
+    line: 21,
+  };
+  const WHY = 'could not be pulled: TOOMANYREQUESTS';
+  const inRedis = (over: Partial<Finding> = {}) =>
+    os({ item: redis.key, listed: REDIS, label: LABEL, file: redis.file, line: 21, ...over });
+  const fixable = inRedis({
+    package: 'libssl3',
+    advisory: 'CVE-2099-20040',
+    severity: 'MEDIUM',
+    publisher: 'HIGH',
+    score: 7.5,
+    title: 'libssl3: a read past the end',
+    description: 'Every word of the advisory.',
+    url: 'https://example.test/CVE-2099-20040',
+  });
+  const unfixed = inRedis({ package: 'busybox', advisory: 'CVE-2099-20041', fixed: undefined, path: 'bin/busybox' });
+  const first = npm({ description: 'The lockfile’s own.' });
+  const last = os({ description: 'The other image’s own.' });
+  // The list's order: the lockfile, the image not pulled, then another image.
+  const targets = [LOCKFILE, redis, IMAGE];
+  const sources = {
+    published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z' },
+    tags: {
+      'ecr-public.aws.com/docker/library/redis': ['8.6.4-alpine', '8.6.5-alpine'],
+      node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'],
+    },
+    images: {
+      [NEWER]: imageReport('2026-11-03T00:00:00Z', [unfixed]),
+      'node:24.23.0-trixie-slim': imageReport('2026-11-05T00:00:00Z'),
+    },
+  };
+  /** The handoff's findings as the scan writes them where every image was read: without their descriptions. */
+  const short = (findings: Finding[]) => findings.map(({ description: _, ...finding }) => finding);
+  const read = { ...sources, findings: short([first, fixable, unfixed, last]), targets };
+  const unpulled = { ...sources, findings: [first, last], targets: [LOCKFILE, { ...redis, unpulled: WHY }, IMAGE] };
+  const context = (now: number) => ({ repository: REPOSITORY, app: false, now });
+  /** What a run uploads and keeps, as deadlines.ts's `main` makes it: the SARIF, each alert's key, the moves, the state. */
+  const kept = (day: Awaited<ReturnType<typeof judge>>, now: number, written?: Finding[]) => {
+    const list = moves(day.judged, context(now));
+    const tagged = day.judged.map((each) => {
+      const at = list.findIndex((move) => move.results.includes(fingerprint(each.finding)));
+      return { ...each.finding, move: at < 0 ? undefined : { index: at + 1, run: '1' } };
+    });
+    // The scan's own file with each message ended; or, with an image not pulled, the file made of every finding.
+    const file = rewrite(sarif(written ?? tagged, '0.70.0'), Object.fromEntries(day.excepted), tagged);
+    return {
+      file: file.file,
+      excepted: file.excepted,
+      keys: tagged.map(alertKey),
+      moves: JSON.stringify(movesFile(list, context(now), '1'), null, 2),
+      state: JSON.stringify(stateOf(REPOSITORY, '1', day.rows, tagged)),
+    };
+  };
+
+  it('carries its findings from the last run’s state: the same results, alerts, moves and state as a run that read it', async () => {
+    const yesterday = await judge({ ...read, alerts: [] });
+    const state = JSON.parse(kept(yesterday, NOW).state) as State;
+    const now = NOW + DAY;
+    const whole = kept(await judge({ ...read, state }, now), now, [first, fixable, unfixed, last]);
+    const day = await judge({ ...unpulled, state }, now);
+    const carried = kept(day, now);
+    // In the list's order, between the lockfile's and the other image's.
+    expect(day.judged.map((each) => each.finding.item)).toEqual([LOCKFILE.key, redis.key, redis.key, IMAGE.key]);
+    expect(day.unpulled).toEqual([{ name: REDIS, why: WHY, carried: 2 }]);
+    expect(day.lines).toContain(
+      `Not pulled: ${REDIS}: its 2 findings are carried from the state run 1 kept, as that run judged them.`,
+    );
+    // Every result, byte for byte: its message with its fix, its day and its move, its line, its level, its fingerprints.
+    expect(carried.file.runs.map((run) => JSON.stringify(run.results))).toEqual(
+      whole.file.runs.map((run) => JSON.stringify(run.results)),
+    );
+    expect(carried.file.runs[0]?.results.map((result) => result.message.text)).toContain(
+      `libssl3 1.0-1 in ${LABEL}: CVE-2099-20040 (medium), fixed in 1.0-2. Fixed by image 8.6.5-alpine@sha256:${'d'.repeat(64)}, first seen 2026-11-03T00:00:00Z. Move 1 of run 1.`,
+    );
+    expect(carried.keys).toEqual(whole.keys);
+    expect(carried.moves).toBe(whole.moves);
+    expect(carried.state).toBe(whole.state);
+    // The rules too, but the long text of an advisory only the carried image has, which the state does not keep.
+    const rules = (file: typeof whole.file) =>
+      file.runs.flatMap((run) => run.tool.driver.rules.map(({ fullDescription: _, ...rule }) => rule));
+    expect(rules(carried.file)).toEqual(rules(whole.file));
+    const long = (file: typeof whole.file) =>
+      Object.fromEntries(file.runs.flatMap((run) => run.tool.driver.rules.map((r) => [r.id, r.fullDescription.text])));
+    expect(long(carried.file)).toEqual({
+      ...long(whole.file),
+      'CVE-2099-20040': 'libssl3: a read past the end',
+    });
+    // And the day after, read again, it is judged from the carried state as from any other.
+    const after = kept(await judge({ ...read, state: JSON.parse(carried.state) as State }, now + DAY), now + DAY);
+    expect(after.keys.map((key) => key.replace(/ Move \d+ of run \d+\./, ''))).toEqual(
+      whole.keys.map((key) => key.replace(/ Move \d+ of run \d+\./, '')),
+    );
+  });
+
+  it('holds a carried finding’s exception, by the key its alert is dismissed with', async () => {
+    const yesterday = await judge({ ...read, alerts: [] });
+    const state = yesterday.kept();
+    const entry = {
+      repository: REPOSITORY,
+      item: REDIS,
+      advisory: unfixed.advisory,
+      package: unfixed.package,
+      reason: 'busybox’s applet is never run.',
+      expires: '2026-12-31',
+    };
+    const day = await judge({ ...unpulled, state, policy: { ...policy, EXCEPTIONS: [entry] } }, NOW + DAY);
+    expect(day.rows.map((row) => row.excepted)).toEqual([false, false, true, false]);
+    expect([...day.excepted]).toEqual([[alertKey(short([unfixed])[0] as Finding), policy.dismissal(entry)]]);
+    // An entry for another item excepts nothing carried.
+    const other = await judge(
+      { ...unpulled, state, policy: { ...policy, EXCEPTIONS: [{ ...entry, item: NODE_IMAGE }] } },
+      NOW + DAY,
+    );
+    expect(other.rows.some((row) => row.excepted)).toBe(false);
+  });
+
+  it('has nothing to carry for an image the last run found nothing in: no finding is made, and it is named', async () => {
+    const yesterday = await judge({ ...sources, findings: short([first, last]), targets, alerts: [] });
+    const day = await judge({ ...unpulled, state: yesterday.kept() }, NOW + DAY);
+    expect(day.judged.map((each) => each.finding.item)).toEqual([LOCKFILE.key, IMAGE.key]);
+    expect(day.unpulled).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
+    expect(day.lines).toContain(
+      `Not pulled: ${REDIS}: the state run 1 kept has no finding of it, so there is none to carry and no alert of it to close.`,
+    );
+  });
+
+  it('with no state to read, is not read and named when it has no alert an upload could close', async () => {
+    // Alerts of other items, and one of its own closed as fixed before: nothing of the image's is open.
+    const alerts = [
+      alertOf(first, '2026-10-01T00:00:00Z'),
+      alertOf(last, '2026-10-01T00:00:00Z'),
+      alertOf(fixable, '2026-09-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-09-10T04:30:00Z' }),
+    ];
+    const day = await judge({ ...unpulled, alerts }, NOW + DAY);
+    expect(day.judged.map((each) => each.finding.item)).toEqual([LOCKFILE.key, IMAGE.key]);
+    expect(day.rows.map((row) => row.seen)).toEqual([at('2026-10-01T00:00:00Z'), at('2026-10-01T00:00:00Z')]);
+    expect(day.unpulled).toEqual([{ name: REDIS, why: WHY, carried: 0 }]);
+    expect(day.lines).toContain(
+      `Not pulled: ${REDIS}: there is no state, and it has no alert, so there is none to carry and none to close.`,
+    );
+  });
+
+  it('fails, with nothing judged, where carrying would not be exact', async () => {
+    const yesterday = await judge({ ...read, alerts: [] });
+    const state = yesterday.kept();
+    // No state to read, and an alert of the image's, open or dismissed: an alert holds its message, and not
+    // everything a result is made of.
+    const none = judge({ ...unpulled, alerts: [alertOf(fixable, '2026-11-01T00:00:00Z')] }, NOW + DAY);
+    await expect(none).rejects.toThrow(NotCarried);
+    await expect(none).rejects.toThrow(
+      `Not pulled: ${REDIS}. It has alerts, and this run has no state to carry the last run's findings from`,
+    );
+    await expect(
+      judge({ ...unpulled, alerts: [alertOf(unfixed, '2026-11-01T00:00:00Z', { state: 'dismissed' })] }, NOW + DAY),
+    ).rejects.toThrow(NotCarried);
+    // A state written before the scan kept what carries a finding.
+    const before: State = {
+      ...state,
+      findings: state.findings.map(
+        ({ item: _i, listed: _l, label: _b, publisher: _p, score: _s, path: _a, title: _t, url: _u, ...each }) => each,
+      ),
+    };
+    await expect(judge({ ...unpulled, state: before }, NOW + DAY)).rejects.toThrow(
+      /The state run 1 kept holds its findings without what carries them/,
+    );
+    // The pin moved since the last run: what that run found in one image is not what is in the next.
+    const moved = { ...redis, label: NEWER, image: NEWER, name: NEWER, unpulled: WHY };
+    await expect(judge({ ...unpulled, targets: [LOCKFILE, moved, IMAGE], state }, NOW + DAY)).rejects.toThrow(
+      /holds findings of its item at another pin, which are not this image's to carry/,
+    );
+    // Nothing of a finding is in what it says.
+    await expect(none).rejects.not.toThrow(/libssl3|busybox|CVE-/);
+  });
+
+  it('fails the run at its end, after the upload, naming the image, whatever the deadlines say', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verdict-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const ends = async (saved: object) => {
+      log.mockClear();
+      writeFileSync(join(dir, 'verdict.json'), JSON.stringify(saved));
+      return { code: await deadlines(['--verdict', dir]), lines: log.mock.calls.map(([line]) => String(line)) };
+    };
+    try {
+      const passing =
+        'Nothing new at high or critical has a fix to install, and nothing is due within a day or past its deadline.';
+      expect((await ends({ passes: true, lines: [passing] })).code).toBe(0);
+      expect((await ends({ passes: true, lines: [passing], unpulled: [] })).code).toBe(0);
+      const carried = await ends({ passes: true, lines: [passing], unpulled: [{ name: REDIS, why: WHY, carried: 2 }] });
+      expect(carried.code).toBe(1);
+      expect(carried.lines).toEqual([
+        passing,
+        `::error::Not pulled: ${REDIS}: ${WHY}. Its 2 findings are the last run's.`,
+      ]);
+      const none = await ends({ passes: true, lines: [passing], unpulled: [{ name: REDIS, why: WHY, carried: 0 }] });
+      expect(none.code).toBe(1);
+      expect(none.lines.at(-1)).toBe(
+        `::error::Not pulled: ${REDIS}: ${WHY}. It has no finding to carry, so no alert of it closes.`,
+      );
+      const failing = 'The run fails: 0 new high or critical with a fix, 0 due within a day, 1 past their deadline.';
+      const both = await ends({ passes: false, lines: [failing], unpulled: [{ name: REDIS, why: WHY, carried: 1 }] });
+      expect(both.code).toBe(1);
+      expect(both.lines).toEqual([
+        failing,
+        `::error::${failing}`,
+        `::error::Not pulled: ${REDIS}: ${WHY}. Its 1 finding is the last run's.`,
+      ]);
+      expect((await ends({ passes: false, lines: [failing] })).code).toBe(1);
+    } finally {
+      log.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is not among the images scanned in moves.json, nor is one whose digests the registry does not give', async () => {
+    const lines: string[] = [];
+    const node = { ...IMAGE, line: 2, name: NODE_IMAGE };
+    const scanned = await scannedImages(
+      [LOCKFILE, { ...redis, unpulled: WHY }, node, { ...redis, key: 'other', image: NEWER, label: NEWER }],
+      {
+        async manifests(reference) {
+          if (reference === NEWER) throw new Error('TOOMANYREQUESTS');
+          return { digest: `sha256:${'f'.repeat(64)}`, platforms: [] };
+        },
+      },
+      (line) => lines.push(line),
+    );
+    expect(scanned.map((each) => each.image)).toEqual([NODE_IMAGE]);
+    expect(lines).toEqual([
+      `::warning::The digests of ${NEWER} could not be read (TOOMANYREQUESTS): it is left out of the images scanned in moves.json.`,
+    ]);
+  });
+});
+
+describe('a day’s moves.json', () => {
+  const chart = {
+    repo: 'https://charts.example.test',
+    chart: 'example',
+    version: '13.2.7',
+    release: 'example',
+    values: [],
+  };
+  const SIDECAR = 'quay.io/example/sidecar:2.11.2';
+  const inChart: ReadTarget = {
+    key: 'chart example quay.io/example/sidecar',
+    kind: 'chart',
+    file: 'deploy/base/example.yaml',
+    label: SIDECAR,
+    image: SIDECAR,
+    chart,
+    name: 'example',
+    line: 14,
+  };
+  const COREDNS = 'docker.io/rancher/mirrored-coredns-coredns:1.14.5';
+  const inK3s: ReadTarget = {
+    key: 'k3s rancher/mirrored-coredns-coredns',
+    kind: 'k3s-release',
+    file: 'deploy/k3d/cluster.yaml',
+    label: COREDNS,
+    image: COREDNS,
+    list: 'https://github.com/k3s-io/k3s/releases/download/v1.37.2%2Bk3s1/k3s-images.txt',
+    name: 'k3s v1.37.2+k3s1',
+    line: 3,
+  };
+  const sidecar = os({ item: inChart.key, file: inChart.file, line: 14, label: SIDECAR, listed: 'example' });
+  const coredns = (advisory: string) =>
+    os({ item: inK3s.key, file: inK3s.file, line: 3, label: COREDNS, listed: inK3s.name, advisory });
+  const render = (tag: string) => `spec:\n  containers:\n    - image: quay.io/example/sidecar:${tag}\n`;
+  const k3s = (tag: string, published: string) => ({
+    published,
+    images: [`docker.io/rancher/mirrored-coredns-coredns:${tag}`],
+  });
+  /** One day with a move of each kind: a package in two versions, an image, a chart to a later major, k3s. */
+  const day = (over: Partial<World> = {}) =>
+    judge({
+      findings: [
+        npm({ installed: '1.0.0, 2.0.0', fixed: '1.0.1, 2.0.3' }),
+        os(),
+        sidecar,
+        coredns('CVE-2099-20050'),
+        coredns('CVE-2099-20051'),
+      ],
+      targets: [LOCKFILE, IMAGE, inChart, inK3s],
+      alerts: [],
+      published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z', 'example-a@2.0.3': '2025-02-01T00:00:00Z' },
+      tags: {
+        node: ['24.22.1-trixie-slim', '24.100.0-trixie-slim', '24.23.0-trixie-slim', '24.23.0-alpine3.24'],
+        'rancher/k3s': ['v1.37.2-k3s1', 'v1.37.2-k3s10', 'v1.37.2-k3s2', 'v1.38.0-k3s1'],
+      },
+      images: {
+        'node:24.100.0-trixie-slim': imageReport('2026-11-01T00:00:00Z'),
+        'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z', [sidecar]),
+        'quay.io/example/sidecar:2.14.3': imageReport('2026-10-15T00:00:00Z'),
+        'docker.io/rancher/mirrored-coredns-coredns:1.14.6': imageReport('2026-10-01T00:00:00Z', [
+          coredns('CVE-2099-20051'),
+        ]),
+        'docker.io/rancher/mirrored-coredns-coredns:1.14.7': imageReport('2026-10-02T00:00:00Z'),
+      },
+      charts: {
+        example: [
+          { version: '13.7.0', created: '2026-10-05T00:00:00Z' },
+          { version: '14.3.1', created: '2026-10-20T00:00:00Z' },
+        ],
+      },
+      renders: { 'example@13.7.0': render('2.14.1'), 'example@14.3.1': render('2.14.3') },
+      k3s: {
+        'v1.37.2+k3s2': k3s('1.14.6', '2026-10-10T00:00:00Z'),
+        'v1.37.2+k3s10': k3s('1.14.7', '2026-10-12T00:00:00Z'),
+      },
+      kubeVersion: '1.37.2',
+      ...over,
+    });
+  const context = { repository: REPOSITORY, app: false, now: NOW };
+
+  it('is the recorded file, byte for byte (fixtures/moves.json)', async () => {
+    const { judged, rows } = await day();
+    const list = moves(judged, context);
+    const { counts, bySeverity } = verdict(rows, false, list);
+    const file = movesFile(list, context, '19234567890', [], counts, bySeverity);
+    expect(`${JSON.stringify(file, null, 2)}\n`).toBe(
+      readFileSync(new URL('./fixtures/moves.json', import.meta.url), 'utf-8'),
+    );
+  });
+
+  it('marks a chart’s later major a major whether or not its pinned version is written with a v', async () => {
+    const pinned = { ...inChart, chart: { ...chart, version: 'v13.2.7' } };
+    const { fixes } = await day({ targets: [LOCKFILE, IMAGE, pinned, inK3s] });
+    expect(fixes[2]?.target).toEqual({ kind: 'chart', chart: 'example', version: '14.3.1', major: true });
   });
 });

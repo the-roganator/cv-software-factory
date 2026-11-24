@@ -35,15 +35,23 @@
  * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
  *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
  *   first seen today. A rename keeps its clock: when an item is new to the list, and a finding of the same package and
- *   advisory belonged to an item no longer on it (in the state; or, in the alerts, one open or closed by this run's
- *   upload), the new finding takes that day. An exception's expiry does
+ *   advisory belonged to an item no longer on it (in the state; or, in the alerts, one open still, or closed by the
+ *   upload that made the new item's first alerts), the new finding takes that day. An exception's expiry does
  *   not restart it: an excepted finding's alert is dismissed, not closed, and keeps its day. Critical 2 days, High 7,
  *   Medium 30, Low 90; a finding no source rates takes Low's. An excepted finding has no deadline.
  * - **The run fails** on a new High or Critical (first seen today) with a fix installable, on one due within a day,
  *   and on one past its deadline, after the upload, so a new finding's alert exists. A new one with no fix the scan
  *   can date is counted on its own and fails nothing, so a failed run always means a move not yet made. `--prove`, a
- *   proving run's, which uploads nothing, fails on none of them. A source that cannot be read (npm, Node's index, an image line's tags or its newest image,
- *   code scanning) fails either, as an unread item fails the scan.
+ *   proving run's, which uploads nothing, fails on none of them. The state and code scanning not read fail either, as
+ *   an unread item fails the scan.
+ * - **A source that does not answer** (npm, Node's index, an image line's tags, its newest image or its digest, a
+ *   chart's versions, a tool's releases, a k3s release) costs the results that asked it, and no others: each keeps the
+ *   fix the last run gave it, and one with none has none that day, so a new High or Critical among them fails
+ *   nothing until its source answers. The log warns once for each such source, by its name, and counts the results
+ *   judged without one.
+ * - **An image the registry did not serve** (scan.ts's `unpulled`) has the last run's findings, carried from the state
+ *   as that run judged them (`carried`), in the upload, the state and the moves; the run fails on it after the
+ *   upload, naming it. Where they cannot be carried exactly, the run fails before anything is uploaded.
  *
  * The log and the step summary give counts alone, never a package or an advisory: by severity, and by overdue, due
  * within a day, within a week, later, and no fix. Node runs this with no dependencies, from a sparse checkout of this
@@ -54,8 +62,10 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { retried } from '../gates/retry.ts';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
+import { judge as excepting, type Policy } from './exceptions.ts';
 import { dayText, type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
 import { dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
@@ -79,11 +89,13 @@ import {
   alertKey,
   type Finding,
   fingerprint,
+  merge,
   messageOf,
   overLimits,
   type Sarif,
   SEVERITIES,
   type Severity,
+  sarif,
 } from './sarif.ts';
 import {
   apiVersionsOf,
@@ -93,6 +105,7 @@ import {
   type ReadTarget,
   realTools,
   type TrivyReport,
+  targetName,
   trivyPin,
 } from './scan.ts';
 import {
@@ -109,6 +122,9 @@ import {
   StateError,
   seal,
 } from './state.ts';
+import { compareTags, compareVersions, majorOf } from './versions.ts';
+
+export { compareVersions } from './versions.ts';
 
 const run = promisify(execFile);
 const DAY = 86_400_000;
@@ -136,14 +152,14 @@ const K3S_IMAGE = 'rancher/k3s';
  * of Kubernetes, not the fix.
  */
 export function k3sLine(pinned: string, tags: string[]) {
-  const [, minor, patch, build] = /^(v\d+\.\d+)\.(\d+)\+k3s(\d+)$/.exec(pinned) ?? [];
+  const [, minor] = /^(v\d+\.\d+)\.\d+\+k3s\d+$/.exec(pinned) ?? [];
   if (!minor) return [];
-  const after = (p: number, b: number) => p > Number(patch) || (p === Number(patch) && b > Number(build));
+  const pinnedTag = pinned.replace('+k3s', '-k3s');
   return tags
-    .map((tag) => /^(v\d+\.\d+)\.(\d+)-k3s(\d+)$/.exec(tag))
-    .filter((m): m is RegExpExecArray => m !== null && m[1] === minor && after(Number(m[2]), Number(m[3])))
-    .sort((a, b) => Number(a[2]) - Number(b[2]) || Number(a[3]) - Number(b[3]))
-    .map((m) => `${m[1]}.${m[2]}+k3s${m[3]}`);
+    .filter((tag) => /^v\d+\.\d+\.\d+-k3s\d+$/.test(tag) && tag.startsWith(`${minor}.`))
+    .filter((tag) => compareTags(tag, pinnedTag) > 0)
+    .sort(compareTags)
+    .map((tag) => tag.replace('-k3s', '+k3s'));
 }
 
 /** Whether two references name one repository, Docker Hub's written with its registry or without. */
@@ -206,25 +222,6 @@ export function severityOf(finding: Pick<Finding, 'severity' | 'publisher'>): Se
   return publisher && SEVERITIES.indexOf(publisher) < SEVERITIES.indexOf(severity) ? publisher : severity;
 }
 
-// Versions, as npm and Trivy write them: numbers, then a prerelease that sorts before the release.
-const parts = (version: string) => {
-  const [release = '', ...pre] = version.trim().replace(/^v/, '').split('-');
-  return { numbers: release.split('.').map((n) => Number.parseInt(n, 10) || 0), pre: pre.join('-') };
-};
-
-export function compareVersions(a: string, b: string) {
-  const x = parts(a);
-  const y = parts(b);
-  for (let i = 0; i < Math.max(x.numbers.length, y.numbers.length); i++) {
-    const d = (x.numbers[i] ?? 0) - (y.numbers[i] ?? 0);
-    if (d) return d;
-  }
-  if (x.pre === y.pre) return 0;
-  if (!x.pre) return 1;
-  if (!y.pre) return -1;
-  return x.pre < y.pre ? -1 : 1;
-}
-
 /** The first fixed version above what is installed, from Trivy's list of fixed versions, or undefined. */
 export function firstFixed(installed: string, fixed: string | undefined) {
   if (!fixed) return undefined;
@@ -273,7 +270,7 @@ export function newestOnLine(tag: string, tags: string[]) {
   if (!line) return undefined;
   return tags
     .filter((each) => line.pattern.test(each))
-    .sort((a, b) => compareVersions(a.slice(line.prefix.length), b.slice(line.prefix.length)))
+    .sort(compareTags)
     .at(-1);
 }
 
@@ -496,8 +493,29 @@ export async function installable(
   const at: (number | undefined)[] = findings.map(() => undefined);
   const fixes: (Target | undefined)[] = findings.map(() => undefined);
   const places: Where[] = [];
-  const lines = { npm: 0, images: 0, k3s: { fixed: 0, none: 0 }, charts: 0, tools: 0, unbuilt: 0 };
+  const lines = {
+    npm: 0,
+    images: 0,
+    k3s: { fixed: 0, none: 0 },
+    charts: 0,
+    tools: 0,
+    unbuilt: 0,
+    unanswered: { sources: 0, results: 0 },
+  };
   const has = (pkg: string, advisory: string) => JSON.stringify([pkg, advisory]);
+  // A source that does not answer (a registry, npm, a release index: a fault after its retries, or an answer that is
+  // none) costs the results that asked it and no others: each is left with no fix of this run's, so it keeps the one
+  // the last run gave it (`fixesOf`), and the log names the source once, never what was asked of npm.
+  const unanswered = new Map<string, { why: string; results: number }>();
+  const asking = async <T>(source: string, ask: () => Promise<T>): Promise<T> => {
+    try {
+      return await ask();
+    } catch (error) {
+      if (error instanceof Unanswered) throw error;
+      if (!unanswered.has(source)) unanswered.set(source, { why: firstLine(error) ?? '', results: 0 });
+      throw new Unanswered(source);
+    }
+  };
   // What each image the scan read has, by its reference without its tag, so an image of ours can tell what its
   // runtime stage brings from what its Dockerfile adds.
   const byImage = new Map<string, Set<string>>();
@@ -536,10 +554,14 @@ export async function installable(
   const listTags = (repository: string) => {
     let listed = tags.get(repository);
     if (!listed) {
-      listed = sources.tags(repository);
+      listed = asking(`The tags of ${repository}`, () => sources.tags(repository));
       tags.set(repository, listed);
     }
     return listed;
+  };
+  const nodeReleases = () => {
+    releases ??= asking("Node's release index", () => sources.releases());
+    return releases;
   };
   // The k3s releases after a pinned one on its line, oldest first, each read once.
   const k3sLines = new Map<string, Promise<string[]>>();
@@ -562,7 +584,7 @@ export async function installable(
   const k3sRelease = (release: string) => {
     let once = k3sReleases.get(release);
     if (!once) {
-      once = sources.k3s(release);
+      once = asking(`k3s's release ${release}`, () => sources.k3s(release));
       k3sReleases.set(release, once);
     }
     return once;
@@ -602,7 +624,7 @@ export async function installable(
     let once = newest.get(reference);
     if (!once) {
       lines.images++;
-      once = sources.image(reference).then((report) => found(report));
+      once = asking(`The image ${reference}`, () => sources.image(reference)).then((report) => found(report));
       newest.set(reference, once);
     }
     return dated
@@ -632,7 +654,7 @@ export async function installable(
   const digestOf = (reference: string) => {
     let once = digests.get(reference);
     if (!once) {
-      once = sources.digest(reference);
+      once = asking(`The digest of ${reference}`, () => sources.digest(reference));
       digests.set(reference, once);
     }
     return once;
@@ -655,15 +677,15 @@ export async function installable(
       once = (async () => {
         const repository = repositoryOf(reference);
         if (!pinnedNode || !runsNode(repository)) return 0;
-        const runs = await sources.node(repository, await digestOf(reference));
+        const digest = await digestOf(reference);
+        const runs = await asking(`The Node ${reference} runs`, () => sources.node(repository, digest));
         if (runs === pinnedNode) return 0;
         const why = !runs
           ? 'names no release of Node the scan can read'
           : compareVersions(runs, pinnedNode) < 0
             ? `runs Node ${runs}, behind the ${pinnedNode} mise.toml pins`
             : undefined;
-        releases ??= sources.releases();
-        const release = runs && !why ? (await releases).find((each) => each.version === `v${runs}`) : undefined;
+        const release = runs && !why ? (await nodeReleases()).find((each) => each.version === `v${runs}`) : undefined;
         if (!runs || why || !release) {
           log(
             `::warning::${reference} ${why ?? `runs Node ${runs}, which Node's release index does not list`}: no fix to count from.`,
@@ -707,23 +729,24 @@ export async function installable(
     const key = JSON.stringify([chart.repo, chart.chart]);
     let listed = chartVersions.get(key);
     if (!listed) {
-      listed = sources.chartVersions(chart.repo, chart.chart);
+      listed = asking(`The versions of the chart ${chart.chart}`, () => sources.chartVersions(chart.repo, chart.chart));
       chartVersions.set(key, listed);
     }
     const versions = (await listed).filter(
       (each) => /^\d+\.\d+\.\d+$/.test(each.version) && compareVersions(each.version, chart.version) > 0,
     );
-    const majorOf = (version: string) => Number(version.split('.')[0]);
-    const pinnedMajor = majorOf(chart.version);
+    // A major as a whole number of any size, since the next few are counted from it.
+    const whole = (version: string) => BigInt(majorOf(version) ?? '0');
+    const pinnedMajor = whole(chart.version);
     // Each major from the pinned one, in order; within it, its versions newest first, a few at most: the newest clean
     // one on the earliest major that has one.
-    const byMajor = new Map<number, { version: string; created: string }[]>();
+    const byMajor = new Map<bigint, { version: string; created: string }[]>();
     for (const each of versions) {
-      const major = majorOf(each.version);
-      if (major < pinnedMajor || major > pinnedMajor + CHART_MAJORS) continue;
-      byMajor.set(major, [...(byMajor.get(major) ?? []), each]);
+      const its = whole(each.version);
+      if (its < pinnedMajor || its > pinnedMajor + BigInt(CHART_MAJORS)) continue;
+      byMajor.set(its, [...(byMajor.get(its) ?? []), each]);
     }
-    for (const major of [...byMajor.keys()].sort((a, b) => a - b)) {
+    for (const major of [...byMajor.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
       const newestFirst = (byMajor.get(major) ?? [])
         .sort((a, b) => compareVersions(b.version, a.version))
         .slice(0, CANDIDATES);
@@ -760,7 +783,7 @@ export async function installable(
     if (!locked) return undefined;
     let listed = toolReleases.get(tool);
     if (!listed) {
-      listed = sources.toolReleases(tool);
+      listed = asking(`The releases of ${tool}`, () => sources.toolReleases(tool));
       toolReleases.set(tool, listed);
     }
     // Within mise.toml's range for it (`pnpm = "12"`, `kubectl = "1.37"`), as `mise upgrade` moves it; the locked
@@ -780,7 +803,9 @@ export async function installable(
       let once = toolScans.get(key);
       if (!once) {
         lines.tools++;
-        once = sources.tool(tool, candidate.version).then((report) => (report ? found(report).has : undefined));
+        once = asking(`The download of ${tool} ${candidate.version}`, () => sources.tool(tool, candidate.version)).then(
+          (report) => (report ? found(report).has : undefined),
+        );
         toolScans.set(key, once);
       }
       const set = await once;
@@ -806,7 +831,7 @@ export async function installable(
     const key = `${name}@${version}`;
     let once = npm.get(key);
     if (!once) {
-      once = sources.published(name, version);
+      once = asking("npm's registry", () => sources.published(name, version));
       npm.set(key, once);
       lines.npm++;
     }
@@ -865,111 +890,129 @@ export async function installable(
     }
     return { kind: target.kind, name: repositoryOf(target.image ?? ''), pin: own, from: pinned(target.image ?? '') };
   };
+  /** One result's fix, from the sources: where moving it writes, then when its fix became installable, and what it is. */
+  const fixFor = async (finding: Finding, index: number) => {
+    const target = kinds.get(finding.item);
+    const stage = target?.kind === 'ours' ? stageOf(target) : undefined;
+    const fromBase =
+      stage !== undefined && (byImage.get(identity(stage.image))?.has(has(finding.package, finding.advisory)) ?? false);
+    const inLockfile =
+      target?.kind === 'ours' && finding.installed.split(', ').every((version) => resolves(finding.package, version));
+    const tool =
+      target?.kind === 'ours' && !fromBase && !inLockfile ? toolOf(finding.path, [...tools.keys()]) : undefined;
+    const route = target ? routeOf(finding, target.kind, fromBase, inLockfile, tool !== undefined) : 'none';
+    places[index] = whereOf(finding, target, route, tool);
+    if (!target || !finding.fixed || route === 'none') return;
+    if (route === 'npm') {
+      // Every copy of the package must be fixable: the clock runs from the last of their fixes.
+      const versions = finding.installed.split(', ').filter(Boolean);
+      const times: number[] = [];
+      const fixed: string[] = [];
+      for (const installed of versions) {
+        const version = firstFixed(installed, finding.fixed);
+        const when = version ? await published(finding.package, version) : Number.NaN;
+        if (!version || Number.isNaN(when)) return;
+        times.push(when);
+        if (!fixed.includes(version)) fixed.push(version);
+      }
+      if (times.length) {
+        at[index] = Math.max(...times) + minimumReleaseAge * 60_000;
+        fixes[index] = { kind: 'version', versions: fixed.sort(compareVersions) };
+      }
+      return;
+    }
+    if (route === 'node') {
+      const all = await nodeReleases();
+      // A patched release on the installed major: moving to another major is not the fix.
+      const major = majorOf(finding.installed);
+      const patched = all
+        .filter(
+          (release) =>
+            majorOf(release.version) === major &&
+            compareVersions(release.version, finding.installed) > 0 &&
+            satisfies(release.version, finding.fixed ?? ''),
+        )
+        .map((release) => ({ version: release.version.replace(/^v/, ''), at: time(`${release.date}T00:00:00Z`) }))
+        .filter((each) => !Number.isNaN(each.at))
+        .sort((a, b) => a.at - b.at || compareVersions(a.version, b.version));
+      const first = patched[0];
+      if (first) {
+        // Where mise.toml pins Node, the pin step moves it once the release is as old as its `minimum_release_age`.
+        at[index] = first.at + (pinnedNode ? miseAge : 0);
+        fixes[index] = { kind: 'version', versions: [first.version] };
+      }
+      return;
+    }
+    if (route === 'tool' && tool) {
+      const fixed = await toolFix(tool, finding);
+      if (fixed) {
+        at[index] = fixed.at;
+        fixes[index] = fixed.target;
+      }
+      return;
+    }
+    // An image that arrives only with a k3s release: from the first release after the pin that ships it fixed.
+    if (target.kind === 'k3s-release') {
+      const fixed = await k3sFix(target, finding);
+      lines.k3s[fixed === undefined ? 'none' : 'fixed']++;
+      if (fixed !== undefined) {
+        at[index] = fixed.at;
+        fixes[index] = { kind: 'k3s', release: fixed.release };
+      }
+      return;
+    }
+    // A chart's image no values file pins: the chart moves, not the image.
+    if (target.kind === 'chart' && !target.pin) {
+      const fixed = await chartFix(target, finding);
+      if (fixed) {
+        at[index] = fixed.at;
+        fixes[index] = fixed.target;
+      }
+      return;
+    }
+    const latest = await newestOf(pinOf(target) ?? '', listTags);
+    if (!latest) return;
+    const image = await scanned(latest.reference, true);
+    if (!image.has.has(has(finding.package, finding.advisory))) {
+      // An image that runs Node brings its Node, which waits for mise as Node's own move does.
+      const ready = target.kind !== 'k3s' ? await nodeReady(latest.reference) : 0;
+      if (ready === undefined) return;
+      // An image that gives no time it was made is installable from now, the day the scan first saw it without the
+      // finding: the state keeps that day for every run after (`fixesOf` takes the earlier).
+      at[index] = Math.max(image.created ?? now, ready);
+      fixes[index] =
+        target.kind === 'k3s'
+          ? { kind: 'k3s', release: latest.tag.replace(/-(k3s\d+)$/, '+$1') }
+          : { kind: 'image', tag: latest.tag, digest: await digestOf(latest.reference) };
+      return;
+    }
+    // A tag that is not a version, whose image nobody has made for half a year: a line no longer built.
+    if (!latest.version && image.created !== undefined && now - image.created > UNBUILT_DAYS * DAY) {
+      lines.unbuilt++;
+      fixes[index] = { kind: 'unbuilt', built: image.created };
+    }
+  };
   await pool(
     findings.map((finding, index) => async () => {
-      const target = kinds.get(finding.item);
-      const stage = target?.kind === 'ours' ? stageOf(target) : undefined;
-      const fromBase =
-        stage !== undefined &&
-        (byImage.get(identity(stage.image))?.has(has(finding.package, finding.advisory)) ?? false);
-      const inLockfile =
-        target?.kind === 'ours' && finding.installed.split(', ').every((version) => resolves(finding.package, version));
-      const tool =
-        target?.kind === 'ours' && !fromBase && !inLockfile ? toolOf(finding.path, [...tools.keys()]) : undefined;
-      const route = target ? routeOf(finding, target.kind, fromBase, inLockfile, tool !== undefined) : 'none';
-      places[index] = whereOf(finding, target, route, tool);
-      if (!target || !finding.fixed || route === 'none') return;
-      if (route === 'npm') {
-        // Every copy of the package must be fixable: the clock runs from the last of their fixes.
-        const versions = finding.installed.split(', ').filter(Boolean);
-        const times: number[] = [];
-        const fixed: string[] = [];
-        for (const installed of versions) {
-          const version = firstFixed(installed, finding.fixed);
-          const when = version ? await published(finding.package, version) : Number.NaN;
-          if (!version || Number.isNaN(when)) return;
-          times.push(when);
-          if (!fixed.includes(version)) fixed.push(version);
-        }
-        if (times.length) {
-          at[index] = Math.max(...times) + minimumReleaseAge * 60_000;
-          fixes[index] = { kind: 'version', versions: fixed.sort(compareVersions) };
-        }
-        return;
-      }
-      if (route === 'node') {
-        releases ??= sources.releases();
-        const all = await releases;
-        // A patched release on the installed major: moving to another major is not the fix.
-        const major = finding.installed.split('.')[0];
-        const patched = all
-          .filter(
-            (release) =>
-              release.version.replace(/^v/, '').split('.')[0] === major &&
-              compareVersions(release.version, finding.installed) > 0 &&
-              satisfies(release.version, finding.fixed ?? ''),
-          )
-          .map((release) => ({ version: release.version.replace(/^v/, ''), at: time(`${release.date}T00:00:00Z`) }))
-          .filter((each) => !Number.isNaN(each.at))
-          .sort((a, b) => a.at - b.at || compareVersions(a.version, b.version));
-        const first = patched[0];
-        if (first) {
-          // Where mise.toml pins Node, the pin step moves it once the release is as old as its `minimum_release_age`.
-          at[index] = first.at + (pinnedNode ? miseAge : 0);
-          fixes[index] = { kind: 'version', versions: [first.version] };
-        }
-        return;
-      }
-      if (route === 'tool' && tool) {
-        const fixed = await toolFix(tool, finding);
-        if (fixed) {
-          at[index] = fixed.at;
-          fixes[index] = fixed.target;
-        }
-        return;
-      }
-      // An image that arrives only with a k3s release: from the first release after the pin that ships it fixed.
-      if (target.kind === 'k3s-release') {
-        const fixed = await k3sFix(target, finding);
-        lines.k3s[fixed === undefined ? 'none' : 'fixed']++;
-        if (fixed !== undefined) {
-          at[index] = fixed.at;
-          fixes[index] = { kind: 'k3s', release: fixed.release };
-        }
-        return;
-      }
-      // A chart's image no values file pins: the chart moves, not the image.
-      if (target.kind === 'chart' && !target.pin) {
-        const fixed = await chartFix(target, finding);
-        if (fixed) {
-          at[index] = fixed.at;
-          fixes[index] = fixed.target;
-        }
-        return;
-      }
-      const latest = await newestOf(pinOf(target) ?? '', listTags);
-      if (!latest) return;
-      const image = await scanned(latest.reference, true);
-      if (!image.has.has(has(finding.package, finding.advisory))) {
-        // An image that runs Node brings its Node, which waits for mise as Node's own move does.
-        const ready = target.kind !== 'k3s' ? await nodeReady(latest.reference) : 0;
-        if (ready === undefined) return;
-        // An image that gives no time it was made is installable from now, the day the scan first saw it without the
-        // finding: the state keeps that day for every run after (`fixesOf` takes the earlier).
-        at[index] = Math.max(image.created ?? now, ready);
-        fixes[index] =
-          target.kind === 'k3s'
-            ? { kind: 'k3s', release: latest.tag.replace(/-(k3s\d+)$/, '+$1') }
-            : { kind: 'image', tag: latest.tag, digest: await digestOf(latest.reference) };
-        return;
-      }
-      // A tag that is not a version, whose image nobody has made for half a year: a line no longer built.
-      if (!latest.version && image.created !== undefined && now - image.created > UNBUILT_DAYS * DAY) {
-        lines.unbuilt++;
-        fixes[index] = { kind: 'unbuilt', built: image.created };
+      try {
+        await fixFor(finding, index);
+      } catch (error) {
+        if (!(error instanceof Unanswered)) throw error;
+        // No fix of this run's, whatever was worked out before the source failed.
+        at[index] = undefined;
+        fixes[index] = undefined;
+        const source = unanswered.get(error.source);
+        if (source) source.results++;
       }
     }),
   );
+  for (const [source, { why, results }] of unanswered) {
+    lines.unanswered.sources++;
+    lines.unanswered.results += results;
+    log(
+      `::warning::${source} could not be read (${why}): ${results} ${results === 1 ? 'result keeps' : 'results keep'} the fix the last run gave, and one with none has none today.`,
+    );
+  }
   for (const repository of dropped)
     log(
       `::warning::The last k3s release read after the pin no longer lists ${repository}: its findings have no fix to count from.`,
@@ -983,43 +1026,66 @@ export async function installable(
 
 /**
  * When each result was first seen, from the alerts: its own alert's creation, carried back across any alert of the
- * same place a re-pin split; or, for an item new to the list, the creation of an alert of the same package and advisory
- * whose item is no longer on it, open still or closed by this run's upload (closed at or after `started`, when the scan
- * began); or now.
+ * same place a re-pin split, and across a rename (an alert of the same package and advisory, of an item no longer on
+ * the list, closed in the upload that made this item's first alerts); or, for an item new to the list with no alert
+ * yet, the creation of such an alert, open still or closed by this run's upload (closed at or after `started`, when
+ * the scan began); or now.
  */
 export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[], now: number, started: number) {
   if (Number.isNaN(started)) throw new Error('the scan gave no time it started');
   const onList = new Set(targets.map((target) => itemKey({ file: target.file, repository: itemOf(target.label) })));
   // Each place's alerts: the earliest open or dismissed, and those closed as fixed, newest first.
-  const live = new Map<string, { at: number; item: string }>();
+  const live = new Map<string, { at: number; item: string; renamed: string }>();
   const closed = new Map<string, { created: number; fixed: number }[]>();
+  // The alerts closed of items no longer on the list, by package and advisory, newest first; and each item's first alert.
+  const left = new Map<string, { created: number; fixed: number }[]>();
+  const began = new Map<string, number>();
+  const push = (
+    lists: Map<string, { created: number; fixed: number }[]>,
+    key: string,
+    created: number,
+    fixed: number,
+  ) => {
+    const list = lists.get(key);
+    if (list) list.push({ created, fixed });
+    else lists.set(key, [{ created, fixed }]);
+  };
   for (const alert of alerts) {
     const place = alertPlace(alert);
     const at = time(alert.created_at);
     if (!place || Number.isNaN(at)) continue;
     const key = placeKey(place);
+    const item = itemKey(place);
+    began.set(item, Math.min(began.get(item) ?? at, at));
     if (alert.state === 'fixed') {
       const fixed = time(alert.fixed_at ?? alert.updated_at);
       if (Number.isNaN(fixed)) continue;
-      const list = closed.get(key);
-      if (list) list.push({ created: at, fixed });
-      else closed.set(key, [{ created: at, fixed }]);
-    } else if (at < (live.get(key)?.at ?? Number.POSITIVE_INFINITY)) live.set(key, { at, item: itemKey(place) });
+      push(closed, key, at, fixed);
+      if (!onList.has(item)) push(left, renameKey(place), at, fixed);
+    } else if (at < (live.get(key)?.at ?? Number.POSITIVE_INFINITY))
+      live.set(key, { at, item, renamed: renameKey(place) });
   }
-  for (const list of closed.values()) list.sort((a, b) => b.created - a.created);
+  for (const list of [...closed.values(), ...left.values()]) list.sort((a, b) => b.created - a.created);
   /**
    * A place's first day: its open alert's, carried back across each alert of the same place code scanning closed in
    * the upload that opened the next (a re-pin it split: closed within SPLIT of the next one's making),
    * never across a real fix, which closed one upload and left the place clear until the finding came back.
    */
   const first = new Map<string, number>();
-  for (const [key, { at }] of live) {
+  for (const [key, { at, item, renamed }] of live) {
     let day = at;
     for (const alert of closed.get(key) ?? [])
       if (alert.created < day && Math.abs(day - alert.fixed) <= SPLIT) day = alert.created;
+    // A rename, by the same reasoning across items: the upload that made this item's first alerts closed the alert
+    // of the item it was, so that alert's day is this one's, on the day of the rename and every day after. An item
+    // with an alert from before that upload was on the list already, and its finding is its own.
+    if (onList.has(item) && (began.get(item) ?? day) >= day - SPLIT)
+      for (const alert of left.get(renamed) ?? [])
+        if (alert.created < day && Math.abs(day - alert.fixed) <= SPLIT) day = alert.created;
     first.set(key, day);
   }
-  // Alerts of items no longer on the list, by package and advisory: open still, or closed by this run's upload.
+  // Alerts of items no longer on the list, by package and advisory: open still, or closed by this run's upload, for
+  // an item whose own alerts that upload has yet to make.
   const gone = new Map<string, number>();
   for (const alert of alerts) {
     const place = alertPlace(alert);
@@ -1089,6 +1155,119 @@ function clocked(
     if (renamed !== undefined) return { seen: renamed, firstSeenToday: false };
     return { seen: own ?? now, firstSeenToday: true };
   });
+}
+
+/** Why an image's findings cannot be carried: the run fails before anything is uploaded, as for any item not read. */
+export class NotCarried extends Error {
+  override name = 'NotCarried';
+}
+
+/** An image the registry did not serve, as the run's end names it: why, and how many findings the last run's state gave. */
+export interface Unpulled {
+  name: string;
+  why: string;
+  carried: number;
+}
+
+/**
+ * A run's findings where the registry did not serve an image (`ReadTarget.unpulled`): the scan's own, and that image's
+ * as the last run judged them, from its state, each in its item's place in the list's order, so the upload holds a
+ * result for every alert the image has and none closes. A carried finding is the state's (`StateFinding`), at the
+ * line its item is pinned on now; its clock and its fix are read from the state as any finding's are, and its target
+ * is the list's, so its move has the lane, the name and the pins it would have read. With them, the comment each
+ * carried result an exception excepts is dismissed with, by its alert's key, as the scan gives the rest.
+ *
+ * Carrying is refused, and the run fails with nothing uploaded, where it would not be exact: for an image whose
+ * findings the state holds without what makes them again (one written before it kept them); for an item whose
+ * findings in the state are another pin's, since what the last run found in one image is not what is in the next;
+ * and, with no state to read, for an image that has an alert of the scan's, open or dismissed, at its place (its
+ * file and its repository, as `alertPlace` reads one), since an alert holds its message and not everything a result
+ * is made of. An image with no finding in the state, or with no state and no such alert, has nothing to carry and no
+ * alert an upload could close: it is not read, and the run's end says so.
+ */
+export function carried(
+  handoff: Handoff,
+  last: { state?: State | undefined; ours?: Alert[] | undefined },
+  policy: Policy,
+  log: (line: string) => void = () => {},
+  now = Date.now(),
+): { findings: Finding[]; excepted: Map<string, string>; unpulled: Unpulled[] } {
+  const targets = handoff.targets.filter((target) => target.unpulled !== undefined);
+  if (!targets.length) return { findings: handoff.findings, excepted: new Map(), unpulled: [] };
+  const state = last.state;
+  if (!state) {
+    // With no state, the alerts say whether an upload without the image's results would close anything.
+    const places = new Set<string>();
+    for (const alert of last.ours ?? []) {
+      const place = alert.state === 'fixed' ? undefined : alertPlace(alert);
+      if (place) places.add(itemKey(place));
+    }
+    const unpulled = targets.map((target) => {
+      const name = targetName(target);
+      if (places.has(itemKey({ file: target.file, repository: itemOf(target.label) })))
+        throw new NotCarried(
+          `Not pulled: ${name}. It has alerts, and this run has no state to carry the last run's findings from`,
+        );
+      log(`Not pulled: ${name}: there is no state, and it has no alert, so there is none to carry and none to close.`);
+      return { name, why: target.unpulled ?? '', carried: 0 };
+    });
+    return { findings: handoff.findings, excepted: new Map(), unpulled };
+  }
+  const reference = (label: string | undefined) => (label ?? '').replace(LABEL_DIGEST, '');
+  // Each item's images on the list today: a finding the state has of another is of a pin since moved.
+  const listed = new Map<string, Set<string>>();
+  for (const target of handoff.targets) listed.set(target.key, (listed.get(target.key) ?? new Set()).add(target.label));
+  const added: Finding[] = [];
+  const unpulled: Unpulled[] = [];
+  for (const target of targets) {
+    const name = targetName(target);
+    const place = itemKey({ file: target.file, repository: itemOf(target.label) });
+    if (state.findings.some((each) => each.item === undefined && itemKey(each) === place))
+      throw new NotCarried(
+        `Not pulled: ${name}. The state run ${state.run} kept holds its findings without what carries them, as a state written before the scan kept that does`,
+      );
+    const own = state.findings.filter((each) => each.item === target.key);
+    if (own.some((each) => !listed.get(target.key)?.has(reference(each.label))))
+      throw new NotCarried(
+        `Not pulled: ${name}. The state run ${state.run} kept holds findings of its item at another pin, which are not this image's to carry`,
+      );
+    const same = own.filter((each) => reference(each.label) === target.label);
+    for (const each of same)
+      added.push({
+        item: target.key,
+        listed: each.listed,
+        label: each.label ?? target.label,
+        file: target.file,
+        line: target.line ?? each.line,
+        type: each.type,
+        package: each.package,
+        installed: each.installed,
+        fixed: each.fixed,
+        advisory: each.advisory,
+        severity: each.severity,
+        publisher: each.publisher,
+        title: each.title,
+        url: each.url,
+        score: each.score,
+        ...(each.path === undefined ? {} : { path: each.path }),
+      });
+    unpulled.push({ name, why: target.unpulled ?? '', carried: same.length });
+    log(
+      same.length
+        ? `Not pulled: ${name}: its ${same.length} findings are carried from the state run ${state.run} kept, as that run judged them.`
+        : `Not pulled: ${name}: the state run ${state.run} kept has no finding of it, so there is none to carry and no alert of it to close.`,
+    );
+  }
+  // In the list's order, as a run that read every image has them, so each result is in the run it would be in.
+  const at = new Map<string, number>();
+  for (const [index, target] of handoff.targets.entries()) if (!at.has(target.key)) at.set(target.key, index);
+  const order = (finding: Finding) => at.get(finding.item) ?? handoff.targets.length;
+  const findings = merge([...handoff.findings, ...added]).sort((a, b) => order(a) - order(b));
+  return {
+    findings,
+    excepted: excepting(policy, handoff.repository, [], added, undefined, new Date(now)).excepted,
+    unpulled,
+  };
 }
 
 /**
@@ -1265,15 +1444,26 @@ export function verdict(all: Row[], prove = false, moves: Move[] = []) {
 }
 
 /** The whole judgement of a scan's hand-off, against the time given: each result's row, its fix and its move. */
-export async function assess(handoff: Handoff, sources: Sources, now: number, log: (line: string) => void = () => {}) {
-  const findings = handoff.findings;
-  // The state the last scan kept, or, with none to read, the alerts, which hold the same days (but a renamed
-  // item's from before its rename): losing the state resets no other clock.
+export async function assess(
+  handoff: Handoff,
+  sources: Sources,
+  now: number,
+  log: (line: string) => void = () => {},
+  policy: Policy = POLICY,
+) {
+  // The state the last scan kept, or, with none to read, the alerts, which hold the same days: losing the state
+  // resets no clock.
   const kept = (sources.state?.() ?? Promise.resolve({ none: 'this run reads none' })).then(async (answer) => {
     if ('state' in answer) return { state: answer.state };
     log(`No state to read (${answer.none}): each day is read from the alerts.`);
     return { ours: (await sources.alerts()).filter(isOurs) };
   });
+  // With an image not pulled, the last run's findings of it, which only the state holds whole, before anything is
+  // judged; otherwise the scan's own, and the state is read while the sources are.
+  const carry = handoff.targets.some((target) => target.unpulled !== undefined)
+    ? carried(handoff, await kept, policy, log, now)
+    : carried(handoff, {}, policy);
+  const findings = carry.findings;
   const [found, read] = await Promise.all([
     installable(
       findings,
@@ -1297,7 +1487,13 @@ export async function assess(handoff: Handoff, sources: Sources, now: number, lo
   const installableAt = fixes.map((fix, index) =>
     fix && fix.target.kind !== 'unbuilt' ? fix.day : (found.at[index] ?? 0) > now ? found.at[index] : undefined,
   );
-  const judgedRows = rows(findings, new Set(handoff.excepted), installableAt, seens, now);
+  const judgedRows = rows(
+    findings,
+    new Set([...handoff.excepted, ...carry.excepted.keys()]),
+    installableAt,
+    seens,
+    now,
+  );
   const judged: Judged[] = judgedRows.map((row, index) => {
     const where = found.places[index] ?? {
       kind: 'third-party' as Kind,
@@ -1314,7 +1510,7 @@ export async function assess(handoff: Handoff, sources: Sources, now: number, lo
       ...where,
     };
   });
-  return { rows: judgedRows, fixes, judged, looked: found.looked };
+  return { rows: judgedRows, fixes, judged, looked: found.looked, unpulled: carry.unpulled, excepted: carry.excepted };
 }
 
 /** Runs each task, a few at a time; the first failure is thrown once all have settled. */
@@ -1660,24 +1856,37 @@ export function manifestDigests(raw: Buffer) {
   return { digest, platforms: [...new Set(platforms)].sort() };
 }
 
-/** Every image target the scan read, with its digests and its pin, for `moves.json`'s `scanned`. */
+/**
+ * Every image target the scan read, with its digests and its pin, for `moves.json`'s `scanned`. An image that was not
+ * pulled was not scanned, and is not listed; nor is one whose manifest the registry does not give, which costs that
+ * image its place and no other, with a warning. Either way a pod that runs it is, to a reader of the file, one the
+ * scan did not read that day.
+ */
 export async function scannedImages(
   targets: ReadTarget[],
   sources: Pick<Sources, 'manifests'>,
+  log: (line: string) => void = () => {},
 ): Promise<ScannedImage[]> {
-  const read = new Map<string, Promise<{ digest: string; platforms: string[] }>>();
+  const read = new Map<string, Promise<{ digest: string; platforms: string[] } | undefined>>();
   const out: ScannedImage[] = [];
   await pool(
     targets
-      .filter((target) => target.image)
+      .filter((target) => target.image && target.unpulled === undefined)
       .map((target) => async () => {
         const image = target.image ?? '';
         let once = read.get(image);
         if (!once) {
-          once = sources.manifests(image);
+          once = sources.manifests(image).catch((error: unknown) => {
+            log(
+              `::warning::The digests of ${image} could not be read (${firstLine(error)}): it is left out of the images scanned in moves.json.`,
+            );
+            return undefined;
+          });
           read.set(image, once);
         }
-        const { digest, platforms } = await once;
+        const manifests = await once;
+        if (!manifests) return;
+        const { digest, platforms } = manifests;
         const pinned = splitReference(image).digest;
         out.push({
           kind: target.kind,
@@ -1727,6 +1936,15 @@ export function toolUrl(lock: string, tool: string, version: string) {
 
 /** An answer trying again cannot change: a 4xx but 429. */
 class Permanent extends Error {}
+
+/** A source that gave no answer, by the name the log gives it: what `installable` contains to the results that asked it. */
+class Unanswered extends Error {
+  readonly source: string;
+  constructor(source: string) {
+    super(`${source} could not be read`);
+    this.source = source;
+  }
+}
 
 /** Tries again on a dropped connection, a timeout, a 429 or a 5xx, as a pull is tried; a permanent answer at once. */
 const transient = <T>(what: () => Promise<T>) =>
@@ -1789,6 +2007,15 @@ export function stateOf(repository: string, run: string, rows: Row[], findings: 
       seen: dayText(rows[index]?.own ?? rows[index]?.seen ?? Number.NaN),
       ...(finding.fix ? { fix: fixOf(finding.fix) } : {}),
       ...(finding.fix && finding.move ? { move: finding.move.index } : {}),
+      // The rest of it, which makes the same result again on a run that cannot pull its image (`carried`).
+      item: finding.item,
+      ...(finding.listed === undefined ? {} : { listed: finding.listed }),
+      label: finding.label,
+      ...(finding.publisher === undefined ? {} : { publisher: finding.publisher }),
+      ...(finding.score === undefined ? {} : { score: finding.score }),
+      ...(finding.path === undefined ? {} : { path: finding.path }),
+      ...(finding.title === undefined ? {} : { title: finding.title }),
+      ...(finding.url === undefined ? {} : { url: finding.url }),
     })),
   };
 }
@@ -1797,7 +2024,13 @@ export function stateOf(repository: string, run: string, rows: Row[], findings: 
 interface Saved {
   passes: boolean;
   lines: string[];
+  /** Each image the registry did not serve, which fails the run whatever the deadlines say. */
+  unpulled?: Unpulled[];
 }
+
+/** An image not pulled, as the log names it once its findings are settled. */
+const unpulledLine = (each: Unpulled) =>
+  `Not pulled: ${each.name}: ${each.why}. ${each.carried ? `Its ${each.carried} ${each.carried === 1 ? 'finding is' : 'findings are'} the last run's.` : 'It has no finding to carry, so no alert of it closes.'}`;
 
 const USAGE =
   'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write [--state <branch>] | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]\n' +
@@ -1814,7 +2047,10 @@ export async function main(args: string[]): Promise<number> {
     const saved = JSON.parse(readFileSync(join(after, 'verdict.json'), 'utf-8')) as Saved;
     for (const line of saved.lines) console.log(line);
     if (!saved.passes) console.log(`::error::${saved.lines.find((line) => line.startsWith('The run fails')) ?? ''}`);
-    return saved.passes ? 0 : 1;
+    // An image not pulled fails the run here, once everything else is uploaded and kept, so it is seen.
+    const unpulled = saved.unpulled ?? [];
+    for (const each of unpulled) console.log(`::error::${unpulledLine(each)}`);
+    return saved.passes && !unpulled.length ? 0 : 1;
   }
   const [dir] = args.filter(
     (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin|memo|memo-day|state)$/),
@@ -1874,8 +2110,11 @@ export async function main(args: string[]): Promise<number> {
   try {
     judged = await assess(handoff, sources, now, (line) => console.log(line));
   } catch (error) {
+    const nothing = `The run fails${write ? ', and nothing is uploaded' : ''}.`;
     console.error(
-      `::error::The deadlines could not be read: ${firstLine(error)}. The run fails${write ? ', and nothing is uploaded' : ''}.`,
+      error instanceof NotCarried
+        ? `::error::${error.message}. ${nothing}`
+        : `::error::The deadlines could not be read: ${firstLine(error)}. ${nothing}`,
     );
     return 1;
   }
@@ -1888,7 +2127,7 @@ export async function main(args: string[]): Promise<number> {
   // Each result in a move names its place in moves.json and the run, after its fix (fixes.ts), so the alerts tie to it.
   let scanned: ScannedImage[];
   try {
-    scanned = await scannedImages(handoff.targets, sources);
+    scanned = await scannedImages(handoff.targets, sources, (line) => console.log(line));
   } catch (error) {
     console.error(
       `::error::The images scanned could not be listed with their digests: ${firstLine(error)}. The run fails${write ? ', and nothing is uploaded' : ''}.`,
@@ -1907,10 +2146,12 @@ export async function main(args: string[]): Promise<number> {
       `Lookups of registries and releases: ${asked.kept} answered from the day's (${memo.day}), ${asked.asked} asked.`,
     );
   }
-  const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results.`;
+  const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results. Sources not read: ${judged.looked.unanswered.sources}, which ${judged.looked.unanswered.results} results were judged without.`;
   const table = movesTable(file);
   const images = `Images scanned, each in moves.json with its digests and pin: ${file.scanned.length} (${new Set(file.scanned.map((each) => each.image)).size} references).`;
   for (const line of [looked, images, ...table, '', ...lines]) console.log(line);
+  for (const each of judged.unpulled)
+    console.log(`::warning::${unpulledLine(each)} The run fails on it after the upload.`);
   writeFileSync(join(dir, 'moves.json'), `${JSON.stringify(file, null, 2)}\n`);
   if (write) {
     // What is uploaded carries each fix: the SARIF's messages, and the excepted alerts' keys, which name them.
@@ -1921,7 +2162,12 @@ export async function main(args: string[]): Promise<number> {
       excepted: Record<string, string>;
     };
     const findings = judged.judged.map((each) => ({ ...each.finding, move: tags.get(fingerprint(each.finding)) }));
-    const rewritten = rewrite(JSON.parse(readFileSync(sarifPath, 'utf-8')) as Sarif, exceptions.excepted, findings);
+    // The scan's own file, or, where an image was not pulled and it wrote none, the same file made of every finding,
+    // the carried among them, with the comment each carried result an exception excepts is dismissed with.
+    const results = judged.unpulled.length
+      ? sarif(findings, pin[2])
+      : (JSON.parse(readFileSync(sarifPath, 'utf-8')) as Sarif);
+    const rewritten = rewrite(results, { ...exceptions.excepted, ...Object.fromEntries(judged.excepted) }, findings);
     const over = overLimits(rewritten.file);
     if (over.length) {
       console.error(
@@ -1931,7 +2177,10 @@ export async function main(args: string[]): Promise<number> {
     }
     writeFileSync(sarifPath, JSON.stringify(rewritten.file));
     writeFileSync(exceptionsPath, JSON.stringify({ ...exceptions, excepted: rewritten.excepted }));
-    writeFileSync(join(dir, 'verdict.json'), JSON.stringify({ passes, lines: lines.slice(3) } satisfies Saved));
+    writeFileSync(
+      join(dir, 'verdict.json'),
+      JSON.stringify({ passes, lines: lines.slice(3), unpulled: judged.unpulled } satisfies Saved),
+    );
     // The state the next scan and the worker read, sealed: what was judged, as it is uploaded.
     if (keeps) {
       const state = stateOf(handoff.repository, keeps.run, judged.rows, findings);
@@ -1954,6 +2203,7 @@ export async function main(args: string[]): Promise<number> {
         `| all | ${Object.values(bySeverity).reduce((a, b) => a + b, 0)} | ${BUCKETS.map(([b]) => byBucket[b]).join(' | ')} |`,
         '',
         ...lines.slice(2),
+        ...judged.unpulled.map((each) => `- ${unpulledLine(each)}`),
         '',
         '### Moves',
         '',

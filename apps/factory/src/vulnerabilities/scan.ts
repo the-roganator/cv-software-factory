@@ -17,10 +17,20 @@
  *   when it cannot be read. An image of ours whose Node version cannot be read is an item the scan cannot read.
  *
  * An item that cannot be read (a lockfile Trivy reads no packages from, or not every package of, one git tracks as
- * anything but a regular file, any other symbolic link git tracks, which `lockfileDir` could point pnpm through, an SBOM with no attestation, an image that cannot be pulled, a chart that does not
- * render, a pin the list does not read) is named in the log and fails the run,
- * and so does a database more than a day old: nothing is written for upload, so no alert closes because its item went
- * unread. The SARIF is written only with `--upload`, when every item was read and the file is within code scanning's
+ * anything but a regular file, any other symbolic link git tracks, which `lockfileDir` could point pnpm through, an
+ * SBOM with no attestation, an image of ours that cannot be pulled, a chart that does not render, a pin the list does
+ * not read) is named in the log and fails the run, and so does a database more than a day old: nothing is written for
+ * upload, so no alert closes because its item went unread.
+ *
+ * Another's image the registry does not serve, after its retries or by its answer, costs that image alone on a run
+ * that uploads: the scan hands it on as a target not pulled (`ReadTarget.unpulled`), writes no SARIF of its own, and
+ * passes, and deadlines.ts, which holds the last run's state, carries that image's findings from it into the upload,
+ * so none of its alerts closes, or fails the run where it cannot. The run still ends failed, after the upload, naming
+ * the image (deadlines.ts `--verdict`). An image of ours is not carried: reading one is verifying its signed SBOM,
+ * and one that does not verify is not an image the registry was slow to serve. A proving run reads no state, so there
+ * an image not pulled fails the run as any unread item does.
+ *
+ * The SARIF is written only with `--upload`, when every item was read and the file is within code scanning's
  * limits: no run over 5,000 results, so code scanning drops none, and no more than 20 runs. Every run also scans
  * PROOF, an image of ours that ran Node 24.22.0, as it scans ours, and fails unless CVE-2026-111497 is found in its
  * Node, so a scan that has stopped seeing Node cannot pass; nothing is uploaded for it. The log gives counts by
@@ -32,9 +42,10 @@
  * alerts.ts to set once code scanning has the upload. The log names each entry that excepts nothing, and warns when the
  * checkout's `osv-scanner.toml` is not the one the policy gives it; neither fails the run.
  *
- * Every run that passes writes `deadlines.json` beside it (`Handoff`): the results as uploaded, without their prose,
- * the targets read, the excepted results' keys and the repository's `minimumReleaseAge`, for deadlines.ts to give each
- * open finding its deadline once code scanning has the upload.
+ * Every run that passes writes `deadlines.json` beside it (`Handoff`): the results as uploaded, without their
+ * descriptions (with them where an image was not pulled, since deadlines.ts then writes the SARIF), the list's targets, the excepted
+ * results' keys and the repository's `minimumReleaseAge`, for deadlines.ts to give each open finding its deadline
+ * before the upload.
  *
  * Trivy's cache is a new directory each run, or `--cache`'s, which the workflow keeps between runs for Trivy's analysis of
  * each layer, keyed by the layer's digest and Trivy's own analysers: a layer read once is not pulled and read again. The
@@ -208,6 +219,8 @@ export interface Read {
   /** The Node version the image runs, where it gives one: Syft's in its SBOM, or `NODE_VERSION` in its configuration. */
   node?: string | undefined;
   unreadable?: string;
+  /** Set with `unreadable` where the registry did not serve another's image: the one unread item a run can carry. */
+  unpulled?: true;
 }
 
 export { repositoryOf };
@@ -446,14 +459,20 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
  */
 async function analysed(tools: Tools, args: string[]) {
   const report = await tools.trivy(['image', ...IMAGE_ARGS, ...args]);
-  if (!report.Metadata?.ImageID) throw new Error('Trivy gave no image it analysed');
+  if (!report.Metadata?.ImageID) throw new NoAnalysis('Trivy gave no image it analysed');
   return report;
 }
+
+/** A report that names no image: Trivy's own answer, which no registry gave, so an answer and never a pull to carry. */
+class NoAnalysis extends Error {}
 
 /** An image's Node version, from its configuration's `NODE_VERSION` or an operating system's `nodejs` package. */
 const nodeOf = (report: TrivyReport) => nodeInConfig(report.Metadata?.ImageConfig) ?? nodeInPackages(report.Results);
 
-/** Any other image: CI's copy where there is one, then its own registry, with retries. */
+/**
+ * Any other image: CI's copy where there is one, then its own registry, with retries. One the registry does not serve,
+ * by a fault after its retries or by an answer (no such tag, a 404, a limit on pulls), is `unpulled`.
+ */
 async function readImage(tools: Tools, target: Target): Promise<Read> {
   const image = target.image ?? '';
   const scan = (reference: string) => analysed(tools, ['--', reference]);
@@ -469,7 +488,8 @@ async function readImage(tools: Tools, target: Target): Promise<Read> {
     const report = await tools.retry(() => scan(image));
     return { target, reports: [report], node: nodeOf(report) };
   } catch (error) {
-    return { target, reports: [], unreadable: `could not be pulled: ${firstLine(error)}` };
+    const unreadable = `could not be pulled: ${firstLine(error)}`;
+    return { target, reports: [], unreadable, ...(error instanceof NoAnalysis ? {} : { unpulled: true as const }) };
   }
 }
 
@@ -540,7 +560,10 @@ async function targetsOf(
   return { targets: [image(item.image ?? item.name)] };
 }
 
-/** A target the scan read, as deadlines.ts needs it: its item's kind, the file that pins it, and what it read. */
+/**
+ * A target of the list, as deadlines.ts needs it: its item's kind, the file that pins it, and what was read. Every one
+ * was read but one with `unpulled`.
+ */
 export interface ReadTarget {
   key: string;
   kind: Item['kind'];
@@ -556,12 +579,22 @@ export interface ReadTarget {
   /** The item as the list names it (inventory.ts's `name`), and the line of its pin. */
   name?: string | undefined;
   line?: number | undefined;
+  /**
+   * Why the registry did not serve its image, for another's image that was not pulled: the run has no findings of
+   * its own for it, and deadlines.ts carries the last run's (`carried`).
+   */
+  unpulled?: string | undefined;
 }
+
+/** A target as the log names it: its item, and its image where the item has several. */
+export const targetName = (target: Pick<ReadTarget, 'name' | 'label'>) =>
+  target.name === undefined || target.label === target.name ? target.label : `${target.name}: ${target.label}`;
 
 export interface Outcome {
   findings: Finding[];
-  /** Each target read, the proof's left out. */
+  /** Each target of the list, in its order, the proof's left out: those read, and those not pulled (`unpulled`). */
   targets: ReadTarget[];
+  /** Each item that fails the run: every one not read, but an image not pulled. */
   unreadable: { name: string; why: string }[];
   read: number;
   /** The Kubernetes version the charts are rendered for: the k3s node's. */
@@ -617,14 +650,15 @@ export async function scan(
         }
         result = { ...(await once), target };
       }
-      if (result.unreadable) {
+      if (result.unreadable && !result.unpulled) {
         unreadable.push({
           name: target.label === item.name ? item.name : `${item.name}: ${target.label}`,
           why: result.unreadable,
         });
         continue;
       }
-      read++;
+      // An image not pulled stays on the list, made from its item as one read is, so what carries its findings
+      // (deadlines.ts) gives them the same place, lane and pins.
       targetsRead.push({
         key: target.key,
         kind: item.kind,
@@ -636,7 +670,10 @@ export async function scan(
         line: item.line,
         ...(item.chart ? { chart: item.chart } : {}),
         ...(target.pin ? { pin: target.pin } : {}),
+        ...(result.unreadable ? { unpulled: result.unreadable } : {}),
       });
+      if (result.unreadable) continue;
+      read++;
       findings.push(...findingsOf(result, lockfiles.get(item.file)), ...nodeFindingsOf(result, database));
     }
   }
@@ -695,10 +732,16 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS, trivy
   lines.push(
     `Read ${outcome.read} targets. Findings by severity: ${SEVERITIES.map((s) => `${s.toLowerCase()} ${total[s]}`).join(', ')}.`,
   );
+  const unpulled = outcome.targets.filter((target) => target.unpulled !== undefined);
   if (outcome.unreadable.length) {
     lines.push(`Not read (${outcome.unreadable.length}):`);
     for (const entry of outcome.unreadable) lines.push(`  ${entry.name}: ${entry.why}`);
-  } else lines.push('Every item was read.');
+  }
+  if (unpulled.length) {
+    lines.push(`Not pulled (${unpulled.length}):`);
+    for (const target of unpulled) lines.push(`  ${targetName(target)}: ${target.unpulled}`);
+  }
+  if (!outcome.unreadable.length && !unpulled.length) lines.push('Every item was read.');
   const proof = outcome.proof;
   lines.push(
     proof.unreadable
@@ -715,15 +758,19 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS, trivy
   for (const run of used) lines.push(`  ${runLine(run)}`);
   const over = overLimits(file, limits);
   if (over.length) lines.push(`The results are over code scanning's limits: ${over.join('; ')}.`);
-  const passes = !outcome.unreadable.length && proof.found && !proof.unreadable && !over.length;
+  // An image not pulled is carried only by a run that uploads, which reads the last run's state: a proving run has none.
+  const passes =
+    !outcome.unreadable.length && proof.found && !proof.unreadable && !over.length && (upload || !unpulled.length);
   lines.push(
-    passes
-      ? upload
-        ? 'Every item was read: the results are written for upload.'
-        : 'Every item was read: a proving run uploads nothing.'
-      : 'The run fails, and nothing is uploaded.',
+    !passes
+      ? 'The run fails, and nothing is uploaded.'
+      : unpulled.length
+        ? `Every other item was read: the results are written for upload once the last run's findings of the ${unpulled.length === 1 ? 'image' : `${unpulled.length} images`} not pulled are carried into them, and the run fails after it.`
+        : upload
+          ? 'Every item was read: the results are written for upload.'
+          : 'Every item was read: a proving run uploads nothing.',
   );
-  return { lines, passes, file };
+  return { lines, passes, file, unpulled };
 }
 
 /** A run as the log names it: its category, how many results, and its items, by their keys. */
@@ -938,7 +985,7 @@ export async function main(args: string[]): Promise<number> {
     database,
     new Set(files.files),
   );
-  const { lines, passes, file } = report(outcome, upload, LIMITS, pin[2]);
+  const { lines, passes, file, unpulled } = report(outcome, upload, LIMITS, pin[2]);
   const osv = join(checkout, 'osv-scanner.toml');
   const exceptions = judge(
     POLICY,
@@ -951,16 +998,20 @@ export async function main(args: string[]): Promise<number> {
   for (const line of lines) console.log(line);
   for (const warning of exceptions.warnings) console.log(`::warning::${warning}`);
   for (const entry of outcome.unreadable) console.log(`::error::Not read: ${entry.name}: ${entry.why}`);
+  // Carried by the next step, or the run fails there: an error when this run fails on it, a warning until then.
+  for (const target of unpulled)
+    console.log(`::${passes ? 'warning' : 'error'}::Not pulled: ${targetName(target)}: ${target.unpulled}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary(outcome, lines)}\n`);
   if (!passes) return 1;
-  // What deadlines.ts reads, after the upload: every run that passes, a proving run's too.
+  // What deadlines.ts reads, before the upload: every run that passes, a proving run's too.
   writeFileSync(
     join(out, 'deadlines.json'),
     JSON.stringify(handoff(repository ?? '', started, cache, checkout, outcome, exceptions.excepted)),
   );
   if (upload) {
-    // The file checked against the limits, as it was checked.
-    writeFileSync(join(out, 'vulnerabilities.sarif'), JSON.stringify(file));
+    // The file checked against the limits, as it was checked; none where an image was not pulled, since this run's
+    // results alone would close that image's alerts: deadlines.ts writes it, with the last run's findings carried.
+    if (!unpulled.length) writeFileSync(join(out, 'vulnerabilities.sarif'), JSON.stringify(file));
     writeFileSync(
       join(out, 'exceptions.json'),
       JSON.stringify({ repository, excepted: Object.fromEntries(exceptions.excepted) }),
@@ -979,9 +1030,11 @@ export interface Handoff {
   cache: string;
   /** pnpm's `minimumReleaseAge` in the scanned repository, in minutes, where it sets one. */
   minimumReleaseAge?: number | undefined;
+  /** Each result, merged, in the list's order, without its description, but where a target was not pulled. */
   findings: Finding[];
   /** The alert key (sarif.ts's `alertKey`) of each excepted result. */
   excepted: string[];
+  /** Each target of the list, in its order: one with `unpulled` was not read. */
   targets: ReadTarget[];
   /** The Kubernetes version the charts were rendered for, for rendering a later chart the same way. */
   kubeVersion?: string | undefined;
@@ -996,12 +1049,16 @@ export function handoff(
   excepted: Map<string, string>,
 ): Handoff {
   const workspace = join(checkout, 'pnpm-workspace.yaml');
+  // With an image not pulled, deadlines.ts writes the SARIF, rules and all, so the findings keep their descriptions.
+  const whole = outcome.targets.some((target) => target.unpulled !== undefined);
   return {
     repository,
     started,
     cache,
     minimumReleaseAge: existsSync(workspace) ? minimumReleaseAge(readFileSync(workspace, 'utf-8')) : undefined,
-    findings: merge(outcome.findings).map(({ title: _t, description: _d, ...finding }) => finding),
+    findings: merge(outcome.findings).map(({ description, ...finding }) =>
+      whole ? { ...finding, description } : finding,
+    ),
     excepted: [...excepted.keys()],
     targets: outcome.targets,
     kubeVersion: outcome.kubeVersion,

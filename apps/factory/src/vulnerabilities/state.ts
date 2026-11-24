@@ -11,8 +11,9 @@
  * moved from another run or repository does not open.
  *
  * Losing it resets no deadline: a scan that finds no state it can open reads the alerts, as a proving run always does
- * (deadlines.ts's `seen` and `stated`), and writes the next. The alerts hold every day but a renamed item's from
- * before its rename.
+ * (deadlines.ts's `seen` and `stated`), and writes the next. The alerts hold every day; what they do not hold is a
+ * finding whole, so only a state carries an image's findings into a run that could not pull it (deadlines.ts's
+ * `carried`).
  *
  *     node apps/factory/src/vulnerabilities/state.ts new        a key, base64, for SCAN_STATE_KEY
  *
@@ -59,6 +60,22 @@ export interface StateFinding {
   fix?: { target: string; day: string } | undefined;
   /** Its move's place in the run's `moves.json`, from 1; absent for one with no fix, or excepted. */
   move?: number | undefined;
+  /**
+   * The rest of the finding as the scan read it (sarif.ts's `Finding`), which makes the same result again on a run
+   * that cannot pull its image (deadlines.ts's `carried`): its item's key and the item as the list names it, the label
+   * its message names, with the digest read, the publisher's rating, the CVSS score, where in the image it is, and the
+   * advisory's title and link. Its description is left out: with it the state would be several times the size, and
+   * only the rule's long text, never a result or its alert, is made from it. A state written before these has none,
+   * and carries nothing.
+   */
+  item?: string | undefined;
+  listed?: string | undefined;
+  label?: string | undefined;
+  publisher?: Severity | undefined;
+  score?: number | undefined;
+  path?: string | undefined;
+  title?: string | undefined;
+  url?: string | undefined;
 }
 
 export interface State {
@@ -181,6 +198,17 @@ function problemOf(state: unknown, repository: string, run: string): string | un
     }
     if (f.move !== undefined && (!Number.isInteger(f.move) || (f.move as number) < 1 || f.fix === undefined))
       return `gives ${at} a move that is not one`;
+    // What carries it on a run that cannot pull its image, each held to its shape where it is there.
+    for (const name of ['item', 'listed', 'label'])
+      if (f[name] !== undefined && !isText(f[name])) return `gives ${at} a value for ${name} that is not text`;
+    // A path in an image and an advisory's own words, as Trivy gave them: any text the state's own size allows.
+    for (const name of ['path', 'title', 'url'])
+      if (f[name] !== undefined && typeof f[name] !== 'string')
+        return `gives ${at} a value for ${name} that is not text`;
+    if (f.publisher !== undefined && !SEVERITIES.includes(f.publisher as Severity))
+      return `gives ${at} a publisher's rating that is not one`;
+    if (f.score !== undefined && !(typeof f.score === 'number' && Number.isFinite(f.score) && f.score >= 0))
+      return `gives ${at} a score that is not one`;
   }
   return undefined;
 }

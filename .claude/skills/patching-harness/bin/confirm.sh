@@ -173,8 +173,11 @@ queued_base || echo "the queued base FAILED: the deploy pin's verdict below is n
 k -n factory rollout restart deploy/patching >/dev/null
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Done once the deploy pin's pull request has merged, and each move's pull request the App opened since has every check
-# completed and the worker's word, at its head, on why it waits to be queued (at Supervised, for Martin); or at 35
-# minutes, whatever stands then.
+# completed and the worker's word, at its head, that it waits for the level ("waits":"level", "at Supervised a move
+# waits for Martin"). The worker says that only after the gate's verdict, the checks and mergeability are through, the
+# last step before it would queue (deploy-queue.ts's queueOne), so it is the pass where Supervised is exercised; its
+# earlier words at that head (`verdict`, `checks`, `conflict`) decide nothing. A move the gate held never gets that
+# word, and D then watches to 35 minutes, whatever stands then.
 d_settled() {
   local merged moves logs n head pending
   merged=$(gh pr list -R "$R" --state merged -L 20 --json title,createdAt \
@@ -187,7 +190,8 @@ d_settled() {
   while read -r n head; do
     pending=$(gh pr checks "$n" -R "$R" --json bucket -q '[.[]|select(.bucket=="pending")]|length' 2>/dev/null || true)
     [ "$pending" = 0 ] || return 1
-    grep -F "\"number\":$n," <<<"$logs" | grep -F "\"head\":\"$head\"" | grep -qF 'pull request waits to be queued' || return 1
+    grep -F "\"number\":$n," <<<"$logs" | grep -F "\"head\":\"$head\"" | grep -F '"waits":"level"' |
+      grep -qF 'pull request waits to be queued' || return 1
   done <<<"$moves"
 }
 until_d=$(($(date +%s) + 2100))

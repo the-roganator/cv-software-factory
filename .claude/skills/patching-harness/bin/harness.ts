@@ -98,7 +98,7 @@ function pinWatchNames(tests: Test[]): string[] {
   ];
 }
 
-function preflight(state: State) {
+function preflight(state: State, appJustReset: boolean) {
   const wrong: string[] = [];
   // The moves the scratch GitHub worker takes, which a reset writes to the ConfigMap `scratch-pin-watch` from
   // batch.env (copies.sh's pin_watch) and the worker reads as it starts: every move a small run's tests stand on.
@@ -154,8 +154,9 @@ function preflight(state: State) {
   // The app's release whole, on the copy's main: a reset takes the app back to its baseline, which is a release through
   // the full canary, and one the canary may abort (back past an ordinary fix, its journeys fail; during a store restore
   // the traffic generator is stopped, and it has too few requests). No test judges that release: the baseline is the
-  // tests' starting point. So the run promotes it whole while it is in flight or aborted, and waits for the Rollout
-  // to be Healthy on main before the clock starts. A test's own release comes after the scan, and is never promoted.
+  // tests' starting point. So a run that has just reset the app copy promotes it whole while it is in flight or
+  // aborted; any other run (a factory campaign, `--no-reset`, a resume) promotes only an aborted one, as what is in
+  // flight there may be a test's own. Either waits for the Rollout to be Healthy on main before the clock starts.
   const appMain = sh('gh', ['api', `repos/${APP}/commits/main`, '-q', '.sha']).trim();
   let rollout = '';
   let promoted = false;
@@ -171,7 +172,7 @@ function preflight(state: State) {
       'jsonpath={.status.phase} {.status.abort}',
     ]).trim();
     if (synced === appMain && rollout.startsWith('Healthy')) break;
-    if (synced === appMain && rollout) {
+    if (synced === appMain && rollout && (appJustReset || rollout.endsWith('true'))) {
       // Again on each look while it is not Healthy: a full promotion asked twice is the same promotion.
       if (!promoted) say(state, `pre-flight: the app's release of its baseline is ${rollout}; promoting it whole`);
       sh('kubectl', ['argo', 'rollouts', '--context', CONTEXT, '-n', 'website', 'promote', '--full', 'website']);
@@ -925,8 +926,11 @@ function workerWaits(state: State): Map<string, string> {
  * its verdict passes and nothing left can change it. Each of its pull requests is unmerged and never queued, with
  * every required check and the gate's verdict at its head in. A forgery's is then final: no watch owns its branch and
  * nothing but a person queues it. Any other's needs its checks green too, so no recovery writes its head again for
- * the gate to judge anew, and the worker to have said, at that head, that it waits for the level or the verdict, which
- * nothing in the run changes. With no pull request yet one may still open: not decided.
+ * the gate to judge anew, and the worker's last word at that head to be the one that ends its pass for good: for a
+ * head the gate held, `verdict` (a rule no level queues); for one it passed (`major`, `move`), `level`, which the worker
+ * says only once the verdict, the checks and mergeability are through, the last step before it would queue. The
+ * worker also says `verdict` while the gate judges again, so that alone decides nothing for a head the gate passed.
+ * With no pull request yet one may still open: not decided.
  */
 function decidedHeld(state: State, test: Test, waits: Map<string, string>): boolean {
   const pulls = state.seen[test.id]?.pulls ?? [];
@@ -934,9 +938,9 @@ function decidedHeld(state: State, test: Test, waits: Map<string, string>): bool
   return pulls.every((p) => {
     if (p.mergedAt || p.queuedBy || p.pending.length || p.gatePending) return false;
     if (test.pr.by === 'forged') return true;
-    return (
-      !p.red.length && p.rule !== undefined && ['level', 'verdict'].includes(waits.get(`${p.number} ${p.head}`) ?? '')
-    );
+    const said = waits.get(`${p.number} ${p.head}`);
+    if (p.red.length || p.rule === undefined) return false;
+    return p.rule === 'held' ? said === 'verdict' : said === 'level';
   });
 }
 
@@ -1141,6 +1145,12 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
     }
     const merged = seen.pulls.find((p) => p.mergedAt);
     if (merged) return fail(`#${merged.number} merged at ${clock(state, merged.mergedAt)}, and must not`);
+    // A major the level holds is one the gate passed as a major: held by the gate for anything else, it proves nothing.
+    const expected = test.rule ?? 'major';
+    const misjudged =
+      test.major && seen.pulls.find((p) => p.state === 'open' && p.rule !== undefined && p.rule !== expected);
+    if (misjudged)
+      return fail(`#${misjudged.number}: the gate's rule is ${misjudged.rule}, not ${expected}: ${where(misjudged)}`);
     if (!seen.pulls.length) return { pass: true, why: 'no pull request opened' };
     const waiting = seen.pulls.filter((p) => p.state === 'open' && p.pending.length);
     if (waiting.length) return fail(`#${waiting[0]?.number} not settled: ${where(waiting[0] as Pull)}`);
@@ -1325,14 +1335,17 @@ function run(state: State) {
         .join('\n')}`,
     );
 
+  // Whether this process reset the app copy, so the release in flight on its main is the baseline's (preflight).
+  let appJustReset = false;
   if (!state.resetAt && !has('--no-reset')) {
     say(state, `reset: ./copies.sh ${reset.join(' ')}`);
     const out = sh(join(BIN, 'copies.sh'), reset, { cwd: BIN, timeout: 30 * 60_000 });
     writeFileSync(join(dirOf(state.id), 'reset.log'), out);
     state.resetAt = new Date().toISOString();
+    appJustReset = reset.includes('app');
     save(state);
   }
-  if (!state.scan1) preflight(state);
+  if (!state.scan1) preflight(state, appJustReset);
   if (!state.scan1 && state.resetAt && !has('--no-reset') && !has('--no-scan')) {
     // The push of the reset's commit started a scan of its own, and the worker opens its pull requests from it: the
     // run stands on that one, and its clock starts there. From a minute before the reset, for any skew between the

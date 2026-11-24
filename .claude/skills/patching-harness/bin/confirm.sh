@@ -2,6 +2,7 @@
 # The confirming pass: every test on one code baseline, in batches of a few, with the two level checks.
 #   ./confirm.sh <a directory for its baseline logs>
 #   STEPS="C D" ./confirm.sh <dir> runs some of its steps (A B C D apps W; all by default).
+#   APP_TESTS="16 20" names the app tests the apps step runs, in that order (all eight by default).
 # It prints one section a step, and `harness.ts summary` at the end. One baseline (every staged set-up, no
 # STAGED_EXTRA) serves A, B, C, D, the apps and W: a batch differs only in the moves the pin watch takes, which the
 # harness's reset of the factory copy gives the scratch worker. X2 and X4 each build a baseline of their own. A batch's
@@ -244,7 +245,7 @@ fi
 # The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.
 # N8's three ride beside test 20, Dependabot's pull request, which the line has no part in.
 if want apps && [ -n "$based" ]; then
-for test in 8a 10 11 12 13 16 20 N1; do
+for test in ${APP_TESTS:-8a 10 11 12 13 16 20 N1}; do  # APP_TESTS='16 20' runs some of them
   echo "##### app $test $(date -u +%H:%MZ)"
   with=(); [ "$test" = 13 ] && with=(--with X1a,X1b)
   [ "$test" = 20 ] && with=(--with N8a,N8b,N8c)

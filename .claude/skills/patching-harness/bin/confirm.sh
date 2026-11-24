@@ -17,6 +17,23 @@ STEPS=${STEPS:-A B C D apps W}
 want() { [[ " $STEPS " == *" $1 "* ]]; }
 k() { kubectl --context k3d-software-factory-scratch "$@"; }
 
+# What broke: one step's failure does not stop the next, but each is said at once and again after the summary, and the
+# pass then exits 1. A verdict of FAIL is the summary's, not a break.
+broken=()
+broke() { broken+=("$*"); echo "BROKE: $*"; }
+# The autonomy level, written to the scratch store; `show` prints the row it wrote.
+level() { # <level> [show]
+  local out
+  out=$(cd "$H" && ./level.sh "$1") || { broke "level $1"; return 1; }
+  if [ -n "${2:-}" ]; then grep '|' <<<"$out"; fi
+}
+# A harness run, its last lines shown: pipefail keeps harness.ts's own status past `tail` and `cut`.
+harness() { # <lines> <args…>
+  local lines=$1; shift
+  (cd "$H" && set -o pipefail && mise exec -- node harness.ts "$@" 2>&1 | tail -"$lines" | cut -c1-700) ||
+    broke "harness.ts $*"
+}
+
 # The switches of the title check that fails on purpose (staged/factory/15-checks-red-on-purpose.patch): repository
 # variables the catalogue names for W1 and W2, set just before their run and cleared after it, and on any exit, as one
 # left set makes red every pull request whose title it names (the harness refuses to run beside one).
@@ -39,7 +56,7 @@ trap red_off EXIT
 # the factory copy writes them where the worker reads them as it starts (copies.sh's pin_watch).
 batch() { # <tests>
   local line
-  line="$(cd "$H" && mise exec -- node harness.ts only "$1" | grep '^PIN_WATCH_ONLY')" || return 1
+  line="$(cd "$H" && mise exec -- node harness.ts only "$1" | grep '^PIN_WATCH_ONLY')" || { broke "batch $1"; return 1; }
   LINE="$line" perl -0pi -e 's/^PIN_WATCH_ONLY=.*\n//mg; $_ .= "$ENV{LINE}\n"' "$BATCH"
   echo "the pin watch takes: ${line#PIN_WATCH_ONLY=}"
 }
@@ -53,6 +70,7 @@ baseline() { # <log>
     (cd "$H" && ./copies.sh "$step") >>"$1" 2>&1 || {
       echo "FAILED at $step"
       grep -n "FAIL \|AssertionError\|copies.sh:\|error:" "$1" | tail -8 | cut -c1-300
+      broke "baseline: $step (see $1)"
       return 1
     }
   done
@@ -73,8 +91,12 @@ baseline() { # <log>
     sleep 20
   done
   echo "root: $state $(date -u +%H:%MZ)"
+  if [ "$state" != "Synced Healthy" ]; then
+    broke "baseline: root is $state after 30 minutes, not Synced Healthy"
+    return 1
+  fi
 }
-campaign() { (cd "$H" && mise exec -- node harness.ts factory "$@" --limit "${LIMIT:-60}" 2>&1 | tail -22 | cut -c1-520); }
+campaign() { harness 22 factory "$@" --limit "${LIMIT:-60}"; }
 # What the watches said of their branches after the run's own restart of the worker.
 watches() {
   echo "--- the watches after the run's restart:"
@@ -103,7 +125,7 @@ fi
 
 if want A && [ -n "$based" ]; then
 echo "##### A: 1,2,3,5,14a and the forgeries, Guarded $(date -u +%H:%MZ)"
-(cd "$H" && ./level.sh guarded >/dev/null)
+level guarded
 batch 1,2,3,5,14a && campaign --only 1,2,3,5,14a,N3a,N3b,N4,N5
 watches
 why
@@ -119,20 +141,19 @@ fi
 if want C && [ -n "$based" ]; then
 echo "##### C: 4a,4b at Lights-out $(date -u +%H:%MZ)"
 batch 2,4a,4b && {
-  (cd "$H" && ./level.sh lights-out | grep '|')
-  campaign --only 2,4a,4b --no-forge --lights-out
+  level lights-out show && campaign --only 2,4a,4b --no-forge --lights-out
 }
 fi
 
 if want D && [ -n "$based" ]; then
 echo "##### D: Supervised, no move queued $(date -u +%H:%MZ)"
-(cd "$H" && ./level.sh supervised | grep '|')
+level supervised show
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # C's moves, on the shared baseline; a build that failed part way leaves `work/` dirty and the reset refuses.
 batch 2,4a,4b
 # The worker stays stopped from the reset until that base has merged: started on the pushed baseline it opens the deploy
 # pull request at once, red, runs its checks again three times and is out of runs before the base is there.
-(cd "$H" && KEEP_WORKER_DOWN=1 ./copies.sh reset factory) >"$LOGS/confirm-d.log" 2>&1 || echo "the reset FAILED: see $LOGS/confirm-d.log; what follows is no verdict"
+(cd "$H" && KEEP_WORKER_DOWN=1 ./copies.sh reset factory) >"$LOGS/confirm-d.log" 2>&1 || broke "D: the reset (see $LOGS/confirm-d.log); what follows is no verdict"
 # A reset pushes main, so the deploy pull request's check finds no merge-queue run of its base and is red. Here alone,
 # where the deploy pin merging at Supervised is the test, one docs pull request of Martin's goes through the queue: the
 # deploy watch then writes its pull request on a base the queue ran. Elsewhere the red one keeps a deploy from
@@ -168,8 +189,8 @@ queued_base() {
   done
   echo "queued base: #$n did not merge in 30 minutes"; return 1
 }
-queued_base || echo "the queued base FAILED: the deploy pin's verdict below is no verdict"
-(cd "$H" && ./copies.sh worker 1)
+queued_base || broke "D: the queued base; the deploy pin's verdict below is no verdict"
+(cd "$H" && ./copies.sh worker 1) || broke "D: the worker's start"
 k -n factory rollout restart deploy/patching >/dev/null
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Done once the deploy pin's pull request has merged, and each move's pull request the App opened since has every check
@@ -209,7 +230,7 @@ gh pr list -R "$R" --state all -L 12 --json number,title,state,createdAt,mergedA
   -q ".[]|select(.createdAt>\"$since\")|\"#\(.number) \(.state) merged=\(.mergedAt) \(.title)\""
 echo "queue: $(gh api graphql -f owner="${R%%/*}" -f name="${R#*/}" -f query='query($owner: String!, $name: String!) {repository(owner:$owner,name:$name){mergeQueue(branch:"main"){entries(first:20){nodes{pullRequest{number}}}}}}' -q '.data.repository.mergeQueue.entries.nodes|map(.pullRequest.number)|join(",")')"
 k -n factory logs deploy/github --since-time="$since" | grep -o '"why":"[^"]*"' | sort | uniq -c | sort -rn | head -6
-(cd "$H" && ./level.sh guarded | grep '|')
+level guarded show
 fi
 
 # The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.
@@ -217,7 +238,7 @@ if want apps && [ -n "$based" ]; then
 for test in 8a 10 11 12 13 N1; do
   echo "##### app $test $(date -u +%H:%MZ)"
   with=(); [ "$test" = 13 ] && with=(--with X1a,X1b)
-  (cd "$H" && mise exec -- node harness.ts app "$test" ${with[@]+"${with[@]}"} --limit "${LIMIT:-60}" 2>&1 | tail -12 | cut -c1-700)
+  harness 12 app "$test" ${with[@]+"${with[@]}"} --limit "${LIMIT:-60}"
 done
 fi
 
@@ -226,12 +247,12 @@ fi
 # Guarded.
 if want W && [ -n "$based" ]; then
 echo "##### W: W1 to W4 $(date -u +%H:%MZ)"
-(cd "$H" && ./level.sh guarded >/dev/null)
+level guarded
 if batch W1a,W1b; then
 for test in ${W_APPS:-W2 W3 W4}; do  # W_APPS='W2 W4' W1=no runs some of them again
   echo "##### app $test $(date -u +%H:%MZ)"
   red_on "$test"
-  (cd "$H" && mise exec -- node harness.ts app "$test" --limit "${LIMIT:-60}" 2>&1 | tail -12 | cut -c1-700)
+  harness 12 app "$test" --limit "${LIMIT:-60}"
   red_off
 done
 if [ "${W1:-yes}" != no ]; then
@@ -249,7 +270,7 @@ fi
 # The security test X2; X1 rides beside test 13 in the apps step, X3 cannot be staged, and X4 is a step of its own
 # (below). Not in the default STEPS: STEPS=X ./confirm.sh <dir>. Guarded.
 if want X; then
-(cd "$H" && ./level.sh guarded >/dev/null)
+level guarded
 # X2: a baseline of its own, with staged/factory-x2/ (copies.sh's STAGED_EXTRA, in batch.env), the day's lockfile
 # moves and ejs's major. The line is taken out of batch.env after, and the next baseline is built without it (the
 # harness refuses any other test on this one).
@@ -266,11 +287,16 @@ fi
 # it. The line is taken out of batch.env after: the next baseline is built without it.
 if want X4; then
 echo "##### X4: a half-made Node move, finished by the line $(date -u +%H:%MZ)"
-(cd "$H" && ./level.sh guarded >/dev/null)
+level guarded
 perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg; $_ .= "STAGED_EXTRA=x4\n"' "$BATCH"
 batch W1a,W1b && SKIP_CHECK=1 baseline "$LOGS/confirm-x4.log" &&
-  (cd "$H" && mise exec -- node harness.ts app X4 --limit "${LIMIT:-60}" 2>&1 | tail -12 | cut -c1-700)
+  harness 12 app X4 --limit "${LIMIT:-60}"
 perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
 fi
 echo "##### summary $(date -u +%H:%MZ)"
-(cd "$H" && mise exec -- node harness.ts summary | cut -c1-170)
+(cd "$H" && set -o pipefail && mise exec -- node harness.ts summary | cut -c1-170) || broke "the summary"
+if [ ${#broken[@]} -gt 0 ]; then
+  echo "##### broke, so no pass:"
+  printf '  %s\n' "${broken[@]}"
+  exit 1
+fi

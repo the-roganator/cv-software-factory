@@ -353,6 +353,11 @@ interface State {
   /** A small run: the only tests this run stands for (`--only 1,2,N4`). The rest are not run, and not judged from it. */
   only?: string[] | undefined;
   resetAt?: string | undefined;
+  /**
+   * The reset's own push, which the scan its run stands on is found by: when it began, and `main`'s commit before and
+   * after it. A reset that found `main` at the baseline has the two the same, and pushed nothing.
+   */
+  reset?: { startedAt: string; before: string; after: string } | undefined;
   scan1?: Scan | undefined;
   kickedAt?: string;
   pods0?: Record<string, number>;
@@ -409,36 +414,36 @@ function latestScan(repo: string, since?: string, event?: string): Scan | undefi
     }
   );
 }
-/**
- * The scan the push of the reset's commit to main started, which the worker opens its pull requests from: the one a
- * run stands on when there is one. None when the reset found main at the baseline already and pushed nothing, or when
- * it has not appeared within two minutes.
- */
-function pushScan(repo: string, since: string): { scan?: Scan; main: string } {
+/** `main`'s commit now: the sha alone, as the commit's own page lists its files, hundreds for a baseline. */
+function mainOf(repo: string): string {
   repoOk(repo);
-  // The sha alone: the commit's own page lists its files, hundreds for a baseline.
-  const main = sh('gh', ['api', `repos/${repo}/commits/main`, '--jq', '.sha']).trim();
+  return sh('gh', ['api', `repos/${repo}/commits/main`, '--jq', '.sha']).trim();
+}
+/**
+ * The scan the push of `commit` to main started since `since`, which the worker opens its pull requests from: the one
+ * a run stands on when there is one. Asked for by its commit, so pushes to main after it (the worker's merges) do not
+ * hide it; none when it has not appeared within two minutes.
+ */
+function pushScan(repo: string, commit: string, since: string): Scan | undefined {
+  repoOk(repo);
   for (let i = 0; i < 12; i++) {
     const runs =
       JSON.parse(
         sh('gh', [
           'api',
-          `repos/${repo}/actions/workflows/vulnerabilities.yml/runs?branch=main&event=push&per_page=20`,
+          `repos/${repo}/actions/workflows/vulnerabilities.yml/runs?branch=main&event=push&head_sha=${commit}&per_page=20`,
         ]),
       ).workflow_runs ?? [];
-    const run = runs.find((r: any) => r.head_sha === main && r.created_at >= since);
+    const run = runs.find((r: any) => r.head_sha === commit && r.created_at >= since);
     if (run)
       return {
-        main,
-        scan: {
-          id: run.id,
-          createdAt: run.created_at,
-          conclusion: run.status === 'completed' ? run.conclusion : undefined,
-        },
+        id: run.id,
+        createdAt: run.created_at,
+        conclusion: run.status === 'completed' ? run.conclusion : undefined,
       };
     if (i < 11) sleep(10_000);
   }
-  return { main };
+  return undefined;
 }
 function dispatchScan(_state: State, repo: string): Scan {
   repoOk(repo);
@@ -1339,30 +1344,48 @@ function run(state: State) {
   let appJustReset = false;
   if (!state.resetAt && !has('--no-reset')) {
     say(state, `reset: ./copies.sh ${reset.join(' ')}`);
+    const startedAt = new Date().toISOString();
+    const before = mainOf(repo);
     const out = sh(join(BIN, 'copies.sh'), reset, { cwd: BIN, timeout: 30 * 60_000 });
     writeFileSync(join(dirOf(state.id), 'reset.log'), out);
     state.resetAt = new Date().toISOString();
+    state.reset = { startedAt, before, after: mainOf(repo) };
     appJustReset = reset.includes('app');
     save(state);
   }
   if (!state.scan1) preflight(state, appJustReset);
   if (!state.scan1 && state.resetAt && !has('--no-reset') && !has('--no-scan')) {
     // The push of the reset's commit started a scan of its own, and the worker opens its pull requests from it: the
-    // run stands on that one, and its clock starts there. From a minute before the reset, for any skew between the
-    // Mac's clock and GitHub's.
-    const since = new Date(Date.parse(state.resetAt) - 60_000).toISOString().replace(/\.\d+Z$/, 'Z');
-    const { scan, main } = pushScan(repo, since);
-    if (scan) {
-      state.scan1 = scan;
+    // run stands on that one, and its clock starts there. Its commit and its time are the reset's own, recorded as it
+    // ran: main may have moved since (the pre-flight takes minutes, and the worker merges). From two minutes before
+    // the reset began, as the push is among its first acts, for any skew between the Mac's clock and GitHub's; a
+    // shared baseline's earlier pushes of the same commit are older than that.
+    const reset = state.reset;
+    if (!reset) {
       say(
         state,
-        `scan ${scan.id}, started ${scan.createdAt}: the push of main at ${main.slice(0, 7)} started it, and the worker opens its pull requests from it`,
+        "no scan of the reset's push to stand on: this run's state does not record main's commit at its reset; the run dispatches one",
+      );
+    } else if (reset.before === reset.after) {
+      say(
+        state,
+        `the reset found main at the baseline, ${reset.after.slice(0, 7)}, and pushed nothing, so no scan started: the run dispatches one`,
       );
     } else {
-      say(
-        state,
-        `no scan of a push of main at ${main.slice(0, 7)} since the reset (the reset found main at the baseline, and pushed nothing): the run dispatches one`,
-      );
+      const since = new Date(Date.parse(reset.startedAt) - 120_000).toISOString().replace(/\.\d+Z$/, 'Z');
+      const scan = pushScan(repo, reset.after, since);
+      if (scan) {
+        state.scan1 = scan;
+        say(
+          state,
+          `scan ${scan.id}, started ${scan.createdAt}: the reset's push of main at ${reset.after.slice(0, 7)} started it, and the worker opens its pull requests from it`,
+        );
+      } else {
+        say(
+          state,
+          `the reset pushed main to ${reset.after.slice(0, 7)}, and no scan of that push appeared since ${since}: the run dispatches one`,
+        );
+      }
     }
   }
   if (!state.scan1) {

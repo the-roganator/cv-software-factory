@@ -127,20 +127,20 @@ if want A || want B || want C || want D || want apps || want W; then
 fi
 
 if want A && [ -n "$based" ]; then
-# With them the routine update (15), the Makefile's pin (17), the workflow's pin that stays an issue (N6) and its
-# forgery (N7). Test 19, the image no registry serves, is on the baseline, so every factory batch's scan has it and
+# With them the Makefile's pin (17), the workflow's pin that stays an issue (N6) and its forgery (N7). Test 19, the image no registry serves, is on the baseline, so every factory batch's scan has it and
 # each batch judges it.
-echo "##### A: 1,2,3,5,14a,15,17,N6,19 and the forgeries, Guarded $(date -u +%H:%MZ)"
+echo "##### A: 1,2,3,5,14a,17,N6,19 and the forgeries, Guarded $(date -u +%H:%MZ)"
 level guarded
-batch 1,2,3,5,14a,15,17,N6 && campaign --only 1,2,3,5,14a,15,17,N6,19,N3a,N3b,N4,N5,N7
+batch 1,2,3,5,14a,17,N6 && campaign --only 1,2,3,5,14a,17,N6,19,N3a,N3b,N4,N5,N7
 watches
 why
 fi
 
 if want B && [ -n "$based" ]; then
-# 18, the routine update across a major, is held here beside 4a and 4b.
-echo "##### B: 4a,4b,6,7a,7b,9,14b,18,19, Guarded $(date -u +%H:%MZ)"
-batch 4a,4b,6,7a,7b,9,14b,18 && campaign --only 4a,4b,6,7a,7b,9,14b,18,19 --no-forge
+# The lockfile's routine updates are here beside its findings' moves: 15 merges and deploys with the day's others, and
+# 18, the one across a major, is held beside 4a and 4b.
+echo "##### B: 4a,4b,6,7a,7b,9,14b,15,18,19, Guarded $(date -u +%H:%MZ)"
+batch 4a,4b,6,7a,7b,9,14b,15,18 && campaign --only 4a,4b,6,7a,7b,9,14b,15,18,19 --no-forge
 watches
 why
 fi

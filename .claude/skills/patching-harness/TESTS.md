@@ -34,7 +34,7 @@ deploy and the next real scan. A local run is a filter before that, never the pr
 | 12 | App: an image under `deploy/` | Syft v1.54.0 to v1.57.1, app #43 | Dependabot's, with Martin's approval |
 | 13 | App: a Critical fix | none; `make drill-vulnerability` stages one | never run |
 | 14 | Either: what mise or the Makefile pins; k3s | none open | an issue, or the cluster's command |
-| 15 | Factory: a routine update, a pin behind with no advisory | the argo-rollouts chart, 2.43.6 with 2.43.12 out | not listed by the scan |
+| 15 | Factory: a routine update, a pin behind with no advisory | none real; `pino` staged at 10.3.1, with 10.4.0 out | not listed by the scan |
 | 16 | App: a routine update, made by the line | `vitest` 5.1.0 to 5.1.1, in Dependabot's app #74 | left to Dependabot |
 | 17 | Factory: a Makefile pin with a finding | Argo CD's chart, `ARGOCD_CHART` 10.15.0 to 10.18.3 | an issue |
 | 18 | Either: a routine update that crosses a major | none real; lefthook staged at 1.13.6, with 2.x out | not listed by the scan |

@@ -95,5 +95,7 @@
 /SECURITY.md                 @mrogan
 /LICENSE                     @mrogan
 /policy/                     @mrogan
+# The patching tests, which the patching harness proves a change to patching against
+/.claude/skills/patching-harness/TESTS.md @mrogan
 # Generated from policy/vulnerabilities.ts (scripts/osv-scanner.ts): Scorecard's view of the exceptions
 /osv-scanner.toml            @mrogan

@@ -177,7 +177,12 @@ function blankHtmlCode(raw: string, state: { unended: boolean }): string {
   return out + raw.slice(copied);
 }
 
-/** The HTML blocks that end at a line holding their end (CommonMark's kinds 1 to 5), by what starts them. */
+/**
+ * The HTML blocks that end at a line holding their end (CommonMark's kinds 1 to 5), by what starts them. A comment's
+ * block ends at a line with `-->`, and not at `--!>`, which ends a comment in a browser: this is where CommonMark ends
+ * the block, not a filter of comments (CodeQL's js/bad-tag-filter reads it as one). Every line of the block is read as
+ * live, so ending it sooner would read the lines after as Markdown, where a backtick hides a mention GitHub still sees.
+ */
 const ENDS_AT: [RegExp, RegExp][] = [
   [/^<(?:pre|script|style|textarea)(?:[\s>]|$)/i, /<\/(?:pre|script|style|textarea)>/i],
   [/^<!--/, /-->/],

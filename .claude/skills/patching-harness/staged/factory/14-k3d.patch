@@ -1,0 +1,48 @@
+# Test 14, a mise pin: k3d back to 5.8.3 in mise.lock, whose k3d-proxy and k3d-tools images 5.9.0 fixes.
+diff --git a/mise.lock b/mise.lock
+index d3220d41..0406ce49 100644
+--- a/mise.lock
++++ b/mise.lock
+@@ -168,29 +168,29 @@ checksum = "sha256:34bec4eba761ba5c16d1965ee6b8f5b0abe5993974a802274e2a4f0418893
+ url = "https://get.helm.sh/helm-v4.3.1-darwin-amd64.tar.gz"
+ 
+ [[tools.k3d]]
+-version = "5.9.0"
++version = "5.8.3"
+ backend = "aqua:k3d-io/k3d"
+ specifiers = ["5"]
+ 
+ [tools.k3d."platforms.linux-arm64"]
+-checksum = "sha256:03cde5cf23e6e8e67de5a039ecf26e5b85aca82fba3e5d13dadf904cd218a250"
+-url = "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-arm64"
+-url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/436305757"
++checksum = "sha256:0b8110f2229631af7402fb828259330985918b08fefd38b7f1b788a1c8687216"
++url = "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-arm64"
++url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/229450023"
+ 
+ [tools.k3d."platforms.linux-x64"]
+-checksum = "sha256:06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0"
+-url = "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64"
+-url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/436305793"
++checksum = "sha256:dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e"
++url = "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64"
++url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/229450045"
+ 
+ [tools.k3d."platforms.macos-arm64"]
+-checksum = "sha256:fe106541d5d0a3f18debcd4d432a16f8c0ce3e6ddc06f8fbb6f696a122313e00"
+-url = "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-darwin-arm64"
+-url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/436305875"
++checksum = "sha256:8da468daa7dc7cf7cdd4735f90a9bb05179fa27858250f62e3d8cdf5b5ca0698"
++url = "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-darwin-arm64"
++url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/229450067"
+ 
+ [tools.k3d."platforms.macos-x64"]
+-checksum = "sha256:b4aabc37534f95b9c764e7823f2df923f50d57600837aa60a06266cce47db732"
+-url = "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-darwin-amd64"
+-url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/436305915"
++checksum = "sha256:fd0f8e9e8ea4d8bc3674572ca6ed0833b639bf57c43c708616d937377324cfea"
++url = "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-darwin-amd64"
++url_api = "https://api.github.com/repos/k3d-io/k3d/releases/assets/229450076"
+ 
+ [[tools.kubectl]]
+ version = "1.37.2"

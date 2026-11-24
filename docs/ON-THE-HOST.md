@@ -100,6 +100,8 @@ The workflows read the same two from each repository's variables of those names,
 
 `deploy/` names the real two: Argo CD syncs this repository's `main`, and admission admits only the real two's images, signed by their `build.yml`. So the local cluster never deploys a copy's merge, and a try against copies goes as far as the merge: its pull requests, CI, the review gate, the pin moves and the worker's guards.
 
+The patching tests keep two such copies standing, with a cluster of their own that deploys their merges: the [`patching-harness` skill](../.claude/skills/patching-harness/SKILL.md).
+
 ## The red-team harness
 
 The red-team harness (`factory red-team`) makes each of spec 5.3's attacks Martin launches ([its page](COMPONENTS/RED-TEAM-HARNESS.md)). It connects as its own role, `factory_redteam` (`make up` makes `postgres-redteam`), and acts only on an `attack.launched` of Martin's. It makes the egress and image attacks' pods in `red-team`, a namespace of their own, so it needs the Kubernetes API (`kubectl proxy`, as the line's `soak-check` uses it); attack 1 posts a report through the app's front door (`APP_URL`, `INGRESS_URL`); attacks 2 and 3 ask the GitHub worker's attack door (`GITHUB_ATTACK_URL`, the worker's `ATTACK_PORT`). Scale the cluster's copy to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/red-team --replicas=0`), and back to one after, so two do not take the same launch:

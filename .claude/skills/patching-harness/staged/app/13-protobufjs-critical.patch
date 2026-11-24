@@ -1,0 +1,87 @@
+# Test 13, a Critical in the app: protobufjs back to 7.5.4 (CVE-2026-41242, fixed in 7.5.5), under @grpc/proto-loader 0.8.0, whose range admits it.
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 92768d6..0555be8 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -295,8 +295,8 @@ packages:
+     resolution: {integrity: sha512-SgC/B3/VZ8lTyOZ4Cwk6f1skWhmkNAaVfiX90qd5u1rRXGKk1//8FTUEN9GvOUq7rfWIqAYkA3CoyumYVpOS6g==}
+     engines: {node: '>=12.10.0'}
+ 
+-  '@grpc/proto-loader@0.8.1':
+-    resolution: {integrity: sha512-wtF6h+DY6M3YaDBPAmvuuA6jV8Sif9MjtOI5euKFWRgCDl5PeDpPsHR9u2l6St5ceY8AZgoNDww5+HvEsXFsGg==}
++  '@grpc/proto-loader@0.8.0':
++    resolution: {integrity: sha512-rc1hOQtjIWGxcxpb9aHAfLpIctjEnsDehj0DAiVfBlmT84uvR0uUtN2hEi/ecvWVjXUGf5qPF4qEgiLOx1YIMQ==}
+     engines: {node: '>=6'}
+     hasBin: true
+ 
+@@ -521,6 +521,9 @@ packages:
+   '@protobufjs/float@1.0.2':
+     resolution: {integrity: sha512-Ddb+kVXlXst9d+R9PfTIxh1EdNkgoRe5tOX6t01f1lYWOvJnSPDBlG241QLzcyPdoNTsblLUdujGSE4RzrTZGQ==}
+ 
++  '@protobufjs/inquire@1.1.2':
++    resolution: {integrity: sha512-pa0vFRuws4wkvaXKK1uXZMAwAX4/t8ANaJo45iw/oQHNQ9q5xUzwgFmVJGXiga2BeN+zpX7Vf9vmsiIa2J+MUw==}
++
+   '@protobufjs/path@1.1.2':
+     resolution: {integrity: sha512-6JOcJ5Tm08dOHAbdR3GrvP+yUUfkjG5ePsHYczMFLq3ZmMkAD98cDgcT2iA1lJ9NVwFd4tH/iSSoe44YWkltEA==}
+ 
+@@ -1067,8 +1070,8 @@ packages:
+   process-warning@5.1.0:
+     resolution: {integrity: sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw==}
+ 
+-  protobufjs@7.6.4:
+-    resolution: {integrity: sha512-RJJPTTpvFfHcWLkIa2JFWK4XvtSzS0yEWDmunqHXli1h3JlkbcQZXDZdcWxv+JK3Xsl5/UFDPZ0iGm7DAengYw==}
++  protobufjs@7.5.4:
++    resolution: {integrity: sha512-CvexbZtbov6jW2eXAvLukXjXUW1TzFaivC46BpWc/3BpcCysb5Vffu+B3XHMm8lVEuy2Mm4XGex8hBSg1yapPg==}
+     engines: {node: '>=12.0.0'}
+ 
+   quick-format-unescaped@4.0.4:
+@@ -1302,19 +1305,19 @@ snapshots:
+ 
+   '@grpc/grpc-js@1.14.4':
+     dependencies:
+-      '@grpc/proto-loader': 0.8.1
++      '@grpc/proto-loader': 0.8.0
+       '@js-sdsl/ordered-map': 4.4.2
+ 
+   '@grpc/grpc-js@1.14.6':
+     dependencies:
+-      '@grpc/proto-loader': 0.8.1
++      '@grpc/proto-loader': 0.8.0
+       '@js-sdsl/ordered-map': 4.4.2
+ 
+-  '@grpc/proto-loader@0.8.1':
++  '@grpc/proto-loader@0.8.0':
+     dependencies:
+       lodash.camelcase: 4.3.0
+       long: 5.3.2
+-      protobufjs: 7.6.4
++      protobufjs: 7.5.4
+       yargs: 17.7.3
+ 
+   '@jridgewell/resolve-uri@3.1.2': {}
+@@ -1579,6 +1582,8 @@ snapshots:
+ 
+   '@protobufjs/float@1.0.2': {}
+ 
++  '@protobufjs/inquire@1.1.2': {}
++
+   '@protobufjs/path@1.1.2': {}
+ 
+   '@protobufjs/pool@1.1.0': {}
+@@ -1931,7 +1936,7 @@ snapshots:
+ 
+   process-warning@5.1.0: {}
+ 
+-  protobufjs@7.6.4:
++  protobufjs@7.5.4:
+     dependencies:
+       '@protobufjs/aspromise': 1.1.2
+       '@protobufjs/base64': 1.1.2
+@@ -1939,6 +1944,7 @@ snapshots:
+       '@protobufjs/eventemitter': 1.1.1
+       '@protobufjs/fetch': 1.1.1
+       '@protobufjs/float': 1.0.2
++      '@protobufjs/inquire': 1.1.2
+       '@protobufjs/path': 1.1.2
+       '@protobufjs/pool': 1.1.0
+       '@protobufjs/utf8': 1.1.2

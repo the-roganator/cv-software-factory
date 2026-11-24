@@ -41,6 +41,10 @@ describe('the files a release changes', () => {
       /version/i.test(readFileSync(file, 'utf-8')),
     );
     expect(readers).toEqual([
+      // The patching harness, which reads the app's scratch copy's dependencies' ranges, and names a test's move in a
+      // scratch copy's manifest: never this checkout's version line.
+      '.claude/skills/patching-harness/bin/catalogue.ts',
+      '.claude/skills/patching-harness/bin/harness.ts',
       // The GitHub worker's guard, which reads a manifest the pin step changed for its dependencies' ranges alone.
       'apps/factory/src/github/actions.ts',
       // The pin step's rule for a manifest's lines in the GitHub worker's guard: a dependency's range, and not its

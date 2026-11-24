@@ -188,7 +188,9 @@ export function isFixture(file: string) {
     /\.test\.[a-z]+$/.test(file) ||
     // The console's sample event log, which it shows when no store is connected, and its design's mockups.
     file.startsWith('packages/samples/') ||
-    file.startsWith('docs/design/mockups/')
+    file.startsWith('docs/design/mockups/') ||
+    // The patching harness's test set-ups: diffs applied to its scratch copies alone, whose own scan reads their pins.
+    file.startsWith('.claude/skills/patching-harness/staged/')
   );
 }
 

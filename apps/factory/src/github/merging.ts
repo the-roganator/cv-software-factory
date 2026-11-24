@@ -155,7 +155,8 @@ export interface QueueCandidate {
  * repository, into `main` (`guardDependabotPin`), and to nothing the factory owns. That is all this guard knows of
  * Dependabot's pull request. What it changes is the review gate's to judge, and GitHub's queue takes it only with the
  * gate's check passed; that the gate passed it as an exact pin of the factory's workflows, at this head, and that
- * Martin's autonomy level queues one, are the watch's to read before it asks (`workflowPinQueueWatch`).
+ * Martin's autonomy level queues one, are the watch's to read before it asks (`workflowPinQueueWatch`), and the
+ * issue guard passes Dependabot's for that watch alone, never for a worker that asks over the door.
  */
 export function guardQueue(
   repo: string,

@@ -773,6 +773,9 @@ describe('judging a pull request through the API', () => {
       status: 'modified',
       patch: `@@ -1,3 +1,3 @@\n jobs:\n   ${workflow}:\n-${call(workflow, OLD)}\n+${call(workflow, NEW)}`,
     });
+    /** One of the factory's workflows, with what it declares to a caller. */
+    const declares = (secrets = '      KEY:\n        required: false\n') =>
+      `on:\n  workflow_call:\n    secrets:\n${secrets}jobs: {}\n`;
     /** The app's repository with two callers, both moved, and the factory's with NEW on main, ahead of OLD. */
     const bumped = (over: Record<string, unknown> = {}) => {
       github({
@@ -789,6 +792,7 @@ describe('judging a pull request through the API', () => {
           'jobs:\n  check:\n    steps:\n      - uses: actions/checkout@1111 # v4\n',
         [`/repos/${FACTORY}/compare/${OLD}...${NEW}`]: { status: 'ahead' },
         [`/repos/${FACTORY}/compare/${NEW}...main`]: { status: 'ahead' },
+        [`/repos/${FACTORY}/contents/.github/workflows/`]: declares(),
         ...over,
       });
       const asked: string[] = [];
@@ -826,6 +830,38 @@ describe('judging a pull request through the API', () => {
       expect(said).toMatchObject({ pass: false, rule: 'held' });
       expect(said.pending).toBeUndefined();
       expect(said.title).toContain("Not an exact pin of the factory's workflows: 2222222 is not on the factory's main");
+    });
+
+    it('holds one whose workflow declares otherwise to its caller at the new commit, or is gone there, for Martin', async () => {
+      const review = `/repos/${FACTORY}/contents/.github/workflows/review.yml?ref=${NEW}`;
+      const asked = bumped({
+        [review]: declares('      KEY:\n        required: false\n      NEW_KEY:\n        required: true\n'),
+      });
+      const said = await judge(run, bump);
+      // Each of the two workflows called, at each of the two commits, from the factory's repository.
+      expect(asked.filter((path) => path.startsWith(`/repos/${FACTORY}/contents/`)).sort()).toEqual([
+        `/repos/${FACTORY}/contents/.github/workflows/codeql.yml`,
+        `/repos/${FACTORY}/contents/.github/workflows/codeql.yml`,
+        `/repos/${FACTORY}/contents/.github/workflows/review.yml`,
+        `/repos/${FACTORY}/contents/.github/workflows/review.yml`,
+      ]);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toBeUndefined();
+      expect(said.title).toBe(
+        "Not an exact pin of the factory's workflows: the factory's review.yml declares otherwise at 2222222 than at 1111111 (the secret NEW_KEY is added): what its caller gives it may have to change with it, so this bump is Martin's, who moves the pin and the caller together: waits for Martin to approve aaaaaaa",
+      );
+      bumped({ [review]: 404 });
+      expect((await judge(run, bump)).title).toContain("the factory's review.yml is not there at 2222222");
+    });
+
+    it('waits while GitHub does not answer for what a workflow declares', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      bumped({ [`/repos/${FACTORY}/contents/.github/workflows/review.yml?ref=${NEW}`]: 502 });
+      const judging = judge(run, bump);
+      await vi.runAllTimersAsync();
+      const said = await judging;
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toContain('the gate could not check its exact pin');
     });
 
     it('holds one whose commit GitHub does not have, trying once: an answer a later try would not change', async () => {

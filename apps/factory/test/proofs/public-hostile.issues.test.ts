@@ -4,6 +4,7 @@
  * and lets through only the outside reply on anyone else's. Martin's (CODEOWNERS), as every file here is: a change to
  * what they assert is a change to the proof.
  */
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,8 +20,9 @@ import { BranchRefused } from '../../src/github/branches.ts';
 import { DEPENDABOT_USER, IssueGuard, IssueRefused, MARTIN, OUTSIDE_REPLY, openedBy } from '../../src/github/issues.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
-import { GitHubWorker } from '../../src/github/worker-client.ts';
+import { GitHubWorker, type GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { closeIssue } from '../../src/line/issues.ts';
+import { verifyRefusal } from '../../src/signed-refusals.ts';
 import { doorReads } from '../github/door-reads.ts';
 import { calls, quiet, REPO, type Route, type Sent } from '../github/fake.ts';
 import { AT, github, records, writes } from '../github/issues-harness.ts';
@@ -215,20 +217,73 @@ describe('Dependabot’s pull request, which the App did not open', () => {
     answer: () => ({ body: { data: { enqueuePullRequest: { mergeQueueEntry: { position: 1, state: 'QUEUED' } } } } }),
   };
   const queues = (sent: Sent[]) => sent.filter((s) => s.path === '/graphql');
+  /** What the worker's watch of Dependabot's workflow pins says of itself as it asks. */
+  const WATCH = 'workflow-pin-watch';
 
   it('knows Dependabot as the review gate does', () => {
     expect(DEPENDABOT_USER).toBe(REVIEW_GATE_DEPENDABOT);
   });
 
-  it('is added to the merge queue from its GitHub Actions branch into main, at the head named', async () => {
+  it('is added to the merge queue from its GitHub Actions branch into main, at the head named, for the worker’s watch', async () => {
     const { github: gh, sent } = github([pull(150), queued]);
     const actions = new LiveActions(gh);
-    expect(await actions.enqueuePullRequest(REPO, 150, HEAD)).toEqual({ position: 1, state: 'QUEUED' });
+    expect(await actions.enqueuePullRequest(REPO, 150, HEAD, WATCH)).toEqual({ position: 1, state: 'QUEUED' });
     expect(queues(sent).map((s) => s.body)).toMatchObject([
       { variables: { input: { pullRequestId: 'PR_node_150', expectedHeadOid: HEAD } } },
     ]);
     // And nothing else is written.
     expect(writes(sent).map((s) => s.path)).toEqual(['/graphql']);
+  });
+
+  it('is added for nobody who asks: not a caller that names no asker, nor the line over HTTP, each refusal kept and signed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'issues-'));
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const recorder = new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT });
+    const { github: gh, sent } = github([pull(150), queued]);
+    const actions = new LiveActions(gh, { guard: new IssueGuard({ openedBy: openedBy(gh), recorder }) });
+    for (const asker of [undefined, 'worker'] as const)
+      await expect(actions.enqueuePullRequest(REPO, 150, HEAD, asker)).rejects.toBeInstanceOf(IssueRefused);
+    // Over the door, as the line asks: its request has no place to say who asks, and one that tries is not read.
+    const server = createWorkerServer({
+      actions,
+      reads: doorReads(),
+      repositories: [REPO],
+      health: () => ({}),
+      recorder,
+      log: quiet,
+    });
+    const { url } = await listenLocal(server);
+    try {
+      const failed = await new GitHubWorker(url)
+        .act('enqueuePullRequest', REPO, { number: 150, expectedHead: HEAD })
+        .catch((error: unknown) => error);
+      expect(failed).toMatchObject({ status: 403, kind: 'issue-refused' });
+      expect((failed as Error).message).toContain("only the worker's own watch adds one to the merge queue");
+      expect(verifyRefusal(publicKey, (failed as GitHubWorkerError).refusal)).toMatchObject({
+        ok: true,
+        refusal: {
+          repo: REPO,
+          number: 150,
+          payload: {
+            mechanism: 'github-guard',
+            action: `Add to the merge queue pull request #150 in ${REPO}`,
+            guardrails: [10],
+          },
+        },
+      });
+      for (const asker of ['workflow-pin-watch', 'watch']) {
+        const named = await fetch(`${url}/v1/actions/enqueuePullRequest`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ repo: REPO, number: 150, expectedHead: HEAD, asker }),
+        });
+        expect(named.status, asker).toBe(400);
+      }
+    } finally {
+      server.close();
+    }
+    expect(queues(sent)).toEqual([]);
+    expect(writes(sent)).toEqual([]);
   });
 
   it('has nothing else done to it: no comment, label, update, review, readying, close or description', async () => {
@@ -280,7 +335,7 @@ describe('Dependabot’s pull request, which the App did not open', () => {
   ])('is never added to the merge queue when it is one %s', async (_what, over) => {
     const { github: gh, sent } = github([pull(150, over), queued]);
     const actions = new LiveActions(gh);
-    await expect(actions.enqueuePullRequest(REPO, 150, HEAD)).rejects.toBeInstanceOf(BranchRefused);
+    await expect(actions.enqueuePullRequest(REPO, 150, HEAD, WATCH)).rejects.toBeInstanceOf(BranchRefused);
     expect(queues(sent)).toEqual([]);
   });
 
@@ -288,13 +343,15 @@ describe('Dependabot’s pull request, which the App did not open', () => {
     for (const number of [131, 121, 140, 151]) {
       const { github: gh, sent } = github([pull(number), queued]);
       const actions = new LiveActions(gh);
-      await expect(actions.enqueuePullRequest(REPO, number, HEAD), String(number)).rejects.toBeInstanceOf(IssueRefused);
+      await expect(actions.enqueuePullRequest(REPO, number, HEAD, WATCH), String(number)).rejects.toBeInstanceOf(
+        IssueRefused,
+      );
       // Refused on who opened it, before the pull request is read.
       expect(calls(sent).map((s) => s.path)).toEqual([`/repos/${REPO}/issues/${number}`]);
     }
   });
 
-  it('is guarded the same way in a dry run, which records the enqueue and asks GitHub for none', async () => {
+  it('is guarded the same way in a dry run, which records the watch’s enqueue alone and asks GitHub for none', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dry-run-'));
     const { github: gh, sent } = github();
     const artifacts = new DiskArtifacts(dir);
@@ -306,9 +363,10 @@ describe('Dependabot’s pull request, which the App did not open', () => {
       base: 'main',
     });
     const bump = new DryRunActions(artifacts, quiet, AT, undefined, guard, candidate(BUMP));
-    await bump.enqueuePullRequest(REPO, 150, HEAD);
+    await expect(bump.enqueuePullRequest(REPO, 150, HEAD)).rejects.toBeInstanceOf(IssueRefused);
+    await bump.enqueuePullRequest(REPO, 150, HEAD, WATCH);
     const npm = new DryRunActions(artifacts, quiet, AT, undefined, guard, candidate('dependabot/npm_and_yarn/x-1.0.0'));
-    await expect(npm.enqueuePullRequest(REPO, 150, HEAD)).rejects.toBeInstanceOf(BranchRefused);
+    await expect(npm.enqueuePullRequest(REPO, 150, HEAD, WATCH)).rejects.toBeInstanceOf(BranchRefused);
     await expect(bump.comment(REPO, 150, 'Queued.')).rejects.toBeInstanceOf(IssueRefused);
     expect(writes(sent)).toEqual([]);
     expect((await records(dir)).filter((r) => r.action === 'enqueuePullRequest')).toHaveLength(1);

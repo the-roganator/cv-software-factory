@@ -649,8 +649,9 @@ async function ahead(repo: string, from: string, to: string, token: string): Pro
 
 /**
  * The most one try at the check of an exact pin of the factory's workflows may take: the listing of the head's
- * workflows, then each of them at once, then the two comparisons at once, each read with the 30 seconds `request`
- * gives one.
+ * workflows, then each of them at once, then the two comparisons and each called workflow at both commits (two reads
+ * for each, twelve for six) at once, each read with the 30 seconds `request` gives one. The reads of what the
+ * workflows declare are made beside the comparisons, so they add requests and no time.
  */
 export const WORKFLOW_PIN_TRY_MS = 90_000;
 
@@ -782,6 +783,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
                   // The factory's repository is public, so the token of the repository that calls it reads it.
                   compare: (base, to) => compared(FACTORY_REPO, base, to, read),
                   calls: () => factoryCalls(repo, head, read),
+                  declared: (workflow, commit) => fileAt(FACTORY_REPO, `.github/workflows/${workflow}`, commit, read),
                 },
                 complete,
               ),

@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { excusedNote, judgedNote } from '../apps/factory/src/gates/test-integrity.ts';
 import {
   type Found,
@@ -18,6 +19,8 @@ import {
   callMoves,
   codeOwners,
   DEPENDABOT,
+  declarationOf,
+  declaresOtherwise,
   digestMoves,
   EXCUSED,
   exactPin,
@@ -947,8 +950,40 @@ describe('an exact pin of the factory’s workflows', () => {
     },
     calls: async () =>
       CALLERS.map((caller, i) => ({ file: `.github/workflows/${caller}.yml`, line: call(WORKFLOWS[i] ?? '', NEW) })),
+    declared: async () => DECLARES,
     ...over,
   });
+  /** One of the factory's workflows, as a caller calls it: what it declares, among its other events and its jobs. */
+  const DECLARES = `# The app's gates.
+name: gates
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      skip:
+        description: Whether the change is one the gates do not judge.
+        type: boolean
+        default: false
+    secrets:
+      SCAN_STATE_KEY:
+        description: The key the caller's scan seals its state with.
+        required: false
+    outputs:
+      kind:
+        description: What the change is.
+        value: \${{ jobs.kind.outputs.kind }}
+
+permissions: {}
+
+jobs:
+  kind:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          on:
+            workflow_call:
+              inputs: {}
+`;
   const judged = (
     files: FileChange[],
     over: { pr?: PullRequest; repo?: string; checks?: WorkflowPinChecks; complete?: boolean } = {},
@@ -962,7 +997,7 @@ describe('an exact pin of the factory’s workflows', () => {
 
   it('moves only the commit of a call, each in its place', () => {
     expect(callMoves(file('codeql', moved('codeql')))).toEqual([
-      { file: '.github/workflows/codeql.yml', from: OLD, to: NEW },
+      { file: '.github/workflows/codeql.yml', workflow: 'codeql.yml', from: OLD, to: NEW },
     ]);
   });
 
@@ -1135,6 +1170,155 @@ describe('an exact pin of the factory’s workflows', () => {
     };
     await expect(judged(bump(), { checks: checks({ compare: down }) })).rejects.toThrow('503');
     await expect(judged(bump(), { checks: checks({ calls: down }) })).rejects.toThrow('503');
+    await expect(judged(bump(), { checks: checks({ declared: down }) })).rejects.toThrow('503');
+  });
+
+  describe('what a called workflow declares to its caller', () => {
+    const MARTINS =
+      "what its caller gives it may have to change with it, so this bump is Martin's, who moves the pin and the caller together";
+    /** The bump, with the factory's app-gates.yml as `was` at the old commit and `now` at the new. */
+    const between = (was: string | undefined, now: string | undefined) =>
+      judged(bump(), {
+        checks: checks({
+          declared: async (workflow, commit) =>
+            workflow !== 'app-gates.yml' ? DECLARES : commit === OLD ? was : commit === NEW ? now : undefined,
+        }),
+      });
+    const refusedBetween = async (was: string | undefined, now: string | undefined) => {
+      const said = await between(was, now);
+      if (!said || !('reason' in said)) throw new Error(`not refused: ${JSON.stringify(said)}`);
+      return said.reason;
+    };
+    const otherwise = (what: string) =>
+      `the factory's app-gates.yml declares otherwise at 2222222 than at 1111111 (${what}): ${MARTINS}`;
+
+    it('reads each workflow called at the head, at the old commit and the new, and passes one that declares the same', async () => {
+      const read: string[] = [];
+      const reading = checks({
+        declared: async (workflow, commit) => {
+          read.push(`${workflow}@${commit.slice(0, 1)}`);
+          return DECLARES;
+        },
+      });
+      expect(await judged(bump(), { checks: reading })).toHaveProperty('moved');
+      expect(read.sort()).toEqual(WORKFLOWS.flatMap((workflow) => [`${workflow}.yml@1`, `${workflow}.yml@2`]).sort());
+    });
+
+    it('passes a change that is no change to what it declares: a comment, a description, the order, its jobs, another event', async () => {
+      for (const now of [
+        DECLARES.replace('    inputs:', '    # What a caller says of the change.\n    inputs:'),
+        DECLARES.replace('        type: boolean', '        type: boolean # true or false'),
+        DECLARES.replace('Whether the change is one the gates do not judge.', 'Whether to judge nothing.'),
+        DECLARES.replace(
+          "        description: The key the caller's scan seals its state with.",
+          "        description: >-\n          The key the caller's scan\n          seals its state with.",
+        ),
+        DECLARES.replace(
+          '        type: boolean\n        default: false',
+          '        default: false\n        type: boolean',
+        ),
+        DECLARES.replace('        type: boolean', "        type: 'boolean'"),
+        DECLARES.replace('    runs-on: ubuntu-24.04', '    runs-on: ubuntu-26.04'),
+        DECLARES.replace('  pull_request:', '  pull_request:\n  merge_group:'),
+        DECLARES.replace(/\n/g, '\r\n'),
+      ])
+        expect(await between(DECLARES, now), now).toHaveProperty('moved');
+    });
+
+    it('refuses an added secret or input, a removed input, a renamed output and one declared otherwise, naming each', async () => {
+      const secret = DECLARES.replace('    outputs:', '      NEW_KEY:\n        required: true\n    outputs:');
+      expect(await refusedBetween(DECLARES, secret)).toBe(otherwise('the secret NEW_KEY is added'));
+      const input = DECLARES.replace(
+        '    secrets:',
+        '      ref:\n        type: string\n        required: true\n    secrets:',
+      );
+      expect(await refusedBetween(DECLARES, input)).toBe(otherwise('the input ref is added'));
+      expect(await refusedBetween(input, DECLARES)).toBe(otherwise('the input ref is removed'));
+      const renamed = DECLARES.replace('      kind:\n        description', '      what:\n        description');
+      expect(await refusedBetween(DECLARES, renamed)).toBe(
+        otherwise('the output kind is removed, the output what is added'),
+      );
+      // The same names, asked for otherwise: a secret made required, an input's type, an output's value.
+      expect(await refusedBetween(DECLARES, DECLARES.replace('required: false', 'required: true'))).toBe(
+        otherwise('the secret SCAN_STATE_KEY is declared otherwise'),
+      );
+      expect(await refusedBetween(DECLARES, DECLARES.replace('type: boolean', 'type: string'))).toBe(
+        otherwise('the input skip is declared otherwise'),
+      );
+      expect(await refusedBetween(DECLARES, DECLARES.replace('default: false', 'default: "false"'))).toBe(
+        otherwise('the input skip is declared otherwise'),
+      );
+      // A part gone whole.
+      const none = DECLARES.replace(/ {4}secrets:\n(?: {6,}.*\n)+/, '');
+      expect(await refusedBetween(DECLARES, none)).toBe(otherwise('the secret SCAN_STATE_KEY is removed'));
+    });
+
+    it('refuses a workflow that is gone, or declares no workflow_call, at either commit', async () => {
+      expect(await refusedBetween(DECLARES, undefined)).toBe(
+        `the factory's app-gates.yml is not there at 2222222: ${MARTINS}`,
+      );
+      expect(await refusedBetween(undefined, DECLARES)).toContain('is not there at 1111111');
+      const uncalled = DECLARES.replace(/ {2}workflow_call:\n(?: {4,}.*\n)+/, '');
+      expect(await refusedBetween(DECLARES, uncalled)).toBe(
+        `the factory's app-gates.yml declares no workflow_call at 2222222: ${MARTINS}`,
+      );
+      expect(await refusedBetween(uncalled, DECLARES)).toContain('declares no workflow_call at 1111111');
+      expect(await refusedBetween(DECLARES, 'name: gates\njobs: {}\n')).toContain(
+        'declares no workflow_call at 2222222',
+      );
+    });
+
+    it('refuses a declaration whose lines differ and that it does not read, and passes one written the same at both', async () => {
+      const listed = DECLARES.replace('        type: boolean', '        type: choice\n        options: [a, b]');
+      expect(await refusedBetween(DECLARES, listed)).toBe(
+        `the factory's app-gates.yml declares its workflow_call in other words at 2222222 than at 1111111, which the gate does not read (a value it does not read: [a, b]): ${MARTINS}`,
+      );
+      expect(await between(listed, listed)).toHaveProperty('moved');
+      const braces = 'on: { workflow_call: { inputs: { skip: { type: boolean } } } }\njobs: {}\n';
+      expect(await refusedBetween(DECLARES, braces)).toContain('which the gate does not read');
+    });
+
+    it('comes after the commits’ own reasons: a commit that is not on main is refused for that', async () => {
+      const other = checks({ calls: async () => [], declared: async () => undefined });
+      expect(await refused(bump(OLD, OTHER), { checks: other })).toBe("3333333 is not on the factory's main");
+    });
+
+    it('reads a declaration as YAML does, for every workflow of the factory’s that a caller may call', () => {
+      const folder = new URL('../.github/workflows/', import.meta.url);
+      const callable: string[] = [];
+      for (const name of readdirSync(folder).filter((each) => each.endsWith('.yml'))) {
+        const text = readFileSync(new URL(name, folder), 'utf-8');
+        const on = (parse(text) as { on?: unknown }).on;
+        const declared = declarationOf(text);
+        const calledBy = typeof on === 'object' && on !== null && !Array.isArray(on) && 'workflow_call' in on;
+        if (!calledBy) {
+          expect(declared, name).toBeUndefined();
+          continue;
+        }
+        callable.push(name);
+        expect(declared, name).toHaveProperty('read', (on as { workflow_call: unknown }).workflow_call ?? {});
+      }
+      // Each workflow the app calls is among them.
+      for (const workflow of WORKFLOWS) expect(callable).toContain(`${workflow}.yml`);
+    });
+
+    it('reads `on:` however a workflow that declares nothing writes it', () => {
+      for (const on of [
+        'on: workflow_call',
+        'on: [push, workflow_call]',
+        'on:\n  - push\n  - workflow_call',
+        'on:\n  workflow_call:',
+        'on:\n  workflow_call: {}',
+        "'on':\n  workflow_call: # none\n  push:",
+      ])
+        expect(declarationOf(`${on}\njobs: {}\n`), on).toMatchObject({ read: {} });
+      for (const on of ['on: push', 'on: [push]', 'on:\n  - push', 'on:\n  push:\n    workflow_call:', 'jobs: {}'])
+        expect(declarationOf(`${on}\njobs: {}\n`), on).toBeUndefined();
+      // The same at both commits, a workflow with nothing declared passes.
+      expect(
+        declaresOtherwise('x.yml', { from: OLD, to: NEW }, 'on: workflow_call\n', 'on:\n  workflow_call:\n'),
+      ).toBeUndefined();
+    });
   });
 
   describe('as the rule decides it', () => {

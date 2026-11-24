@@ -10,8 +10,9 @@
  *   `IssueRefused`, carrying it, which the worker answers 403, as GitHub answers an issue the App may not change. A
  *   pull request is an issue to GitHub, so one the App opened passes, as its issues do.
  * - **Dependabot's workflow pins.** One action passes on a pull request GitHub's Dependabot opened: adding it to the
- *   merge queue, and then only from its `dependabot/github_actions/` branch of the repository into `main`, which the
- *   queue's guard holds (`guardQueue`, `merging.ts`). Such a pull request can move the commit the factory's own
+ *   merge queue, asked by the worker's own watch (`workflowPinQueueWatch`) and by nothing else, so no worker that
+ *   asks over the door, the line among them, adds one; and then only from its `dependabot/github_actions/` branch of
+ *   the repository into `main`, which the queue's guard holds (`guardQueue`, `merging.ts`). Such a pull request can move the commit the factory's own
  *   workflows are called at, which the App, with no `workflows` permission, cannot write. The guard holds who opened
  *   it, from where and into what, and nothing of what it changes: whether it is that bump and nothing else is the
  *   review gate's verdict (`exact-pin`), and whether one is queued is Martin's autonomy level, both of which the
@@ -86,6 +87,13 @@ export type OpenedBy = (repo: string, number: number) => Promise<Opened>;
  */
 export type Opener = 'app' | 'outside' | 'dependabot';
 
+/**
+ * Who asks for a pull request to be added to the merge queue: a worker that asks over the door, as the line does, and
+ * the worker's watches of the App's own pull requests, which need say nothing; or the watch of Dependabot's workflow
+ * pins, which says so in its own call. No request over HTTP can say it: the door passes on no such word.
+ */
+export type QueueAsker = 'worker' | 'workflow-pin-watch';
+
 const ISSUE = z.object({
   user: z.object({ id: z.number().int() }).nullable(),
   pull_request: z.unknown().optional(),
@@ -148,19 +156,30 @@ export class IssueGuard {
 
   /**
    * Passes an action on an issue or pull request the App opened, the outside reply, word for word, on an issue
-   * opened by anyone but Martin or the App, and adding to the merge queue a pull request Dependabot opened, which
-   * the queue's guard then holds to its workflow pins' branch (`guardQueue`). It answers whose it passed, for that
-   * guard to hold each to its own branches. Anything else is recorded, and thrown as `IssueRefused`.
+   * opened by anyone but Martin or the App, and adding to the merge queue a pull request Dependabot opened, when the
+   * watch of its workflow pins asks (`asker`), which the queue's guard then holds to its workflow pins' branch
+   * (`guardQueue`). It answers whose it passed, for that guard to hold each to its own branches. Anything else is
+   * recorded, and thrown as `IssueRefused`: the same enqueue asked by anyone else among it, in words of its own.
    */
-  async check(repo: string, number: number, action: IssueAction, body?: string): Promise<Opener> {
+  async check(
+    repo: string,
+    number: number,
+    action: IssueAction,
+    body?: string,
+    asker: QueueAsker = 'worker',
+  ): Promise<Opener> {
     const opened = await this.#openerOf(repo, number);
     if (opened.by === APP_USER) return 'app';
     if (action === 'comment' && body === OUTSIDE_REPLY && !opened.pullRequest && outside(opened.by)) return 'outside';
-    if (action === 'enqueuePullRequest' && opened.pullRequest && opened.by === DEPENDABOT_USER) return 'dependabot';
+    const dependabots = action === 'enqueuePullRequest' && opened.pullRequest && opened.by === DEPENDABOT_USER;
+    if (dependabots && asker === 'workflow-pin-watch') return 'dependabot';
     const what = opened.pullRequest ? 'pull request' : 'issue';
-    const output =
-      `${repo}#${number} was opened by ${opened.by === null ? 'a deleted account' : `user ${opened.by}`}, ` +
-      `not the factory's App: the factory acts only on the issues and pull requests it opened (guardrail 10).`;
+    const output = dependabots
+      ? `${repo}#${number} is Dependabot's, not the factory's App's: only the worker's own watch adds one to the merge ` +
+        "queue, once the review gate passed it as an exact pin of the factory's workflows and the autonomy level " +
+        'queues one. No worker that asks does (guardrail 10).'
+      : `${repo}#${number} was opened by ${opened.by === null ? 'a deleted account' : `user ${opened.by}`}, ` +
+        `not the factory's App: the factory acts only on the issues and pull requests it opened (guardrail 10).`;
     const refusal = await this.#recorder?.record({
       mechanism: 'github-guard',
       cause: 'issue',

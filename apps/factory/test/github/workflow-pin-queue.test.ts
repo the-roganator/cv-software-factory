@@ -137,7 +137,9 @@ function harness(
   let levels = 0;
   const actions = o.actions ?? {
     dryRun: false,
-    enqueuePullRequest: async (_repo: string, number: number, head: string) => {
+    enqueuePullRequest: async (_repo: string, number: number, head: string, asker?: string) => {
+      // The watch says who asks, in every call: the guard adds Dependabot's pull request for it alone.
+      expect(asker).toBe('workflow-pin-watch');
       enqueued.push([number, head]);
       return o.enqueue ? o.enqueue(number, head) : { position: 1, state: 'QUEUED' };
     },

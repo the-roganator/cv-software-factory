@@ -890,8 +890,8 @@ export const THEIRS =
  * another ecosystem among them, is not looked at. One of third-party actions, or of them and the factory's together,
  * is read, and waits on the gate's rule, which is never `exact-pin` for it: that pull request is Martin's.
  *
- * It does to Dependabot's pull request the one thing the worker's guard lets through, the enqueue: no commit, comment
- * or label. In a dry run it does nothing at all.
+ * It does to Dependabot's pull request the one thing the worker's guard lets through, the enqueue, which the guard
+ * lets through for this watch alone: no commit, comment or label. In a dry run it does nothing at all.
  */
 export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: string): Watch {
   if (!WORKFLOW_PIN_REPOS.includes(repo)) throw new Error(`The worker does not queue ${repo}'s workflow pins.`);
@@ -909,7 +909,11 @@ export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: 
   const queue: DeployQueueDependencies = {
     github,
     reads: { ...deps.reads, reviewVerdict },
-    actions: { enqueuePullRequest: (...args) => deps.actions.enqueuePullRequest(...args) },
+    // Said in this call alone: the guard adds Dependabot's pull request for this watch, and for no worker that asks.
+    actions: {
+      enqueuePullRequest: (where, number, head) =>
+        deps.actions.enqueuePullRequest(where, number, head, 'workflow-pin-watch'),
+    },
     recorder: deps.recorder,
     heads: { get: () => undefined },
     log: deps.log,

@@ -63,6 +63,35 @@ describe("ZAP's start", () => {
     expect(said).toEqual([`ZAP did not answer within 0s, try 1 of ${START_TRIES}: stopped.`]);
   });
 
+  it('gives the next attempt its whole limit when a stopped ZAP answers late, marking its own attempt alone', async () => {
+    const marked = new Set<number>();
+    const stoppedAt: number[] = [];
+    const began = Date.now();
+    const exit = await runStarted(
+      (attempt) => {
+        let end: (code: number | null) => void = () => {};
+        return {
+          exit: new Promise((resolve) => (end = resolve)),
+          // The first ZAP answers as it is stopped: too late, and for its own attempt.
+          stop: () => {
+            stoppedAt.push(Date.now() - began);
+            if (attempt === 1) marked.add(1);
+            end(137);
+          },
+          kill: () => end(137),
+        };
+      },
+      (attempt) => marked.has(attempt),
+      () => {},
+      40,
+      1,
+    );
+    expect(exit).toBe(NEVER_STARTED);
+    expect(stoppedAt).toHaveLength(2);
+    // The second waited its own 40ms, not ended as answered at once.
+    expect((stoppedAt[1] ?? 0) - (stoppedAt[0] ?? 0)).toBeGreaterThanOrEqual(35);
+  });
+
   it(`ends with its own status after ${START_TRIES} starts no ZAP answered`, async () => {
     let starts = 0;
     const exit = await runStarted(

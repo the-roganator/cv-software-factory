@@ -128,18 +128,18 @@ export async function startPostgres(): Promise<{ url: string; stop: () => void }
   );
   const port = docker('port', name, '5432/tcp').split(':').at(-1);
   // pg_isready answers before the server takes connections from outside; a query proves it does. A minute by the
-  // clock, since a slow runner's first initdb takes a while, each query given ten seconds of it: a count of tries
-  // would wait as long as each try took.
+  // clock, since a slow runner's first initdb takes a while, each query given at most ten seconds of what is left of
+  // it: a count of tries would wait as long as each try took.
   const until = Date.now() + 60_000;
   for (;;) {
     try {
       execFileSync('docker', ['exec', name, 'psql', '-U', 'factory', '-h', '127.0.0.1', '-c', 'select 1'], {
         stdio: 'pipe',
-        timeout: 10_000,
+        timeout: Math.max(1, Math.min(10_000, until - Date.now())),
       });
       break;
     } catch (error) {
-      if (Date.now() > until) throw error;
+      if (Date.now() + 250 >= until) throw error;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }

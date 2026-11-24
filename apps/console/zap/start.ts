@@ -63,14 +63,15 @@ const within = (promise: Promise<unknown>, ms: number) =>
   });
 
 /**
- * Starts ZAP up to `START_TRIES` times: a run whose ZAP has not answered (`answered`, which `hooks.py` makes true)
+ * Starts ZAP up to `START_TRIES` times: a run whose ZAP has not answered (`answered`, asked of each attempt by its
+ * number, which `hooks.py` makes true for its own attempt alone, so a stopped ZAP that answers late counts for nothing)
  * within `START_LIMIT_MS` is stopped and started again. A stopped run has `STOP_WAIT_MS` to end, then its client is
  * killed and given as long again, so a stop that does nothing (a Docker that does not answer) never holds the scan. The
  * last run's exit, or `NEVER_STARTED` when no run's ZAP answered.
  */
 export async function runStarted(
   start: (attempt: number) => Run,
-  answered: () => boolean,
+  answered: (attempt: number) => boolean,
   say: Say = console.error,
   limitMs = START_LIMIT_MS,
   everyMs = 2_000,
@@ -84,8 +85,9 @@ export async function runStarted(
       return code;
     });
     const until = Date.now() + limitMs;
-    while (!done && !answered() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, everyMs));
-    if (done || answered()) return exit;
+    while (!done && !answered(attempt) && Date.now() < until)
+      await new Promise((resolve) => setTimeout(resolve, everyMs));
+    if (done || answered(attempt)) return exit;
     run.stop();
     let how = 'stopped';
     if (!(await within(exit, stopWaitMs))) {

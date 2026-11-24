@@ -98,8 +98,9 @@ try {
   // here so that Java takes its IPv4 address.
   const linux = process.platform === 'linux';
   const target = linux ? harness.origin : harness.origin.replace('localhost', 'console.host');
-  // `hooks.py` writes it in the working folder once ZAP answers zap-baseline.py.
-  const answered = join(work, 'answered');
+  // `hooks.py` writes it in the working folder once ZAP answers zap-baseline.py: one for each attempt, named for it, so
+  // a ZAP stopped for not answering that answers late marks its own attempt, never the next.
+  const answered = (attempt: number) => join(work, `answered-${attempt}`);
   // Not spawnSync: the proxy and the admin service answer ZAP from this process, so it must keep running.
   const start = (attempt: number) => {
     const name = `zap-${process.pid}-${attempt}`;
@@ -114,7 +115,10 @@ try {
         '--volume',
         `${work}:/zap/wrk:rw`,
         // The values come from this process's environment, so they are never on a command line.
-        ...['SF_SESSION_COOKIE', 'SF_CSRF_TOKEN', 'SF_TARGET', 'SF_ORIGIN'].flatMap((name) => ['--env', name]),
+        ...['SF_SESSION_COOKIE', 'SF_CSRF_TOKEN', 'SF_TARGET', 'SF_ORIGIN', 'SF_ANSWERED'].flatMap((name) => [
+          '--env',
+          name,
+        ]),
         // Nothing left behind that ZAP's user owns and this one could not remove.
         ...['--env', 'PYTHONDONTWRITEBYTECODE=1'],
         ZAP_IMAGE,
@@ -132,6 +136,7 @@ try {
           SF_CSRF_TOKEN: session.token,
           SF_TARGET: target,
           SF_ORIGIN: harness.origin,
+          SF_ANSWERED: `answered-${attempt}`,
         },
       },
     );
@@ -144,10 +149,10 @@ try {
       kill: () => void zap.kill('SIGKILL'),
     };
   };
-  const exit = await runStarted(start, () => existsSync(answered));
+  const exit = await runStarted(start, (attempt) => existsSync(answered(attempt)));
   rmSync(REPORT, { recursive: true, force: true });
   mkdirSync(REPORT, { recursive: true });
-  cpSync(work, REPORT, { recursive: true, filter: (path) => !/(\.(py|tsv)|\/answered)$/.test(path) });
+  cpSync(work, REPORT, { recursive: true, filter: (path) => !/(\.(py|tsv)|\/answered-\d+)$/.test(path) });
   // On Linux what ZAP wrote is its user's; the temporary folder goes with the runner if it cannot go now.
   try {
     rmSync(work, { recursive: true, force: true });

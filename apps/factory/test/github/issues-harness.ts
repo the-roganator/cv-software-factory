@@ -4,7 +4,7 @@
  */
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { APP_USER, MARTIN } from '../../src/github/issues.ts';
+import { APP_USER, DEPENDABOT_USER, MARTIN } from '../../src/github/issues.ts';
 import { calls, client, type Route } from './fake.ts';
 
 export const SOMEONE = 4242;
@@ -19,6 +19,8 @@ export const ISSUES: Record<number, { by: number | null; pullRequest?: boolean }
   130: { by: SOMEONE },
   131: { by: SOMEONE, pullRequest: true },
   140: { by: null },
+  150: { by: DEPENDABOT_USER, pullRequest: true },
+  151: { by: DEPENDABOT_USER },
 };
 
 /** GitHub as the issue actions find it: each issue as `ISSUES` has it, open, with no comments, taking every write. */

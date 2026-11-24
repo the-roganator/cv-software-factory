@@ -343,7 +343,9 @@ function guardDeployWatch(repo: string, args: Record<string, unknown>): void {
 /**
  * Throws `BranchRefused` for an enqueue a worker asks in a repository whose merge queue only the worker's own watches
  * add to: this one's, where the deploy queue and the pin queue add only what their watches opened and the gate passed
- * (ADR 0017). The line adds to the app's alone.
+ * (ADR 0017). The line adds to the app's alone, and there only the App's own: Dependabot's bump of the factory's
+ * workflows is the worker's watch's to add, and the issue guard refuses it to every request that comes through here,
+ * which can name no asker (`CALLS`, `QueueAsker` in `issues.ts`).
  */
 function guardEnqueue(repo: string): void {
   if (repo === QUEUES_DEPLOYS_IN || PIN_REPOS.includes(repo)) {

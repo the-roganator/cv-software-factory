@@ -747,6 +747,7 @@ describe('the deploy queue watch', () => {
       state: 'open',
       draft: false,
       head: { ref: 'deploy/local', sha: HEAD, repo: REPO },
+      base: 'main',
     });
     const actions = new DryRunActions(store as never, quiet, undefined, undefined, guard, candidate);
     const { pass, sent } = harness({ actions });
@@ -1418,6 +1419,7 @@ describe('the pin queue watch', () => {
       state: 'open',
       draft: false,
       head: { ref: 'factory/pin/zap', sha: PIN_HEAD, repo: REPO },
+      base: 'main',
     });
     const actions = new DryRunActions(store as never, quiet, undefined, undefined, guard, candidate);
     const { pass, sent } = pinHarness({ actions });

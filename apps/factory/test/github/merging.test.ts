@@ -605,7 +605,7 @@ describe('merging in a dry run', () => {
       guard(),
       async (repo, n) => {
         const { head, state, draft } = pull(n, n === 18 ? { ref: 'factory/red-team-test-1a2b3c4d' } : {});
-        return { state, draft, head: { ref: head.ref, sha: head.sha, repo: repo } };
+        return { state, draft, head: { ref: head.ref, sha: head.sha, repo: repo }, base: 'main' };
       },
     );
     const reads = new DryRunReads(made, live, TIMES, () => now);

@@ -40,7 +40,7 @@ import {
   scratchBranch,
   withCarries,
 } from './deploys.ts';
-import { type IssueAction, IssueGuard, openedBy } from './issues.ts';
+import { type IssueAction, IssueGuard, type Opener, openedBy, type QueueAsker } from './issues.ts';
 import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
 import {
@@ -366,9 +366,10 @@ export interface Actions {
   /**
    * Adds a pull request the App opened to the merge queue, at `expectedHead` alone: the head the gate judged, so a
    * push since cannot ride its verdict (`merging.ts`). Refused, before GitHub is asked, for a pull request from a
-   * fork, from a branch the factory does not own, or from a red-team attack's.
+   * fork, from a branch the factory does not own, or from a red-team attack's. One of Dependabot's is added only when
+   * the watch of its workflow pins asks (`asker`, `issues.ts`), which no request over the door can say.
    */
-  enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued>;
+  enqueuePullRequest(repo: string, number: number, expectedHead: string, asker?: QueueAsker): Promise<Enqueued>;
   /**
    * Writes a watch's commit again, so that GitHub runs a pull request's checks again on a new head: the commit at
    * `head`, the branch's head now, made once more on its one parent with the same tree, its message the same but for
@@ -473,6 +474,7 @@ const QUEUE_PULL = z.object({
   draft: z.boolean().optional(),
   node_id: z.string().min(1),
   head: z.object({ ref: z.string(), sha: SHA, repo: z.object({ full_name: z.string() }).nullable() }),
+  base: z.object({ ref: z.string() }),
 });
 
 /** A pull request as the queue's guard reads it, from GitHub. */
@@ -486,6 +488,7 @@ export function queueCandidate(
       draft: pull.draft ?? false,
       nodeId: pull.node_id,
       head: { ref: pull.head.ref, sha: pull.head.sha, repo: pull.head.repo?.full_name ?? null },
+      base: pull.base.ref,
     };
   };
 }
@@ -870,11 +873,11 @@ export class LiveActions implements Actions {
     await this.#github.write(repo, 'POST', `/repos/${repo}/issues/${number}/comments`, { body });
   }
 
-  async enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued> {
-    await this.#guard.check(repo, number, 'enqueuePullRequest');
+  async enqueuePullRequest(repo: string, number: number, expectedHead: string, asker?: QueueAsker): Promise<Enqueued> {
+    const opener = await this.#guard.check(repo, number, 'enqueuePullRequest', undefined, asker);
     // Read from GitHub once the guard has passed it, so the pull request queued is the one guarded, by its own id.
     const pull = await queueCandidate(this.#github)(repo, number);
-    guardQueue(repo, number, pull, expectedHead);
+    guardQueue(repo, number, pull, expectedHead, opener === 'dependabot' ? opener : 'app');
     const answer = await this.#github.graphql(
       repo,
       ENQUEUE,
@@ -1084,9 +1087,15 @@ export class DryRunActions implements Actions {
    * from `DRY_RUN_NUMBERS_FROM` up is one this dry run made, which GitHub never had, as the App: it passes, whether
    * this worker remembers it or has started again since.
    */
-  async #guarded(repo: string, number: number, action: IssueAction, body?: string): Promise<void> {
-    if (number >= DRY_RUN_NUMBERS_FROM) return;
-    await this.#guard.check(repo, number, action, body);
+  async #guarded(
+    repo: string,
+    number: number,
+    action: IssueAction,
+    body?: string,
+    asker?: QueueAsker,
+  ): Promise<Opener> {
+    if (number >= DRY_RUN_NUMBERS_FROM) return 'app';
+    return this.#guard.check(repo, number, action, body, asker);
   }
 
   /** A commit this dry run would have made, or undefined for any other. */
@@ -1366,7 +1375,7 @@ export class DryRunActions implements Actions {
    * then recorded, and its own pull request reads as queued from then on, and merges after the dry run's while
    * (`dry-run-reads.ts`). One that reads as merged is not open, and is refused (409).
    */
-  async enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued> {
+  async enqueuePullRequest(repo: string, number: number, expectedHead: string, asker?: QueueAsker): Promise<Enqueued> {
     const made = this.#pulls.get(number);
     const own = made?.repo === repo ? made : undefined;
     if (own) {
@@ -1377,12 +1386,14 @@ export class DryRunActions implements Actions {
           state: own.closedAt || this.#mergedNow(own) ? 'closed' : 'open',
           draft: own.draft,
           head: { ref: own.head, sha: this.headOf(own), repo },
+          base: own.base,
         },
         expectedHead,
       );
     } else {
-      await this.#guarded(repo, number, 'enqueuePullRequest');
-      guardQueue(repo, number, await this.#readPull(repo, number), expectedHead);
+      const opener = await this.#guarded(repo, number, 'enqueuePullRequest', undefined, asker);
+      const pull = await this.#readPull(repo, number);
+      guardQueue(repo, number, pull, expectedHead, opener === 'dependabot' ? opener : 'app');
     }
     await this.#record('enqueuePullRequest', repo, { number, expectedHead });
     if (!own) return { position: null, state: null };

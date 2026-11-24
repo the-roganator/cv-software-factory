@@ -63,20 +63,55 @@
  * In a dry run the watches write nothing to GitHub and record no commit, so no head in GitHub is one a watch wrote: the
  * queues add nothing and record no enqueue. A dry run's own deploy and pin pull requests, which GitHub never had, are
  * not seen here: the dry run's reads merge its deploy on their own clock (`dry-run-reads.ts`).
+ *
+ * One pull request that is not the App's is queued the same way, in the app's repository (`workflowPinQueueWatch`):
+ * Dependabot's bump of the commit the factory's own workflows are called at, which the App cannot write, having no
+ * `workflows` permission. Dependabot writes it, the gate judges it, and the worker only adds it:
+ *
+ * - Dependabot opened it (`DEPENDABOT_USER`), from a `dependabot/github_actions/` branch of the repository into main,
+ *   not a draft;
+ * - the gate passed that head as `exact-pin`: every changed line a call of the factory's workflows, each moved from
+ *   one commit to one later commit on the factory's main, and nothing else (`workflowPin`, scripts/review-routing.ts).
+ *   No watch of the worker's wrote this head, so there is no positive check to make first: the gate's verdict at the
+ *   very head, which the enqueue then names (`expectedHeadOid`), is the proof of what it is;
+ * - the autonomy level in force, read just before the enqueue, queues an exact pin with auto-merge on (Guarded and
+ *   Lights-out; Supervised, and off, when they cannot be read): a new commit of the factory's workflows is new change
+ *   to the app, as the local deploy pin is not;
+ * - its checks, the conflict and the queue, as for the others. The worker writes nothing to Dependabot's branch and
+ *   says nothing on its pull request, so a required check that failed on the head is not run again from a new head,
+ *   and a head out of tries is said in the log alone: either waits for Martin, or for Dependabot's next rebase.
+ *
+ * In a dry run this watch does nothing: the pull request is one GitHub has, and a dry run adds nothing there.
  */
 import type { Autonomy } from '@software-factory/events';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { ACTIONS_APP } from '../gates/counts.ts';
-import { FACTORY_REPOSITORY } from '../repositories.ts';
+import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../repositories.ts';
 import type { Actions } from './actions.ts';
 import { APP_LOGIN, checksRunOf } from './actions.ts';
-import { BranchRefused, pinBranch, type WatchedHeads } from './branches.ts';
+import {
+  BranchRefused,
+  DEPENDABOT_ACTIONS_PREFIX,
+  dependabotActionsBranch,
+  pinBranch,
+  type WatchedHeads,
+} from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
-import { APP_USER, IssueRefused } from './issues.ts';
+import { APP_USER, DEPENDABOT_USER, IssueRefused } from './issues.ts';
 import { type LevelReader, type Merging, mergingWait } from './level.ts';
-import { failedChecks, type MergeQueue, REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
+import {
+  failedChecks,
+  listedReviews,
+  type MergeQueue,
+  REVIEW_CHECK,
+  REVIEW_RUNS,
+  type ReviewVerdict,
+  reviewCheckOf,
+  reviewRunsPath,
+  verdictOf,
+} from './merging.ts';
 import { guardPinBranch } from './pin-guard.ts';
 import { PIN_LABEL, PIN_REPOS, type PinScope } from './pins.ts';
 import type { Watch } from './poller.ts';
@@ -113,6 +148,7 @@ export type QueuePull = z.infer<typeof PULLS>[number];
 export type QueueWait =
   | { waits: 'not-a-deploy'; why: string }
   | { waits: 'not-a-pin'; why: string }
+  | { waits: 'not-a-workflow-pin'; why: string }
   | { waits: 'verdict'; why: string }
   | { waits: 'checks'; why: string }
   | { waits: 'level'; why: string }
@@ -152,6 +188,28 @@ export function pinPullWait(repo: string, pull: QueuePull): QueueWait | undefine
   if (pull.base.ref !== 'main') return not(`it is into ${pull.base.ref}, not main`);
   if (pull.draft) return not('it is a draft');
   if (!pull.labels.some((l) => l.name === PIN_LABEL)) return not(`it has no ${PIN_LABEL} label`);
+  return undefined;
+}
+
+/**
+ * The repositories whose pull requests of Dependabot's for the factory's workflows the worker queues: the app's, which
+ * calls them at a commit. The factory's own calls none of its workflows by commit, and the gate passes none there.
+ */
+export const WORKFLOW_PIN_REPOS: readonly string[] = [APP_REPOSITORY];
+
+/**
+ * Whether a pull request is one of Dependabot's the worker may queue in a repository, by what GitHub's list shows of
+ * it: Dependabot's, from one of its GitHub Actions branches of that repository into main, not a draft. That it moves
+ * the factory's workflows' commit and nothing else is not read here: it is the gate's verdict (`exact-pin`).
+ */
+export function workflowPinPullWait(repo: string, pull: QueuePull): QueueWait | undefined {
+  const not = (why: string): QueueWait => ({ waits: 'not-a-workflow-pin', why });
+  if (pull.user?.id !== DEPENDABOT_USER) return not('Dependabot did not open it');
+  if (pull.head.repo?.full_name !== repo) return not(`it is not from a branch of ${repo}`);
+  if (!dependabotActionsBranch(pull.head.ref))
+    return not(`${pull.head.ref} is not one of Dependabot's branches under ${DEPENDABOT_ACTIONS_PREFIX}`);
+  if (pull.base.ref !== 'main') return not(`it is into ${pull.base.ref}, not main`);
+  if (pull.draft) return not('it is a draft');
   return undefined;
 }
 
@@ -225,8 +283,9 @@ const LEVEL_NAME: Record<Autonomy, string> = {
  */
 export function levelWait(merging: Merging, rule: QueueRule): QueueWait | undefined {
   const waits = mergingWait(merging, rule);
-  if (waits === 'level') return { waits, why: `at ${LEVEL_NAME[merging.autonomy]} a ${rule} waits for Martin` };
-  if (waits === 'auto-merge') return { waits, why: `with auto-merge off a ${rule} waits for Martin` };
+  const a = /^[aeiou]/.test(rule) ? 'an' : 'a';
+  if (waits === 'level') return { waits, why: `at ${LEVEL_NAME[merging.autonomy]} ${a} ${rule} waits for Martin` };
+  if (waits === 'auto-merge') return { waits, why: `with auto-merge off ${a} ${rule} waits for Martin` };
   return undefined;
 }
 
@@ -424,6 +483,25 @@ export interface PinQueueDependencies extends DeployQueueDependencies {
 }
 
 /**
+ * The workflow pin queue's: what it reads, the enqueue and nothing else it could do to Dependabot's pull request, and
+ * the level and auto-merge in force. It keeps no record of heads: no watch of the worker's writes Dependabot's branch.
+ */
+export interface WorkflowPinQueueDependencies {
+  github: GitHub;
+  /**
+   * The checks, the conflict and the queue. The gate's verdict the watch reads itself, from the review App's check on
+   * the head GitHub lists (`merging.ts`): `reviewVerdict` keeps and signs the gate's hold as a refusal of a merge the
+   * factory asked for, and of Dependabot's pull request, most of which the gate holds for Martin, it asked for none.
+   */
+  reads: Omit<DeployQueueDependencies['reads'], 'reviewVerdict'>;
+  /** The enqueue; in a dry run (`dryRun`), the watch asks for none. */
+  actions: Pick<Actions, 'enqueuePullRequest' | 'dryRun'>;
+  recorder?: RefusalRecorder | undefined;
+  level: LevelReader;
+  log: Logger;
+}
+
+/**
  * Whether a pull request's head is the commit its watch wrote to its branch: the positive check every queue makes
  * before it reads anything more. A head at any other commit, whoever put it there, is not the watch's.
  */
@@ -481,10 +559,12 @@ function queueState(deps: DeployQueueDependencies, repo: string, kind: string) {
 }
 
 /**
- * Adds one pull request, already known to be the App's own of its kind, to the queue at its head once the gate passed
- * that head by the rule and its checks are green; otherwise says why it waits. `confirm`, when given, is read last,
- * once all else passes and just before the enqueue, as it costs more and should be fresh: a wait it gives is said as
- * the others are.
+ * Adds one pull request, already known to be one of its kind the worker queues, to the queue at its head once the gate
+ * passed that head by the rule and its checks are green; otherwise says why it waits. `confirm`, when given, is read
+ * last, once all else passes and just before the enqueue, as it costs more and should be fresh: a wait it gives is
+ * said as the others are. `level`, when given, is asked whether it queues the rule. `theirs`, for a head the worker
+ * did not write and never writes, is what a required check that failed there waits for, in place of the head written
+ * again.
  */
 async function queueOne(
   deps: DeployQueueDependencies,
@@ -494,8 +574,11 @@ async function queueOne(
   pull: QueuePull,
   rules: readonly QueueRule[],
   attempt: Attempt,
-  confirm?: () => Promise<QueueWait | undefined>,
-  level?: LevelReader,
+  {
+    confirm,
+    level,
+    theirs,
+  }: { confirm?: () => Promise<QueueWait | undefined>; level?: LevelReader; theirs?: string } = {},
 ): Promise<void> {
   const { github, reads, actions, recorder, log } = deps;
   const { number } = pull;
@@ -513,6 +596,7 @@ async function queueOne(
   const rule = verdict.judged?.rule as QueueRule;
   const checks = checksWait(runs, required);
   if (checks?.waits === 'failed') {
+    if (theirs !== undefined) return state.wait(number, head, { waits: 'failed', why: `${checks.why}: ${theirs}` });
     return writeAgain(deps, state, repo, kind, pull, attempt, latestRequired(runs, required), checks);
   }
   if (checks) return state.wait(number, head, checks);
@@ -661,6 +745,25 @@ const CLOSED = z.array(
   }),
 );
 
+/** A repository's open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */
+async function openPulls(deps: { github: GitHub; log: Logger }, repo: string, kind: string): Promise<QueuePull[]> {
+  const pulls: QueuePull[] = [];
+  for (let page = 1; page <= OPEN_PAGES; page++) {
+    const { body } = await deps.github.poll(
+      repo,
+      `/repos/${repo}/pulls?state=open&per_page=100&sort=created&direction=asc&page=${page}`,
+      PULLS,
+    );
+    pulls.push(...body);
+    if (body.length < 100) return pulls;
+  }
+  deps.log.warn(
+    { repo, read: pulls.length },
+    `more pull requests are open than the ${kind} queue reads: it reads the oldest`,
+  );
+  return pulls;
+}
+
 /**
  * Watches the pin watch's open pull requests in a repository, and adds each to the merge queue once the gate passed
  * its head as a move the autonomy level queues and its checks are green. Only what the watch wrote is queued: the
@@ -740,28 +843,9 @@ export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: Pi
     return undefined;
   };
 
-  /** The open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */
-  const openPulls = async (): Promise<QueuePull[]> => {
-    const pulls: QueuePull[] = [];
-    for (let page = 1; page <= OPEN_PAGES; page++) {
-      const { body } = await github.poll(
-        repo,
-        `/repos/${repo}/pulls?state=open&per_page=100&sort=created&direction=asc&page=${page}`,
-        PULLS,
-      );
-      pulls.push(...body);
-      if (body.length < 100) return pulls;
-    }
-    deps.log.warn(
-      { repo, read: pulls.length },
-      'more pull requests are open than the pin queue reads: it reads the oldest',
-    );
-    return pulls;
-  };
-
   return async () => {
     if (only !== '*' && only.length === 0) return;
-    const pulls = await openPulls();
+    const pulls = await openPulls(deps, repo, 'pin');
     const candidates = pulls.filter((p) => pinBranch(p.head.ref) || p.labels.some((l) => l.name === PIN_LABEL));
     state.keep(new Set(candidates.map((p) => p.number)));
     for (const pull of candidates) {
@@ -780,14 +864,91 @@ export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: Pi
         return labelWait(events, whole) ?? (await heldBefore(pull));
       };
       // One pull request that cannot be read (closed since the list, an answer that does not parse) holds only itself.
-      await queueOne(deps, state, repo, 'pin', pull, MOVE_RULES, attempt, labelled, deps.level).catch(
-        (error: unknown) => {
-          deps.log.warn(
-            { repo, number, head, err: error },
-            'could not read the pin pull request: tries again next pass',
-          );
-        },
-      );
+      await queueOne(deps, state, repo, 'pin', pull, MOVE_RULES, attempt, {
+        confirm: labelled,
+        level: deps.level,
+      }).catch((error: unknown) => {
+        deps.log.warn({ repo, number, head, err: error }, 'could not read the pin pull request: tries again next pass');
+      });
+    }
+  };
+}
+
+/**
+ * What a required check that failed on Dependabot's head waits for: the worker writes nothing to Dependabot's branch,
+ * so nothing of its own makes a new head for the checks to run on.
+ */
+export const THEIRS =
+  "the factory writes nothing to Dependabot's branch, so it waits for Martin to run the check again, or for " +
+  "Dependabot's next rebase of it (`@dependabot rebase`, or main moving on)";
+
+/**
+ * Watches Dependabot's open pull requests for GitHub Actions in a repository that calls the factory's workflows, and
+ * adds each to the merge queue once the gate passed its head as an exact pin, the autonomy level queues one and its
+ * checks are green. Only a pull request Dependabot opened from a `dependabot/github_actions/` branch is read further:
+ * one from a fork, into another branch or a draft waits, and says why; every other open pull request, Dependabot's of
+ * another ecosystem among them, is not looked at. One of third-party actions, or of them and the factory's together,
+ * is read, and waits on the gate's rule, which is never `exact-pin` for it: that pull request is Martin's.
+ *
+ * It does to Dependabot's pull request the one thing the worker's guard lets through, the enqueue, which the guard
+ * lets through for this watch alone: no commit, comment or label. In a dry run it does nothing at all.
+ */
+export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: string): Watch {
+  if (!WORKFLOW_PIN_REPOS.includes(repo)) throw new Error(`The worker does not queue ${repo}'s workflow pins.`);
+  const { github } = deps;
+  /** The head GitHub's list gave each pull request this pass: the head its verdict is read at, and it is queued at. */
+  const listed = new Map<number, string>();
+  /** The review App's verdict on a pull request at the head listed, and nothing kept of a hold. */
+  const reviewVerdict = async (_repo: string, number: number): Promise<ReviewVerdict> => {
+    const head = listed.get(number) ?? '';
+    const { body } = await github.poll(repo, reviewRunsPath(repo, head), REVIEW_RUNS);
+    const check = reviewCheckOf(listedReviews(body), head);
+    return { number, head, check, ...verdictOf(number, head, check) };
+  };
+  // What the queue is given: no comment and no commit to make, and no head of its own to vouch for.
+  const queue: DeployQueueDependencies = {
+    github,
+    reads: { ...deps.reads, reviewVerdict },
+    // Said in this call alone: the guard adds Dependabot's pull request for this watch, and for no worker that asks.
+    actions: {
+      enqueuePullRequest: (where, number, head) =>
+        deps.actions.enqueuePullRequest(where, number, head, 'workflow-pin-watch'),
+    },
+    recorder: deps.recorder,
+    heads: { get: () => undefined },
+    log: deps.log,
+  };
+  const state = queueState(queue, repo, 'workflow pin');
+
+  return async () => {
+    if (deps.actions.dryRun) return;
+    const pulls = await openPulls(deps, repo, 'workflow pin');
+    const candidates = pulls.filter(
+      (p) => p.user?.id === DEPENDABOT_USER && p.head.ref.startsWith(DEPENDABOT_ACTIONS_PREFIX),
+    );
+    state.keep(new Set(candidates.map((p) => p.number)));
+    listed.clear();
+    for (const pull of candidates) {
+      const { number } = pull;
+      const head = pull.head.sha;
+      listed.set(number, head);
+      const attempt = state.attempt(number, head);
+      if (attempt.done) continue;
+      const notOne = workflowPinPullWait(repo, pull);
+      if (notOne) {
+        state.wait(number, head, notOne);
+        continue;
+      }
+      // One pull request that cannot be read (closed since the list, an answer that does not parse) holds only itself.
+      await queueOne(queue, state, repo, 'workflow pin', pull, ['exact-pin'], attempt, {
+        level: deps.level,
+        theirs: THEIRS,
+      }).catch((error: unknown) => {
+        deps.log.warn(
+          { repo, number, head, err: error },
+          'could not read the workflow pin pull request: tries again next pass',
+        );
+      });
     }
   };
 }

@@ -7,7 +7,14 @@ import { type Made, sealMade } from '../../src/github/made.ts';
 import { LiveReads } from '../../src/github/reads.ts';
 import { ScanReads } from '../../src/github/scanning.ts';
 import { FACTORY_REPOSITORY } from '../../src/repositories.ts';
-import { newKey, readKey, type State, type StateFinding, seal } from '../../src/vulnerabilities/state.ts';
+import {
+  newKey,
+  readKey,
+  type State,
+  type StateFinding,
+  type StateRoutine,
+  seal,
+} from '../../src/vulnerabilities/state.ts';
 import { zipEntry } from '../../src/vulnerabilities/zip.ts';
 import { zipOf } from '../vulnerabilities/zip-of.ts';
 import { CLIENT_ID, client, fakeGitHub, PRIVATE_KEY, quiet, REPO, type Route, type Sent } from './fake.ts';
@@ -378,6 +385,181 @@ describe('the scan’s moves', () => {
       Object.assign(finding, { file: 'other/pnpm-lock.yaml', line: 9 }),
     );
     await fails({ state: elsewhere }, /move 2, a lockfile's, has findings outside the files it names/);
+  });
+
+  /**
+   * The fixtures' day with two routine moves after its two: an image merely behind, which the artifact names whole,
+   * and a lockfile's package, which only the state's record names.
+   */
+  const none = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+  const routineDay = () => {
+    const file = fixture('moves.json');
+    const [, lockfile] = file.moves;
+    const image = {
+      ...file.moves[0],
+      name: 'ghcr.io/example/tool',
+      pins: [{ file: 'deploy/tool/Dockerfile', line: 2 }],
+      from: '3.1.0',
+      to: `image 3.2.0@sha256:${'2'.repeat(64)}`,
+      clears: none,
+      leaves: none,
+      deadline: undefined,
+      newToday: 0,
+    };
+    file.moves.push(image, { ...lockfile, clears: none, leaves: none, deadline: undefined, newToday: 0 });
+    file.totals.moves = 4;
+    file.totals.lanes.line = 4;
+    file.totals.routine = 2;
+    const routine: NonNullable<State['routine']> = [
+      { move: 3, name: image.name, from: image.from, to: image.to, pins: image.pins, seen: '2026-11-06T06:15:00Z' },
+      {
+        move: 4,
+        name: 'merely-behind',
+        from: '4.1.0',
+        to: 'version 4.2.0',
+        pins: [{ file: 'pnpm-lock.yaml', line: 388 }],
+        seen: '2026-11-05T06:15:00Z',
+      },
+    ];
+    return { moves: file, state: { ...state(), routine } };
+  };
+  /** The routine day with its state's records changed. */
+  const recorded = (change: (routine: NonNullable<State['routine']>) => void) => {
+    const day = routineDay();
+    change(day.state.routine);
+    return day;
+  };
+
+  it('give a routine move no findings, and a lockfile’s its package, versions and pins from the state’s record', async () => {
+    const { moves, file } = await read(routineDay());
+    expect(file?.totals).toMatchObject({ fixed: 4, moves: 4, routine: 2 });
+    const [, finding, image, lockfile] = moves;
+    expect(image).toMatchObject({ index: 3, name: 'ghcr.io/example/tool', findings: [], lockfile: false });
+    expect(image).not.toHaveProperty('withheld');
+    expect(image).not.toHaveProperty('mark');
+    expect(lockfile).toMatchObject({
+      index: 4,
+      name: 'a package in `pnpm-lock.yaml`',
+      from: '',
+      to: '',
+      findings: [],
+      withheld: {
+        package: 'merely-behind',
+        from: '4.1.0',
+        to: 'version 4.2.0',
+        pins: [{ file: 'pnpm-lock.yaml', line: 388 }],
+      },
+    });
+    // A finding's move keeps its place and what its findings give it, with routine moves listed after it.
+    expect(finding).toEqual((await read()).moves[1]);
+  });
+
+  it('mark a routine lockfile move by its package and files, the same on every day it is listed', async () => {
+    const [, finding, , lockfile] = (await read(routineDay())).moves;
+    expect(lockfile?.mark).toMatch(/^[0-9a-f]{12}$/);
+    expect(lockfile?.mark).not.toBe(finding?.mark);
+    // Another day: the list in another order, the package at another line and to a later target.
+    const later = routineDay();
+    later.moves.moves.splice(2, 2, later.moves.moves[3], later.moves.moves[2]);
+    later.state.routine = [
+      {
+        ...(later.state.routine[1] as StateRoutine),
+        move: 3,
+        to: 'version 4.3.0',
+        pins: [{ file: 'pnpm-lock.yaml', line: 401 }],
+      },
+      { ...(later.state.routine[0] as StateRoutine), move: 4 },
+    ];
+    const [, , again] = (await read(later)).moves;
+    expect(again?.withheld?.package).toBe('merely-behind');
+    expect(again?.mark).toBe(lockfile?.mark);
+  });
+
+  it('leave out a record that names no move: a release the scan saw and still waits on, or passed over', async () => {
+    const waiting = {
+      name: 'still-waiting',
+      from: '1.0.0',
+      to: 'version 1.1.0',
+      pins: [{ file: 'pnpm-lock.yaml', line: 12 }],
+      seen: '2026-11-09T06:15:00Z',
+    };
+    const day = recorded((routine) => routine.unshift(waiting, { ...waiting, name: 'ghcr.io/example/tool' }));
+    const read_ = await read(day);
+    expect(read_.moves).toEqual((await read(routineDay())).moves);
+    expect(JSON.stringify(read_)).not.toContain('still-waiting');
+    // A day with nothing but waiting releases lists no routine move, and is read as any day.
+    const none = { state: { ...state(), routine: [waiting] } };
+    expect((await read(none)).moves).toEqual((await read()).moves);
+  });
+
+  it('read a day whose state records no routine move for one the artifact names whole', async () => {
+    const day = recorded((routine) => routine.shift());
+    expect((await read(day)).moves[2]).toMatchObject({ name: 'ghcr.io/example/tool', findings: [] });
+  });
+
+  it('fail on a routine lockfile move the state has no record of, or one recorded outside the files it names', async () => {
+    await fails(
+      recorded((routine) => routine.pop()),
+      /move 4, a lockfile's routine move, has no record in the state/,
+    );
+    const day = routineDay();
+    const { routine: _, ...before } = day.state;
+    await fails({ ...day, state: before }, /move 4, a lockfile's routine move, has no record in the state/);
+    await fails(
+      recorded((routine) =>
+        Object.assign(routine[1] as StateRoutine, { pins: [{ file: 'other/pnpm-lock.yaml', line: 9 }] }),
+      ),
+      /move 4, a lockfile's routine move, is recorded outside the files it names/,
+    );
+    await fails(
+      recorded((routine) => Object.assign(routine[1] as StateRoutine, { pins: [] })),
+      /move 4, a lockfile's routine move, is recorded outside the files it names/,
+    );
+  });
+
+  it('fail on a routine record that names a move with findings, one past the list, or one another names', async () => {
+    await fails(
+      recorded((routine) => Object.assign(routine[1] as StateRoutine, { move: 2 })),
+      /the state's routine move 2 names move 2, which is no routine move/,
+    );
+    await fails(
+      recorded((routine) => Object.assign(routine[0] as StateRoutine, { move: 5 })),
+      /the state's routine move 1 names move 5 of 4/,
+    );
+    await fails(
+      recorded((routine) => routine.push({ ...(routine[1] as StateRoutine) })),
+      /the state's routine move 3 names move 4, which another names too/,
+    );
+  });
+
+  it('fail on a routine record that is not the move the artifact names, or whose target the grammar does not read', async () => {
+    for (const change of [
+      { name: 'ghcr.io/example/other' },
+      { from: '3.0.0' },
+      { to: `image 3.3.0@sha256:${'3'.repeat(64)}` },
+      { pins: [{ file: 'deploy/tool/Dockerfile', line: 3 }] },
+    ])
+      await fails(
+        recorded((routine) => Object.assign(routine[0] as StateRoutine, change)),
+        /the state's routine move 1 is not move 3 as moves\.json names it/,
+      );
+    await fails(
+      recorded((routine) => Object.assign(routine[1] as StateRoutine, { to: 'the newest' })),
+      /the state's routine move 2 has a target the grammar does not read/,
+    );
+  });
+
+  it('fail on a count of routine moves that differs from the list’s, and read a file that counts none', async () => {
+    const day = routineDay();
+    day.moves.totals.routine = 1;
+    await fails(day, /counts 1 routine moves and lists 2/);
+    delete day.moves.totals.routine;
+    expect((await read(day)).moves).toHaveLength(4);
+    for (const bad of [-1, 1.5, '2']) {
+      const wrong = routineDay();
+      wrong.moves.totals.routine = bad;
+      await fails(wrong, /not the shape this worker reads \(totals\.routine\)/);
+    }
   });
 
   it('pass through every image the scan read, with its digests and pin', async () => {

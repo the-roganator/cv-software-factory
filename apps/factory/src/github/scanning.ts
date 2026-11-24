@@ -6,7 +6,8 @@
  * push or hand (a pull request's run of the same workflow is never read, and a run still going is passed over), with
  * that run's conclusion: `moves.json`, which is public, and the state the scan kept, sealed with the repository's key
  * (vulnerabilities/state.ts, ADR 0021), for what `moves.json` withholds: a lockfile move's package and versions, and
- * each move's findings. It reads no alert: code scanning is where findings are shown, not where the worker learns them.
+ * each move's findings. A routine move, a pin merely behind, has no finding: a lockfile's is read from the state's
+ * record of it (`routine`). It reads no alert: code scanning is where findings are shown, not where the worker learns them.
  *
  * A third, `pins`, sealed the same way, holds the moves the run made with the pin step (github/made.ts), where it
  * made any: in the factory for the pin watch to commit, in the app for the line's pin step to make again as the scan
@@ -26,11 +27,12 @@
  */
 import { createHmac } from 'node:crypto';
 import { z } from 'zod';
-import { type Fix, type Target, targetText } from '../vulnerabilities/fixes.ts';
+import { type Fix, readTarget, type Target, targetText } from '../vulnerabilities/fixes.ts';
 import type { Kind } from '../vulnerabilities/inventory.ts';
 import {
   type DayCounts,
   furthest,
+  isRoutine,
   LANES,
   MOVES_VERSION,
   type MovesFile,
@@ -48,6 +50,7 @@ import {
   STATE_FILE,
   type State,
   StateError,
+  type StateRoutine,
 } from '../vulnerabilities/state.ts';
 import { type ZipError, zipEntry } from '../vulnerabilities/zip.ts';
 import { type GitHub, GitHubError } from './client.ts';
@@ -108,7 +111,8 @@ export interface ReadMove extends PublicMove {
   index: number;
   /**
    * What `moves.json` withholds of a lockfile's move, which it names only by its file: the package, its version, its
-   * target and its pins, as the state gives them. Absent for any other move, which the artifact names whole.
+   * target and its pins, as the state gives them: from its findings, or for a routine move, which has none, from the
+   * state's record of it. Absent for any other move, which the artifact names whole.
    */
   withheld?: { package: string; from: string; to: string; pins: { file: string; line: number }[] } | undefined;
   /**
@@ -262,6 +266,8 @@ export const MOVES_FILE_SCHEMA = z.strictObject({
     ...DAY_COUNTS,
     // Every open result by severity: a scan made before it counted them writes none, and its file reads as it did.
     open: COUNTS.optional(),
+    // How many of the moves are routine: a scan that lists none of them writes no count, and its file reads as it did.
+    routine: z.number().int().nonnegative().optional(),
     lanes: z.strictObject(
       Object.fromEntries(LANES.map((lane) => [lane, z.number().int().nonnegative()])) as Record<
         (typeof LANES)[number],
@@ -514,7 +520,9 @@ function movesFileOf(repo: string, run: ScanRun, bytes: Buffer): MovesFile {
 
 /**
  * `moves.json`'s moves with their findings from the state, each checked against the other: every move has as many
- * findings as it clears, none names a move past the list, and the total is `moves.json`'s.
+ * findings as it clears, none names a move past the list, and the total is `moves.json`'s. A routine move clears
+ * nothing and has no finding; the state's record of one (`routine`) is held to the move it names (`routineOf`), and a
+ * lockfile's routine move, which the artifact names by its file alone, must have one.
  */
 export function joined(
   repo: string,
@@ -556,11 +564,15 @@ export function joined(
     fixes[each.move - 1]?.push(readStateFix(each.fix));
   }
 
+  const routine = routineOf(repo, file, state);
   const moves = file.moves.map((move, i): ReadMove => {
     const own = (findings[i] ?? []).sort(byPlace);
     if (own.length !== total(move.clears))
       throw disagrees(repo, `move ${i + 1} clears ${total(move.clears)} results and the state gives it ${own.length}`);
-    return { ...move, index: i + 1, ...lockfileOf(repo, move, i, own, fixes[i] ?? []), findings: own };
+    const withheld = isRoutine(move)
+      ? routineLockfileOf(repo, move, i, routine.get(i + 1))
+      : lockfileOf(repo, move, i, own, fixes[i] ?? []);
+    return { ...move, index: i + 1, ...withheld, findings: own };
   });
   const read = moves.reduce((sum, move) => sum + move.findings.length, 0);
   if (read !== file.totals.fixed)
@@ -573,6 +585,57 @@ export function joined(
 }
 
 const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const byPin = (a: { file: string; line: number }, b: { file: string; line: number }) =>
+  order(a.file, b.file) || a.line - b.line;
+const filesOf = (pins: readonly { file: string }[]) => [...new Set(pins.map((pin) => pin.file))].sort().join('\n');
+
+/**
+ * The state's records of the day's routine moves, by the move each names, each held to `moves.json`. A record that
+ * names no move is a release the scan saw and still waits on, or passed over: it is no move of the day, and is left
+ * out. One that names a move names a move
+ * of the list, once, that is routine (one with findings has them, and no record), to a target the grammar reads; a
+ * move the artifact names whole is the same move there, by its name, what it pins, its target and its pins; and the
+ * artifact's count of routine moves, where it gives one, is the list's.
+ */
+function routineOf(repo: string, file: MovesFile, state: State): Map<number, StateRoutine> {
+  const listed = file.moves.filter((move) => isRoutine(move)).length;
+  if (file.totals.routine !== undefined && file.totals.routine !== listed)
+    throw disagrees(repo, `${MOVES_FILE} counts ${file.totals.routine} routine moves and lists ${listed}`);
+  const out = new Map<number, StateRoutine>();
+  for (const [at, each] of (state.routine ?? []).entries()) {
+    if (each.move === undefined) continue;
+    const where = `the state's routine move ${at + 1}`;
+    const move = file.moves[each.move - 1];
+    if (!move) throw disagrees(repo, `${where} names move ${each.move} of ${file.moves.length}`);
+    if (out.has(each.move)) throw disagrees(repo, `${where} names move ${each.move}, which another names too`);
+    if (!isRoutine(move)) throw disagrees(repo, `${where} names move ${each.move}, which is no routine move`);
+    if (!readTarget(each.to)) throw disagrees(repo, `${where} has a target the grammar does not read`);
+    if (!move.lockfile) {
+      const same =
+        each.name === move.name &&
+        each.from === move.from &&
+        each.to === move.to &&
+        JSON.stringify([...each.pins].sort(byPin)) === JSON.stringify([...move.pins].sort(byPin));
+      if (!same) throw disagrees(repo, `${where} is not move ${each.move} as ${MOVES_FILE} names it`);
+    }
+    out.set(each.move, each);
+  }
+  return out;
+}
+
+/**
+ * What `moves.json` withholds of a lockfile's routine move, from the state's record of it: its package, the version
+ * it is at, its target and its pins, in the files the artifact names. Nothing for any other routine move.
+ */
+function routineLockfileOf(repo: string, move: PublicMove, i: number, record: StateRoutine | undefined) {
+  if (!move.lockfile) return {};
+  if (!record) throw disagrees(repo, `move ${i + 1}, a lockfile's routine move, has no record in the state`);
+  if (!record.pins.length || filesOf(move.pins) !== filesOf(record.pins))
+    throw disagrees(repo, `move ${i + 1}, a lockfile's routine move, is recorded outside the files it names`);
+  const pins = record.pins.map((pin) => ({ file: pin.file, line: pin.line })).sort(byPin);
+  return { withheld: { package: record.name, from: record.from, to: record.to, pins } };
+}
+
 /** A move's findings in one order on every read: by where they are pinned, then advisory and package. */
 const byPlace = (a: MoveFinding, b: MoveFinding) =>
   order(a.file, b.file) || a.line - b.line || order(a.advisory, b.advisory) || order(a.package, b.package);

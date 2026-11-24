@@ -193,6 +193,85 @@ describe("the sense's sends", () => {
     expect(fixedIn(two.sends)).toBe('3.9.1, 3.10.0');
   });
 
+  /** A routine update: the same move with nothing behind it, as the read gives one. */
+  const behind = (move: ReadMove): ReadMove => {
+    const { deadline: _, ...rest } = move;
+    return { ...rest, clears: zero, leaves: zero, newToday: 0, findings: [] };
+  };
+
+  it('sends a routine update as an outdated dependency, with no evidence: a lockfile’s by its package, an image, Node', () => {
+    const { sends, skipped } = sendsOf(read([behind(lockfile), behind(image), behind(node)]), '2026-11-11T04:59:00Z');
+    expect(skipped).toEqual([]);
+    // The move is named as a finding's is: the same name and ecosystem, so the same ticket and the same pin step.
+    const fixes = sendsOf(read([lockfile, image, node]), '2026-11-11T04:59:00Z').sends;
+    expect(sends.map((s) => s.signal.move)).toEqual(fixes.map((s) => s.signal.move));
+    expect(sends.map((s) => s.id)).toEqual(fixes.map((s) => s.id));
+    for (const { signal } of sends) {
+      expect(validateSignal(signal)).toEqual({ ok: true });
+      expect(signal).toMatchObject({
+        sense: 'dependency',
+        check: 'the vulnerability scan',
+        symptom: 'outdated-dependency',
+        version: appMoves().run.headSha,
+        observedAt: '2026-11-11T04:59:00Z',
+      });
+      expect(signal).not.toHaveProperty('evidence');
+    }
+    expect(sends[0]?.signal.move).toMatchObject({ name: 'left-pad', ecosystem: 'npm', from: '1.2.3', to: '1.2.4' });
+  });
+
+  it('gives a routine update’s send the same id on the same run, and another on the next', () => {
+    const first = sendsOf(read([behind(lockfile)]), '2026-11-11T04:59:00Z').sends[0];
+    expect(sendsOf(read([behind(lockfile)]), '2026-11-11T09:00:00Z').sends[0]?.id).toBe(first?.id);
+    const next = { ...read([behind(lockfile)]), run: { ...appMoves().run, id: appMoves().run.id + 1 } };
+    expect(sendsOf(next, '2026-11-12T04:59:00Z').sends[0]?.id).not.toBe(first?.id);
+  });
+
+  it('sends a name with a fix at one version and a routine update at another as a vulnerable dependency’s, both joined', () => {
+    const other: ReadMove = behind({
+      ...lockfile,
+      index: 2,
+      withheld: {
+        package: 'left-pad',
+        from: '2.0.0',
+        to: 'version 2.1.0',
+        pins: [{ file: 'pnpm-lock.yaml', line: 900 }],
+      },
+    });
+    const { sends, skipped } = sendsOf(read([lockfile, other]), '2026-11-11T04:59:00Z');
+    expect(skipped).toEqual([]);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.signal).toMatchObject({
+      symptom: 'vulnerable-dependency',
+      move: { name: 'left-pad', from: '1.2.3,2.0.0', to: '1.2.4,2.1.0' },
+      evidence: [{ kind: 'scan', findings: [{ advisory: 'CVE-2026-1002' }, { advisory: 'CVE-2026-1001' }] }],
+    });
+  });
+
+  it('sends no routine update of another lane, with no target, or of a lockfile whose package the state does not give', () => {
+    const { withheld: _, ...unnamed } = behind(lockfile);
+    const { sends, skipped } = sendsOf(
+      read([
+        { ...behind(image), lane: 'worker' },
+        { ...behind(image), index: 4, to: '' },
+        { ...unnamed, index: 5 },
+      ]),
+      '2026-11-11T04:59:00Z',
+    );
+    expect(sends).toEqual([]);
+    expect(skipped).toEqual([
+      'move 4: node: no target to move to',
+      'move 5: a lockfile’s move whose package the scan’s state does not give',
+    ]);
+  });
+
+  it('still sends nothing for a move a finding asks for when none of its findings fits a signal', () => {
+    const misfit = { ...lockfile, findings: [{ ...found(1, 'HIGH'), advisory: 'not an advisory\nat all' }] };
+    const { sends, skipped } = sendsOf(read([misfit]), '2026-11-11T04:59:00Z');
+    expect(sends).toEqual([]);
+    expect(skipped.at(-1)).toBe('move 1: no finding that fits a signal');
+  });
+
   it('sends nothing for another lane, or a move with no target', () => {
     const none = [
       { ...image, lane: 'worker' as const },

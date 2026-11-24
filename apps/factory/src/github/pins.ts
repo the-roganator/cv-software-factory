@@ -9,11 +9,14 @@
  * - **The moves in the `worker` and `cluster` lanes** are grouped by the files they pin (`branchOf`): Kyverno's four
  *   images in one values file are one pull request, and so is one chart at two Applications, a move of two files. A
  *   move the review gate will name `major` (across a major, clearing no Critical) rides apart from the rest of its
- *   file, since the autonomy level may hold it and the others must not wait for it. Each group is committed on `main`'s
+ *   file, since the autonomy level may hold it and the others must not wait for it; and a file's routine updates, the
+ *   moves no finding asks for (`isRoutine`), ride apart from those one does, so a routine update whose checks fail
+ *   holds up no fix. Each group is committed on `main`'s
  *   head, signed by GitHub as every commit of the App's is, through `commitPins`, whose guard (`pin-guard.ts`) lets the
  *   commit replace the version or digest at each pin and nothing else, and refuses, with a signed record, anything it
  *   cannot prove is that; then one pull request is opened from the branch, labelled `pin`. Its description is the
- *   factory's own: each pin before and after, what each move clears in counts, its deadline, and how it merges. As the
+ *   factory's own: each pin before and after, what each move clears in counts and its deadline, or that it is a
+ *   routine update, with no advisory behind it and no deadline, and how it merges. As the
  *   day's moves at its files change (a target moves on, a move joins or goes), its branch moves, in one forced update,
  *   and its title and description with it; one that conflicts with `main` is committed again on `main`'s head. A pull
  *   request Martin closed without merging it is not opened again for the same edits. A worker started again keeps
@@ -31,7 +34,7 @@
  *   left as it is: the watch never pushes to Dependabot's branch or closes its pull request (the actions refuse both,
  *   as a branch the factory does not own and a pull request the App did not open), and Dependabot closes it itself
  *   once `main` has the version, when it next looks at it.
- * - **A move in the `issue` lane** (a workflow's pin, the Makefile's), a line no longer built, a move the watch cannot write on its pins' lines, and one the pin step refused, is
+ * - **A move in the `issue` lane** (a workflow's pin), a line no longer built, a move the watch cannot write on its pins' lines, and one the pin step refused, is
  *   one issue, labelled `pin`, that a session can take as it stands: its pins, its target, its counts and its
  *   deadline. It is found again by the mark in its body, and updated, never opened twice; one Martin closed is opened
  *   again only for a later target.
@@ -52,13 +55,14 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import { FACTORY_REPOSITORY } from '../repositories.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
+import { isRoutine } from '../vulnerabilities/moves.ts';
 import { DIGEST_PATTERN, splitReference } from '../vulnerabilities/reference.ts';
 import { libraryOf } from '../vulnerabilities/registry.ts';
 import { SEVERITIES } from '../vulnerabilities/sarif.ts';
 import { type Actions, APP_LOGIN } from './actions.ts';
 import { BranchRefused, PIN_PREFIX, type WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
-import { groupKey, groupOf, type MadeGroup, madeByStep, namedMajor, writtenBy } from './made.ts';
+import { type Apart, groupKey, groupOf, type MadeGroup, madeByStep, namedMajor, writtenBy } from './made.ts';
 import { isOwnCommit } from './own-commit.ts';
 import { PatchRefused } from './patches.ts';
 import {
@@ -207,11 +211,12 @@ const filesOf = (move: Pick<ReadMove, 'pins'>) => [...new Set(move.pins.map((pin
  * The branch of the pull request a move is in: that of the files it writes, so every move of the day at one file is in
  * one pull request, and a move at two files (one chart at two Applications) is whole in one. A move the gate will name
  * `major` is on its files' other branch: the level may hold it, and the rest of its file's moves do not wait for it. A
+ * routine update is on a branch of its files' routine updates, so no fix waits for one. A
  * move the pin step makes is grouped by what it writes whole (`writtenBy`): the lockfile, with an image that brings
  * its library there; mise's files; an image's Dockerfiles, with the Node it brings.
  */
-export const branchOf = (move: Pick<ReadMove, 'pins' | 'major' | 'findings' | 'lockfile' | 'name' | 'to'>): string =>
-  pinBranchFor(madeByStep(move) ? writtenBy(move) : filesOf(move), namedMajor(move));
+export const branchOf = (move: Pick<ReadMove, 'pins' | 'lockfile' | 'name' | 'to'> & Apart): string =>
+  pinBranchFor(madeByStep(move) ? writtenBy(move) : filesOf(move), namedMajor(move), isRoutine(move));
 
 /** A move's name as code in a description: no backtick, no line break. */
 const code = (text: string) => `\`${text.replace(/[`\r\n]/g, '')}\``;
@@ -308,8 +313,13 @@ const editsOf = (carried: readonly Carried[]): PinEdit[] =>
 
 /** How a pull request merges, in its description: by the gate's rule for it, and what is Martin's after. */
 function mergesBy(carried: readonly Carried[]): string {
-  const merges = carried.some(({ move }) => namedMajor(move))
-    ? 'It crosses a major and clears no Critical by Trivy’s own rating, so the review gate passes it as `major` when it is exactly the scan’s moves. The worker adds a `major` to the merge queue at Lights-out; at any other level it waits for you: read what the new major changes, then add it to the queue or close it.'
+  const majors = carried.filter(({ move }) => namedMajor(move));
+  // A routine update clears nothing: its major has no advisory behind it at all.
+  const why = majors.every(({ move }) => isRoutine(move))
+    ? 'It crosses a major, with no advisory behind it'
+    : 'It crosses a major and clears no Critical by Trivy’s own rating';
+  const merges = majors.length
+    ? `${why}, so the review gate passes it as \`major\` when it is exactly the scan’s moves. The worker adds a \`major\` to the merge queue at Lights-out; at any other level it waits for you: read what the new major changes, then add it to the queue or close it.`
     : 'The review gate passes it as `move` when it is exactly the scan’s moves, which the gate makes itself on main and compares with this pull request, and the worker then adds it to the merge queue once its checks are green and the autonomy level queues a move. If anything differs, its `review` check says what: your approval of its head passes it, and adding it to the queue is yours.';
   // k3s merges as any move; only the cluster's own command applies it.
   const cluster = carried.some(({ move }) => move.lane === 'cluster')
@@ -318,16 +328,57 @@ function mergesBy(carried: readonly Carried[]): string {
   return `${merges}${cluster}`;
 }
 
+/** Whether every move a pull request carries is a routine update: its files' routine updates ride together. */
+const allRoutine = (carried: readonly Carried[]) => carried.length > 0 && carried.every(({ move }) => isRoutine(move));
+
+/** What a routine update is, in a description: one sentence, for one move or for several. */
+const routineWords = (count: number) =>
+  count === 1
+    ? 'It is a routine update: a newer release, with no advisory behind it and no deadline.'
+    : 'Each is a routine update: a newer release, with no advisory behind it and no deadline.';
+
+/**
+ * What each move clears and leaves, and its deadline, as a table after a blank line. A routine update clears nothing
+ * and has no deadline, which its description says in a sentence: its row says only what its pins still have open,
+ * where they have anything, and the table is left out where no row is left.
+ */
+function countsTable(moves: readonly ReadMove[]): string[] {
+  const found = moves.filter((move) => !isRoutine(move));
+  const left = moves.filter((move) => isRoutine(move) && SEVERITIES.some((s) => move.leaves[s]));
+  return [
+    ...(found.length
+      ? [
+          '',
+          '| Move | Clears | Leaves on the same pins | Deadline |',
+          '| --- | --- | --- | --- |',
+          ...found.map(
+            (move) =>
+              `| ${code(move.name)} | ${counted(move.clears)} | ${counted(move.leaves)} | ${move.deadline ?? 'none'} |`,
+          ),
+        ]
+      : []),
+    ...(left.length
+      ? [
+          '',
+          '| Routine update | Leaves on the same pins |',
+          '| --- | --- |',
+          ...left.map((move) => `| ${code(move.name)} | ${counted(move.leaves)} |`),
+        ]
+      : []),
+  ];
+}
+
 /** A pull request's description, the factory's own. */
 export function pullBody(carried: readonly Carried[], moves: Moves): string {
   const sorted = [...carried].sort((a, b) => (a.move.name < b.move.name ? -1 : a.move.name > b.move.name ? 1 : 0));
   const edits = editsOf(sorted);
   const one = sorted.length === 1 ? sorted[0]?.move : undefined;
+  const routine = allRoutine(sorted);
   const what = one
     ? `moves ${code(one.name)} from ${code(one.from)} to ${code(one.to)}`
-    : `makes ${sorted.length} of the day’s moves`;
+    : `makes ${sorted.length} of the day’s ${routine ? 'routine updates' : 'moves'}`;
   const lines = [
-    `The factory's pin watch ${what}, as ${runText(moves)} found (judged ${moves.file?.judged ?? 'then'}). It changes nothing but the version or digest at each pin.`,
+    `The factory's pin watch ${what}, as ${runText(moves)} ${routine ? 'lists' : 'found'} (judged ${moves.file?.judged ?? 'then'}).${routine ? ` ${routineWords(sorted.length)}` : ''} It changes nothing but the version or digest at each pin.`,
     '',
     '| Move | Pin | Before | After |',
     '| --- | --- | --- | --- |',
@@ -337,13 +388,7 @@ export function pullBody(carried: readonly Carried[], moves: Moves): string {
           `| ${code(move.name)} | ${code(`${edit.file}:${edit.line}`)} | ${code(edit.from)} | ${code(edit.to)} |`,
       ),
     ),
-    '',
-    '| Move | Clears | Leaves on the same pins | Deadline |',
-    '| --- | --- | --- | --- |',
-    ...sorted.map(
-      ({ move }) =>
-        `| ${code(move.name)} | ${counted(move.clears)} | ${counted(move.leaves)} | ${move.deadline ?? 'none'} |`,
-    ),
+    ...countsTable(sorted.map(({ move }) => move)),
     '',
     mergesBy(sorted),
     '',
@@ -364,8 +409,8 @@ function cannotWrite(move: ReadMove, why?: string): string {
     return `The watch cannot write it on its pins' lines (${why}): move it by hand, and the scan's next run sees it.`;
   if (move.lane === 'none')
     return 'Its line is no longer built: nothing on this line will bring the fix. Move the pin to a line its publisher builds, and the scan reads it from there.';
-  if (move.pins.some((pin) => pin.file === 'Makefile'))
-    return 'The Makefile pins it, with what mise pins beside it, and no pull request of the App’s writes the Makefile: move both in a pull request of your own.';
+  if (isRoutine(move) && move.pins.some((pin) => pin.file.startsWith('.github/')))
+    return 'A workflow pins it, and the App writes no workflow: move it in a pull request of your own, when you choose to. Nothing is due.';
   if (move.pins.some((pin) => pin.file.startsWith('.github/')))
     return 'A workflow pins it, and the App writes no workflow: move it in a pull request of your own.';
   return 'It needs more than its pins’ lines written, which no pull request of the App’s makes: move it in a pull request of your own.';
@@ -381,7 +426,13 @@ function issueKey(move: ReadMove): string {
 export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: string; body: string; key: string } {
   const key = issueKey(move);
   const name = move.lockfile ? `${move.name} (${key.slice('lockfile-'.length)})` : move.name;
-  const to = move.lockfile ? 'the version its alerts name' : move.to || 'a line that is built';
+  const routine = isRoutine(move);
+  // A lockfile's package and versions are the scan's alone: its alerts name a finding's, and a routine update has none.
+  const to = move.lockfile
+    ? routine
+      ? 'a newer release'
+      : 'the version its alerts name'
+    : move.to || 'a line that is built';
   const title =
     move.lane === 'none'
       ? `Move ${name.replace(/`/g, '')} off a line no longer built`
@@ -400,9 +451,15 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
     '',
     ...pins,
     '',
-    `**Clears** ${counted(move.clears)}; leaves ${counted(move.leaves)} on the same pins.`,
-    '',
-    `**Deadline** ${move.deadline ?? 'none'}.`,
+    ...(routine
+      ? [
+          `**A routine update** A newer release, with no advisory behind it and no deadline${SEVERITIES.some((s) => move.leaves[s]) ? `; its pins have ${counted(move.leaves)} open that it leaves` : ''}.`,
+        ]
+      : [
+          `**Clears** ${counted(move.clears)}; leaves ${counted(move.leaves)} on the same pins.`,
+          '',
+          `**Deadline** ${move.deadline ?? 'none'}.`,
+        ]),
     '',
     'The watch keeps this issue to the scan: it updates it as the move changes, and closes it once the scan no longer lists the move.',
     '',
@@ -470,30 +527,23 @@ export function madeTitle({ made }: Written): string {
 /**
  * The description of a pull request of moves the pin step made: what each moves, before and after, as its diff shows
  * it; for a move the scan names in public (what mise pins), what it clears and its deadline, as for an edit's; for a
- * lockfile's, nothing more, since what the scan found in a package is the scan's alone.
+ * lockfile's, nothing more, since what the scan found in a package is the scan's alone. Routine updates, which ride
+ * apart, are said to be so: there is nothing the scan found behind one.
  */
 export function madeBody(carried: readonly Carried[], written: Written, moves: Moves): string {
   const { made } = written;
   const names = (values: readonly string[]) => values.map((value) => code(value)).join(', ') || '–';
   const open = carried.filter(({ move }) => !move.lockfile);
+  const routine = allRoutine(carried);
+  const kind = routine ? 'routine updates' : 'moves';
   const lines = [
-    `The factory's pin watch makes ${carried.length === 1 ? 'one of the day’s moves' : `${carried.length} of the day’s moves`} in ${made.files.map((file) => code(file)).join(' and ')}, as ${runText(moves)} found (judged ${moves.file?.judged ?? 'then'}). The scan made ${carried.length === 1 ? 'it' : 'them'} on the commit it read, with the pin step and the pnpm and mise this repository pins, and the review gate makes ${carried.length === 1 ? 'it' : 'them'} again on main and compares, byte for byte. It changes nothing but the files they write.`,
+    `The factory's pin watch makes ${carried.length === 1 ? `one of the day’s ${kind}` : `${carried.length} of the day’s ${kind}`} in ${made.files.map((file) => code(file)).join(' and ')}, as ${runText(moves)} ${routine ? 'lists' : 'found'} (judged ${moves.file?.judged ?? 'then'}).${routine ? ` ${routineWords(carried.length)}` : ''} The scan made ${carried.length === 1 ? 'it' : 'them'} on the commit it read, with the pin step and the pnpm and mise this repository pins, and the review gate makes ${carried.length === 1 ? 'it' : 'them'} again on main and compares, byte for byte. It changes nothing but the files they write.`,
     '',
     '| Moves | Before | After |',
     '| --- | --- | --- |',
     ...made.steps.map((step) => `| ${code(step.name)} | ${names(step.before)} | ${names(step.after)} |`),
     ...brought(made),
-    ...(open.length
-      ? [
-          '',
-          '| Move | Clears | Leaves on the same pins | Deadline |',
-          '| --- | --- | --- | --- |',
-          ...open.map(
-            ({ move }) =>
-              `| ${code(move.name)} | ${counted(move.clears)} | ${counted(move.leaves)} | ${move.deadline ?? 'none'} |`,
-          ),
-        ]
-      : []),
+    ...countsTable(open.map(({ move }) => move)),
     '',
     mergesBy(carried),
     '',
@@ -993,7 +1043,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     };
     for (const pull of open) {
       if (keep.has(pull.head.ref) || !(every || own(pull))) continue;
-      const sentence = `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: \`main\` has moved its pins, or nothing they cleared is left. Closed; the watch opens another if the scan lists one.`;
+      const sentence = `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: \`main\` has moved its pins, or the scan has nothing left to move them for. Closed; the watch opens another if the scan lists one.`;
       await actions.closePullRequest(repo, pull.number, sentence);
       heads?.delete(repo, pull.head.ref);
       log.info({ repo, number: pull.number }, 'closed a pin pull request with no move left');
@@ -1028,7 +1078,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         repo,
         issue.number,
         'completed',
-        `${RunText(day)} no longer lists this move as one the App cannot make: it is moved, made by a pull request of the factory's, or nothing it cleared is left.`,
+        `${RunText(day)} no longer lists this move as one the App cannot make: it is moved, made by a pull request of the factory's, or the scan has nothing left to move it for.`,
       );
       log.info({ repo, number: issue.number, key }, 'closed a pin issue whose move is gone');
     }

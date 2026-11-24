@@ -543,7 +543,7 @@ const counts = (critical: number, high: number, medium = 0, low = 0) => ({
   LOW: low,
   UNKNOWN: 0,
 });
-const NONE = counts(0, 0);
+export const NONE = counts(0, 0);
 
 /** A finding Trivy rated Critical, at a pin, as the state gives it: what lets a major merge as a move. */
 export const trivyCritical = (pin: { file: string; line: number }): ReadMove['findings'][number] => ({
@@ -655,7 +655,8 @@ export const FILES: Record<string, string> = {
     '',
   ].join('\n'),
   'mise.toml': ['[tools]', 'example-cd = "10.9.5"', ''].join('\n'),
-  Makefile: ['EXAMPLE_CD_CHART := 10.9.5', ''].join('\n'),
+  Makefile: ['ARGOCD_CHART := 9.4.1', ''].join('\n'),
+  '.github/workflows/platform.yml': ['env:', '  EXAMPLE_CD: 10.9.5', ''].join('\n'),
   'deploy/images/old-line/Dockerfile': ['FROM example/old-line:1.0.0', ''].join('\n'),
   'pnpm-lock.yaml': ['lockfileVersion: 9.0', ''].join('\n'),
 };
@@ -711,10 +712,7 @@ export function factoryMoves(): ReadMove[] {
     }),
     move({
       name: 'example-cd',
-      pins: [
-        { file: 'Makefile', line: 1 },
-        { file: 'mise.toml', line: 2 },
-      ],
+      pins: [{ file: '.github/workflows/platform.yml', line: 2 }],
       from: '10.9.5',
       to: 'chart example-cd 10.15.0',
       clears: counts(2, 45, 60, 12),

@@ -10,8 +10,9 @@ import { describe, expect, it } from 'vitest';
 import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
-import { commitTitle } from '../../src/line/agents/agent.ts';
+import { commitTitle, titleFor } from '../../src/line/agents/agent.ts';
 import {
+  disclosedMove,
   moveIssue,
   moveNote,
   moveSection,
@@ -711,6 +712,54 @@ describe('what the line says of a move', () => {
     const { body } = moveIssue('7', TICKET, TICKET, signal('2.0.1'));
     expect(body).toContain('- Pinned at: `pnpm-lock.yaml:41`');
     expect(body).not.toContain('undefined');
+  });
+
+  it('says of a routine update’s issue that it is one: a newer release, no advisory, and nothing the scan found', () => {
+    const { evidence: _, ...bare } = signal('2.0.1');
+    const routine: PayloadOf<'signal.received'> = { ...bare, symptom: 'outdated-dependency' };
+    const rated = { category: 'dependency' as const, severity: 'cosmetic' as const };
+    const { title, body } = moveIssue('7', { ...TICKET, ...rated }, rated, routine);
+    expect(title).toBe(TICKET.title);
+    expect(body).toBe(
+      [
+        'The factory’s ticket #7: the move of `invented-pkg`, in npm, from `2.0.0` to `2.0.1` or later, in the-roganator/cv-worlds-worst-website.',
+        '',
+        '- Category: dependency',
+        '- Severity: cosmetic',
+        '- Pinned at: `pnpm-lock.yaml:41`',
+        '- A routine update: the scan lists a newer release, with no advisory behind it and no deadline.',
+        '',
+        'The factory is working on it: its move will come as a pull request that refers here. The issue closes when the move is verified in production, by the scan of the release.',
+      ].join('\n'),
+    );
+    // A vulnerable dependency's says what the scan found, and nothing of a routine update.
+    const found = moveIssue('7', TICKET, TICKET, signal('2.0.1')).body;
+    expect(found).toContain('- What the scan found on it:');
+    expect(found).not.toContain('routine');
+    // What it discloses is the move alone: there is no finding to name.
+    expect(disclosedMove({ name: 'invented-pkg', ecosystem: 'npm' }, routine)).toEqual({
+      name: 'invented-pkg',
+      ecosystem: 'npm',
+      from: '2.0.0',
+      to: '2.0.1',
+      pins: PINS,
+    });
+  });
+
+  it('titles a routine update’s commit `chore(deps)`, within the title’s rule however long its name, and a fix’s `fix(deps)`', () => {
+    expect(moveTitle('invented-pkg', '2.0.1')).toBe('fix(deps): move invented-pkg to 2.0.1');
+    expect(moveTitle('invented-pkg', '2.0.1', true)).toBe('chore(deps): move invented-pkg to 2.0.1');
+    const routine = [{ sense: 'dependency' as const, symptom: 'outdated-dependency' as const }];
+    const asked = { kind: 'ticket' as const, ticket: TICKET };
+    for (const name of ['invented-pkg', `@scope/${'n'.repeat(70)}`, 'n'.repeat(120)])
+      for (const version of ['2.0.1', `2.0.1-${'rc.'.repeat(30)}1`]) {
+        const title = moveTitle(name, version, true);
+        expect(title, title).toMatch(/^chore\(deps\): move /);
+        expect(titleFor(asked, routine).safeParse(title).success, title).toBe(true);
+        // Each is held to its own rule: a routine update's is no fix's title, nor a fix's a routine update's.
+        expect(titleFor(asked).safeParse(title).success).toBe(false);
+        expect(titleFor(asked, routine).safeParse(moveTitle(name, version)).success).toBe(false);
+      }
   });
 });
 

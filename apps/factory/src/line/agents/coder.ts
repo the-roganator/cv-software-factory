@@ -97,6 +97,7 @@ import {
   holdDraft,
   need,
   oneLine,
+  routineUpdate,
   StepFailed,
   StepStale,
   titleFor,
@@ -312,6 +313,13 @@ const RESULT = [
   '- `note`: the commit’s body, at most 1000 characters, in plain sentences for the reviewer: what was wrong, which test shows it, and what you changed. Add anything else you noticed and left alone.',
 ];
 
+/** A routine update's result: a chore's title, since no advisory asked for the move, and the same note. */
+const UPDATE_RESULT = [
+  RESULT[0] as string,
+  '- `title`: the pull request’s title as a Conventional Commit of type chore with the scope deps, at most 80 characters, such as "chore(deps): move pino to 10.4.2". The move is a routine update, which no advisory asked for: never a fix’s title.',
+  RESULT[2] as string,
+];
+
 /** When a fix's first step may change nothing, and how it says so. */
 const NOTHING_TO_FIX = `If the code already does what every criterion asks, so there is nothing to fix, change nothing and write {"unchanged"} instead: at most ${UNCHANGED_MAX} characters, in plain sentences for Martin, on what you found. He decides what happens next.`;
 
@@ -333,7 +341,8 @@ const needsLine = ({ protectedPaths }: CoderInput) =>
   `If a criterion cannot be met without changing a file outside the scope (an existing test your change rightly makes wrong, say), leave that file as it is and write {"needs":[{"path","reason"}]} instead: each such file, and why, in at most ${NEED_REASON_CHARS} characters, for Martin. Nothing of your round is pushed: the work item holds for him, and the planner may widen the scope to them. Never name a path no scope may name: ${protectedWords(protectedPaths).join(', ')}.`;
 
 /** What the work item's result is asked for: an improvement's, or a fix's. */
-const resultFor = ({ asked }: CoderInput) => (asked.kind === 'request' ? IMPROVEMENT_RESULT : RESULT);
+const resultFor = ({ asked, signals }: CoderInput) =>
+  asked.kind === 'request' ? IMPROVEMENT_RESULT : routineUpdate(signals) ? UPDATE_RESULT : RESULT;
 
 /** How a round with suggestions answers them. */
 const DECLINING =
@@ -528,7 +537,7 @@ function first(input: CoderInput): string[] {
     TEST_INTEGRITY,
     ...contradictedLines(input.spec),
     '',
-    ...RESULT,
+    ...resultFor(input),
     ...(input.move ? (mayMove(input) ? [MOVED] : []) : mayChangeNothingAbove(input) ? [] : [NOTHING_TO_FIX]),
     needsLine(input),
   ];
@@ -729,7 +738,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     coderResult({
       suggestions: input.suggestions?.length ?? 0,
       alone: suggestionsAlone(input),
-      title: titleFor(input.asked),
+      title: titleFor(input.asked, input.signals),
       narrowed: pressed(input),
       moved: mayMove(input),
     }),
@@ -805,7 +814,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
         throw error;
       }
       // Held to the rule the coder's and the describer's are: a title that breaks it is the line's own failure.
-      title = commitTitle.parse(moveTitle(move.name, version));
+      title = titleFor(input.asked, input.signals).parse(moveTitle(move.name, version, routineUpdate(input.signals)));
       note = moveNote(move, version, pins, !context.pinned?.alone);
     } else {
       ({ title, note } = result);

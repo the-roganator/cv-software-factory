@@ -10,7 +10,8 @@
  * - **Its branch** is `factory/pin/<files>`, one plain segment made from the files its moves pin (`pinBranchFor`):
  *   nothing that could reach outside it.
  * - **Its pins** are at most `MAX_PINS`, no two at one line, each in a plain path (`plainPath`), none under `.github/` or
- *   `policy/`, in a lockfile, or in mise's files, which only the pin step writes (below).
+ *   `policy/`, in a lockfile, or in mise's files, which only the pin step writes (below). Of the Makefile, the one
+ *   line that pins Argo CD's chart (`makefilePin`), and no other.
  * - **Each pin's file** is an ordinary file in the tree of `main`'s head, as git's own tree names it (a symbolic link,
  *   a submodule or a folder is refused), and of the commit the scan read.
  * - **Each pin's line** is the same at `main`'s head as at the commit the scan read: a line that has changed since
@@ -244,14 +245,18 @@ export function segmentOf(text: string, most = MAX_SEGMENT): string {
  * The branch of the pull request that carries the day's moves at these files: the first file's path, for whoever reads
  * it, and a digest of them all, so no two sets of files share a branch whatever their paths fold or are cut to.
  * `deploy/base/postgres/statefulset.yaml` is `factory/pin/deploy-base-postgres-statefulset.yaml-<8 hex>`. The moves the
- * review gate names `major` are on a branch of their own, marked so.
+ * review gate names `major` are on a branch of their own, marked so, and so are the routine updates, which no finding
+ * asks for: `…-major-<8 hex>`, `…-routine-<8 hex>`, and `…-routine-major-<8 hex>` for a routine update across a major.
+ * So neither a major the level holds nor a routine update whose checks fail keeps a fix from merging.
  */
-export function pinBranchFor(files: readonly string[], major = false): string {
+export function pinBranchFor(files: readonly string[], major = false, routine = false): string {
   const sorted = [...new Set(files)].sort();
   const digest = createHash('sha256').update(JSON.stringify(sorted)).digest('hex').slice(0, 8);
-  // The path is cut so the whole is one segment the guard takes, with `-major-` and the digest after it.
-  const path = segmentOf(sorted[0] ?? '', MAX_SEGMENT - 15);
-  return `${PIN_PREFIX}${[path, ...(major ? ['major'] : []), digest].filter(Boolean).join('-')}`;
+  // The path is cut so the whole is one segment the guard takes, with `-major-` and the digest after it, and
+  // `-routine` before them for a routine update.
+  const path = segmentOf(sorted[0] ?? '', MAX_SEGMENT - 15 - (routine ? '-routine'.length : 0));
+  const marks = [...(routine ? ['routine'] : []), ...(major ? ['major'] : [])];
+  return `${PIN_PREFIX}${[path, ...marks, digest].filter(Boolean).join('-')}`;
 }
 
 /** Where a pin branch's commit is made before the branch moves to it. */
@@ -267,11 +272,10 @@ export function guardPinBranch(branch: string): void {
   }
 }
 
-/** The files no pin move writes, by name: a workflow's, the policies', a lockfile, mise's, the Makefile. */
+/** The files no pin move writes, by name: a workflow's, the policies', a lockfile, mise's. */
 export function forbiddenPin(file: string): string | undefined {
   if (file.startsWith('.github/')) return 'a pin under .github/ is a workflow’s, and the App writes none';
   if (file.startsWith('policy/')) return 'policy/ holds the rules of the line, which no pin move writes';
-  if (file === 'Makefile') return 'the Makefile’s pins move with the toolchain, by hand';
   if (/(^|\/)\.?mise(\.[\w-]+)?\.(toml|lock)$/.test(file))
     return 'mise’s files are written by the scan’s pin step, whole, never edited at a line';
   if (inScope(file, LOCKFILES)) return 'a lockfile is written by the scan’s pin step, whole, never edited at a line';
@@ -281,11 +285,23 @@ export function forbiddenPin(file: string): string | undefined {
 /**
  * Whether a file CODEOWNERS gives a person (as `paths.ts` reads it) may hold a pin the watch moves: one under `deploy/`,
  * where the cluster's pins are, or a `Dockerfile`'s. Any other such file (the worker's code, the gate's scripts,
- * `AGENTS.md`, a config) holds the rules of the line, whose numbers are no pin, whatever a scan says.
+ * `AGENTS.md`, a config) holds the rules of the line, whose numbers are no pin, whatever a scan says. The Makefile is
+ * one of those but for a single line (`makefilePin`).
  */
 export function ownedPinPlace(file: string): boolean {
   return file.startsWith('deploy/') || /(^|\/)Dockerfile$/.test(file);
 }
+
+/** The Makefile, at the root, and the one line of it a pin move writes: `ARGOCD_CHART := <version>`, and nothing after. */
+const MAKEFILE = 'Makefile';
+const MAKEFILE_PIN = /^ARGOCD_CHART\s*:?=\s*(\S+)$/;
+
+/**
+ * Whether a line of the Makefile is its pin of Argo CD's chart at `from`, as inventory.ts reads it (`argoCD`): the one
+ * place in the Makefile a pin move writes, its version alone. Every other line of it, a recipe, another variable, the
+ * same variable with anything after its version, is the rules of the line.
+ */
+export const makefilePin = (line: string, from: string): boolean => MAKEFILE_PIN.exec(line)?.[1] === from;
 
 /** Whether a tag or version starts as a version does (`2.14.3`, `v1.54.0`), not as a word (`bookworm`, `main`). */
 const VERSIONED = /^v?\d/;
@@ -395,13 +411,14 @@ export async function pinChanges(
       409,
     );
 
-  // The rules of the line, as CODEOWNERS at main's head gives them, hold no pin but the cluster's and a Dockerfile's.
+  // The rules of the line, as CODEOWNERS at main's head gives them, hold no pin but the cluster's, a Dockerfile's, and
+  // the Makefile's of Argo CD's chart, whose line is held to that below.
   const owners = (await Promise.all(CODEOWNERS_PATHS.map((path) => source.file(repo, commit.base, path)))).find(
     (found) => found !== null,
   );
   const owned = protectedFrom(owners?.text ?? null).filter((entry) => entry !== 'deploy/');
   for (const pin of pins)
-    if (inScope(pin.file, owned) && !ownedPinPlace(pin.file))
+    if (inScope(pin.file, owned) && !ownedPinPlace(pin.file) && pin.file !== MAKEFILE)
       refuse(`${pin.file} is a rule of the line CODEOWNERS gives a person, and holds no pin the watch moves.`);
   // mise's files are Martin's, and a move may write them (the scan's pin step, for what mise pins), as it may a
   // Dockerfile's FROMs, a pin's place; no other.
@@ -455,6 +472,10 @@ export async function pinChanges(
       if (line === undefined) refuse(`${place} is past the end of ${file}.`);
       if (scannedLines[pin.line - 1] !== line)
         refuse(`${place} has changed since the scan read it: it is not the pin the scan named.`);
+      if (file === MAKEFILE && !makefilePin(line as string, pin.from))
+        refuse(
+          `${place} is not the Makefile’s pin of Argo CD’s chart (ARGOCD_CHART) at ${JSON.stringify(pin.from)}: no pin move writes any other line of the Makefile.`,
+        );
       const at = spans(line as string, pin.from);
       if (at.length !== 1)
         refuse(

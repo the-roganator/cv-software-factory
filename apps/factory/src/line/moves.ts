@@ -47,7 +47,8 @@ export function restWords(scan: Scan): string {
  * any), and the scan's findings, each by its advisory's id. The issue is where a finding's package and advisory first
  * become public, as Dependabot's own pull request would make them: so it is built from the ticket's own payload and
  * the signal, never from a public view, which may withhold both. `rated` gives the category and the severity, as the
- * line reads them for every ticket.
+ * line reads them for every ticket. A routine update's signal carries no scan, and its issue says why it moves: a
+ * newer release, and no advisory.
  */
 export function moveIssue(
   workItem: string,
@@ -74,7 +75,9 @@ export function moveIssue(
           ...scan.findings.map((finding) => `  - ${findingLine(finding)}`),
           ...(rest ? [`  - and more: ${rest}`] : []),
         ]
-      : []),
+      : signal?.symptom === 'outdated-dependency'
+        ? ['- A routine update: the scan lists a newer release, with no advisory behind it and no deadline.']
+        : []),
     '',
     'The factory is working on it: its move will come as a pull request that refers here. The issue closes when the move is verified in production, by the scan of the release.',
   ].join('\n');
@@ -167,17 +170,19 @@ const TITLE_CHARS = 80;
 /**
  * A move's commit title, the line's own: `fix(deps): move <name> to <version>`, the version the pin step wrote
  * (`writtenVersion`), within the title's rule however long the name or the version. A version too long to fit is
- * left out, then the name's scope, then the name is cut.
+ * left out, then the name's scope, then the name is cut. A routine update's, which no advisory asked for, is a
+ * chore's (`chore(deps): …`): it fixes nothing, and the app's release notes list no chore.
  */
-export function moveTitle(name: string, version: string): string {
+export function moveTitle(name: string, version: string, routine = false): string {
   const unscoped = name.replace(/^@[^/]+\//, '');
+  const type = routine ? 'chore(deps)' : 'fix(deps)';
   const said = [
-    `fix(deps): move ${name} to ${version}`,
-    `fix(deps): move ${name}`,
-    `fix(deps): move ${unscoped} to ${version}`,
-    `fix(deps): move ${unscoped}`,
+    `${type}: move ${name} to ${version}`,
+    `${type}: move ${name}`,
+    `${type}: move ${unscoped} to ${version}`,
+    `${type}: move ${unscoped}`,
   ].find((title) => title.length <= TITLE_CHARS);
-  return said ?? cutTo(`fix(deps): move ${unscoped}`, TITLE_CHARS);
+  return said ?? cutTo(`${type}: move ${unscoped}`, TITLE_CHARS);
 }
 
 /**

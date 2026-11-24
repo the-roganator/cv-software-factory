@@ -1,7 +1,8 @@
 /**
  * A move (spec 4.3): whether a pull request is exactly the scan's moves and nothing else. The review gate passes one as
  * `move`, or as `major` when one of its moves crosses a major and clears no Critical by Trivy's own rating, whatever the
- * publisher's (`namedMajor`, scripts/review-routing.ts).
+ * publisher's (`namedMajor`, scripts/review-routing.ts); a routine update across a major, which clears nothing, among
+ * them.
  *
  * The gate takes the moves the daily scan of `main` asked for (`ScanMove`: `moves.json` joined with the state the scan
  * sealed, read by scripts/moves.ts), makes them itself on the pull request's base, main's tip (for the merge queue's
@@ -25,13 +26,14 @@
  * moves to, whether it crosses a major, and what it clears. Who opened the pull request decides nothing here.
  */
 
-import { madeByLine, madeByStep, namedMajor, stepOf } from '../apps/factory/src/github/made.ts';
+import { madeByLine, madeByStep, namedMajor, routineStep, stepOf } from '../apps/factory/src/github/made.ts';
 import { spans } from '../apps/factory/src/github/pin-guard.ts';
 import { editAt } from '../apps/factory/src/github/pins.ts';
 import type { ReadMove } from '../apps/factory/src/github/scanning.ts';
 import { moveOf } from '../apps/factory/src/patching/sends.ts';
 import { repositoryOfImage } from '../apps/factory/src/repositories.ts';
 import { readTarget, type Target } from '../apps/factory/src/vulnerabilities/fixes.ts';
+import { isRoutine } from '../apps/factory/src/vulnerabilities/moves.ts';
 import type { Move as PinStepMove } from '../apps/runner/src/pins.ts';
 import type { MoveResult } from './review-routing.ts';
 
@@ -132,7 +134,8 @@ function stepMove(move: ScanMove, app: boolean, base: MoveIO['base']): PinStepMo
   if (!madeByLine(move)) return undefined;
   const made = moveOf(move.repository, move);
   if (typeof made === 'string') return made;
-  return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to };
+  // A routine update is made as the line's pin step makes it: to exactly its target.
+  return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to, ...routineStep(move) };
 }
 
 /** Why the gate will not make a move by an edit, or nothing when it will. */
@@ -270,12 +273,15 @@ export async function proveMove(
   const major = carried.filter(namedMajor);
   const names = carried.map((move) => (move.lockfile ? move.name : `${move.name} to ${shortTarget(move.to)}`));
   const title = `${carried.length === 1 ? 'The scan’s move' : `The scan’s ${plural(carried.length, 'move')}`} of ${names.join(', ')}, made by the gate on main and the same as the pull request`;
-  return major.length
-    ? {
-        rule: 'major',
-        title: `${title}; a major that clears no Critical by Trivy’s rating: ${major.map((m) => m.name).join(', ')}`,
-      }
-    : { rule: 'move', title };
+  if (!major.length) return { rule: 'move', title };
+  // A routine update clears nothing: its major has no finding behind it, which its title says in place of a rating.
+  const named = (moves: ScanMove[]) => moves.map((m) => m.name).join(', ');
+  const [routine, found] = [major.filter((m) => isRoutine(m)), major.filter((m) => !isRoutine(m))];
+  const why = [
+    ...(found.length ? [`a major that clears no Critical by Trivy’s rating: ${named(found)}`] : []),
+    ...(routine.length ? [`a routine update across a major, with no finding behind it: ${named(routine)}`] : []),
+  ];
+  return { rule: 'major', title: `${title}; ${why.join('; ')}` };
 }
 
 /** A target as a title names it: a tag without its digest, a chart's or a package's version. */

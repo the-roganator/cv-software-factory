@@ -8,9 +8,13 @@ import {
   mentions,
   mentionsIn,
   problemOf,
+  routineUpdate,
   scopedNamesInCode,
   stepFrom,
+  titleFor,
+  updateTitle,
 } from '../../src/line/agents/agent.ts';
+import type { Asked } from '../../src/line/agents/evidence.ts';
 import { AGENTS } from '../../src/line/agents/index.ts';
 
 describe('a fix’s title', () => {
@@ -29,6 +33,50 @@ describe('a fix’s title', () => {
     expect(commitTitle.safeParse(title(80)).success).toBe(true);
     expect(commitTitle.safeParse(title(81)).success).toBe(false);
     expect(commitTitle.safeParse(title(81, 'cart')).success).toBe(false);
+  });
+});
+
+describe('a routine update’s title', () => {
+  const ticket = { title: 'Move pino, in npm', category: 'dependency', severity: 'cosmetic', traces: [] };
+  const asked = { kind: 'ticket', ticket: { ...ticket, fingerprint: { name: 'pino', ecosystem: 'npm' } } } as Asked;
+  const sense = (symptom: 'outdated-dependency' | 'vulnerable-dependency') => ({
+    sense: 'dependency' as const,
+    symptom,
+  });
+  const probe = { sense: 'probe' as const, symptom: 'server-error' as const };
+
+  it('is `chore(deps): …` and nothing else: no other type, no other scope, and none', () => {
+    expect(updateTitle.parse(' chore(deps): move pino to 10.4.2 ')).toBe('chore(deps): move pino to 10.4.2');
+    for (const wrong of [
+      'fix(deps): move pino to 10.4.2',
+      'chore: move pino to 10.4.2',
+      'chore(cart): move pino to 10.4.2',
+      'chore(deps): move pino, fixes #12',
+      `chore(deps): ${'m'.repeat(70)}`,
+    ])
+      expect(updateTitle.safeParse(wrong).success, wrong).toBe(false);
+  });
+
+  it('is asked of a work item whose newest dependency signal names an outdated dependency, and of no other', () => {
+    expect(routineUpdate([sense('outdated-dependency')])).toBe(true);
+    expect(routineUpdate([sense('vulnerable-dependency')])).toBe(false);
+    expect(routineUpdate([])).toBe(false);
+    expect(routineUpdate([probe])).toBe(false);
+    // The newest of the sense's decides: a finding since makes it a fix, and one cleared since a routine update.
+    expect(routineUpdate([sense('outdated-dependency'), sense('vulnerable-dependency')])).toBe(false);
+    expect(routineUpdate([sense('vulnerable-dependency'), sense('outdated-dependency'), probe])).toBe(true);
+
+    const chore = 'chore(deps): move pino to 10.4.2';
+    const fix = 'fix(deps): move pino to 10.4.2';
+    expect(titleFor(asked, [sense('outdated-dependency')]).safeParse(chore).success).toBe(true);
+    expect(titleFor(asked, [sense('outdated-dependency')]).safeParse(fix).success).toBe(false);
+    for (const signals of [[], [probe], [sense('vulnerable-dependency')]]) {
+      expect(titleFor(asked, signals).safeParse(fix).success).toBe(true);
+      expect(titleFor(asked, signals).safeParse(chore).success).toBe(false);
+    }
+    // An improvement is a feature whatever its signals say.
+    const request = { kind: 'request', request: { title: 't', words: 'w' } } as Asked;
+    expect(titleFor(request, [sense('outdated-dependency')]).safeParse(chore).success).toBe(false);
   });
 });
 

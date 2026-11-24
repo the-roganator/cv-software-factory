@@ -3,8 +3,12 @@
  * whole path in one piece (path.ts), where each step's own tests give it a move written by hand. A case that ends
  * short of a pull request with `gap` is a move the scan sends the line that the line cannot make; the gap says what
  * stops it. Fixing one changes its case here, to a pull request.
+ *
+ * A routine update, a pin merely behind, has no finding to start from: its cases start from the scan's move for one,
+ * written by hand to the scan's shape, and are carried from the state and `moves.json` on as a finding's is.
  */
 import { describe, expect, it } from 'vitest';
+import { APP, isRoutine, type Move } from '../../src/vulnerabilities/moves.ts';
 import type { Finding } from '../../src/vulnerabilities/sarif.ts';
 import type { ReadTarget } from '../../src/vulnerabilities/scan.ts';
 import { type Carried, carry, fileOf, runningNode, type World } from './path.ts';
@@ -109,6 +113,10 @@ const WORLD: World = {
 interface Case {
   name: string;
   findings: () => Finding[];
+  /** The day's routine updates, as the scan lists them after its findings' moves. */
+  routine?: Move[];
+  /** The symptom each move is sent as, where it is not a vulnerable dependency's. */
+  symptom?: string;
   world?: World;
   /** Where each of the scan's moves ends, and the step's own words where it ends short. */
   ends: {
@@ -122,6 +130,38 @@ interface Case {
   /** What is wrong, for a move sent to the line that it cannot make, or makes wrongly. */
   gap?: string;
 }
+
+const NONE = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+/** A routine update of the app's, as the scan lists one: no result, nothing cleared, no deadline, and a target. */
+const behind = (over: Pick<Move, 'name' | 'pins' | 'from' | 'to' | 'lockfile'> & Partial<Move>): Move => ({
+  repository: APP,
+  major: false,
+  clears: NONE,
+  leaves: NONE,
+  deadline: undefined,
+  newToday: 0,
+  lane: 'line',
+  results: [],
+  ...over,
+});
+const ROUTINE = {
+  /** A package within its range: `example-direct`, which the manifest asks for at `^1.0.0`. */
+  npm: behind({
+    name: 'example-direct',
+    pins: [{ file: 'pnpm-lock.yaml', line: 16 }],
+    from: '1.0.0',
+    to: { kind: 'version', versions: ['1.0.1'] },
+    lockfile: true,
+  }),
+  /** An image under `deploy/`: Syft, at a newer tag. */
+  syft: behind({
+    name: 'ghcr.io/anchore/syft',
+    pins: [{ file: T.syft.file, line: T.syft.line ?? 1 }],
+    from: 'v1.57.1',
+    to: { kind: 'image', tag: 'v1.58.0', digest: digest('3') },
+    lockfile: false,
+  }),
+};
 
 const NODE_ADVISORY = { type: 'node', package: 'node', installed: '24.22.2', fixed: '>=24.22.3' };
 
@@ -233,6 +273,30 @@ const CASES: Case[] = [
     ends: [{ ends: 'pull request', tags: ['code-owned'], wrote: ['deploy/images/syft/Dockerfile'] }],
   },
   {
+    name: 'a routine update: a package of the lockfile, within its range',
+    findings: () => [],
+    routine: [ROUTINE.npm],
+    symptom: 'outdated-dependency',
+    ends: [{ ends: 'pull request', tags: ['dependency-change'], wrote: ['pnpm-lock.yaml'] }],
+  },
+  {
+    name: 'a routine update: an image under deploy/, Syft at a newer tag',
+    findings: () => [],
+    routine: [ROUTINE.syft],
+    symptom: 'outdated-dependency',
+    ends: [{ ends: 'pull request', tags: ['code-owned'], wrote: ['deploy/images/syft/Dockerfile'] }],
+  },
+  {
+    name: 'a routine update beside a fix: each its own move, the fix listed first',
+    findings: () => [npm('example-indirect', '3.2.0', '3.2.1', 19)],
+    routine: [ROUTINE.npm, ROUTINE.syft],
+    ends: [
+      { ends: 'pull request', tags: ['dependency-change'] },
+      { ends: 'pull request', tags: ['dependency-change'] },
+      { ends: 'pull request', tags: ['code-owned'] },
+    ],
+  },
+  {
     name: '.devcontainer/Dockerfile: its base, built again',
     findings: () => [found(T.dev, { type: 'ubuntu' })],
     ends: [{ ends: 'pull request', tags: [] }],
@@ -251,7 +315,7 @@ describe('a move of the app’s, from the scan’s finding to a pull request', (
 
   for (const each of CASES)
     it(`${each.name}${each.gap ? ` (gap: ${each.gap})` : ''}`, async () => {
-      const carried = await carry(each.findings(), TARGETS, each.world ?? WORLD);
+      const carried = await carry(each.findings(), TARGETS, each.world ?? WORLD, each.routine);
       expect(carried.map((one) => one.move.lane)).toEqual(each.ends.map((end) => end.lane ?? 'line'));
       for (const [i, wanted] of each.ends.entries()) {
         const got = carried[i] as Carried;
@@ -262,8 +326,30 @@ describe('a move of the app’s, from the scan’s finding to a pull request', (
         if (wanted.tags) expect(got.tags).toEqual(wanted.tags);
         if (wanted.wrote) expect([...(got.wrote ?? [])].sort()).toEqual(wanted.wrote);
         expect(got.nodeApart !== undefined, got.nodeApart).toBe(wanted.nodeApart ?? false);
+        if (each.symptom) expect(got.sent?.symptom).toBe(each.symptom);
       }
     });
+
+  it('sends a routine update as an outdated dependency, and a fix beside it as a vulnerable one', async () => {
+    expect(Object.values(ROUTINE).every(isRoutine)).toBe(true);
+    const carried = await carry(
+      [npm('example-indirect', '3.2.0', '3.2.1', 19)],
+      TARGETS,
+      WORLD,
+      Object.values(ROUTINE),
+    );
+    expect(carried.map((each) => [each.sent?.name, each.sent?.symptom, each.sent?.from, each.sent?.to])).toEqual([
+      ['example-indirect', 'vulnerable-dependency', '3.2.0', '3.2.1'],
+      ['example-direct', 'outdated-dependency', '1.0.0', '1.0.1'],
+      ['ghcr.io/anchore/syft', 'outdated-dependency', 'v1.57.1', `v1.58.0@${digest('3')}`],
+    ]);
+    // The public list names a routine lockfile move as it names a finding's: by its file, its package withheld.
+    expect(carried[1]?.move).toMatchObject({
+      name: 'example-direct (withheld)',
+      lane: 'line',
+      pins: ['pnpm-lock.yaml'],
+    });
+  });
 
   it('names every gap there is', () => {
     expect(CASES.filter((each) => each.gap).map((each) => each.name)).toMatchInlineSnapshot(`

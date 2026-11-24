@@ -128,6 +128,53 @@ describe('the scan’s making of the moves the pin step makes', () => {
     });
   });
 
+  it('makes a file’s routine updates in a group of their own, on the commit scanned, as the pin watch keeps them apart', async () => {
+    const NONE = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+    const behind = (index: number, name: string, from: string, to: string, major = false): ReadMove => ({
+      ...npm(index, name, from, to),
+      clears: NONE,
+      major,
+    });
+    const moves = [
+      npm(1, 'example-a', '1.0.0', '1.0.1'),
+      behind(2, 'example-b', '2.0.0', '2.0.3'),
+      behind(3, 'example-c', '3.0.0', '3.1.0'),
+      behind(4, 'example-d', '4.0.0', '5.0.0', true),
+    ];
+    const groups = [...groupsOf(moves, FACTORY_REPOSITORY).values()];
+    // The fix alone, the routine updates together, and the routine major apart again.
+    expect(groups.map((group) => group.map((move) => move.index))).toEqual([[1], [2, 3], [4]]);
+    // The app's line makes each of its moves alone, and the scan's step makes them for it by the same groups.
+    const app = moves.map((move) => ({ ...move, repository: APP_REPOSITORY, lane: 'line' as const }));
+    expect([...groupsOf(app, APP_REPOSITORY).values()].map((group) => group.map((move) => move.index))).toEqual([
+      [1],
+      [2, 3],
+      [4],
+    ]);
+
+    const dir = checkout({ 'pnpm-lock.yaml': LOCK('1.0.0', '2.0.0') });
+    const made = [];
+    for (const group of groups.slice(0, 2))
+      made.push(
+        await makeGroup(dir, group, mkdtempSync(join(tmpdir(), 'scan-pins-work-')), async (checkoutDir, steps) => {
+          // Each group on the commit scanned: neither is made on what the other wrote.
+          expect(execFileSync('git', ['-C', checkoutDir, 'status', '--porcelain'], { encoding: 'utf8' })).toBe('');
+          const names = steps.map((step) => step.name);
+          return new Map([
+            [
+              'pnpm-lock.yaml',
+              LOCK(names.includes('example-a') ? '1.0.1' : '1.0.0', names.includes('example-b') ? '2.0.3' : '2.0.0'),
+            ],
+          ]);
+        }),
+      );
+    expect(made[0]).toMatchObject({ files: ['pnpm-lock.yaml'], major: false, moves: [1] });
+    expect(made[0]).not.toHaveProperty('routine');
+    expect(made[0]?.changed).toEqual([{ path: 'pnpm-lock.yaml', text: LOCK('1.0.1', '2.0.0') }]);
+    expect(made[1]).toMatchObject({ files: ['pnpm-lock.yaml'], major: false, routine: true, moves: [2, 3] });
+    expect(made[1]?.changed).toEqual([{ path: 'pnpm-lock.yaml', text: LOCK('1.0.0', '2.0.3') }]);
+  });
+
   it('makes the app’s on its checkout held to the registry, as its line and the gate do (S2-M1)', async () => {
     const dir = checkout({ 'pnpm-lock.yaml': LOCK('1.0.0', '2.0.0') });
     const move = { ...npm(1, 'example-a', '1.0.0', '1.0.1', 'line'), repository: APP_REPOSITORY };
@@ -181,6 +228,13 @@ describe('the scan’s making of the moves the pin step makes', () => {
       key,
     );
     expect(() => openMade(wrong, key, FACTORY_REPOSITORY, '7')).toThrow(/a registry's answer that is not one/);
+    // A group of routine updates says so, with a yes or a no and nothing else.
+    const routine = { ...(made.groups[0] as Made['groups'][number]), routine: true };
+    expect(openMade(sealMade({ ...made, groups: [routine] }, key), key, FACTORY_REPOSITORY, '7').groups[0]).toEqual(
+      routine,
+    );
+    const unsure = sealMade({ ...made, groups: [{ ...routine, routine: 'yes' as unknown as boolean }] }, key);
+    expect(() => openMade(unsure, key, FACTORY_REPOSITORY, '7')).toThrow(/do not say whether group 1 is routine/);
     // One made before the answers were kept still opens.
     const { asked: _, ...older } = made.groups[0] as Made['groups'][number];
     expect(openMade(sealMade({ ...made, groups: [older] }, key), key, FACTORY_REPOSITORY, '7').groups[0]).toEqual(

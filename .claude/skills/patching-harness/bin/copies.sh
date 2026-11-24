@@ -176,6 +176,16 @@ pin_watch_from_cluster() { # <dir>
   grep -qx ' *name: scratch-pin-watch' "$file" || die "PIN_WATCH_ONLY in $file is not read from scratch-pin-watch"
 }
 
+# The copy's GitHub worker polls every 15 seconds, not the real one's 60 (GITHUB_POLL_SECONDS, which the real manifest
+# leaves at its default): each hand-off of a move (checks green to queued, merged to the deploy pull request) waits a
+# poll, and a pass is three hours of them. Nothing the worker decides counts polls: its tries are counted in runs and
+# removals, the pin watch's pass and the signing grace by the clock, and an unchanged answer costs it no request.
+worker_poll() { # <dir>
+  local file="$1/deploy/base/factory/github.yaml"
+  perl -0pi -e 's{^( +)- name: PIN_WATCH_ONLY\n}{$1- name: GITHUB_POLL_SECONDS\n$1  value: "15"\n$1- name: PIN_WATCH_ONLY\n}m' "$file"
+  grep -qx ' *- name: GITHUB_POLL_SECONDS' "$file" || die "GITHUB_POLL_SECONDS is not set in $file"
+}
+
 pin_watch() {
   local only=${PIN_WATCH_ONLY:-*}
   kubectl --context "$SCRATCH_CONTEXT" -n factory create configmap scratch-pin-watch --from-literal=only="$only" \
@@ -191,6 +201,7 @@ build() {
   apply_staged factory "$WORK/factory"
   (cd "$WORK/factory" && rename && real_mirror && second_cluster && tidy)
   pin_watch_from_cluster "$WORK/factory"
+  worker_poll "$WORK/factory"
   # The last pins, so main never names an image the copy has not built; pin-images moves them to this baseline's own.
   [[ -f "$STATE/images.env" ]] && pin_overlays factory
   commit "$WORK/factory" "chore(scratch): $FACTORY_COPY, the baseline"
@@ -330,6 +341,12 @@ push_baseline() { # <copy> <dir>
   ruleset "$copy" disabled
   git -C "$dir" push -q --force "https://github.com/$copy" HEAD:refs/heads/baseline HEAD:refs/heads/main
   ruleset "$copy" active
+  # Dependabot follows a branch for a `uses:` pinned by commit only where the called repository has a version tag
+  # that is not on the pinned commit, as the real factory's releases are: the factory copy has one, on the real commit
+  # its baseline starts from, which a reset's sweep of tags takes and this puts back (test 20).
+  if [[ $copy == "$FACTORY_COPY" ]]; then
+    git -C "$dir" push -q --force "https://github.com/$copy" "$FACTORY_FROM:refs/tags/$DEPENDABOT_TAG"
+  fi
 }
 
 # scripts/github-settings.ts from the factory baseline, told the copies by name (policy/repositories.ts) as well as
@@ -429,6 +446,8 @@ pin_images() {
   [[ $f == "$(cat "$WORK/factory.sha")" && $a == "$(cat "$WORK/app.sha")" ]] ||
     die "the copies' main is not the baseline in work/: build, then reset, then pin-images"
   worker 0
+  # Both copies' builds at once: neither reads the other's.
+  local started=()
   for pair in "$FACTORY_COPY:$f" "$APP_COPY:$a"; do
     local copy=${pair%%:*} sha=${pair#*:}
     say "build.yml on $copy at $sha"
@@ -441,7 +460,10 @@ pin_images() {
       [[ -n $run ]] && break; sleep 10
     done
     [[ -n $run ]] || die "build.yml did not start in $copy"
-    run_ok "$run" "$copy" || die "build.yml failed in $copy (run $run)"
+    started+=("$copy:$run")
+  done
+  for pair in "${started[@]}"; do
+    run_ok "${pair#*:}" "${pair%%:*}" || die "build.yml failed in ${pair%%:*} (run ${pair#*:})"
   done
   digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq -r .digest; }
   # The last ones stay, for the refusal record's signed builds (refusal_images).

@@ -37,7 +37,9 @@ export interface Test {
     | { by: 'lockfile' }
     | { by: 'dependabot'; title: RegExp }
     | { by: 'line' }
-    | { by: 'forged'; forge: string };
+    | { by: 'forged'; forge: string }
+    /** No pull request: the test is read from the scan's own run. */
+    | { by: 'none' };
   /** The app's move as its work item names it (`dependency.name`): the ticket the line is told to take. */
   dependency?: string;
   /** Among an app's lockfile moves, which file names none of: the one that clears a Critical, or the one that clears none. */
@@ -86,6 +88,27 @@ export interface Test {
    * that would change other tests, so a baseline of its own.
    */
   staged?: string;
+  /**
+   * A routine update: a pin merely behind, which the scan lists with nothing to clear. Its pull request is on a branch
+   * of routine updates, apart from the moves a finding asks for, and the next scan no longer lists it.
+   */
+  routine?: boolean;
+  /** A move that is Martin's to make: it ends as an issue, with no pull request of the App's, at every level. */
+  issue?: boolean;
+  /** A move that is the App's to write: an issue opened for it fails the test. */
+  noIssue?: boolean;
+  /** Who must add its pull request to the merge queue: the scratch App (the worker). */
+  queuedBy?: 'app';
+  /**
+   * Its pull request moves the repository's pins of another's workflows: after the merge every one of the `count`
+   * `uses:` lines is at one commit, on the called repository's main and after the one pinned before.
+   */
+  calls?: { repo: string; count: number };
+  /**
+   * The scan with one image the registry will not serve: the image as the run's annotation names it, and the file
+   * that pins it, whose open alerts must not fall.
+   */
+  unread?: { image: string; file: string };
 }
 
 const LOCKFILE = 'a package in `deploy/overlays/local/factory-image/kustomization.yaml` and `pnpm-lock.yaml`';
@@ -267,6 +290,146 @@ export const TESTS: Test[] = [
     moves: ['ghcr.io/k3d-io/k3d-tools', 'ghcr.io/k3d-io/k3d-proxy'],
     pr: { by: 'pin' },
     deployed: { kind: 'none' },
+  },
+  // The routine updates and the rest of 15 to 20.
+  {
+    // Argo Rollouts' chart, 2.43.6 on the baseline with 2.43.12 out since 9 November and no finding in any of its
+    // images (its values pin the controller's image by digest, so no chart version in between changes what runs).
+    id: '15',
+    title: 'a routine update: the argo-rollouts chart',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: ['argo-rollouts'],
+    routine: true,
+    pr: { by: 'pin' },
+    deployed: { kind: 'chart', apps: ['argo-rollouts'] },
+  },
+  {
+    // vitest, 5.1.0 in the app's lockfile with 5.1.1 out since 18 November, inside `package.json`'s range: the scan
+    // lists it as a package in the lockfile, the sense sends it, and the line is told its ticket by the package's name.
+    id: '16',
+    title: 'app routine update, made by the line (vitest)',
+    repo: APP,
+    campaign: 'app',
+    moves: [APP_DEV_LOCKFILE],
+    routine: true,
+    pr: { by: 'line' },
+    dependency: 'vitest',
+    removes: { file: 'pnpm-lock.yaml', lines: ['  vitest@5.1.0:'] },
+    deployed: { kind: 'app-deploy' },
+  },
+  {
+    // Argo CD's chart in the Makefile, 10.15.0 (Argo CD v3.6.1) with findings a later 10.x clears on the same 3.6
+    // line as mise's CLI: the App's pull request of that one line, and no issue.
+    id: '17',
+    title: "the Makefile's pin of Argo CD's chart",
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: ['argo-cd'],
+    pr: { by: 'pin' },
+    files: ['Makefile'],
+    noIssue: true,
+    deployed: { kind: 'none' },
+  },
+  {
+    id: '18',
+    title: 'a routine update across a major',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    routine: true,
+    major: true,
+    pr: { by: 'pin' },
+    deployed: { kind: 'none' },
+    notRun: 'no pin is chosen for it yet (SKILL.md, "The tests that wait")',
+  },
+  {
+    id: '19',
+    title: 'the scan, with one image the registry will not serve',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    pr: { by: 'none' },
+    unread: { image: 'ghcr.io/the-roganator/cv-software-factory-scratch/unread', file: 'deploy/unread/Dockerfile' },
+    deployed: { kind: 'none' },
+    notRun: 'no image is staged that the registry stops serving between two scans (SKILL.md, "The tests that wait")',
+  },
+  {
+    // Dependabot's pull request for the group `factory` of the app's dependabot.yml (staged/app/20-…): the six
+    // `uses:` lines of the factory copy's workflows, moved to the factory copy's main.
+    id: '20',
+    title: "Dependabot's move of the app's pins of the factory's workflows",
+    repo: APP,
+    campaign: 'app',
+    moves: [],
+    pr: { by: 'dependabot', title: /bump the factory group/i },
+    rule: 'exact-pin',
+    queuedBy: 'app',
+    files: [
+      '.github/workflows/codeql.yml',
+      '.github/workflows/gates.yml',
+      '.github/workflows/pull-request.yml',
+      '.github/workflows/review.yml',
+      '.github/workflows/scorecard.yml',
+      '.github/workflows/vulnerabilities.yml',
+    ],
+    calls: { repo: FACTORY, count: 6 },
+    deployed: { kind: 'none' },
+  },
+  {
+    id: 'N6',
+    title: 'a workflow pin stays an issue for Martin',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    issue: true,
+    pr: { by: 'pin' },
+    deployed: { kind: 'none' },
+    notRun: 'the baseline has no pin in a workflow file for the scan to read (SKILL.md, "The tests that wait")',
+  },
+  {
+    // The pin watch's title and label on a branch of the App's that moves an image a workflow names.
+    id: 'N7',
+    title: 'forged: a workflow pin moved, claiming a move',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    pr: { by: 'forged', forge: 'N7' },
+    deployed: { kind: 'none' },
+    mustNot: true,
+  },
+  {
+    // Test 20's change as Dependabot writes it, with one third-party action's line moved too.
+    id: 'N8a',
+    title: "forged: the factory's workflows and a third-party action's line",
+    repo: APP,
+    campaign: 'app',
+    moves: [],
+    pr: { by: 'forged', forge: 'N8a' },
+    deployed: { kind: 'none' },
+    mustNot: true,
+  },
+  {
+    // The same six lines, at a commit on another branch of the factory copy than main.
+    id: 'N8b',
+    title: "forged: the factory's workflows at a commit not on its main",
+    repo: APP,
+    campaign: 'app',
+    moves: [],
+    pr: { by: 'forged', forge: 'N8b' },
+    deployed: { kind: 'none' },
+    mustNot: true,
+  },
+  {
+    // The same six lines, at a commit of the factory copy's main before the one pinned.
+    id: 'N8c',
+    title: "forged: the factory's workflows at a commit behind the pinned one",
+    repo: APP,
+    campaign: 'app',
+    moves: [],
+    pr: { by: 'forged', forge: 'N8c' },
+    deployed: { kind: 'none' },
+    mustNot: true,
   },
   // The recovery tests, W1 to W4 (the names N1 to N5 are the refusals').
   {

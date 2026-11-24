@@ -5,13 +5,20 @@
  * forged; everything that judges it is real (the worker's queue and watches, CI, the review gate, the merge queue,
  * admission). `./copies.sh reset` deletes every branch but main and baseline, so this runs again after each reset.
  *
- *     node forge.ts <N3a|N3b|N4|N5|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity]
+ *     node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>]
+ *                   [--as unsigned|other-identity] [--by app|martin]
  *
  *   N3a  backward: the pin watch's branch and title for the postgres move, pinning an older real tag at its digest now
  *   N3b  a digest not served: the move's right tag, with an invented digest
  *   N4   beyond its pins: the move's real change, and one comment line in another file under deploy/
  *   N5   an image of ours not signed on main: the App's local deploy, pinning the factory at a digest of ours that
  *        build.yml on main never signed (the amd64 manifest inside a signed index, or one another identity signed)
+ *   N7   a workflow's pin: one third-party action's `uses:` commit in a workflow of the factory copy's, moved to that
+ *        action's commit before it, under the pin watch's title and label, claiming a move no scan lists
+ *   N8a  in the app copy: its `uses:` lines of the factory copy's workflows moved to the factory copy's main, as
+ *        Dependabot writes them (the commit alone changing), and one third-party action's line moved with them
+ *   N8b  the same lines, at a commit of the factory copy's that is not on its main (a closed pull request's head)
+ *   N8c  the same lines, at the commit before the one pinned
  *   X1a  in the app copy: the scan's runtime-image move (test 10's), made by the copy's own pin step,
  *        with the Node build stage's `FROM` it brings at an older real digest of node under the move's tag, and the
  *        commit's `Pins-made-at` and `Pins-asked` lines claiming that digest, which the gate must not make the move from
@@ -25,7 +32,12 @@
  * Reads go through `gh` as Martin, and the registry through crane. Writes go through GitHub's API as the scratch App
  * alone (the-roganator-scratch-factory), with an installation token minted here for the one copy forged in, from the
  * Keychain's scratch-factory-github-app-key, kept in memory, never printed or written. Commits are made by
- * `createCommitOnBranch`, as the worker makes its own, so GitHub signs them as the App's.
+ * `createCommitOnBranch`, as the worker makes its own, so GitHub signs them as the App's. `--by martin` writes as
+ * Martin's gh login instead (a plain branch of a person's), to the same copy alone.
+ *
+ * N8 cannot be forged as Dependabot: nobody can write as it. As the App or as Martin, the gate holds the forgery if it
+ * passes that change for Dependabot alone or for its content; which of the two held it is in the gate's words, not in
+ * the fact that it held. What the gate does with the same change under Dependabot's own name is its unit tests'.
  */
 // biome-ignore-all lint/suspicious/noExplicitAny: it reads GitHub's and the registry's JSON as each gives it, untyped
 import { execFileSync } from 'node:child_process';
@@ -91,8 +103,19 @@ const tagsOf = (repository: string) => sh('crane', ['ls', repository]).split('\n
 
 const b64url = (data: string | Buffer) => Buffer.from(data).toString('base64url');
 let token: string | undefined;
+/**
+ * Who writes: the scratch App, or Martin's gh login (`--by martin`, and whenever the forgery writes a workflow file and
+ * the App has no permission for those; the forgery's output says who wrote it, `by`).
+ */
+let BY: 'app' | 'martin' = 'app';
+/** Whether the forgery writes a workflow file (N7, N8), which takes a permission of its own. */
+let WORKFLOWS = false;
 async function appToken(): Promise<string> {
   if (token) return token;
+  if (BY === 'martin') {
+    token = sh('gh', ['auth', 'token']).trim();
+    return token;
+  }
   const pem = Buffer.from(sh('security', ['find-generic-password', '-s', KEYCHAIN, '-w']).trim(), 'base64').toString();
   const now = Math.floor(Date.now() / 1000);
   const unsigned = `${b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: APP_ID }))}`;
@@ -102,13 +125,22 @@ async function appToken(): Promise<string> {
     throw new Error(`the Keychain's key is ${app.slug}'s, not the scratch App's`);
   const installation = await github('GET', `/repos/${REPO}/installation`, undefined, jwt);
   // A token for the copy forged in alone: nothing it is handed can reach another repository.
-  const minted = await github(
-    'POST',
-    `/app/installations/${installation.id}/access_tokens`,
-    { repositories: [REPO.split('/')[1]], permissions: { contents: 'write', pull_requests: 'write' } },
-    jwt,
-  );
-  token = minted.token as string;
+  const mint = (permissions: Record<string, string>) =>
+    github(
+      'POST',
+      `/app/installations/${installation.id}/access_tokens`,
+      { repositories: [REPO.split('/')[1]], permissions },
+      jwt,
+    );
+  try {
+    token = (await mint({ contents: 'write', pull_requests: 'write', ...(WORKFLOWS ? { workflows: 'write' } : {}) }))
+      .token as string;
+  } catch (error) {
+    // GitHub mints no token with a permission the App was not given: a workflow file is then Martin's login's to write.
+    if (!WORKFLOWS) throw error;
+    BY = 'martin';
+    token = sh('gh', ['auth', 'token']).trim();
+  }
   return token;
 }
 /** A call to GitHub's API: with a JWT for the App's own calls, else as the App's installation in the copy. */
@@ -361,6 +393,118 @@ async function forgeDeploy(head: string, as: 'unsigned' | 'other-identity', bran
   };
 }
 
+// ── N7 and N8: a workflow's pins ────────────────────────────────────────────────────────────────────────────────────
+
+/** A third-party action's `uses:` at a commit: the action's repository, the path within it, and the commit. */
+const ACTION = /^(\s*(?:-\s*)?uses:\s*)([\w.-]+\/[\w.-]+)((?:\/[\w./-]+)?)@([0-9a-f]{40})(.*)$/;
+/** The workflow files of the copy at a commit, each with its text. */
+function workflowsAt(head: string): { path: string; text: string }[] {
+  return read<any[]>(`contents/.github/workflows?ref=${head}`)
+    .filter((f) => /\.ya?ml$/.test(f.name))
+    .map((f) => ({ path: f.path as string, text: fileAt(head, f.path) }));
+}
+/** The first third-party action a workflow pins by commit, and that action's commit before it: a real, older one. */
+function olderAction(files: { path: string; text: string }[]) {
+  for (const { path, text } of files) {
+    const lines = text.split('\n');
+    for (const [index, line] of lines.entries()) {
+      const [, lead, action, sub, commit, rest] = ACTION.exec(line) ?? [];
+      if (!action || !commit || action.startsWith('the-roganator/')) continue;
+      let parent: string | undefined;
+      try {
+        parent = JSON.parse(sh('gh', ['api', `repos/${action}/commits/${commit}`])).parents?.[0]?.sha;
+      } catch {}
+      if (!parent) continue;
+      lines[index] = `${lead}${action}${sub}@${parent}${rest}`;
+      return { path, before: text, after: lines.join('\n'), action, line: index + 1, was: commit, to: parent };
+    }
+  }
+  throw new Error('no workflow pins a third-party action at a commit with a parent');
+}
+
+async function forgeWorkflowPin(head: string, branchOver?: string): Promise<Forgery> {
+  const moved = olderAction(workflowsAt(head));
+  return {
+    test: 'N7',
+    // A pin branch of the watch's own shape, which the watch never made.
+    branch: branchOver ?? (await pinBranchFor(moved.action)),
+    title: pinTitle(moved.action, moved.to.slice(0, 7)),
+    label: 'pin',
+    files: [{ path: moved.path, before: moved.before, after: moved.after }],
+    forged: {
+      file: moved.path,
+      line: moved.line,
+      was: moved.was,
+      to: moved.to,
+      what: `a workflow's pin of ${moved.action}, moved under the pin watch's title: a move no scan lists and no level passes`,
+    },
+    expect: [
+      "the worker's queue (head not the watch's commit)",
+      "the review gate: a workflow's pin is Martin's at every level",
+    ],
+  };
+}
+
+/**
+ * N8: the app's `uses:` lines of the factory copy's workflows, every one moved to `to` with nothing else on the line
+ * changed, as Dependabot's pull request for the group moves them; and what makes each variant one the gate must hold.
+ */
+async function forgeCalls(test: 'N8a' | 'N8b' | 'N8c', head: string, branchOver?: string): Promise<Forgery> {
+  const called = new RegExp(`^(\\s*uses:\\s*${FACTORY}/\\.github/workflows/[\\w.-]+@)([0-9a-f]{40})(.*)$`);
+  const files = workflowsAt(head);
+  const pinned = files.flatMap((f) => f.text.split('\n').map((line) => called.exec(line)?.[2])).find(Boolean);
+  if (!pinned) throw new Error(`the app copy pins none of ${FACTORY}'s workflows at ${head.slice(0, 7)}`);
+  const factory = <T = any>(path: string): T => JSON.parse(sh('gh', ['api', `repos/${FACTORY}/${path}`])) as T;
+  const main = factory<any>('git/ref/heads/main').object.sha as string;
+  let to = main;
+  let what = '';
+  if (test === 'N8b') {
+    // A commit of the factory copy's that its main does not hold: the head of a pull request closed unmerged.
+    const side = factory<any[]>('pulls?state=closed&sort=updated&direction=desc&per_page=50')
+      .filter((p) => !p.merged_at)
+      .map((p) => p.head.sha as string)
+      .find((sha) => !['behind', 'identical'].includes(factory<any>(`compare/${main}...${sha}`).status));
+    if (!side) throw new Error(`${FACTORY} has no closed pull request whose head is not on main`);
+    to = side;
+    what = `the factory's workflows at ${side.slice(0, 7)}, a closed pull request's head that main does not hold`;
+  } else if (test === 'N8c') {
+    const before = factory<any>(`commits/${pinned}`).parents?.[0]?.sha as string | undefined;
+    if (!before) throw new Error(`${pinned.slice(0, 7)} has no parent in ${FACTORY}`);
+    to = before;
+    what = `the factory's workflows at ${before.slice(0, 7)}, the commit before the one pinned`;
+  }
+  if (to === pinned) throw new Error(`the app copy already pins ${FACTORY}'s workflows at ${to.slice(0, 7)}`);
+  const changed = files
+    .map(({ path, text }) => ({
+      path,
+      before: text,
+      after: text
+        .split('\n')
+        .map((line) => line.replace(called, `$1${to}$3`))
+        .join('\n'),
+    }))
+    .filter((f) => f.after !== f.before);
+  let extra: Record<string, unknown> = {};
+  if (test === 'N8a') {
+    // One third-party action's line too, in a file the change already writes or another.
+    const moved = olderAction(changed.map((f) => ({ path: f.path, text: f.after })).concat(files));
+    const file = changed.find((f) => f.path === moved.path);
+    if (file) file.after = moved.after;
+    else changed.push({ path: moved.path, before: moved.before, after: moved.after });
+    extra = { extra: { file: moved.path, line: moved.line, action: moved.action, was: moved.was, to: moved.to } };
+    what = `the factory's workflows at its main, ${to.slice(0, 7)}, and ${moved.action} moved in ${moved.path}`;
+  }
+  return {
+    test,
+    branch: branchOver ?? `forged/${test.toLowerCase()}`,
+    // Dependabot's title for the group (the app's dependabot.yml: prefix `ci`, group `factory`).
+    title: `ci: bump the factory group with ${changed.length} updates`,
+    files: changed,
+    forged: { was: pinned, to, files: changed.map((f) => f.path), what, ...extra },
+    expect: ['the review gate: not an exact pin of the factory’s workflows at its main'],
+  };
+}
+
 // ── X1: the app's move, with a tag it brings at a digest the scan never named ──────────────────────────────────────
 
 /** The move X1 forges on: test 10's, the runtime image, which brings the Node build stage's `FROM` with it. */
@@ -542,7 +686,7 @@ async function make(forgery: Forgery, head: string) {
   let number: number;
   let reused = false;
   if (open[0]) {
-    if (open[0].user?.login !== APP_BOT)
+    if (BY === 'app' && open[0].user?.login !== APP_BOT)
       throw new Error(`#${open[0].number} from ${branch} is ${open[0].user?.login}'s, not the App's`);
     number = open[0].number;
     reused = true;
@@ -564,14 +708,22 @@ async function main() {
   };
   const branchOver = opt('--branch');
   const as = (opt('--as') ?? 'unsigned') as 'unsigned' | 'other-identity';
-  if (!['N3a', 'N3b', 'N4', 'N5', 'X1a', 'X1b'].includes(test ?? '') || !['unsigned', 'other-identity'].includes(as)) {
+  const by = opt('--by') ?? 'app';
+  if (
+    !['N3a', 'N3b', 'N4', 'N5', 'N7', 'N8a', 'N8b', 'N8c', 'X1a', 'X1b'].includes(test ?? '') ||
+    !['unsigned', 'other-identity'].includes(as) ||
+    !['app', 'martin'].includes(by)
+  ) {
     console.error(
-      'usage: node forge.ts <N3a|N3b|N4|N5|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity]',
+      'usage: node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity] [--by app|martin]',
     );
     process.exit(2);
   }
+  BY = by as 'app' | 'martin';
   const x1 = test === 'X1a' || test === 'X1b';
-  if (x1) REPO = APP;
+  const n8 = test === 'N8a' || test === 'N8b' || test === 'N8c';
+  if (x1 || n8) REPO = APP;
+  WORKFLOWS = n8 || test === 'N7';
   repoOk(REPO);
   if (branchOver !== undefined && (!/^[\w./-]+$/.test(branchOver) || ['main', 'baseline'].includes(branchOver)))
     throw new Error(`--branch ${branchOver} is not a branch the forge may write`);
@@ -581,9 +733,13 @@ async function main() {
   const head = read<any>(`git/ref/heads/${at ?? 'main'}`).object.sha as string;
   const forgery = x1
     ? await forgeRuntime(test, head, branchOver)
-    : test === 'N5'
-      ? await forgeDeploy(head, as, branchOver)
-      : await forgePin(test as 'N3a' | 'N3b' | 'N4', head, branchOver);
+    : n8
+      ? await forgeCalls(test, head, branchOver)
+      : test === 'N7'
+        ? await forgeWorkflowPin(head, branchOver)
+        : test === 'N5'
+          ? await forgeDeploy(head, as, branchOver)
+          : await forgePin(test as 'N3a' | 'N3b' | 'N4', head, branchOver);
   const out = {
     test: forgery.test,
     repo: REPO,
@@ -602,7 +758,7 @@ async function main() {
   const made = await make(forgery, head);
   console.log(
     JSON.stringify(
-      { ...out, number: made.number, head: made.head, reused: made.reused, at: new Date().toISOString() },
+      { ...out, by: BY, number: made.number, head: made.head, reused: made.reused, at: new Date().toISOString() },
       null,
       2,
     ),

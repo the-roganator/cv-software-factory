@@ -4,8 +4,10 @@ Decided by Martin on 15 November 2026. Each test is an outcome, not a step. The 
 
 ## What every test asserts
 
-1. It starts from a real pin at a known vulnerable version, already in the scratch repository's baseline.
-2. It ends merged and deployed, and the next scan no longer reports the finding.
+1. It starts from a real pin at a known vulnerable version, already in the scratch repository's baseline. A routine
+   update (15, 16, 18) starts from a pin that is behind, with no advisory.
+2. It ends merged and deployed, and the next scan no longer reports the finding. A routine update ends with the scan no
+   longer listing it.
 3. Nobody touched it: no approval, no hold answered, no check re-run by hand.
 4. One pull request carries the whole change, with everything that must move with it.
 5. It is done within a time limit (an hour from scan to deployed, to start with).
@@ -32,6 +34,16 @@ deploy and the next real scan. A local run is a filter before that, never the pr
 | 12 | App: an image under `deploy/` | Syft v1.54.0 to v1.57.1, app #43 | Dependabot's, with Martin's approval |
 | 13 | App: a Critical fix | none; `make drill-vulnerability` stages one | never run |
 | 14 | Either: what mise or the Makefile pins; k3s | none open | an issue, or the cluster's command |
+| 15 | Factory: a routine update, a pin behind with no advisory | the argo-rollouts chart, 2.43.6 with 2.43.12 out | not listed by the scan |
+| 16 | App: a routine update, made by the line | `vitest` 5.1.0 to 5.1.1, in Dependabot's app #74 | left to Dependabot |
+| 17 | Factory: a Makefile pin with a finding | Argo CD's chart, `ARGOCD_CHART` 10.15.0 to 10.18.3 | an issue |
+| 18 | Either: a routine update that crosses a major | none chosen | not listed by the scan |
+| 19 | The scan, with one image the registry will not serve | none; a registry's limit on pulls has failed a whole run | the run failed, with no moves |
+| 20 | App: Dependabot's pull request that moves only the app's pins of the factory's workflows | the six `uses:` lines, to the factory's `main` | Dependabot's, with Martin's approval |
+
+15 to 20 were added on 24 November 2026. 15 and 16 merge and deploy, nobody touching them. 17 merges as the App's move,
+not an issue. 18 is held at Guarded and merges at Lights-out, as 4a and 4b. In 19 the scan still lists every other
+move, and they merge. 20 passes the gate as an exact pin, is queued by the worker, and merges with nobody touching it.
 
 k3s: its pull request merges as any other. Applying it is `make upgrade-cluster` on the host, which is not automated
 and is no part of the test.
@@ -44,6 +56,9 @@ and is no part of the test.
 | N3 | It goes backward, or to a digest the registry does not serve | be refused |
 | N4 | It changes anything beyond its pins | be refused |
 | N5 | An image of ours that is not signed on `main` | be refused |
+| N6 | A workflow pin, with or without a finding | stay an issue for Martin: no pull request of the App's, at any level |
+| N7 | Forged: a pull request that moves a workflow pin, claiming a move | be held by the gate, at Lights-out too |
+| N8 | Forged: 20's change, with a third-party action's line in it, or a commit not on the factory's `main`, or behind the old one | be held by the gate |
 
 N2, a move that makes the findings worse, is dropped (Martin, 17 November 2026): a fix does not normally make things
 worse, and the next daily scan picks up whatever a move brought, as it would any finding.
@@ -55,7 +70,7 @@ Martin's word, 17 November 2026. The tests above are judged at the level the scr
 | Level | What merges with nobody touching it |
 |---|---|
 | Supervised | no move and no fix of the line's; the factory's local deploy pin, which only runs what Martin merged, still does |
-| Guarded | every move but a major (4a, 4b), which is held; a major that clears a Critical merges |
+| Guarded | every move but a major (4a, 4b, 18), which is held; a major that clears a Critical merges |
 | Lights-out | every move, majors too |
 
-For a move nothing in the cluster runs (9, 14a, 14b), merged is the end: there is no deploy to wait for.
+For a move nothing in the cluster runs (9, 14a, 14b, 17, 20), merged is the end: there is no deploy to wait for.

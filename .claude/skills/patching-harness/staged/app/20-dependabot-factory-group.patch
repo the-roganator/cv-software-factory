@@ -1,0 +1,18 @@
+# Test 20: the factory's workflows as a Dependabot group of their own, so one pull request moves the app's six pins of them
+diff --git a/.github/dependabot.yml b/.github/dependabot.yml
+--- a/.github/dependabot.yml
++++ b/.github/dependabot.yml
+@@ -36,8 +36,13 @@
+     commit-message:
+       prefix: ci
+     groups:
++      # Software Factory's workflows, which move together to one commit of its main: a pull request of their own, apart
++      # from every other action's.
++      factory:
++        patterns: ['the-roganator/cv-software-factory/*']
+       actions:
+         patterns: ['*']
++        exclude-patterns: ['the-roganator/cv-software-factory/*']
+ 
+   - package-ecosystem: docker
+     directories:

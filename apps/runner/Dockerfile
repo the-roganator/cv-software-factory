@@ -8,7 +8,7 @@
 # repository's pnpm, and the Agent SDK. The app's own dependencies are not here: the prepare pod installs them onto the
 # job's volume, from the app's lockfile.
 
-FROM node:24.22.3-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS base
+FROM node:24.22.3-trixie-slim@sha256:4d00acb4bcc42c454c4eb801526f7ad7f772ea3bd4fd168c5cc2e384abcbb9d4 AS base
 # git, to check out the app and write the agent's patch. The Debian packages are the image's release's.
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends git ca-certificates \

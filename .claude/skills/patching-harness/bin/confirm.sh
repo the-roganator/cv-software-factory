@@ -83,6 +83,9 @@ baseline() { # <log>
   for _ in $(seq 1 90); do
     state=$(k -n argocd get app root -o jsonpath='{.status.sync.status} {.status.health.status}')
     [ "$state" = "Synced Healthy" ] && break
+    # Argo CD looks at the copies' main every few minutes: asked to look now, it takes the baseline just pushed at
+    # once. A refresh reads git and each resource's health again and changes nothing in the cluster.
+    k -n argocd annotate application root website argocd.argoproj.io/refresh=normal --overwrite >/dev/null 2>&1 || true
     synced=$(k -n argocd get app website -o jsonpath='{.status.sync.revision}')
     phase=$(k -n website get rollout website -o jsonpath='{.status.phase}')
     if [ "$synced" = "$app_main" ] && [ -n "$phase" ] && [ "$phase" != Healthy ]; then
@@ -124,24 +127,29 @@ if want A || want B || want C || want D || want apps || want W; then
 fi
 
 if want A && [ -n "$based" ]; then
-echo "##### A: 1,2,3,5,14a and the forgeries, Guarded $(date -u +%H:%MZ)"
+# With them the routine update (15), the Makefile's pin (17), the workflow's pin that stays an issue (N6) and its
+# forgery (N7). Test 19, the image no registry serves, is on the baseline, so every factory batch's scan has it and
+# each batch judges it.
+echo "##### A: 1,2,3,5,14a,15,17,N6,19 and the forgeries, Guarded $(date -u +%H:%MZ)"
 level guarded
-batch 1,2,3,5,14a && campaign --only 1,2,3,5,14a,N3a,N3b,N4,N5
+batch 1,2,3,5,14a,15,17,N6 && campaign --only 1,2,3,5,14a,15,17,N6,19,N3a,N3b,N4,N5,N7
 watches
 why
 fi
 
 if want B && [ -n "$based" ]; then
-echo "##### B: 4a,4b,6,7a,7b,9,14b, Guarded $(date -u +%H:%MZ)"
-batch 4a,4b,6,7a,7b,9,14b && campaign --only 4a,4b,6,7a,7b,9,14b --no-forge
+# 18, the routine update across a major, is held here beside 4a and 4b.
+echo "##### B: 4a,4b,6,7a,7b,9,14b,18,19, Guarded $(date -u +%H:%MZ)"
+batch 4a,4b,6,7a,7b,9,14b,18 && campaign --only 4a,4b,6,7a,7b,9,14b,18,19 --no-forge
 watches
 why
 fi
 
 if want C && [ -n "$based" ]; then
-echo "##### C: 4a,4b at Lights-out $(date -u +%H:%MZ)"
-batch 2,4a,4b && {
-  level lights-out show && campaign --only 2,4a,4b --no-forge --lights-out
+# At Lights-out the majors merge, 18 among them; a workflow's pin is still an issue (N6) and its forgery still held (N7).
+echo "##### C: 4a,4b,18 at Lights-out, with N6, N7 and 19 $(date -u +%H:%MZ)"
+batch 2,4a,4b,18,N6 && {
+  level lights-out show && campaign --only 2,4a,4b,18,N6,N7,19 --lights-out
 }
 fi
 
@@ -218,7 +226,7 @@ d_settled() {
 until_d=$(($(date +%s) + 2100))
 while [ "$(date +%s)" -lt "$until_d" ]; do
   d_settled && { echo "settled $(date -u +%H:%MZ)"; break; }
-  sleep 60
+  sleep 20
 done
 deploy=$(gh pr list -R "$R" --state all -L 20 --json number,title,mergedAt,createdAt \
   -q "[.[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(deploy): \"))][0]|\"#\(.number) merged=\(.mergedAt)\"")
@@ -234,10 +242,12 @@ level guarded show
 fi
 
 # The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.
+# N8's three ride beside test 20, Dependabot's pull request, which the line has no part in.
 if want apps && [ -n "$based" ]; then
-for test in 8a 10 11 12 13 N1; do
+for test in 8a 10 11 12 13 16 20 N1; do
   echo "##### app $test $(date -u +%H:%MZ)"
   with=(); [ "$test" = 13 ] && with=(--with X1a,X1b)
+  [ "$test" = 20 ] && with=(--with N8a,N8b,N8c)
   harness 12 app "$test" ${with[@]+"${with[@]}"} --limit "${LIMIT:-60}"
 done
 fi

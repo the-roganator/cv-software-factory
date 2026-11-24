@@ -18,6 +18,7 @@
 #   ./copies.sh forget-closed  make the watches forget the pull requests a reset closed (reset does this itself)
 #   ./copies.sh dependabot   close the copies' Dependabot pull requests the real ones closed, or no test needs
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
+#   ./copies.sh summon-dependabot  have Dependabot look at the app copy now (test 20; the harness calls it)
 #   ./copies.sh down         delete the scratch cluster and its state
 #
 # The scratch cluster is the copies' alone: its own k3d name and kube context (k3d-software-factory-scratch), ports
@@ -176,6 +177,16 @@ pin_watch_from_cluster() { # <dir>
   grep -qx ' *name: scratch-pin-watch' "$file" || die "PIN_WATCH_ONLY in $file is not read from scratch-pin-watch"
 }
 
+# The copy's GitHub worker polls every 15 seconds, not the real one's 60 (GITHUB_POLL_SECONDS, which the real manifest
+# leaves at its default): each hand-off of a move (checks green to queued, merged to the deploy pull request) waits a
+# poll, and a pass is three hours of them. Nothing the worker decides counts polls: its tries are counted in runs and
+# removals, the pin watch's pass and the signing grace by the clock, and an unchanged answer costs it no request.
+worker_poll() { # <dir>
+  local file="$1/deploy/base/factory/github.yaml"
+  perl -0pi -e 's{^( +)- name: PIN_WATCH_ONLY\n}{$1- name: GITHUB_POLL_SECONDS\n$1  value: "15"\n$1- name: PIN_WATCH_ONLY\n}m' "$file"
+  grep -qx ' *- name: GITHUB_POLL_SECONDS' "$file" || die "GITHUB_POLL_SECONDS is not set in $file"
+}
+
 pin_watch() {
   local only=${PIN_WATCH_ONLY:-*}
   kubectl --context "$SCRATCH_CONTEXT" -n factory create configmap scratch-pin-watch --from-literal=only="$only" \
@@ -191,6 +202,7 @@ build() {
   apply_staged factory "$WORK/factory"
   (cd "$WORK/factory" && rename && real_mirror && second_cluster && tidy)
   pin_watch_from_cluster "$WORK/factory"
+  worker_poll "$WORK/factory"
   # The last pins, so main never names an image the copy has not built; pin-images moves them to this baseline's own.
   [[ -f "$STATE/images.env" ]] && pin_overlays factory
   commit "$WORK/factory" "chore(scratch): $FACTORY_COPY, the baseline"
@@ -330,6 +342,12 @@ push_baseline() { # <copy> <dir>
   ruleset "$copy" disabled
   git -C "$dir" push -q --force "https://github.com/$copy" HEAD:refs/heads/baseline HEAD:refs/heads/main
   ruleset "$copy" active
+  # Dependabot follows a branch for a `uses:` pinned by commit only where the called repository has a version tag
+  # that is not on the pinned commit, as the real factory's releases are: the factory copy has one, on the real commit
+  # its baseline starts from, which a reset's sweep of tags takes and this puts back (test 20).
+  if [[ $copy == "$FACTORY_COPY" ]]; then
+    git -C "$dir" push -q --force "https://github.com/$copy" "$FACTORY_FROM:refs/tags/$DEPENDABOT_TAG"
+  fi
 }
 
 # scripts/github-settings.ts from the factory baseline, told the copies by name (policy/repositories.ts) as well as
@@ -429,6 +447,8 @@ pin_images() {
   [[ $f == "$(cat "$WORK/factory.sha")" && $a == "$(cat "$WORK/app.sha")" ]] ||
     die "the copies' main is not the baseline in work/: build, then reset, then pin-images"
   worker 0
+  # Both copies' builds at once: neither reads the other's.
+  local started=()
   for pair in "$FACTORY_COPY:$f" "$APP_COPY:$a"; do
     local copy=${pair%%:*} sha=${pair#*:}
     say "build.yml on $copy at $sha"
@@ -441,7 +461,10 @@ pin_images() {
       [[ -n $run ]] && break; sleep 10
     done
     [[ -n $run ]] || die "build.yml did not start in $copy"
-    run_ok "$run" "$copy" || die "build.yml failed in $copy (run $run)"
+    started+=("$copy:$run")
+  done
+  for pair in "${started[@]}"; do
+    run_ok "${pair#*:}" "${pair%%:*}" || die "build.yml failed in ${pair%%:*} (run ${pair#*:})"
   done
   digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq -r .digest; }
   # The last ones stay, for the refusal record's signed builds (refusal_images).
@@ -578,6 +601,28 @@ reset_one() { # <copy> <dir>
   dependabot_like_real "$copy" "$real"
   dependabot_only_needed "$copy"
   forget_closed "$copy"
+}
+
+# Dependabot looks at a repository on its own day of the week, and at once when a push to main changes
+# .github/dependabot.yml. So, for the test of its own pull request (20), one commit on the app copy's main that
+# rewrites a last comment line of that file: Martin's, made by git under his signing configuration, as the copy's
+# ruleset wants verified signatures and the contents API's commits are not his; pushed with the ruleset off for the
+# push alone, as a baseline is. Its run is the Actions run "github_actions in /. - Update #…", within the minute.
+summon_dependabot() {
+  local dir="$WORK/app" copy=$APP_COPY file=.github/dependabot.yml pushed=0
+  git -C "$dir" fetch -q "https://github.com/$copy" main
+  git -C "$dir" checkout -q -f --detach FETCH_HEAD
+  perl -ni -e 'print unless /^# Dependabot was last asked to look on /' "$dir/$file"
+  echo "# Dependabot was last asked to look on $(date -u +%FT%TZ)." >>"$dir/$file"
+  git -C "$dir" add "$file"
+  git -C "$dir" -c commit.gpgsign=true commit -q -m "chore(scratch): ask Dependabot to look now" \
+    -m "Scratch copy for the patching tests: not the real repository." ||
+    die "the commit that summons Dependabot was not made (is a signing key set?)"
+  ruleset "$copy" disabled
+  git -C "$dir" push -q "https://github.com/$copy" HEAD:refs/heads/main || pushed=1
+  ruleset "$copy" active
+  [[ $pushed == 0 ]] || die "could not push the commit that summons Dependabot to $copy"
+  say "summoned Dependabot on $copy at $(git -C "$dir" rev-parse --short HEAD)"
 }
 
 # reset [factory|app] [--store]: both copies unless one is named; --store also puts the scratch store back to its clean
@@ -731,5 +776,6 @@ case "${1:-}" in
   forget-closed) forget_closed "$FACTORY_COPY"; forget_closed "$APP_COPY" ;;
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
+  summon-dependabot) summon_dependabot ;;
   *) sed -n '2,32p' "$0"; exit 2 ;;
 esac

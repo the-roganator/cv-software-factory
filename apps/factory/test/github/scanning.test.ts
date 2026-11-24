@@ -513,7 +513,7 @@ describe('the scan’s moves', () => {
     );
     await fails(
       recorded((routine) => Object.assign(routine[1] as StateRoutine, { pins: [] })),
-      /move 4, a lockfile's routine move, is recorded outside the files it names/,
+      /the state gives routine move 2 no pins/,
     );
   });
 
@@ -545,7 +545,7 @@ describe('the scan’s moves', () => {
       );
     await fails(
       recorded((routine) => Object.assign(routine[1] as StateRoutine, { to: 'the newest' })),
-      /the state's routine move 2 has a target the grammar does not read/,
+      /the state gives routine move 2 a target the grammar does not read/,
     );
   });
 

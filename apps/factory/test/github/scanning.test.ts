@@ -475,6 +475,23 @@ describe('the scan’s moves', () => {
     expect(again?.mark).toBe(lockfile?.mark);
   });
 
+  it('leave out a record that names no move: a release the scan saw and still waits on, or passed over', async () => {
+    const waiting = {
+      name: 'still-waiting',
+      from: '1.0.0',
+      to: 'version 1.1.0',
+      pins: [{ file: 'pnpm-lock.yaml', line: 12 }],
+      seen: '2026-11-09T06:15:00Z',
+    };
+    const day = recorded((routine) => routine.unshift(waiting, { ...waiting, name: 'ghcr.io/example/tool' }));
+    const read_ = await read(day);
+    expect(read_.moves).toEqual((await read(routineDay())).moves);
+    expect(JSON.stringify(read_)).not.toContain('still-waiting');
+    // A day with nothing but waiting releases lists no routine move, and is read as any day.
+    const none = { state: { ...state(), routine: [waiting] } };
+    expect((await read(none)).moves).toEqual((await read()).moves);
+  });
+
   it('read a day whose state records no routine move for one the artifact names whole', async () => {
     const day = recorded((routine) => routine.shift());
     expect((await read(day)).moves[2]).toMatchObject({ name: 'ghcr.io/example/tool', findings: [] });

@@ -309,8 +309,35 @@ describe('a routine update: a move no finding asks for, made and compared as any
   });
 
   it('names a routine update across a major `major`: it clears no Critical, as it clears nothing', async () => {
-    const behind = SCAN.map((m) => (m.name === 'loki' ? { ...m, clears: NONE, leaves: NONE } : m));
-    expect(await prove(change({ [LOKI]: swap(LOKI, '18.13.7', '21.2.3') }), behind)).toMatchObject({ rule: 'major' });
+    const behind = SCAN.map((m) => (m.name === 'loki' ? { ...m, clears: NONE } : m));
+    const result = await prove(change({ [LOKI]: swap(LOKI, '18.13.7', '21.2.3') }), behind);
+    // Its title says what it is, in place of a rating of findings it does not have.
+    expect(result).toEqual({
+      rule: 'major',
+      title:
+        'The scan’s move of loki to 21.2.3, made by the gate on main and the same as the pull request; a routine update across a major, with no finding behind it: loki',
+    });
+    // Beside a finding's major in one pull request, each is named for what it is.
+    const two = [
+      ...behind,
+      move({
+        name: 'tempo',
+        pins: [{ file: PROMETHEUS, line: 6 }],
+        from: '29.35.0',
+        to: 'chart tempo 30.0.0 (a major)',
+        major: true,
+      }),
+    ].filter((m) => m.name !== 'prometheus');
+    const both = await prove(
+      change({ [LOKI]: swap(LOKI, '18.13.7', '21.2.3'), [PROMETHEUS]: swap(PROMETHEUS, '29.35.0', '30.0.0') }),
+      two,
+    );
+    expect(both).toMatchObject({
+      rule: 'major',
+      title: expect.stringContaining(
+        '; a major that clears no Critical by Trivy’s rating: tempo; a routine update across a major, with no finding behind it: loki',
+      ),
+    });
   });
 
   it('passes a routine update of the app’s lockfile, its package from the state’s record, made by the pin step', async () => {

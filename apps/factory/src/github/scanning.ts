@@ -590,7 +590,9 @@ const byPin = (a: { file: string; line: number }, b: { file: string; line: numbe
 const filesOf = (pins: readonly { file: string }[]) => [...new Set(pins.map((pin) => pin.file))].sort().join('\n');
 
 /**
- * The state's records of the day's routine moves, by the move each names, each held to `moves.json`: it names a move
+ * The state's records of the day's routine moves, by the move each names, each held to `moves.json`. A record that
+ * names no move is a release the scan saw and still waits on, or passed over: it is no move of the day, and is left
+ * out. One that names a move names a move
  * of the list, once, that is routine (one with findings has them, and no record), to a target the grammar reads; a
  * move the artifact names whole is the same move there, by its name, what it pins, its target and its pins; and the
  * artifact's count of routine moves, where it gives one, is the list's.
@@ -601,6 +603,7 @@ function routineOf(repo: string, file: MovesFile, state: State): Map<number, Sta
     throw disagrees(repo, `${MOVES_FILE} counts ${file.totals.routine} routine moves and lists ${listed}`);
   const out = new Map<number, StateRoutine>();
   for (const [at, each] of (state.routine ?? []).entries()) {
+    if (each.move === undefined) continue;
     const where = `the state's routine move ${at + 1}`;
     const move = file.moves[each.move - 1];
     if (!move) throw disagrees(repo, `${where} names move ${each.move} of ${file.moves.length}`);

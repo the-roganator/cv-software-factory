@@ -1,7 +1,7 @@
+import type { PayloadOf } from '@software-factory/events';
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import type { Moves } from '../../src/github/scanning.ts';
-
 import { commitTitle } from '../../src/line/agents/agent.ts';
 import { MOVED_UNCHANGED, MOVED_UNTESTED } from '../../src/line/agents/coder.ts';
 import {
@@ -82,7 +82,16 @@ const grpcPins = (version: string) =>
   ].join('');
 const GRPC_PINS = grpcPins('1.14.7');
 
-async function grpcTicket(): Promise<string> {
+/** The dependency sense's signal for a routine update of it: an outdated dependency, with no scan. */
+const GRPC_BEHIND: PayloadOf<'signal.received'> = {
+  sense: 'dependency',
+  check: 'the vulnerability scan',
+  version: 'c'.repeat(40),
+  symptom: 'outdated-dependency',
+  move: { repository: 'the-roganator/cv-worlds-worst-website', ...GRPC, pins: [{ file: 'pnpm-lock.yaml', line: 3 }] },
+};
+
+async function grpcTicket(signal?: PayloadOf<'signal.received'>): Promise<string> {
   const workItem = await nextWorkItem(database.as.triage);
   await events.append([
     event(
@@ -109,6 +118,7 @@ async function grpcTicket(): Promise<string> {
       },
       'triage',
     ),
+    ...(signal ? [event(workItem, 'signal.received', signal, 'triage')] : []),
   ]);
   return workItem;
 }
@@ -302,6 +312,25 @@ describe('a dependency’s move on the line', () => {
     expect(pushed?.actor).toBe('factory');
     // No model was called for Build: the planner's call is the only one recorded.
     expect((await types(workItem)).filter((t) => t === 'model.called')).toHaveLength(1);
+    expect(await payloads(workItem, 'hold.started')).toEqual([]);
+  });
+
+  it('titles a routine update’s commit a chore of the dependencies, never a fix', async () => {
+    const workItem = await grpcTicket(GRPC_BEHIND);
+    const { pass, github } = line({
+      planner: gatesOnly,
+      coder: () => ({ kind: 'handed-back', handback: handback(CODED, PATCH), pins: GRPC_PINS }),
+    });
+    await justOne(workItem);
+    await pass(); // the issue, and the planner
+    await pass(); // Build: the pin step alone
+    const [applied] = github.acts.filter((a) => a.action === 'applyPatch');
+    const { message } = (applied?.args ?? { message: '' }) as { message: string };
+    expect(message.split('\n')[0]).toBe('chore(deps): move @grpc/grpc-js to 1.14.7');
+    expect(await payloads(workItem, 'pull-request.pushed')).toEqual([
+      expect.objectContaining({ title: 'chore(deps): move @grpc/grpc-js to 1.14.7' }),
+    ]);
+    expect((await failures(workItem))?.failures ?? 0).toBe(0);
     expect(await payloads(workItem, 'hold.started')).toEqual([]);
   });
 

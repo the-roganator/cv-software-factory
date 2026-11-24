@@ -67,12 +67,17 @@ export interface State {
   /** The run that wrote it (GITHUB_RUN_ID), which its seal binds. */
   run: string;
   findings: StateFinding[];
-  /** The day's routine moves, which no finding carries: what `moves.json` withholds of a lockfile's, and each one's day. */
-  routine?: StateRoutine[];
+  /**
+   * The day's routine moves, which no finding carries: what `moves.json` withholds of a lockfile's, and each one's
+   * day; and each release the scan saw that is still inside its wait, which is no move yet.
+   */
+  routine?: StateRoutine[] | undefined;
 }
+
+/** A release a pin with no finding is behind (routine.ts), listed as a move or still waiting to be. */
 export interface StateRoutine {
-  /** Its place in the run's `moves.json`, from 1. */
-  move: number;
+  /** Its place in the run's `moves.json`, from 1; absent while the release waits, and for one passed over. */
+  move?: number | undefined;
   /** What moves: a package, an image's repository, a chart's name, `k3s`. */
   name: string;
   from: string;

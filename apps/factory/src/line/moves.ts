@@ -200,17 +200,19 @@ const TITLE_CHARS = 80;
 /**
  * A move's commit title, the line's own: `fix(deps): move <name> to <version>`, the version the pin step wrote
  * (`writtenVersion`), within the title's rule however long the name or the version. A version too long to fit is
- * left out, then the name's scope, then the name is cut.
+ * left out, then the name's scope, then the name is cut. A routine update's, which no advisory asked for, is a
+ * chore's (`chore(deps): …`): it fixes nothing, and the app's release notes list no chore.
  */
-export function moveTitle(name: string, version: string): string {
+export function moveTitle(name: string, version: string, routine = false): string {
   const unscoped = name.replace(/^@[^/]+\//, '');
+  const type = routine ? 'chore(deps)' : 'fix(deps)';
   const said = [
-    `fix(deps): move ${name} to ${version}`,
-    `fix(deps): move ${name}`,
-    `fix(deps): move ${unscoped} to ${version}`,
-    `fix(deps): move ${unscoped}`,
+    `${type}: move ${name} to ${version}`,
+    `${type}: move ${name}`,
+    `${type}: move ${unscoped} to ${version}`,
+    `${type}: move ${unscoped}`,
   ].find((title) => title.length <= TITLE_CHARS);
-  return said ?? cutTo(`fix(deps): move ${unscoped}`, TITLE_CHARS);
+  return said ?? cutTo(`${type}: move ${unscoped}`, TITLE_CHARS);
 }
 
 /**

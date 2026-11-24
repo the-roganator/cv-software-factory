@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
-import { commitTitle } from '../../src/line/agents/agent.ts';
+import { commitTitle, titleFor } from '../../src/line/agents/agent.ts';
 import {
   compareVersions,
   disclosedMove,
@@ -756,11 +756,20 @@ describe('what the line says of a move', () => {
     });
   });
 
-  it('titles a move’s commit `fix(deps)`, the one type of a dependency’s that the line’s own title rule takes', () => {
+  it('titles a routine update’s commit `chore(deps)`, within the title’s rule however long its name, and a fix’s `fix(deps)`', () => {
     expect(moveTitle('invented-pkg', '2.0.1')).toBe('fix(deps): move invented-pkg to 2.0.1');
-    expect(commitTitle.safeParse('fix(deps): move invented-pkg to 2.0.1').success).toBe(true);
-    // The app's own check takes `chore`; the line's rule for a work item's pull request does not.
-    expect(commitTitle.safeParse('chore(deps): move invented-pkg to 2.0.1').success).toBe(false);
+    expect(moveTitle('invented-pkg', '2.0.1', true)).toBe('chore(deps): move invented-pkg to 2.0.1');
+    const routine = [{ sense: 'dependency' as const, symptom: 'outdated-dependency' as const }];
+    const asked = { kind: 'ticket' as const, ticket: TICKET };
+    for (const name of ['invented-pkg', `@scope/${'n'.repeat(70)}`, 'n'.repeat(120)])
+      for (const version of ['2.0.1', `2.0.1-${'rc.'.repeat(30)}1`]) {
+        const title = moveTitle(name, version, true);
+        expect(title, title).toMatch(/^chore\(deps\): move /);
+        expect(titleFor(asked, routine).safeParse(title).success, title).toBe(true);
+        // Each is held to its own rule: a routine update's is no fix's title, nor a fix's a routine update's.
+        expect(titleFor(asked).safeParse(title).success).toBe(false);
+        expect(titleFor(asked, routine).safeParse(moveTitle(name, version)).success).toBe(false);
+      }
   });
 });
 

@@ -117,8 +117,8 @@ export function printOf(node: any, required: string[]): string | undefined {
 // ── The scan's word on an image the registry did not serve ───────────────────────────────────────────────────────────
 
 /** How the scan's run begins its line for an image it could not pull, before the image's name (deadlines.ts). */
-export const NOT_PULLED = 'Not pulled: ';
-/** Whether a line of the scan's run says `image` was not pulled: the words, then a name that holds the image. */
+export const NOT_PULLED = 'Image not read: ';
+/** Whether a line of the scan's run says `image` was not read: the words, then a name that holds the image. */
 export const saysNotPulled = (message: string, image: string) =>
   message.split('\n').some((line) => {
     const at = line.indexOf(NOT_PULLED);

@@ -232,13 +232,13 @@ describe('a failure that is certain before the limit', () => {
   });
 });
 
-describe("the scan's word on an image not pulled", () => {
+describe("the scan's word on an image not read", () => {
   it('is its opening words and then the image, on one line', () => {
     const image = 'ghcr.io/anchore/grype';
-    expect(saysNotPulled(`Not pulled: ${image}:unread@sha256:59dc: could not be read`, image)).toBe(true);
-    expect(saysNotPulled(`Not pulled: a stage: ${image}:unread: MANIFEST_UNKNOWN`, image)).toBe(true);
+    expect(saysNotPulled(`Image not read: ${image}:unread@sha256:59dc: could not be read`, image)).toBe(true);
+    expect(saysNotPulled(`Image not read: a stage: ${image}:unread: MANIFEST_UNKNOWN`, image)).toBe(true);
     expect(saysNotPulled(`Read: ${image}`, image)).toBe(false);
-    expect(saysNotPulled(`${image} first\nNot pulled: another/image: gone`, image)).toBe(false);
+    expect(saysNotPulled(`${image} first\nImage not read: another/image: gone`, image)).toBe(false);
   });
 });
 

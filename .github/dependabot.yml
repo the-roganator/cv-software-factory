@@ -97,8 +97,8 @@ updates:
   # A docker cooldown holds only where the registry gives Dependabot the image's publication date. Where it gives none,
   # the pull request opens with Dependabot's warning that no publication date was available, and the image arrives at
   # the first weekly run after its release, held by its digest and review alone. The scan's routine update of such an
-  # image waits three days whatever the registry says: from the day the image's own configuration says it was made, or,
-  # for a tag built again, from the day the scan first saw the pin behind it. By registry, from each one's bumps:
+  # image waits three days whatever the registry or the image says: from the day the scan first saw the pin behind
+  # its tag, which the scan's state keeps. By registry, from each one's bumps:
   #   Docker Hub (node, postgres, nginxinc/nginx-unprivileged)       no date
   #   gcr.io (distroless/nodejs24-debian13)                          no date
   #   Microsoft's, mcr.microsoft.com (playwright, devcontainers)     no date

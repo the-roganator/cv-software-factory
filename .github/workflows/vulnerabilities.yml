@@ -28,13 +28,13 @@
 #   (routine.ts), which changes no verdict and fails no run:
 #   their table is in the log and the step summary, and `moves.json`, the artifact `moves`, holds the same. It seals
 #   the state the next run reads, uploaded before the results, so every upload has its state. A registry or a release
-#   index that does not answer costs the results that asked it, which keep the fix the last run gave them, with a
-#   warning that names it; the state or the alerts not read fails the run before the upload, so no message loses its
-#   day. After the upload it holds its
+#   index that does not answer costs the results that asked it, which keep the fix the last run gave them, and the
+#   run fails on it after the upload, naming it; the state or the alerts not read fails the run before the upload,
+#   so no message loses its day. After the upload it holds its
 #   categories' alerts to policy/vulnerabilities.ts, read from this repository's main alone: each excepted result's
 #   alert dismissed as won't fix, and any dismissed with no exception in force reopened (alerts.ts). Then the run
 #   fails on a new High or Critical with a fix, one due within a day, or one past its deadline, its last lines naming
-#   the moves that hold them, and on an image not read, naming it. One scan at a time uploads, so no two uploads'
+#   the moves that hold them, and on an image or a source not read, naming each. One scan at a time uploads, so no two uploads'
 #   alerts interleave.
 # - pins: needs scan. The moves no pin's line writes (a lockfile's package, what mise pins, an image that brings another
 #   pin with it), made by the pin step on the commit the scan read and sealed with the scan's key, the artifact `pins`
@@ -302,7 +302,7 @@ jobs:
       # finding's days (code scanning's alerts, where there is none it can open), and seals the next. It reads npm's registry, Node's release index, k3s's releases, the charts' repositories, the tools'
       # releases, and the newer images on each line with a fixed finding (crane for the tags and the index digests,
       # Trivy on the scan's database): one that does not answer costs the results that asked it, which keep the last
-      # run's fix. It fails, and nothing is uploaded, when the state and the alerts cannot be read, or an image was
+      # run's fix, and fails the run at its end. It fails, and nothing is uploaded, when the state and the alerts cannot be read, or an image was
       # not read and its findings cannot be carried from the state. For the pins that are merely behind (routine.ts)
       # it reads the same, and a package's releases and a tag's digest, with no layer pulled: one of those that does
       # not answer costs that pin's routine update for the day.
@@ -393,7 +393,8 @@ jobs:
         run: node factory/apps/factory/src/vulnerabilities/alerts.ts "$RUNNER_TEMP/scan/exceptions.json"
       # The verdict judged before the upload, once each new finding's alert exists: fails on a new High or Critical with
       # a fix, one due within a day, or one past its deadline, naming the moves that hold them; and on an image the
-      # scan could not read, naming it and why, with its findings the last run's.
+      # scan could not read, naming it and why, with its findings the last run's, and on a source that did not
+      # answer, naming it.
       - name: Deadlines
         if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
         env:

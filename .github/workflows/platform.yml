@@ -82,9 +82,10 @@ jobs:
     if: ${{ !cancelled() && (needs.which.result != 'success' || (needs.which.outputs.platform != 'none' && needs.which.outputs.platform != 'matched')) }}
     runs-on: ubuntu-24.04
     # GitHub's service ends the job at this limit even when its runner has stopped answering, closing it 5 to 10 minutes
-    # later; `Make the cluster`'s own limit, below, ends a cluster that hangs sooner, as a failure, while the runner still
-    # answers. A healthy job takes 5 to 10 minutes, and one whose cluster did not come up about 15 to 17.
-    timeout-minutes: 20
+    # later; the steps' own limits, below, end a cluster that hangs sooner, as a failure, while the runner still
+    # answers. So it holds them all: three minutes for the set-up before them, the node's 10, the cluster's 15 and the
+    # figures' 2 (a test holds the sum). A healthy job takes 5 to 10 minutes.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -129,12 +130,13 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
       # The cluster's node, and Argo CD's images pulled into it before the install (scripts/platform-pull-first.sh): the
       # hang seen on hosted runners waited on the install's hook pod, whose image never started to download, until the
-      # step's limit. Each pull is ended inside the node and tried again, and this step's own limit, which the runner
-      # keeps, ends one that hangs anyway in five minutes rather than fifteen. A healthy one takes under a minute. On a
-      # failure of its own it says why, as `Make the cluster` does, for the step after to carry.
+      # step's limit. Each pull is ended inside the node and tried again, all of them within the script's 7 minutes, so
+      # the script names the image that did not pull; this step's own limit, which the runner keeps, gives the node's
+      # making 3 minutes beyond that, and ends a step that hangs anyway at 10 minutes. A healthy one takes under a
+      # minute. On a failure of its own it says why, as `Make the cluster` does, for the step after to carry.
       - name: Make the node, and pull Argo CD's images first
         id: node
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           {
             make cluster-node K3D_REGISTRIES=deploy/k3d/ci-registries.yaml && scripts/platform-pull-first.sh

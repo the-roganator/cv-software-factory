@@ -74,12 +74,23 @@ describe("Argo CD's images, pulled first", () => {
     expect(out).toMatch(/^Pulled quay\.io\/argoproj\/argocd:v3\.6\.1 in \d+s \(try 3 of 3\)\.$/m);
   });
 
+  it('ends within its deadline, naming the image it was pulling, however many tries are left', () => {
+    // 3 tries of 4s each would take 12s; the deadline leaves room for one, after the margin and the kill outside it.
+    const { status, out, calls } = pull(['hang', 'hang', 'hang', 'hang'], { LIMIT: '4', DEADLINE: '21' });
+    expect(status).toBe(1);
+    expect(calls[0]).toBe('exec k3d-software-factory-server-0 timeout 4 crictl pull quay.io/argoproj/argocd:v3.6.1');
+    expect(calls.length).toBeLessThan(3);
+    expect(out).toContain(
+      "::error::quay.io/argoproj/argocd:v3.6.1 did not pull into the node within the 21s all of Argo CD's images have",
+    );
+  });
+
   it('fails by name, after its tries, when an image never pulls', () => {
     const { status, out, calls } = pull(['ok', 'hang', 'hang'], { TRIES: '2' });
     expect(status).toBe(1);
     expect(calls).toHaveLength(3);
     expect(out).toContain(
-      '::error::ecr-public.aws.com/docker/library/redis:8.6.4-alpine did not pull into the node in 2 tries of 1s',
+      '::error::ecr-public.aws.com/docker/library/redis:8.6.4-alpine did not pull into the node in 2 tries of at most 1s',
     );
   });
 });

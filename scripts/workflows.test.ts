@@ -978,18 +978,28 @@ describe('platform.yml', () => {
     expect(why?.name).toBe(`Why: ${expression('env.PLATFORM_FAULT')}`);
     expect(why?.if).toBe(expression("(failure() || cancelled()) && env.PLATFORM_FAULT != ''"));
     // A cluster that has not come up fails at the watch's 12-minute ceiling, or at the step's 15 if the watch is stuck
-    // too, and the job ends at GitHub's 20 if the runner no longer answers.
+    // too, and the job ends at GitHub's 30 if the runner no longer answers.
     const limited = steps[making] as { id?: string; 'timeout-minutes'?: number } | undefined;
     expect(limited?.id).toBe('make');
     expect(limited?.['timeout-minutes']).toBe(15);
+    expect((jobs.platform as { 'timeout-minutes'?: number } | undefined)?.['timeout-minutes']).toBe(30);
     expect(steps[making]?.run).toContain('SYNC_TIMEOUT=12m TIMEOUT=720');
-    expect((jobs.platform as { 'timeout-minutes'?: number } | undefined)?.['timeout-minutes']).toBe(20);
-    // Just before it, the node, and Argo CD's images pulled into it, within a limit of five minutes of their own: a pull
-    // that hangs ends there, not at the cluster's fifteen (scripts/platform-pull-first.test.ts). A failure of its own
-    // says why, as the cluster's does.
+    // Just before it, the node, and Argo CD's images pulled into it, within a limit of their own: a pull that hangs ends
+    // there, not at the cluster's fifteen (scripts/platform-pull-first.test.ts). A failure of its own says why, as the
+    // cluster's does.
     const node = steps[making - 1] as Step & { 'timeout-minutes'?: number };
     expect(node.id).toBe('node');
-    expect(node['timeout-minutes']).toBe(5);
+    // The limits nest: the script ends within its deadline, with three minutes of the step's left for making the node,
+    // so the script, not the step's limit, names the image that did not pull; and the job's limit, which GitHub's
+    // service keeps when the runner does not, holds three minutes of set-up, the node's, the cluster's and the
+    // figures', so each step's own limit fires first.
+    const pullFirst = readFileSync('scripts/platform-pull-first.sh', 'utf-8');
+    const deadline = Number(/^deadline=\$\{DEADLINE:-(\d+)\}$/m.exec(pullFirst)?.[1]);
+    expect(deadline).toBeGreaterThan(0);
+    const limit = (step: unknown) => (step as { 'timeout-minutes'?: number } | undefined)?.['timeout-minutes'] ?? 0;
+    expect(deadline + 3 * 60).toBeLessThanOrEqual(limit(node) * 60);
+    const figures = steps[making + 1];
+    expect(3 + limit(node) + limit(steps[making]) + limit(figures)).toBeLessThanOrEqual(limit(jobs.platform));
     expect(node.run).toContain(
       'make cluster-node K3D_REGISTRIES=deploy/k3d/ci-registries.yaml && scripts/platform-pull-first.sh',
     );

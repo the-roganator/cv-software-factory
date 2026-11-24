@@ -241,7 +241,7 @@ describe('how long nothing after is', () => {
 });
 
 describe("the app's pins of the factory's workflows", () => {
-  const repo = 'the-roganator/cv-software-factory-scratch';
+  const repo = 'example/factory-copy';
   const a = 'a'.repeat(40);
   const b = 'b'.repeat(40);
   const caller = (commit: string, file: string) =>
@@ -249,7 +249,7 @@ describe("the app's pins of the factory's workflows", () => {
 
   it('reads each pin, and no other action’s', () => {
     expect(workflowPins(caller(a, 'review.yml'), repo)).toEqual([{ workflow: 'review.yml', commit: a }]);
-    expect(workflowPins(caller(a, 'review.yml'), 'the-roganator/cv-software-factory')).toEqual([]);
+    expect(workflowPins(caller(a, 'review.yml'), 'example/factory')).toEqual([]);
   });
 
   it('passes when every pin is at the one commit', () => {

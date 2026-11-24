@@ -137,8 +137,11 @@ try {
     );
     return {
       exit: new Promise<number | null>((resolve) => zap.on('close', resolve)),
-      // The container, not the client: stopping `docker run` alone would leave ZAP running.
-      stop: () => void spawn('docker', ['rm', '--force', name], { stdio: 'ignore' }),
+      // The container, not the client: stopping `docker run` alone would leave ZAP running. Its own limit, so a Docker
+      // that does not answer leaves no process behind.
+      stop: () => void spawn('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 15_000 }),
+      // The client, when the container's removal did not end it.
+      kill: () => void zap.kill('SIGKILL'),
     };
   };
   const exit = await runStarted(start, () => existsSync(answered));

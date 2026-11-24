@@ -37,7 +37,7 @@ describe("ZAP's image", () => {
 /** A run of ZAP that ends when stopped, or with `code` when it answers. */
 function fakeRun(answers: boolean, code = 0) {
   let end: (code: number | null) => void = () => {};
-  const run: Run = { exit: new Promise((resolve) => (end = resolve)), stop: () => end(137) };
+  const run: Run = { exit: new Promise((resolve) => (end = resolve)), stop: () => end(137), kill: () => end(137) };
   if (answers) setTimeout(() => end(code), 5);
   return run;
 }
@@ -77,6 +77,39 @@ describe("ZAP's start", () => {
     );
     expect(starts).toBe(START_TRIES);
     expect(exit).toBe(NEVER_STARTED);
+  });
+
+  it('kills the client of a run its stop did not end, and goes on, never waiting on it unbounded', async () => {
+    const said: string[] = [];
+    const killed: number[] = [];
+    let starts = 0;
+    const exit = await runStarted(
+      (attempt) => {
+        starts++;
+        let end: (code: number | null) => void = () => {};
+        // A stop that does nothing, as when Docker does not answer; and a second run whose kill ends nothing either.
+        return {
+          exit: new Promise((resolve) => (end = resolve)),
+          stop: () => {},
+          kill: () => {
+            killed.push(attempt);
+            if (attempt === 1) end(137);
+          },
+        };
+      },
+      () => false,
+      (l) => said.push(l),
+      10,
+      1,
+      10,
+    );
+    expect(starts).toBe(START_TRIES);
+    expect(killed).toEqual([1, 2]);
+    expect(exit).toBe(NEVER_STARTED);
+    expect(said).toEqual([
+      `ZAP did not answer within 0s, try 1 of ${START_TRIES}: stopped, its client killed.`,
+      `ZAP did not answer within 0s, try 2 of ${START_TRIES}: its client killed, and not yet gone.`,
+    ]);
   });
 
   it('keeps the exit of a ZAP that stopped by itself before answering, which hooks.py reports', async () => {

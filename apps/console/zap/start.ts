@@ -42,16 +42,31 @@ export function pullImage(image: string, pull: Pull = dockerPull, say: Say = con
   return false;
 }
 
-/** One run of ZAP: its exit, and a way to stop it. */
+/** How long a stopped run has to end before its client is killed, and then to go. */
+export const STOP_WAIT_MS = 20_000;
+
+/** One run of ZAP: its exit, a way to stop it (its container), and a way to end its client when that does not. */
 export interface Run {
   exit: Promise<number | null>;
   stop: () => void;
+  kill: () => void;
 }
+
+/** Whether `promise` settles within `ms`. */
+const within = (promise: Promise<unknown>, ms: number) =>
+  new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    void promise.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 
 /**
  * Starts ZAP up to `START_TRIES` times: a run whose ZAP has not answered (`answered`, which `hooks.py` makes true)
- * within `START_LIMIT_MS` is stopped and started again. The last run's exit, or `NEVER_STARTED` when no run's ZAP
- * answered.
+ * within `START_LIMIT_MS` is stopped and started again. A stopped run has `STOP_WAIT_MS` to end, then its client is
+ * killed and given as long again, so a stop that does nothing (a Docker that does not answer) never holds the scan. The
+ * last run's exit, or `NEVER_STARTED` when no run's ZAP answered.
  */
 export async function runStarted(
   start: (attempt: number) => Run,
@@ -59,6 +74,7 @@ export async function runStarted(
   say: Say = console.error,
   limitMs = START_LIMIT_MS,
   everyMs = 2_000,
+  stopWaitMs = STOP_WAIT_MS,
 ): Promise<number | null> {
   for (let attempt = 1; ; attempt++) {
     const run = start(attempt);
@@ -71,8 +87,12 @@ export async function runStarted(
     while (!done && !answered() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, everyMs));
     if (done || answered()) return exit;
     run.stop();
-    await exit;
-    say(`ZAP did not answer within ${Math.round(limitMs / 1000)}s, try ${attempt} of ${START_TRIES}: stopped.`);
+    let how = 'stopped';
+    if (!(await within(exit, stopWaitMs))) {
+      run.kill();
+      how = (await within(exit, stopWaitMs)) ? 'stopped, its client killed' : 'its client killed, and not yet gone';
+    }
+    say(`ZAP did not answer within ${Math.round(limitMs / 1000)}s, try ${attempt} of ${START_TRIES}: ${how}.`);
     if (attempt >= START_TRIES) return NEVER_STARTED;
   }
 }

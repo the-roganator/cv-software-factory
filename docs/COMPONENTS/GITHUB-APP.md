@@ -11,7 +11,7 @@ Its issues and pull requests are opened by its bot user, `mrogan-software-factor
 
 ## Permissions
 
-- **Allowed:** contents (branches), pull requests, checks, issues. Adding its own pull request to the merge queue, as the line does, uses contents and pull requests, and nothing more. None of its pull requests changes a workflow, which GitHub would not merge for a token without workflows.
+- **Allowed:** contents (branches), pull requests, checks, issues. Adding a pull request to the merge queue, as the line does, uses contents and pull requests, and nothing more. None of its own pull requests changes a workflow, which a token without workflows cannot write. The one it queues that does is Dependabot's, which moves the commit the app calls the factory's workflows at ([the workflow pin queue](GITHUB-WORKER.md#the-workflow-pin-queue)): Dependabot writes it, and GitHub's queue merges a pull request that changes a workflow when an App without that permission added it.
 - **Read only:** Actions, to find the vulnerability scan's last run and download its `moves` artifact, and security events, to read the scan's code-scanning alerts ([the GitHub worker's `moves`](GITHUB-WORKER.md#for-patching)). It may neither start, re-run nor cancel a run, nor dismiss or reopen an alert: an alert's state is the exceptions policy's alone. Martin accepts these on the installation once `scripts/github-settings.ts` names them.
 - **Denied:** workflows, administration, variables, bypassing rulesets.
 

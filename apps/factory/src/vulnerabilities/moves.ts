@@ -1,7 +1,8 @@
 /**
  * The day's findings grouped into moves: a finding is evidence, a move is the unit of work, the pin that moves and
- * everything moving it clears. A pure function of the results deadlines.ts judged, so the same results always give the
- * same moves, and anything that reads the alerts' messages (fixes.ts) can group them again the same way.
+ * everything moving it clears. A pure function of the results deadlines.ts judged and the pins routine.ts found
+ * behind, so the same results and pins always give the same moves, and anything that reads the alerts' messages
+ * (fixes.ts) can group the findings' moves again the same way.
  *
  * A move is one pin's name and what it pins now: every result with a fix there is one move, wherever it is pinned, to
  * the furthest target (fixes.ts) any of them needs, and a line no longer built is a move apart; so one image in three

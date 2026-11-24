@@ -210,11 +210,6 @@ export interface Sources {
    * routine listing, which wants the digest alone. Absent, `digest` is asked.
    */
   served?(reference: string): Promise<string>;
-  /**
-   * When an image was made, as its configuration says, read from the registry with no layer pulled and no scan, for a
-   * routine move's wait; undefined where it says none. Absent, no image is listed as behind.
-   */
-  created?(reference: string): Promise<string | undefined>;
   /** A chart's versions in its repository's index, each with when it was published. */
   chartVersions(repo: string, chart: string): Promise<{ version: string; created: string }[]>;
   /** A chart, rendered as the scan renders it, with its values files from the checkout. */
@@ -1725,18 +1720,6 @@ function realSources(
       if (!DIGEST.test(digest)) throw new Error(`crane gave no digest for ${reference}`);
       return digest;
     },
-    async created(reference) {
-      // The image's configuration alone, for the platform the scan falls back to: no layer is pulled, and nothing scanned.
-      const { stdout } = await tools.retry(() =>
-        run('crane', ['config', '--platform', 'linux/amd64', registryName(reference)], {
-          env: anonymous,
-          maxBuffer: 16 * 1024 * 1024,
-          timeout: 5 * 60 * 1000,
-        }),
-      );
-      const made = (JSON.parse(stdout) as { created?: unknown } | null)?.created;
-      return typeof made === 'string' ? made : undefined;
-    },
     // As the pin step reads it, from the registry as data: a refusal (no Node it can read) is an answer, not a pull to
     // try again.
     async node(image, digest) {
@@ -2298,6 +2281,7 @@ export async function main(args: string[]): Promise<number> {
   // is not looked up. Nothing here fails the run, or changes what it judged.
   const policy = (POLICY as { ROUTINE?: typeof POLICY.ROUTINE }).ROUTINE;
   const lookedBefore = { made: made.made, kept: asked.kept };
+  let listed = policy !== undefined;
   let listing: Listing = {
     behind: [],
     records: [],
@@ -2317,6 +2301,7 @@ export async function main(args: string[]): Promise<number> {
       log: (line) => console.log(line),
     });
   } catch (error) {
+    listed = false;
     console.log(
       `::warning::The pins that are behind could not be listed (${firstLine(error)}): no routine move today.`,
     );
@@ -2341,7 +2326,15 @@ export async function main(args: string[]): Promise<number> {
     return 1;
   }
   const { lines, bySeverity, byBucket, passes, counts } = verdict(judged.rows, prove, list);
-  const file = movesFile(list, context, run, scanned, counts, bySeverity);
+  const file = movesFile(
+    list,
+    context,
+    run,
+    scanned,
+    counts,
+    bySeverity,
+    listed ? { unread: listing.counts.unread } : undefined,
+  );
   const tags = new Map<string, MoveTag>();
   if (run)
     for (const [index, move] of list.entries())

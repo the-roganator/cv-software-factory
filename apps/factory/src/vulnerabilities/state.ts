@@ -22,6 +22,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { dayText, type Fix, readTarget, targetText } from './fixes.ts';
+import { DIGEST } from './reference.ts';
 import { SEVERITIES, type Severity } from './sarif.ts';
 import { ZipError, zipEntry } from './zip.ts';
 
@@ -102,8 +103,15 @@ export interface StateRoutine {
   to: string;
   pins: { file: string; line: number }[];
   /**
-   * When the scan first saw this target for this pin, UTC to the second: the wait counts from the release's own day,
-   * and from this where the registry gives none (an image that says 1970) or a later one.
+   * For an image, the digests its pins held when it was seen, in order: a pin that holds another has moved, and the
+   * record is no longer its own.
+   */
+  held?: string[] | undefined;
+  /** Set on the record of a routine move that is a major (its `Move.major`); absent otherwise. */
+  major?: boolean | undefined;
+  /**
+   * When the scan first saw this release for this pin, UTC to the second: an image's and a chart's wait counts from
+   * it, and a package's and k3s's from their registry's day, never taken to be later than it.
    */
   seen: string;
 }
@@ -252,6 +260,12 @@ function problemOf(state: unknown, repository: string, run: string): string | un
         (pin.line as number) < 0
       )
         return `gives ${at} a pin that is not one`;
+    if (
+      r.held !== undefined &&
+      (!Array.isArray(r.held) || !r.held.every((each) => typeof each === 'string' && DIGEST.test(each)))
+    )
+      return `gives ${at} digests that are not ones`;
+    if (r.major !== undefined && typeof r.major !== 'boolean') return `gives ${at} a major that is not one`;
     if (!isDay(r.seen)) return `gives ${at} no day it was first seen`;
   }
   return undefined;

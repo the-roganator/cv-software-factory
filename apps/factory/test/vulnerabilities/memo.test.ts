@@ -142,7 +142,7 @@ describe('the day’s lookups', () => {
     expect([changed.calls, kube.calls, version.calls, helm.calls].map((calls) => calls.length)).toEqual([1, 1, 1, 1]);
   });
 
-  it('keeps a package’s releases and the day an image was made, where the sources give them', async () => {
+  it('keeps a package’s releases and the digest a tag serves, where the sources give them', async () => {
     const file = fileIn();
     const calls: string[] = [];
     const routine = (): Sources =>
@@ -151,10 +151,6 @@ describe('the day’s lookups', () => {
         versions: async (name: string) => {
           calls.push(`versions ${name}`);
           return name === 'left-pad' ? { latest: '1.0.1', versions: [] } : undefined;
-        },
-        created: async (reference: string) => {
-          calls.push(`created ${reference}`);
-          return undefined;
         },
         served: async (reference: string) => {
           calls.push(`served ${reference}`);
@@ -167,27 +163,19 @@ describe('the day’s lookups', () => {
     const sources = counted(memoised(routine(), memo, asked), made);
     expect(await sources.versions?.('left-pad')).toEqual({ latest: '1.0.1', versions: [] });
     expect(await sources.versions?.('none-such')).toBeUndefined();
-    expect(await sources.created?.('postgres@sha256:abc')).toBeUndefined();
     expect(await sources.served?.('postgres:18')).toBe('sha256:abc');
     writeMemo(file, memo);
     const again = counted(memoised(routine(), readMemo(file, dayOf(NOON)), asked), made);
     expect(await again.versions?.('left-pad')).toEqual({ latest: '1.0.1', versions: [] });
-    expect(await again.created?.('postgres@sha256:abc')).toBeUndefined();
     expect(await again.served?.('postgres:18')).toBe('sha256:abc');
-    expect(calls).toEqual([
-      'versions left-pad',
-      'versions none-such',
-      'created postgres@sha256:abc',
-      'served postgres:18',
-    ]);
+    expect(calls).toEqual(['versions left-pad', 'versions none-such', 'served postgres:18']);
     // Every lookup made is counted, whatever answered it; a file of the checkout's is none.
     again.file('mise.toml');
-    expect(made).toEqual({ made: 7 });
-    expect(asked).toEqual({ kept: 3, asked: 4 });
+    expect(made).toEqual({ made: 5 });
+    expect(asked).toEqual({ kept: 2, asked: 3 });
     // Sources that give neither are given neither.
     const plain = counted(memoised(counting().sources, memo), made);
     expect(plain.versions).toBeUndefined();
-    expect(plain.created).toBeUndefined();
     expect(plain.served).toBeUndefined();
   });
 

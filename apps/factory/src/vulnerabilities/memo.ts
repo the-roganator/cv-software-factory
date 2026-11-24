@@ -1,6 +1,6 @@
 /**
  * The day's lookups, kept between runs: what deadlines.ts asked a registry or a publisher's releases (npm's publish
- * times and a package's releases, Node's release index, an image's tags, digest, manifests and the day it was made, a
+ * times and a package's releases, Node's release index, an image's tags, digest and manifests, a
  * chart repository's versions and a chart's rendering, a tool's releases, a k3s release), each answer asked once a day (UTC) and reused by every run that day.
  * A release published after the day's first lookup is seen the next day, as the daily scan sees it.
  *
@@ -84,13 +84,12 @@ export function memoised(
     }
     return pending;
   };
-  const { versions, created, served } = sources;
+  const { versions, served } = sources;
   return {
     ...sources,
     published: (name, version) => once(`published ${name} ${version}`, () => sources.published(name, version)),
     ...(versions && { versions: (name) => once(`versions ${name}`, () => versions(name)) }),
     ...(served && { served: (reference) => once(`served ${reference}`, () => served(reference)) }),
-    ...(created && { created: (reference) => once(`created ${reference}`, () => created(reference)) }),
     releases: () => once('releases', () => sources.releases()),
     tags: (repository) => once(`tags ${repository}`, () => sources.tags(repository)),
     digest: (reference) => once(`digest ${reference}`, () => sources.digest(reference)),
@@ -134,7 +133,6 @@ const LOOKUPS = [
   'digest',
   'manifests',
   'served',
-  'created',
   'chartVersions',
   'render',
   'toolReleases',

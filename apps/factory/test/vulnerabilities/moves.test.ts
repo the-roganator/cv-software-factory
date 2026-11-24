@@ -490,6 +490,7 @@ describe('a pin that is merely behind', () => {
     expect('routine' in plain.totals).toBe(false);
     const file = movesFile(moves(findings, context(), [behind()]), context(), '19234567890');
     expect(file.totals).toMatchObject({ fixed: 1, moves: 2, routine: 1, lanes: { worker: 2 } });
+    expect('routineUnread' in file.totals).toBe(false);
     expect(table(file)).toEqual([
       'Moves: 1 results with a fix, in 2 moves, 1 of them routine (worker 2).',
       '',
@@ -498,6 +499,39 @@ describe('a pin that is merely behind', () => {
       `| example/image | 2.17.0 | image 2.17.0@${DIGEST} | 1 high | nothing | 0 | 2026-11-14T04:30:00Z | worker |`,
       `| example/other | 3.1.0 | image 3.2.0@${DIGEST} | nothing | nothing | 0 | – | worker |`,
     ]);
+  });
+
+  it('says a routine listing was made, and how many pins it could not read, zero included', () => {
+    const file = (behinds: Behind[], listing?: { unread: number }) =>
+      movesFile(moves([result()], context(), behinds), context(), '19234567890', [], undefined, undefined, listing);
+    // No listing made (no policy for one): no word of it, so a reader takes nothing as moved.
+    expect(Object.keys(file([]).totals)).not.toContain('routineUnread');
+    expect(file([], { unread: 0 }).totals).toMatchObject({ routine: 0, routineUnread: 0 });
+    expect(file([behind()], { unread: 2 }).totals).toMatchObject({ routine: 1, routineUnread: 2 });
+  });
+
+  it('lists a lockfile’s routine moves after every other, in an order that says nothing of their names', () => {
+    const npm = (name: string) =>
+      behind({
+        kind: 'lockfile',
+        name,
+        pins: [{ file: 'pnpm-lock.yaml', line: 9 }],
+        from: '1.0.0',
+        to: { kind: 'version', versions: ['1.0.1'] },
+      });
+    const names = ['aaa-first', 'mmm-middle', 'zzz-last', 'example-b', 'example-c'];
+    const list = moves([], context(), [...names.map(npm), behind({ name: 'b/image' }), behind({ name: 'zz/image' })]);
+    expect(list.slice(0, 2).map((move) => move.name)).toEqual(['b/image', 'zz/image']);
+    const hidden = list.slice(2).map((move) => move.name);
+    expect([...hidden].sort()).toEqual([...names].sort());
+    // Not by name, and the same whatever order they were found in.
+    expect(hidden).not.toEqual([...names].sort());
+    const again = moves([], context(), [
+      behind({ name: 'zz/image' }),
+      ...names.map(npm).reverse(),
+      behind({ name: 'b/image' }),
+    ]);
+    expect(again.map((move) => move.name)).toEqual(list.map((move) => move.name));
   });
 
   it('names nothing of a lockfile’s package: its file alone, as a finding’s move of one', () => {

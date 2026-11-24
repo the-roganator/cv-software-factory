@@ -39,6 +39,57 @@ export const ADVISORY = /^(CVE-\d{4}-\d{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})
 
 export const EXCEPTIONS: Exception[] = [];
 
+/** A package the scan lists no routine move for (apps/factory/src/vulnerabilities/routine.ts), and why. */
+export interface Left {
+  /** The repository it is left alone in, `owner/name`, or `all` for both. */
+  repository: string;
+  /** The package, as its lockfile names it. */
+  package: string;
+  /** Set where only a move its manifest's range does not admit is left, and one within the range is listed. */
+  major?: true;
+  /** Why the scan leaves it. */
+  reason: string;
+}
+
+/** The wait before a pin that is merely behind is listed as a move, and what is never listed so. */
+export interface Routine {
+  /** How old a release is, in days, before a pin with no finding is moved to it. */
+  days: number;
+  /** The same for a major: a chart's next major, or a release its manifest's range does not admit. */
+  majorDays: number;
+  leave: Left[];
+}
+
+/**
+ * The scan lists a pin that is behind, with no finding, as a routine move once the release it would move to has
+ * waited: most malicious releases are pulled within hours, and the first release of a major is the one most often
+ * followed by a fix (postgres.js 4.0.0 lost LISTEN after a failed reconnect, and 4.1.0 fixed it a week later). A fix
+ * for a finding does not wait here: it has its own waits (pnpm's `minimumReleaseAge`, mise's `minimum_release_age`).
+ */
+export const ROUTINE: Routine = {
+  days: 3,
+  majorDays: 7,
+  leave: [
+    {
+      repository: 'all',
+      package: '@types/node',
+      major: true,
+      reason: "Node's own types follow the Node mise.toml pins, which moves only when someone upgrades the toolchain.",
+    },
+    // Playwright's library and its browsers' image are one release: the image's move brings the library in the
+    // lockfile (the pin step's `moveImage`), so the image's routine move is the one move.
+    { repository: 'all', package: 'playwright', reason: "It moves with Playwright's image, which brings it." },
+    { repository: 'all', package: 'playwright-core', reason: "It moves with Playwright's image, which brings it." },
+    { repository: 'all', package: '@playwright/test', reason: "It moves with Playwright's image, which brings it." },
+    {
+      repository: 'all',
+      package: '@anthropic-ai/claude-agent-sdk',
+      reason:
+        "The SDK is the agent loop every step runs in, and the tests replay cassettes: its bump merges only after a bench run on Claude, which is Martin's to start.",
+    },
+  ],
+};
+
 /** A day, `YYYY-MM-DD`, as a count of days, or undefined for anything else. */
 function day(text: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return undefined;

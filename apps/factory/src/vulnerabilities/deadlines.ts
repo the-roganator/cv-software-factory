@@ -45,6 +45,9 @@
  *   proving run's, which uploads nothing, fails on none of them. A source that cannot be read (npm, Node's index, an image line's tags or its newest image,
  *   code scanning) fails either, as an unread item fails the scan.
  *
+ * After the findings' moves, the run lists each pin that is merely behind as a routine move (routine.ts), once its
+ * release has waited: no lookup for it fails the run, and none changes a deadline, the verdict or a finding's move.
+ *
  * The log and the step summary give counts alone, never a package or an advisory: by severity, and by overdue, due
  * within a day, within a week, later, and no fix. Node runs this with no dependencies, from a sparse checkout of this
  * repository; Trivy runs in its pinned image, as the scan runs it, on the scan's database.
@@ -54,11 +57,12 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { retried } from '../gates/retry.ts';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
 import { dayText, type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
-import { dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
+import { counted, dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
 import {
   APP,
   type Context,
@@ -69,12 +73,14 @@ import {
   moves,
   movesFile,
   table as movesTable,
+  pinsOf,
   publicMove,
   type ScannedImage,
 } from './moves.ts';
 import { satisfies } from './node.ts';
 import { DIGEST, hasRegistry, repositoryOf, splitReference } from './reference.ts';
 import { nodeInImage, PinsRefused, releaseAge, releasedAt, runsNode } from './registry.ts';
+import { type Listing, type Lookups, recorded, routine, summary as routineSummary } from './routine.ts';
 import {
   alertKey,
   type Finding,
@@ -107,6 +113,7 @@ import {
   STATE_VERSION,
   type State,
   StateError,
+  type StateRoutine,
   seal,
 } from './state.ts';
 
@@ -122,13 +129,13 @@ const PNPM_DEFAULT_MINUTES = 24 * 60;
 const NODE_INDEX = 'https://nodejs.org/dist/index.json';
 
 /** The earliest time an image may say it was made: before it, the build set none (a reproducible one says 1970). */
-const EARLIEST = Date.parse('2000-01-01T00:00:00Z');
+export const EARLIEST = Date.parse('2000-01-01T00:00:00Z');
 
 /** Trivy's types of an npm package. */
 const NPM_TYPES = new Set(['pnpm', 'npm', 'yarn', 'node-pkg']);
 
 /** k3s's node image, whose tags name its releases (`v1.37.1-k3s1` for `v1.37.1+k3s1`). */
-const K3S_IMAGE = 'rancher/k3s';
+export const K3S_IMAGE = 'rancher/k3s';
 
 /**
  * The k3s releases after a pinned one on its line, oldest first, from the node image's tags (`v1.37.2-k3s1` is
@@ -167,6 +174,12 @@ export function k3sReleaseOf(list: string) {
 export interface Sources {
   /** When npm published a version of a package, or undefined when npm has no such version. */
   published(name: string, version: string): Promise<string | undefined>;
+  /**
+   * A package's releases in npm's registry, for a routine move (routine.ts): each version that is no prerelease and
+   * not deprecated, with when it was published, and the version its `latest` tag names; undefined when npm has no
+   * such package. Absent, no package is listed as behind.
+   */
+  versions?(name: string): Promise<PackageVersions | undefined>;
   /** Node's releases, from its release index: each version with its day. */
   releases(): Promise<{ version: string; date: string }[]>;
   /** Every tag of an image's repository. */
@@ -177,6 +190,11 @@ export interface Sources {
   digest(reference: string): Promise<string>;
   /** An image's index digest, and every platform manifest it lists (none for a single manifest). */
   manifests(reference: string): Promise<{ digest: string; platforms: string[] }>;
+  /**
+   * When an image was made, as its configuration says, read from the registry with no layer pulled and no scan, for a
+   * routine move's wait; undefined where it says none. Absent, no image is listed as behind.
+   */
+  created?(reference: string): Promise<string | undefined>;
   /** A chart's versions in its repository's index, each with when it was published. */
   chartVersions(repo: string, chart: string): Promise<{ version: string; created: string }[]>;
   /** A chart, rendered as the scan renders it, with its values files from the checkout. */
@@ -198,6 +216,12 @@ export interface Sources {
    * run), no run that kept one, or one that does not open. Absent, there is none.
    */
   state?(): Promise<{ state: State } | { none: string }>;
+}
+
+/** A package's releases, as `Sources.versions` gives them. */
+export interface PackageVersions {
+  latest?: string | undefined;
+  versions: { version: string; published: string }[];
 }
 
 /** The higher of Trivy's rating and the publisher's. */
@@ -426,7 +450,7 @@ export const UNBUILT_DAYS = 180;
 const CHART_MAJORS = 3;
 
 /** How many versions of one chart's major, or of a tool's range, are tried for a fix, newest first, at most. */
-const CANDIDATES = 4;
+export const CANDIDATES = 4;
 
 /** A tool in mise.toml whose release brings a package into an image of ours, from where Trivy found it (`opt/pnpm/…`). */
 export function toolOf(path: string | undefined, tools: string[]) {
@@ -697,6 +721,15 @@ export async function installable(
     }
     return once;
   };
+  const chartListed = (chart: Chart) => {
+    const key = JSON.stringify([chart.repo, chart.chart]);
+    let listed = chartVersions.get(key);
+    if (!listed) {
+      listed = sources.chartVersions(chart.repo, chart.chart);
+      chartVersions.set(key, listed);
+    }
+    return listed;
+  };
   /**
    * The newest chart on the pinned major whose rendering runs a copy of the image without the finding, or the first
    * later major's newest that does, marked a major; dated from the chart's publication.
@@ -704,13 +737,7 @@ export async function installable(
   const chartFix = async (target: ReadTarget, finding: Finding) => {
     const chart = target.chart;
     if (!chart) return undefined;
-    const key = JSON.stringify([chart.repo, chart.chart]);
-    let listed = chartVersions.get(key);
-    if (!listed) {
-      listed = sources.chartVersions(chart.repo, chart.chart);
-      chartVersions.set(key, listed);
-    }
-    const versions = (await listed).filter(
+    const versions = (await chartListed(chart)).filter(
       (each) => /^\d+\.\d+\.\d+$/.test(each.version) && compareVersions(each.version, chart.version) > 0,
     );
     const majorOf = (version: string) => Number(version.split('.')[0]);
@@ -818,8 +845,6 @@ export async function installable(
     if (!target)
       return { kind: 'third-party', name: finding.listed ?? finding.item, pin: own, from: finding.installed };
     if (route === 'npm') return { kind: 'lockfile', name: finding.package, pin: own, from: finding.installed };
-    const stage = target.kind === 'ours' ? stageOf(target) : undefined;
-    const stagePin = stage ? { file: stage.dockerfile, line: stage.line } : own;
     if (route === 'tool' && tool) {
       const lock = sources.file('mise.lock') ?? '';
       const header = lock
@@ -832,6 +857,16 @@ export async function installable(
         from: tools.get(tool) ?? '',
       };
     }
+    return pinOfTarget(target, own, finding.listed);
+  };
+  /**
+   * Where a target's own pin is written, and what it pins now: a finding's on it, and a routine move's (routine.ts),
+   * by one rule, so both have one name, one `from` and one branch. `own` is the item's pin, and `listed` its name on
+   * the list.
+   */
+  const pinOfTarget = (target: ReadTarget, own: Where['pin'], listed = target.name): Where => {
+    const stage = target.kind === 'ours' ? stageOf(target) : undefined;
+    const stagePin = stage ? { file: stage.dockerfile, line: stage.line } : own;
     if (target.kind === 'ours' && stage)
       return { kind: 'dockerfile', name: repositoryOf(stage.image), pin: stagePin, from: pinned(stage.image) };
     if (target.kind === 'k3s' || target.kind === 'k3s-release')
@@ -845,7 +880,7 @@ export async function installable(
             : nameAndTag(target.image ?? '').tag?.replace(/-(k3s\d+)$/, '+$1')) ?? '',
       };
     if (target.kind === 'chart' && target.chart) {
-      const chartName = finding.listed ?? target.chart.release;
+      const chartName = listed ?? target.chart.release;
       if (target.pin)
         return {
           kind: 'chart',
@@ -978,7 +1013,17 @@ export async function installable(
     log(
       `::warning::k3s ${release} has a node image and no published, stable release with its list of images: passed over.`,
     );
-  return { at, fixes, places, looked: lines };
+  const lookups: Lookups = {
+    tags: listTags,
+    digest: digestOf,
+    nodeReady,
+    stageOf,
+    where: (target) => pinOfTarget(target, { file: target.file, line: target.line ?? 1 }),
+    chartVersions: chartListed,
+    rendered,
+    k3s: k3sRelease,
+  };
+  return { at, fixes, places, looked: lines, lookups };
 }
 
 /**
@@ -1314,11 +1359,11 @@ export async function assess(handoff: Handoff, sources: Sources, now: number, lo
       ...where,
     };
   });
-  return { rows: judgedRows, fixes, judged, looked: found.looked };
+  return { rows: judgedRows, fixes, judged, looked: found.looked, lookups: found.lookups, state: read.state };
 }
 
 /** Runs each task, a few at a time; the first failure is thrown once all have settled. */
-async function pool(tasks: (() => Promise<void>)[], size = 8) {
+export async function pool(tasks: (() => Promise<void>)[], size = 8) {
   let next = 0;
   let failed: unknown;
   const worker = async () => {
@@ -1377,7 +1422,20 @@ function realSources(
   const anonymous = anonymousEnv(work);
   // Read once, outside any retry: a record that cannot be read fails the run with its own cause.
   const apiVersions = apiVersionsOf(checkout);
-  const times = new Map<string, Promise<Record<string, string>>>();
+  // A package's document, asked once: its publish times, and its releases, with the rest of it let go.
+  const packuments = new Map<string, Promise<{ time: Record<string, string>; releases: PackageVersions }>>();
+  const packument = (name: string) => {
+    let once = packuments.get(name);
+    if (!once) {
+      once = transient(async () => {
+        const body = (await get(npmUrl(name), "npm's registry")) as Packument | undefined;
+        if (!body?.time || typeof body.time !== 'object') throw new Error("npm's registry gave no publish times");
+        return { time: body.time, releases: packageVersions(body) };
+      });
+      packuments.set(name, once);
+    }
+    return once;
+  };
   // One HTTP read: the answer's status and text, or an error that names the source, never the package asked for (the
   // log gives counts alone), and is permanent for an answer trying again cannot change.
   const request = async (url: string, source: string, init: RequestInit = {}) => {
@@ -1408,16 +1466,22 @@ function realSources(
   };
   return {
     async published(name, version) {
-      let once = times.get(name);
-      if (!once) {
-        once = transient(async () => {
-          const body = (await get(npmUrl(name), "npm's registry")) as { time?: Record<string, string> } | undefined;
-          if (!body?.time || typeof body.time !== 'object') throw new Error("npm's registry gave no publish times");
-          return body.time;
-        });
-        times.set(name, once);
-      }
-      return (await once)[version];
+      return (await packument(name)).time[version];
+    },
+    async versions(name) {
+      return (await packument(name)).releases;
+    },
+    async created(reference) {
+      // The image's configuration alone, for the platform the scan falls back to: no layer is pulled, and nothing scanned.
+      const { stdout } = await tools.retry(() =>
+        run('crane', ['config', '--platform', 'linux/amd64', registryName(reference)], {
+          env: anonymous,
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 5 * 60 * 1000,
+        }),
+      );
+      const made = (JSON.parse(stdout) as { created?: unknown } | null)?.created;
+      return typeof made === 'string' ? made : undefined;
     },
     // As the pin step reads it, from the registry as data: a refusal (no Node it can read) is an answer, not a pull to
     // try again.
@@ -1638,6 +1702,25 @@ function realSources(
   };
 }
 
+/** A package's document in npm's registry, as far as it is read. */
+interface Packument {
+  time: Record<string, string>;
+  versions?: Record<string, { deprecated?: unknown } | null> | undefined;
+  'dist-tags'?: { latest?: unknown } | undefined;
+}
+
+/** A package's releases, from its document: each version it still has that is no prerelease and not deprecated. */
+export function packageVersions(body: Packument): PackageVersions {
+  const latest = body['dist-tags']?.latest;
+  const versions = Object.entries(body.versions ?? {}).flatMap(([version, about]) => {
+    const published = body.time[version];
+    return /^\d+\.\d+\.\d+$/.test(version) && typeof published === 'string' && !about?.deprecated
+      ? [{ version, published }]
+      : [];
+  });
+  return { ...(typeof latest === 'string' ? { latest } : {}), versions };
+}
+
 /** A reference as it is read: one pinned by tag and digest by its digest alone, which is what the pin holds. */
 export function byDigest(reference: string) {
   const { repository, digest } = splitReference(reference);
@@ -1770,7 +1853,13 @@ export function rewrite(file: Sarif, excepted: Record<string, string>, findings:
 }
 
 /** The state a run keeps: each result as it was judged, with its day, its fix and its move's place. */
-export function stateOf(repository: string, run: string, rows: Row[], findings: Finding[]): State {
+export function stateOf(
+  repository: string,
+  run: string,
+  rows: Row[],
+  findings: Finding[],
+  routine: StateRoutine[] = [],
+): State {
   return {
     version: STATE_VERSION,
     repository,
@@ -1790,6 +1879,8 @@ export function stateOf(repository: string, run: string, rows: Row[], findings: 
       ...(finding.fix ? { fix: fixOf(finding.fix) } : {}),
       ...(finding.fix && finding.move ? { move: finding.move.index } : {}),
     })),
+    // The day's routine listing, on a day that has one: a state with none has no word of it.
+    ...(routine.length ? { routine } : {}),
   };
 }
 
@@ -1869,7 +1960,9 @@ export async function main(args: string[]): Promise<number> {
   const asked: MemoCount = { kept: 0, asked: 0 };
   // The Helm that renders a chart, from this repository's mise.lock, in the key of each rendering kept.
   const helm = memo ? (await promisify(execFile)('helm', ['version', '--short'])).stdout.trim() : '';
-  const sources = memo ? memoised(real, memo, asked, helm) : real;
+  // Every lookup is counted as it is made, so the routine listing's own can be said.
+  const made = { made: 0 };
+  const sources = counted(memo ? memoised(real, memo, asked, helm) : real, made);
   let judged: Awaited<ReturnType<typeof assess>>;
   try {
     judged = await assess(handoff, sources, now, (line) => console.log(line));
@@ -1884,7 +1977,38 @@ export async function main(args: string[]): Promise<number> {
     app: handoff.repository === APP,
     now,
   };
-  const list = moves(judged.judged, context);
+  // The pins that are merely behind, each a routine move after the findings' (routine.ts): a pin a finding's move has
+  // is not looked up. Nothing here fails the run, or changes what it judged.
+  const policy = (POLICY as { ROUTINE?: typeof POLICY.ROUTINE }).ROUTINE;
+  const lookedBefore = { made: made.made, kept: asked.kept };
+  let listing: Listing = {
+    behind: [],
+    records: [],
+    counts: { pins: 0, listed: 0, waiting: 0, current: 0, left: 0, unread: 0 },
+  };
+  try {
+    listing = await routine({
+      repository: handoff.repository,
+      targets: handoff.targets,
+      sources,
+      lookups: judged.lookups,
+      policy,
+      last: judged.state?.routine,
+      taken: pinsOf(moves(judged.judged, context)),
+      minimumReleaseAge: handoff.minimumReleaseAge ?? PNPM_DEFAULT_MINUTES,
+      now,
+      log: (line) => console.log(line),
+    });
+  } catch (error) {
+    console.log(
+      `::warning::The pins that are behind could not be listed (${firstLine(error)}): no routine move today.`,
+    );
+  }
+  const routineLine = routineSummary(listing, policy, {
+    made: made.made - lookedBefore.made,
+    kept: asked.kept - lookedBefore.kept,
+  });
+  const list = moves(judged.judged, context, listing.behind);
   // Each result in a move names its place in moves.json and the run, after its fix (fixes.ts), so the alerts tie to it.
   let scanned: ScannedImage[];
   try {
@@ -1910,7 +2034,7 @@ export async function main(args: string[]): Promise<number> {
   const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results.`;
   const table = movesTable(file);
   const images = `Images scanned, each in moves.json with its digests and pin: ${file.scanned.length} (${new Set(file.scanned.map((each) => each.image)).size} references).`;
-  for (const line of [looked, images, ...table, '', ...lines]) console.log(line);
+  for (const line of [looked, routineLine, images, ...table, '', ...lines]) console.log(line);
   writeFileSync(join(dir, 'moves.json'), `${JSON.stringify(file, null, 2)}\n`);
   if (write) {
     // What is uploaded carries each fix: the SARIF's messages, and the excepted alerts' keys, which name them.
@@ -1934,9 +2058,11 @@ export async function main(args: string[]): Promise<number> {
     writeFileSync(join(dir, 'verdict.json'), JSON.stringify({ passes, lines: lines.slice(3) } satisfies Saved));
     // The state the next scan and the worker read, sealed: what was judged, as it is uploaded.
     if (keeps) {
-      const state = stateOf(handoff.repository, keeps.run, judged.rows, findings);
+      const state = stateOf(handoff.repository, keeps.run, judged.rows, findings, recorded(listing.records, list));
       writeFileSync(join(dir, STATE_FILE), seal(state, keeps.key));
-      console.log(`State kept for the next run: ${state.findings.length} findings, sealed.`);
+      console.log(
+        `State kept for the next run: ${state.findings.length} findings${state.routine ? ` and ${state.routine.length} releases a pin is behind` : ''}, sealed.`,
+      );
     }
   }
   if (process.env.GITHUB_STEP_SUMMARY)

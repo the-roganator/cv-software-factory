@@ -132,6 +132,67 @@ describe('a state the scan wrote', () => {
   });
 });
 
+describe('the day’s routine listing, in a state', () => {
+  const ROUTINE = [
+    {
+      move: 2,
+      name: 'example-b',
+      from: '1.2.0',
+      to: 'version 1.4.0',
+      pins: [{ file: 'pnpm-lock.yaml', line: 140 }],
+      seen: '2026-11-06T04:30:00Z',
+    },
+    // A release still inside its wait: seen, and no move yet.
+    {
+      name: 'node',
+      from: '24.22.1-trixie-slim',
+      to: `image 24.23.0-trixie-slim@sha256:${'b'.repeat(64)}`,
+      pins: [{ file: '.devcontainer/Dockerfile', line: 2 }],
+      seen: '2026-11-10T04:30:00Z',
+    },
+  ];
+  const routine = (state: Record<string, unknown>) => (state.routine as Record<string, unknown>[])[0] ?? {};
+  const withRoutine = (change: (state: Record<string, unknown>) => void = () => {}) =>
+    sealedWith((state) => {
+      state.routine = structuredClone(ROUTINE);
+      change(state);
+    });
+
+  it('opens with it and without it', () => {
+    expect(open(withRoutine(), KEY, REPOSITORY, STATE.run).routine).toEqual(ROUTINE);
+    expect('routine' in open(seal(STATE, KEY), KEY, REPOSITORY, STATE.run)).toBe(false);
+    expect(
+      open(
+        withRoutine((s) => Object.assign(s, { routine: [] })),
+        KEY,
+        REPOSITORY,
+        STATE.run,
+      ).routine,
+    ).toEqual([]);
+  });
+
+  it.each<[string, (state: Record<string, unknown>) => void, string]>([
+    ['a listing that is no list', (s) => Object.assign(s, { routine: {} }), 'lists routine moves that are not a list'],
+    ['a place that is none', (s) => Object.assign(routine(s), { move: 0 }), 'gives routine move 1 a place'],
+    ['no name', (s) => Object.assign(routine(s), { name: '' }), 'gives routine move 1 no name'],
+    ['no `from`', (s) => Object.assign(routine(s), { from: undefined }), 'gives routine move 1 no from'],
+    [
+      'a target the grammar does not read',
+      (s) => Object.assign(routine(s), { to: 'version 1.4.0; rm -rf' }),
+      'gives routine move 1 a target the grammar does not read',
+    ],
+    ['no pins', (s) => Object.assign(routine(s), { pins: [] }), 'gives routine move 1 no pins'],
+    [
+      'a pin with no line',
+      (s) => Object.assign(routine(s), { pins: [{ file: 'pnpm-lock.yaml' }] }),
+      'gives routine move 1 a pin that is not one',
+    ],
+    ['no day', (s) => Object.assign(routine(s), { seen: '2026-11-06' }), 'gives routine move 1 no day'],
+  ])('refuses %s, naming the move by its place alone', (_name, change, message) => {
+    expect(() => open(withRoutine(change), KEY, REPOSITORY, STATE.run)).toThrow(message);
+  });
+});
+
 describe('the last state kept', () => {
   const runsOf = (event: string) =>
     `/repos/${REPOSITORY}/actions/workflows/vulnerabilities.yml/runs?branch=main&event=${event}&status=completed&per_page=100`;

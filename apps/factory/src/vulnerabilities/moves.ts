@@ -7,15 +7,19 @@
  * the furthest target (fixes.ts) any of them needs, and a line no longer built is a move apart; so one image in three
  * Dockerfiles is one move of three pins, and a package in two versions one move. A chart's images are the chart's own: two charts that run one image are two moves.
  *
+ * A pin that is merely behind, with no finding (routine.ts's `Behind`), is a routine move: it clears nothing, has no
+ * deadline and no results, and is listed after the findings' moves, by name, so a finding's move keeps the place it
+ * would have with none listed. One pin is one move: a pin a finding's move has gets no routine move that day. Routine
+ * is worked out (`isRoutine`), never a field.
+ *
  * Its lane says who moves it, worked out, never chosen, in this order:
  *
  * - `none`: nothing to move to (a line no longer built);
  * - `line`: the app's, which its line moves, an image's under `deploy/` among them;
  * - `cluster`: k3s, which only the cluster's own command applies;
- * - `issue`: what no pull request of the App's can write: what the Makefile pins (Argo CD's chart, with its CLI), and
- *   a workflow;
- * - `worker`: every other pin, which the GitHub worker moves: a chart among them, at one Application or several; and
- *   every package of the lockfile, what mise pins (k3d, a tool's release), and an image that brings another pin with
+ * - `issue`: what no pull request of the App's can write: a workflow's pin, with a finding or none;
+ * - `worker`: every other pin, which the GitHub worker moves: a chart among them, at one Application or several, or
+ *   at the Makefile (Argo CD's); and every package of the lockfile, what mise pins (k3d, a tool's release), and an image that brings another pin with
  *   it (Node, or Playwright's library: the pin step's `moveImage`), which the pin step makes in the scan's run for the
  *   worker to commit (github/made.ts).
  *
@@ -103,11 +107,12 @@ export interface Context {
 }
 
 const zero = (): Counts => Object.fromEntries(SEVERITIES.map((s) => [s, 0])) as Counts;
+const total = (counts: Counts) => SEVERITIES.reduce((sum, s) => sum + counts[s], 0);
 
 const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** The pin a result's group is keyed by: its name and what it pins now. */
-const pinKey = (each: Pick<Judged, 'name' | 'from' | 'kind'>) =>
+export const pinKey = (each: Pick<Judged, 'name' | 'from' | 'kind'>) =>
   JSON.stringify([each.kind === 'lockfile' ? 'npm' : '', each.name, each.from]);
 
 /** A move's lane, worked out from what it is: see the module's comment for the order. */
@@ -116,8 +121,7 @@ export function laneOf(move: Pick<Move, 'to' | 'pins'>, kinds: Set<Kind>, contex
   if (!target || target.kind === 'unbuilt') return 'none';
   if (context.app) return 'line';
   if (target.kind === 'k3s' || kinds.has('k3s') || kinds.has('k3s-release')) return 'cluster';
-  // What the Makefile pins (Argo CD's chart with its CLI) no pull request of the App's writes, nor a workflow.
-  if (move.pins.some((pin) => pin.file === 'Makefile')) return 'issue';
+  // A workflow's pin no pull request of the App's writes.
   if (move.pins.some((pin) => pin.file.startsWith('.github/workflows/'))) return 'issue';
   return 'worker';
 }
@@ -180,8 +184,38 @@ export function furthest(targets: Target[]): Target | undefined {
   return { kind: 'version', versions: [...byMajor.values()].sort(later) };
 }
 
-/** The day's moves, from the judged results: the most urgent first (earliest deadline, then most Critical, then name). */
-export function moves(results: Judged[], context: Context): Move[] {
+/** A pin that is merely behind: what a routine move is made from (routine.ts finds them). */
+export interface Behind {
+  /** The kind of item the pin is, as a finding on it would have it. */
+  kind: Kind;
+  name: string;
+  pins: Pin[];
+  from: string;
+  to: Target;
+  /**
+   * Set for a package's release its manifest's range does not admit: the move is a major whatever its numbers (below
+   * 1.0 a new minor is outside a caret range), since the pin step writes the manifest for it.
+   */
+  outside?: boolean | undefined;
+}
+
+/**
+ * Whether a move is routine: it clears nothing and has somewhere to go. Every move made from findings clears at least
+ * one result, a line no longer built among them, so the counts alone tell; the lane is asked too, and not `to`, because
+ * `moves.json` writes a lockfile's `to` as empty: one test reads a `Move` and a `PublicMove` alike.
+ */
+export const isRoutine = (move: Pick<Move | PublicMove, 'clears' | 'lane'>) =>
+  total(move.clears) === 0 && move.lane !== 'none';
+
+/** The pins the moves given write, as `pinKey` names them: where no routine move is made. */
+export const pinsOf = (list: Move[]) =>
+  new Set(list.map((move) => pinKey({ kind: move.lockfile ? 'lockfile' : 'third-party', ...move })));
+
+/**
+ * The day's moves, from the judged results: the most urgent first (earliest deadline, then most Critical, then name);
+ * then a routine move for each pin that is behind and has none, by name.
+ */
+export function moves(results: Judged[], context: Context, behind: Behind[] = []): Move[] {
   const open = results.filter((each) => !each.excepted);
   const groups = new Map<string, Judged[]>();
   for (const each of open) {
@@ -231,7 +265,7 @@ export function moves(results: Judged[], context: Context): Move[] {
     move.lane = laneOf(move, new Set(members.map((each) => each.kind)), context);
     out.push(move);
   }
-  return out.sort(
+  out.sort(
     (a, b) =>
       (a.deadline ?? Number.POSITIVE_INFINITY) - (b.deadline ?? Number.POSITIVE_INFINITY) ||
       b.clears.CRITICAL - a.clears.CRITICAL ||
@@ -239,6 +273,35 @@ export function moves(results: Judged[], context: Context): Move[] {
       order(a.name, b.name) ||
       order(a.from, b.from),
   );
+  const taken = pinsOf(out);
+  const routine: Move[] = [];
+  for (const each of behind) {
+    const key = pinKey(each);
+    if (taken.has(key)) continue;
+    taken.add(key);
+    // What the pin has, with no fix the scan can date: the move is not known to clear it.
+    const leaves = zero();
+    for (const left of byPin.get(key) ?? []) leaves[left.severity]++;
+    const move: Move = {
+      repository: context.repository,
+      name: each.name,
+      pins: [...each.pins].sort((a, b) => order(a.file, b.file) || a.line - b.line),
+      from: each.from,
+      to: each.to,
+      major: isMajor(each.to, each.from) || each.outside === true,
+      clears: zero(),
+      leaves,
+      deadline: undefined,
+      newToday: 0,
+      lane: 'none',
+      lockfile: each.kind === 'lockfile',
+      results: [],
+    };
+    move.lane = laneOf(move, new Set([each.kind]), context);
+    if (move.lane !== 'none') routine.push(move);
+  }
+  routine.sort((a, b) => order(a.name, b.name) || order(a.from, b.from));
+  return [...out, ...routine];
 }
 
 /** A move as the log, the step summary and `moves.json` give it: a lockfile's named by its file alone. */
@@ -315,8 +378,9 @@ export interface MovesFile {
    * by severity, as the log's line of deadlines gives them, fix or none. It is optional, under the same `MOVES_VERSION`,
    * so a file from a scan that predates it (the app's, at an older commit of the workflow) reads as it did; a reader
    * built before it refuses a file that has it, so the worker reads this repository's moves again once it is deployed.
+   * `routine` is how many of the moves are routine, written only on a day that has one, optional as `open` is.
    */
-  totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts } & DayCounts;
+  totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts; routine?: number } & DayCounts;
   moves: PublicMove[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];
@@ -354,13 +418,21 @@ export function movesFile(
     Lane,
     number
   >;
-  const fixed = list.reduce((sum, m) => sum + SEVERITIES.reduce((n, s) => n + m.clears[s], 0), 0);
+  const fixed = list.reduce((sum, m) => sum + total(m.clears), 0);
+  const routine = list.filter(isRoutine).length;
   return {
     version: MOVES_VERSION,
     repository: context.repository,
     judged: dayText(context.now),
     ...(run ? { run } : {}),
-    totals: { fixed, moves: list.length, lanes, ...(open ? { open: { ...open } } : {}), ...day },
+    totals: {
+      fixed,
+      moves: list.length,
+      lanes,
+      ...(open ? { open: { ...open } } : {}),
+      ...(routine ? { routine } : {}),
+      ...day,
+    },
     moves: list.map(publicMove),
     scanned: [...scanned].sort(
       (a, b) => order(a.pin.file, b.pin.file) || a.pin.line - b.pin.line || order(a.image, b.image),
@@ -379,7 +451,7 @@ export function table(file: MovesFile): string[] {
     .map((lane) => `${lane} ${file.totals.lanes[lane]}`)
     .join(', ');
   const lines = [
-    `Moves: ${file.totals.fixed} results with a fix, in ${file.totals.moves} moves${lanes ? ` (${lanes})` : ''}.`,
+    `Moves: ${file.totals.fixed} results with a fix, in ${file.totals.moves} moves${file.totals.routine ? `, ${file.totals.routine} of them routine` : ''}${lanes ? ` (${lanes})` : ''}.`,
   ];
   if (!file.moves.length) return lines;
   lines.push(

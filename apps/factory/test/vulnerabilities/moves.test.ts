@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
 import {
   APP,
+  type Behind,
   type Context,
   furthest,
   isMajor,
+  isRoutine,
   type Judged,
   MOVES_VERSION,
   moves,
   movesFile,
+  publicMove,
   table,
 } from '../../src/vulnerabilities/moves.ts';
 import type { Finding, Severity } from '../../src/vulnerabilities/sarif.ts';
@@ -218,9 +221,8 @@ describe('the day’s moves', () => {
       expect(laneOf(chart(false))).toBe('worker');
       expect(moves([chart(true)], context())[0]?.major).toBe(true);
     });
-    it('issue: what the Makefile pins, and a workflow', () => {
-      expect(laneOf(result({ kind: 'chart', name: 'argocd', pin: { file: 'Makefile', line: 7 } }))).toBe('issue');
-      // Argo CD's chart, which the Makefile pins, even at a major.
+    it('worker: what the Makefile pins, Argo CD’s chart, a major or not', () => {
+      expect(laneOf(result({ kind: 'chart', name: 'argocd', pin: { file: 'Makefile', line: 7 } }))).toBe('worker');
       expect(
         laneOf(
           result({
@@ -230,7 +232,9 @@ describe('the day’s moves', () => {
             target: { kind: 'chart', chart: 'argo-cd', version: '11.0.0', major: true },
           }),
         ),
-      ).toBe('issue');
+      ).toBe('worker');
+    });
+    it('issue: a workflow’s pin', () => {
       expect(laneOf(result({ kind: 'workflow', pin: { file: '.github/workflows/check.yml', line: 30 } }))).toBe(
         'issue',
       );
@@ -378,5 +382,145 @@ describe('a major, of any kind', () => {
     });
     // A lockfile's major is in a lockfile's lane, as its package's any other move is.
     expect(moves([npm], context())[0]).toMatchObject({ major: true, lane: 'worker' });
+  });
+});
+
+describe('a pin that is merely behind', () => {
+  const behind = (over: Partial<Behind> = {}): Behind => ({
+    kind: 'third-party',
+    name: 'example/other',
+    pins: [{ file: 'deploy/y.yaml', line: 8 }],
+    from: '3.1.0',
+    to: { kind: 'image', tag: '3.2.0', digest: DIGEST },
+    ...over,
+  });
+
+  it('is a routine move: no result, nothing cleared, no deadline, listed after the findings’ moves by name', () => {
+    const findings = [result({ name: 'zebra/image', due: NOW + 9 * DAY }), result({ due: NOW + DAY })];
+    const alone = moves(findings, context());
+    const list = moves(findings, context(), [behind({ name: 'b/later' }), behind({ name: 'a/sooner' })]);
+    // A finding's move keeps the place it has with no routine move listed, which the state's `move` names.
+    expect(list.slice(0, 2)).toEqual(alone);
+    expect(list.map((move) => move.name)).toEqual(['example/image', 'zebra/image', 'a/sooner', 'b/later']);
+    expect(list[2]).toEqual({
+      repository: REPOSITORY,
+      name: 'a/sooner',
+      pins: [{ file: 'deploy/y.yaml', line: 8 }],
+      from: '3.1.0',
+      to: { kind: 'image', tag: '3.2.0', digest: DIGEST },
+      major: false,
+      clears: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+      leaves: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+      deadline: undefined,
+      newToday: 0,
+      lane: 'worker',
+      lockfile: false,
+      results: [],
+    });
+    expect(list.map(isRoutine)).toEqual([false, false, true, true]);
+    expect(list.map((move) => isRoutine(publicMove(move)))).toEqual([false, false, true, true]);
+  });
+
+  it('gets no routine move where a finding’s move has the pin, a line no longer built among them', () => {
+    const pin = { name: 'example/image', from: '2.17.0' };
+    expect(moves([result()], context(), [behind(pin)])).toHaveLength(1);
+    const unbuilt = result({ target: { kind: 'unbuilt', built: NOW - 400 * DAY }, due: undefined });
+    expect(moves([unbuilt], context(), [behind(pin)]).map((move) => move.lane)).toEqual(['none']);
+    // A package of that name is another pin, and so is the same image at another tag.
+    const others = [behind({ ...pin, kind: 'lockfile' }), behind({ ...pin, from: '2.16.0' })];
+    expect(moves([result()], context(), others)).toHaveLength(3);
+    // Two of one pin are one move.
+    expect(moves([], context(), [behind(), behind()])).toHaveLength(1);
+  });
+
+  it('says what the pin has that no fix clears, which the move is not known to clear', () => {
+    const open = result({ target: undefined, severity: 'MEDIUM' });
+    const [move] = moves([open, result({ target: undefined, excepted: true })], context(), [
+      behind({ name: 'example/image', from: '2.17.0' }),
+    ]);
+    expect(move?.leaves).toEqual({ CRITICAL: 0, HIGH: 0, MEDIUM: 1, LOW: 0, UNKNOWN: 0 });
+    expect(move && isRoutine(move)).toBe(true);
+  });
+
+  it('takes the lane a finding’s move of the pin would: the worker’s, the cluster’s, an issue’s, the app’s line', () => {
+    const laneOf = (each: Behind, over: Partial<Context> = {}) => moves([], context(over), [each])[0]?.lane;
+    expect(laneOf(behind())).toBe('worker');
+    expect(
+      laneOf(
+        behind({
+          kind: 'chart',
+          name: 'argo-cd',
+          pins: [{ file: 'Makefile', line: 7 }],
+          to: { kind: 'chart', chart: 'argo-cd', version: '10.9.6', major: false },
+        }),
+      ),
+    ).toBe('worker');
+    expect(laneOf(behind({ kind: 'workflow', pins: [{ file: '.github/workflows/check.yml', line: 30 }] }))).toBe(
+      'issue',
+    );
+    expect(laneOf(behind({ kind: 'k3s', name: 'k3s', to: { kind: 'k3s', release: 'v1.37.2+k3s1' } }))).toBe('cluster');
+    expect(laneOf(behind(), { repository: APP, app: true })).toBe('line');
+    expect(
+      laneOf(behind({ kind: 'workflow', pins: [{ file: '.github/workflows/check.yml', line: 30 }] }), {
+        repository: APP,
+        app: true,
+      }),
+    ).toBe('line');
+  });
+
+  it('is a major by the one rule, and whenever its manifest’s range does not admit it', () => {
+    const npm = (from: string, to: string, outside = false) =>
+      moves([], context(), [
+        behind({ kind: 'lockfile', name: 'example-a', from, to: { kind: 'version', versions: [to] }, outside }),
+      ])[0]?.major;
+    expect(npm('3.2.0', '3.4.0')).toBe(false);
+    expect(npm('3.2.0', '4.0.0', true)).toBe(true);
+    // Below 1.0 a new minor is outside a caret range: its numbers say no major, and the range says one.
+    expect(npm('0.5.3', '0.6.0', true)).toBe(true);
+    const chart = behind({ kind: 'chart', to: { kind: 'chart', chart: 'grafana', version: '14.3.1', major: true } });
+    expect(moves([], context(), [chart])[0]?.major).toBe(true);
+  });
+
+  it('is counted in the totals and said in the table, and a day with none is written with no word of them', () => {
+    const findings = [result()];
+    const plain = movesFile(moves(findings, context()), context(), '19234567890');
+    expect(JSON.stringify(movesFile(moves(findings, context(), []), context(), '19234567890'))).toBe(
+      JSON.stringify(plain),
+    );
+    expect('routine' in plain.totals).toBe(false);
+    const file = movesFile(moves(findings, context(), [behind()]), context(), '19234567890');
+    expect(file.totals).toMatchObject({ fixed: 1, moves: 2, routine: 1, lanes: { worker: 2 } });
+    expect(table(file)).toEqual([
+      'Moves: 1 results with a fix, in 2 moves, 1 of them routine (worker 2).',
+      '',
+      '| Move | From | To | Clears | Leaves | New today | Deadline | Lane |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| example/image | 2.17.0 | image 2.17.0@${DIGEST} | 1 high | nothing | 0 | 2026-11-14T04:30:00Z | worker |`,
+      `| example/other | 3.1.0 | image 3.2.0@${DIGEST} | nothing | nothing | 0 | – | worker |`,
+    ]);
+  });
+
+  it('names nothing of a lockfile’s package: its file alone, as a finding’s move of one', () => {
+    const secret = behind({
+      kind: 'lockfile',
+      name: 'example-secret',
+      pins: [{ file: 'pnpm-lock.yaml', line: 4242 }],
+      from: '1.0.0',
+      to: { kind: 'version', versions: ['1.3.7'] },
+    });
+    const file = movesFile(moves([], context(), [secret]), context());
+    const text = JSON.stringify(file) + table(file).join('\n');
+    for (const word of ['example-secret', '4242', '1.0.0', '1.3.7']) expect(text).not.toContain(word);
+    expect(file.moves).toEqual([
+      expect.objectContaining({
+        name: 'a package in `pnpm-lock.yaml`',
+        pins: [{ file: 'pnpm-lock.yaml', line: 0 }],
+        from: '',
+        to: '',
+        lockfile: true,
+        lane: 'worker',
+      }),
+    ]);
+    expect(file.moves.map(isRoutine)).toEqual([true]);
   });
 });

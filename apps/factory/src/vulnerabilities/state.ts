@@ -67,6 +67,28 @@ export interface State {
   /** The run that wrote it (GITHUB_RUN_ID), which its seal binds. */
   run: string;
   findings: StateFinding[];
+  /**
+   * The day's routine moves, which no finding carries: what `moves.json` withholds of a lockfile's, and each one's
+   * day; and each release the scan saw that is still inside its wait, which is no move yet.
+   */
+  routine?: StateRoutine[] | undefined;
+}
+
+/** A release a pin with no finding is behind (routine.ts), listed as a move or still waiting to be. */
+export interface StateRoutine {
+  /** Its place in the run's `moves.json`, from 1; absent while the release waits, and for one passed over. */
+  move?: number | undefined;
+  /** What moves: a package, an image's repository, a chart's name, `k3s`. */
+  name: string;
+  from: string;
+  /** Its target, as fixes.ts writes one (`targetText`). */
+  to: string;
+  pins: { file: string; line: number }[];
+  /**
+   * When the scan first saw this target for this pin, UTC to the second: the wait counts from the release's own day,
+   * and from this where the registry gives none (an image that says 1970) or a later one.
+   */
+  seen: string;
 }
 
 /** A state that cannot be read: sealed with another key, for another run or repository, or not a state at all. */
@@ -155,7 +177,7 @@ const isText = (value: unknown): value is string =>
 /** What is wrong with a state's shape, or undefined: the first thing, by the finding's place in the list alone. */
 function problemOf(state: unknown, repository: string, run: string): string | undefined {
   if (typeof state !== 'object' || state === null) return 'is not an object';
-  const { version, findings, ...rest } = state as Record<string, unknown>;
+  const { version, findings, routine, ...rest } = state as Record<string, unknown>;
   if (version !== STATE_VERSION) return `is version ${JSON.stringify(version)}, not ${STATE_VERSION}`;
   if (rest.repository !== repository) return "is another repository's";
   if (rest.run !== run) return "is another run's";
@@ -181,6 +203,28 @@ function problemOf(state: unknown, repository: string, run: string): string | un
     }
     if (f.move !== undefined && (!Number.isInteger(f.move) || (f.move as number) < 1 || f.fix === undefined))
       return `gives ${at} a move that is not one`;
+  }
+  if (routine === undefined) return undefined;
+  if (!Array.isArray(routine)) return 'lists routine moves that are not a list';
+  for (const [index, each] of routine.entries()) {
+    const at = `routine move ${index + 1}`;
+    if (typeof each !== 'object' || each === null) return `has no ${at}`;
+    const r = each as Record<string, unknown>;
+    if (r.move !== undefined && (!Number.isInteger(r.move) || (r.move as number) < 1))
+      return `gives ${at} a place that is not one`;
+    for (const name of ['name', 'from']) if (!isText(r[name])) return `gives ${at} no ${name}`;
+    if (typeof r.to !== 'string' || !readTarget(r.to)) return `gives ${at} a target the grammar does not read`;
+    if (!Array.isArray(r.pins) || !r.pins.length) return `gives ${at} no pins`;
+    for (const pin of r.pins as (Record<string, unknown> | null)[])
+      if (
+        typeof pin !== 'object' ||
+        pin === null ||
+        !isText(pin.file) ||
+        !Number.isInteger(pin.line) ||
+        (pin.line as number) < 0
+      )
+        return `gives ${at} a pin that is not one`;
+    if (!isDay(r.seen)) return `gives ${at} no day it was first seen`;
   }
   return undefined;
 }

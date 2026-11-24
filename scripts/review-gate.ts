@@ -666,7 +666,11 @@ interface Listed {
  * Every line of the workflows at a commit of `repo` that names the factory's workflows, with its file: what a bump of
  * the commit they are called at must have moved, every one. A repository with no workflows has none.
  */
-async function factoryCalls(repo: string, ref: string, token: string): Promise<{ file: string; line: string }[]> {
+async function factoryCalls(
+  repo: string,
+  ref: string,
+  token: string,
+): Promise<{ file: string; number: number; line: string }[]> {
   const where = `/repos/${repo}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`;
   const listed = await api<Listed[] | Listed>('GET', where, token);
   if (!Array.isArray(listed)) throw new Answered(`.github/workflows is not a folder at ${short(ref)}`);
@@ -677,8 +681,8 @@ async function factoryCalls(repo: string, ref: string, token: string): Promise<{
       if (text === undefined) throw new Answered(`${path} is not at ${short(ref)}`);
       return text
         .split('\n')
-        .filter(callsFactory)
-        .map((line) => ({ file: path, line: line.replace(/\r$/, '') }));
+        .map((line, at) => ({ file: path, number: at + 1, line: line.replace(/\r$/, '') }))
+        .filter(({ line }) => callsFactory(line));
     }),
   );
   return texts.flat();

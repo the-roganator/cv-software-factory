@@ -10,7 +10,8 @@
  *   `IssueRefused`, carrying it, which the worker answers 403, as GitHub answers an issue the App may not change. A
  *   pull request is an issue to GitHub, so one the App opened passes, as its issues do.
  * - **Dependabot's workflow pins.** One action passes on a pull request GitHub's Dependabot opened: adding it to the
- *   merge queue, asked by the worker's own watch (`workflowPinQueueWatch`) and by nothing else, so no worker that
+ *   merge queue, in a repository that calls the factory's workflows (`WORKFLOW_PIN_REPOS`) and in no other, asked by
+ *   the worker's own watch (`workflowPinQueueWatch`) and by nothing else, so no worker that
  *   asks over the door, the line among them, adds one; and then only from its `dependabot/github_actions/` branch of
  *   the repository into `main`, which the queue's guard holds (`guardQueue`, `merging.ts`). Such a pull request can move the commit the factory's own
  *   workflows are called at, which the App, with no `workflows` permission, cannot write. The guard holds who opened
@@ -31,6 +32,7 @@
 
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { APP_REPOSITORY } from '../repositories.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
 import { type GitHub, GitHubError } from './client.ts';
@@ -48,6 +50,14 @@ export const APP_USER = 337_765_427;
  * whose pull request the factory adds to the merge queue, and nothing else (`IssueGuard.check`).
  */
 export const DEPENDABOT_USER = 49_699_333;
+
+/**
+ * The repositories where Dependabot's pull request for the factory's workflows is added to the merge queue: the app's,
+ * which calls them at a commit. Nowhere else, the factory's own repository among it, which calls none of its
+ * workflows by commit: both guards hold the enqueue to these (`IssueGuard.check`, and `guardQueue` in `merging.ts`),
+ * and the watch runs in no other (`workflowPinQueueWatch`).
+ */
+export const WORKFLOW_PIN_REPOS: readonly string[] = [APP_REPOSITORY];
 
 /** What an issue opened by anyone else is told, once. Fixed: it says nothing of the issue, or of who opened it. */
 export const OUTSIDE_REPLY = [
@@ -172,14 +182,19 @@ export class IssueGuard {
     if (opened.by === APP_USER) return 'app';
     if (action === 'comment' && body === OUTSIDE_REPLY && !opened.pullRequest && outside(opened.by)) return 'outside';
     const dependabots = action === 'enqueuePullRequest' && opened.pullRequest && opened.by === DEPENDABOT_USER;
-    if (dependabots && asker === 'workflow-pin-watch') return 'dependabot';
+    const here = WORKFLOW_PIN_REPOS.includes(repo);
+    if (dependabots && here && asker === 'workflow-pin-watch') return 'dependabot';
     const what = opened.pullRequest ? 'pull request' : 'issue';
-    const output = dependabots
-      ? `${repo}#${number} is Dependabot's, not the factory's App's: only the worker's own watch adds one to the merge ` +
-        "queue, once the review gate passed it as an exact pin of the factory's workflows and the autonomy level " +
-        'queues one. No worker that asks does (guardrail 10).'
-      : `${repo}#${number} was opened by ${opened.by === null ? 'a deleted account' : `user ${opened.by}`}, ` +
-        `not the factory's App: the factory acts only on the issues and pull requests it opened (guardrail 10).`;
+    const output = !dependabots
+      ? `${repo}#${number} was opened by ${opened.by === null ? 'a deleted account' : `user ${opened.by}`}, ` +
+        `not the factory's App: the factory acts only on the issues and pull requests it opened (guardrail 10).`
+      : !here
+        ? `${repo}#${number} is Dependabot's, not the factory's App's, and ${repo} is not a repository where the ` +
+          "factory adds one of Dependabot's to the merge queue: it acts only on the issues and pull requests it " +
+          'opened (guardrail 10).'
+        : `${repo}#${number} is Dependabot's, not the factory's App's: only the worker's own watch adds one to the merge ` +
+          "queue, once the review gate passed it as an exact pin of the factory's workflows and the autonomy level " +
+          'queues one. No worker that asks does (guardrail 10).';
     const refusal = await this.#recorder?.record({
       mechanism: 'github-guard',
       cause: 'issue',

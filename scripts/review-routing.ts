@@ -716,9 +716,31 @@ function scalarOf(text: string): unknown {
   if (/^(true|True|TRUE)$/.test(plain)) return true;
   if (/^(false|False|FALSE)$/.test(plain)) return false;
   if (/^(null|Null|NULL|~)$/.test(plain)) return null;
-  if (/^[-+]?(\.\d+|\d+(\.\d*)?)([eE][-+]?\d+)?$/.test(plain)) return Number(plain);
+  // A number is read only as it is written whole: `20.10` and `20.1`, `010` and `10`, `1e2` and `100` are one number
+  // each and other texts, and a caller is given the text. Any other way of writing one is not read.
+  if (NUMBER.test(plain)) {
+    if (String(Number(plain)) !== plain) throw new Unread(`a number it does not read as it is written: ${plain}`);
+    return Number(plain);
+  }
   return plain;
 }
+
+/** What YAML reads as a number when it is written plain: decimal, with an exponent, hexadecimal, octal, infinite or none. */
+const NUMBER =
+  /^[-+]?(\.\d+|\d+(\.\d*)?)([eE][-+]?\d+)?$|^0x[0-9a-fA-F]+$|^0o[0-7]+$|^[-+]?\.(inf|Inf|INF)$|^\.(nan|NaN|NAN)$/;
+
+/**
+ * Whether a line of a declaration holds an anchor, an alias or a merge key (`&name`, `*name`, `<<:`), as a key, a
+ * value or an item: what such a declaration says is written somewhere outside its own lines.
+ */
+const refersElsewhere = (line: string): boolean => {
+  if (!says(line)) return false;
+  const item = line.trim().replace(/^(?:-\s+)+/, '');
+  const value = /^(?:[\w.-]+|'[^']*'|"[^"\\]*")\s*:\s+(.*)$/.exec(item)?.[1] ?? '';
+  // In brackets or braces, one may be any item or value of it.
+  const within = /^[[{]/.test(value) && /(^|[\s[{,:])(?:[&*][\w-]|<<\s*:)/.test(value);
+  return /^[&*]\S/.test(item) || /^[&*]\S/.test(value) || /^<<\s*:/.test(item) || within;
+};
 
 /**
  * A block of YAML that is maps of maps of scalars, read: each key on a line of its own, its value on that line, a map
@@ -730,7 +752,8 @@ function mapOf(lines: readonly string[]): Record<string, unknown> | null {
   const first = lines.find(says);
   if (first === undefined) return null;
   const indent = indentOf(first);
-  const map: Record<string, unknown> = {};
+  // With no prototype: a name a file gives (`__proto__`, `constructor`, `toString`) is a key as any other.
+  const map: Record<string, unknown> = Object.create(null);
   for (let i = 0; i < lines.length; ) {
     const line = lines[i] ?? '';
     if (!says(line)) {
@@ -766,10 +789,12 @@ function mapOf(lines: readonly string[]): Record<string, unknown> | null {
 /**
  * What a workflow's file declares under `on: workflow_call:`, or undefined when it declares no `workflow_call`: the
  * declaration's own lines, as they are written, and those lines read (`mapOf`), or why the gate does not read them.
+ * One that holds an anchor, an alias or a merge key is not read, and is marked `elsewhere`: what it declares is
+ * written outside its lines, so the same lines at two commits may declare two things.
  */
 export function declarationOf(
   text: string,
-): { lines: string; read: Record<string, unknown> } | { lines: string; unread: string } | undefined {
+): { lines: string; read: Record<string, unknown> } | { lines: string; unread: string; elsewhere?: true } | undefined {
   const all = text.replace(/\r\n?/g, '\n').split('\n');
   const at = all.findIndex((line) => /^(on|'on'|"on")\s*:/.test(line));
   if (at === -1) return undefined;
@@ -804,10 +829,16 @@ export function declarationOf(
     .trim();
   const under = events.slice(from + 1, to);
   const lines = [own, ...under].join('\n');
+  if ([`workflow_call: ${own}`, ...under].some(refersElsewhere))
+    return {
+      lines,
+      unread: 'an anchor, an alias or a merge key, which says it elsewhere in the file',
+      elsewhere: true,
+    };
   if (own !== '' && !['{}', 'null', '~'].includes(own))
     return { lines, unread: '`workflow_call:` written on one line' };
   try {
-    return { lines, read: (own === '' ? mapOf(under) : null) ?? {} };
+    return { lines, read: (own === '' ? mapOf(under) : null) ?? Object.create(null) };
   } catch (error) {
     if (error instanceof Unread) return { lines, unread: error.message };
     throw error;
@@ -815,7 +846,11 @@ export function declarationOf(
 }
 
 /** What each part of a declaration holds, as a reason names one. */
-const DECLARED: Record<string, string> = { inputs: 'input', secrets: 'secret', outputs: 'output' };
+const DECLARED = new Map([
+  ['inputs', 'input'],
+  ['secrets', 'secret'],
+  ['outputs', 'output'],
+]);
 
 /** A value with its keys in order, and no `description`, which tells a reader and asks nothing of a caller. */
 const ordered = (value: unknown): unknown =>
@@ -834,7 +869,7 @@ function declaredOtherwise(was: Record<string, unknown>, now: Record<string, unk
   const names = (part: unknown) => (typeof part === 'object' && part !== null ? (part as Record<string, unknown>) : {});
   for (const part of [...new Set([...Object.keys(was), ...Object.keys(now)])].sort()) {
     const [before, after] = [names(was[part]), names(now[part])];
-    const what = DECLARED[part] ?? part;
+    const what = DECLARED.get(part) ?? part;
     const found = differs.length;
     for (const name of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
       if (!Object.hasOwn(before, name)) differs.push(`the ${what} ${name} is added`);
@@ -859,8 +894,9 @@ const MARTINS =
  * secrets and outputs) read at each commit and compared as what it says, not as it is written, so a comment, a
  * description or the order of its keys is no difference. `was` and `now` are the workflow's file at each commit, or
  * undefined where it is not there. A workflow that is gone at the new commit, or declares no `workflow_call` there,
- * differs; and where the declaration's lines differ and the gate does not read one of them (`mapOf`), it differs too,
- * as nothing says it does not.
+ * differs; where the declaration's lines differ and the gate does not read one of them (`mapOf`), it differs too, as
+ * nothing says it does not; and one written with an anchor, an alias or a merge key differs whatever its lines, as
+ * what it declares is written outside them.
  *
  * A caller gives a workflow its inputs and secrets and reads its outputs, and a bump moves the commit alone: one that
  * needs the caller changed breaks only once it merges, and what breaks may be the gate that would judge its repair.
@@ -882,6 +918,15 @@ export function declaresOtherwise(
   const [before, after] = [declarationOf(was), declarationOf(now)];
   if (!after) return martins(`declares no workflow_call at ${short(to)}`);
   if (!before) return martins(`declares no workflow_call at ${short(from)}, so what it declared there is not known`);
+  // Before the lines are compared: the same lines that say it elsewhere are no proof it is said the same.
+  const elsewhere = [
+    { at: from, declared: before },
+    { at: to, declared: after },
+  ].find(({ declared }) => 'elsewhere' in declared);
+  if (elsewhere)
+    return martins(
+      `declares its workflow_call at ${short(elsewhere.at)} with an anchor, an alias or a merge key, so what it declares is outside the lines the gate compares`,
+    );
   if (before.lines === after.lines) return undefined;
   const unread = 'unread' in before ? before.unread : 'unread' in after ? after.unread : undefined;
   if ('unread' in before || 'unread' in after)
@@ -909,8 +954,11 @@ export interface WorkflowPinChecks {
    * when `head` descends from `base`, `identical`, `behind` when `base` descends from `head`, or `diverged`.
    */
   compare: (base: string, head: string) => Promise<string>;
-  /** Every line of the workflows at the pull request's head that names the factory's workflows, with its file. */
-  calls: () => Promise<{ file: string; line: string }[]>;
+  /**
+   * Every line of the workflows at the pull request's head that names the factory's workflows, a comment's among them,
+   * with its file and its number there, from 1.
+   */
+  calls: () => Promise<{ file: string; number: number; line: string }[]>;
   /** One of the factory's workflows, by its file's name, as a commit of the factory has it, or undefined if it has none. */
   declared: (workflow: string, commit: string) => Promise<string | undefined>;
 }
@@ -968,10 +1016,13 @@ export async function workflowPin(
     };
   if (from === to) return { reason: `it leaves the calls at ${short(to)}, the same commit` };
   const called = new Set<string>();
-  for (const { file, line } of await checks.calls()) {
+  for (const { file, number, line } of await checks.calls()) {
     const call = WORKFLOW_CALL.exec(line);
+    // Any line that names them, a comment among it: said whole, with where it is, as it holds every such bump.
     if (!call)
-      return { reason: `${file} at its head calls the factory's workflows by something other than a commit of main` };
+      return {
+        reason: `${file}:${number} at its head names the factory's workflows in a line that is not a call of one at a commit of main (\`${line.trim().slice(0, 120)}\`), which holds every bump of them until it is one, or does not name them`,
+      };
     if (call[3] !== to)
       return {
         reason: `${file} at its head still calls the factory at ${short(call[3] ?? '')}: every call moves together`,

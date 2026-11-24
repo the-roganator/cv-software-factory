@@ -28,6 +28,7 @@ import { type Judged, readVerdict, type Verdict } from '../../../../policy/revie
 import type { SignedRefusal } from '../signed-refusals.ts';
 import { BranchRefused, guardBranch, guardDependabotPin, redTeamBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
+import { WORKFLOW_PIN_REPOS } from './issues.ts';
 import type { CheckRun } from './reads.ts';
 
 /**
@@ -151,8 +152,9 @@ export interface QueueCandidate {
  * Refuses to add a pull request to the queue unless it is from a branch of this repository the factory owns and is not
  * a red-team attack's (a `BranchRefused`, so the worker signs it as `github-guard`), and unless it is open, ready, and
  * at the head the line names (a conflict: the line looks again). Whose it is, the issue guard asks first, and says
- * (`opener`): the App's own, as above; or Dependabot's, which is held instead to its GitHub Actions branch of this
- * repository, into `main` (`guardDependabotPin`), and to nothing the factory owns. That is all this guard knows of
+ * (`opener`): the App's own, as above; or Dependabot's, which is held instead to a repository that calls the factory's
+ * workflows (`WORKFLOW_PIN_REPOS`), and to its GitHub Actions branch of that repository, into `main`
+ * (`guardDependabotPin`), and to nothing the factory owns. That is all this guard knows of
  * Dependabot's pull request. What it changes is the review gate's to judge, and GitHub's queue takes it only with the
  * gate's check passed; that the gate passed it as an exact pin of the factory's workflows, at this head, and that
  * Martin's autonomy level queues one, are the watch's to read before it asks (`workflowPinQueueWatch`), and the
@@ -167,8 +169,14 @@ export function guardQueue(
 ): void {
   // A fork's branch of the same name is not the factory's, nor Dependabot's own.
   if (pull.head.repo !== repo) throw new BranchRefused(`Pull request #${number} is not from a branch of ${repo}.`);
-  if (opener === 'dependabot') guardDependabotPin(pull.head.ref, pull.base);
-  else {
+  if (opener === 'dependabot') {
+    if (!WORKFLOW_PIN_REPOS.includes(repo)) {
+      throw new BranchRefused(
+        `${repo} is not a repository where the factory adds a pull request of Dependabot's to the merge queue.`,
+      );
+    }
+    guardDependabotPin(pull.head.ref, pull.base);
+  } else {
     guardBranch(pull.head.ref);
     if (redTeamBranch(pull.head.ref)) {
       throw new BranchRefused(

@@ -13,7 +13,8 @@
 #   except the tests the pull request's description names as ones its spec contradicts, which it names in its summary.
 #   It reads the description through the API when it runs, so it alone holds `pull-requests: read`.
 # - tests first: runs the change's new and changed tests against the base's source, and says which fail there. Not
-#   required: a fix whose tests all pass before it holds for Martin, and the line reads this to know.
+#   required: a fix whose tests all pass before it holds for Martin, and the line reads this to know. Skipped for a
+#   change that adds or changes no test, a move of pins among them, which has nothing to run there (`tests changed`).
 # - dependency review and image scan: fail only on a vulnerability the change brings in.
 # - lockfile scan: Trivy's findings on each lockfile of the base and of the change, each scanned alone with development
 #   dependencies; fails on any vulnerability, at any severity, the change's lockfiles have and the base's do not
@@ -192,9 +193,75 @@ jobs:
           # Named in its notice of what it judged, which the review gate reads: a run is that pull request's alone.
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
 
+  # Whether the change adds or changes a test, for tests first to run: one that does not, a move of pins among them,
+  # has nothing to run on the base, and tests first is skipped rather than failed. The same read tests first makes
+  # (`tests-first.ts prepare`), of the same two trees; it runs none of the change's code. Named so that nothing takes it
+  # for tests first itself, which the console finds by a name ending so.
+  tests-changed:
+    name: tests changed
+    if: ${{ !inputs.skip && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tests: ${{ steps.which.outputs.tests }}
+    steps:
+      # It checks out a change, and runs none of its code; called from anything but a pull_request or merge_group run,
+      # it fails rather than run, as the jobs that do.
+      - name: Refuse a privileged context
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$GITHUB_EVENT_NAME" != merge_group ]; then
+            echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
+            exit 1
+          fi
+      # The change first, with its merge commit's parents, for its base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: change
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/gates/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Find the base
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node
+      - id: which
+        run: |
+          node factory/apps/factory/src/gates/tests-first.ts prepare base change "$RUNNER_TEMP/tests-first.json" > "$RUNNER_TEMP/tests-first-files"
+          if grep -q . "$RUNNER_TEMP/tests-first-files"; then tests=true; else tests=false; fi
+          [ "$tests" = true ] || echo "::notice::This change adds or changes no test, so tests first has nothing to run on the base, and is skipped."
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+
   tests-first:
     name: tests first
-    if: ${{ !inputs.skip && github.event_name != 'merge_group' }}
+    needs: tests-changed
+    # Skipped for a change that adds or changes no test; run when the read above failed, so a fault of its own never
+    # passes for one.
+    if: ${{ !cancelled() && !inputs.skip && github.event_name != 'merge_group' && (needs.tests-changed.result != 'success' || needs.tests-changed.outputs.tests != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

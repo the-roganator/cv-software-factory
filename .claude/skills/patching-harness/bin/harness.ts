@@ -353,6 +353,11 @@ interface State {
   /** A small run: the only tests this run stands for (`--only 1,2,N4`). The rest are not run, and not judged from it. */
   only?: string[] | undefined;
   resetAt?: string | undefined;
+  /**
+   * The reset's own push, which the scan its run stands on is found by: when it began, and `main`'s commit before and
+   * after it. A reset that found `main` at the baseline has the two the same, and pushed nothing.
+   */
+  reset?: { startedAt: string; before: string; after: string } | undefined;
   scan1?: Scan | undefined;
   kickedAt?: string;
   pods0?: Record<string, number>;
@@ -408,6 +413,37 @@ function latestScan(repo: string, since?: string, event?: string): Scan | undefi
       conclusion: run.status === 'completed' ? run.conclusion : undefined,
     }
   );
+}
+/** `main`'s commit now: the sha alone, as the commit's own page lists its files, hundreds for a baseline. */
+function mainOf(repo: string): string {
+  repoOk(repo);
+  return sh('gh', ['api', `repos/${repo}/commits/main`, '--jq', '.sha']).trim();
+}
+/**
+ * The scan the push of `commit` to main started since `since`, which the worker opens its pull requests from: the one
+ * a run stands on when there is one. Asked for by its commit, so pushes to main after it (the worker's merges) do not
+ * hide it; none when it has not appeared within two minutes.
+ */
+function pushScan(repo: string, commit: string, since: string): Scan | undefined {
+  repoOk(repo);
+  for (let i = 0; i < 12; i++) {
+    const runs =
+      JSON.parse(
+        sh('gh', [
+          'api',
+          `repos/${repo}/actions/workflows/vulnerabilities.yml/runs?branch=main&event=push&head_sha=${commit}&per_page=20`,
+        ]),
+      ).workflow_runs ?? [];
+    const run = runs.find((r: any) => r.head_sha === commit && r.created_at >= since);
+    if (run)
+      return {
+        id: run.id,
+        createdAt: run.created_at,
+        conclusion: run.status === 'completed' ? run.conclusion : undefined,
+      };
+    if (i < 11) sleep(10_000);
+  }
+  return undefined;
 }
 function dispatchScan(_state: State, repo: string): Scan {
   repoOk(repo);
@@ -1308,13 +1344,50 @@ function run(state: State) {
   let appJustReset = false;
   if (!state.resetAt && !has('--no-reset')) {
     say(state, `reset: ./copies.sh ${reset.join(' ')}`);
+    const startedAt = new Date().toISOString();
+    const before = mainOf(repo);
     const out = sh(join(BIN, 'copies.sh'), reset, { cwd: BIN, timeout: 30 * 60_000 });
     writeFileSync(join(dirOf(state.id), 'reset.log'), out);
     state.resetAt = new Date().toISOString();
+    state.reset = { startedAt, before, after: mainOf(repo) };
     appJustReset = reset.includes('app');
     save(state);
   }
   if (!state.scan1) preflight(state, appJustReset);
+  if (!state.scan1 && state.resetAt && !has('--no-reset') && !has('--no-scan')) {
+    // The push of the reset's commit started a scan of its own, and the worker opens its pull requests from it: the
+    // run stands on that one, and its clock starts there. Its commit and its time are the reset's own, recorded as it
+    // ran: main may have moved since (the pre-flight takes minutes, and the worker merges). From two minutes before
+    // the reset began, as the push is among its first acts, for any skew between the Mac's clock and GitHub's; a
+    // shared baseline's earlier pushes of the same commit are older than that.
+    const reset = state.reset;
+    if (!reset) {
+      say(
+        state,
+        "no scan of the reset's push to stand on: this run's state does not record main's commit at its reset; the run dispatches one",
+      );
+    } else if (reset.before === reset.after) {
+      say(
+        state,
+        `the reset found main at the baseline, ${reset.after.slice(0, 7)}, and pushed nothing, so no scan started: the run dispatches one`,
+      );
+    } else {
+      const since = new Date(Date.parse(reset.startedAt) - 120_000).toISOString().replace(/\.\d+Z$/, 'Z');
+      const scan = pushScan(repo, reset.after, since);
+      if (scan) {
+        state.scan1 = scan;
+        say(
+          state,
+          `scan ${scan.id}, started ${scan.createdAt}: the reset's push of main at ${reset.after.slice(0, 7)} started it, and the worker opens its pull requests from it`,
+        );
+      } else {
+        say(
+          state,
+          `the reset pushed main to ${reset.after.slice(0, 7)}, and no scan of that push appeared since ${since}: the run dispatches one`,
+        );
+      }
+    }
+  }
   if (!state.scan1) {
     // A reset deletes the copy's code scanning analyses, and the scan cannot read its deadlines until main has one
     // again (CodeQL's run on the push): the scan waits for it, as the daily one never has to.
@@ -1332,7 +1405,13 @@ function run(state: State) {
     }
     state.scan1 = has('--no-scan') ? latestScan(repo) : dispatchScan(state, repo);
     if (!state.scan1) throw new Error('no scan to stand on');
-    say(state, `scan ${state.scan1.id}, started ${state.scan1.createdAt}: the clock starts here`);
+    say(
+      state,
+      `scan ${state.scan1.id}, started ${state.scan1.createdAt}: ${has('--no-scan') ? "main's latest, as --no-scan asks" : 'dispatched'}`,
+    );
+  }
+  if (!state.pods0) {
+    say(state, `the clock starts at scan ${state.scan1.id}, ${state.scan1.createdAt}`);
     state.pods0 = podRestarts();
     state.failed0 = cluster()
       .pods.filter((p) => p.phase === 'Failed')

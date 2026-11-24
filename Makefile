@@ -94,12 +94,15 @@ define cluster-held
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key scan-state-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store bench-down stop-the-line start-the-line take-the-line new-work close-work-item enrol guardrails drill-vulnerability
+.PHONY: help cluster-node up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key scan-state-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store bench-down stop-the-line start-the-line take-the-line new-work close-work-item enrol guardrails drill-vulnerability
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-up: ## Create the local cluster; Argo CD then deploys everything from main (or REVISION=<branch>); refused while another session holds it (FORCE=1)
+# The cluster's node alone, made when there is none, without Argo CD or anything it deploys: `make up` makes it first,
+# and the platform check makes it in a step of its own, to pull Argo CD's images into it before the install
+# (scripts/platform-pull-first.sh).
+cluster-node:
 	@docker info >/dev/null 2>&1 || { echo "Docker isn't running. Start OrbStack (or another runtime) and try again."; exit 1; }
 	$(cluster-held)
 	@# The cluster's state lives off its node, on a volume made first, which k3d leaves when it deletes the cluster:
@@ -109,6 +112,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 			echo "  $(STATE) holds a cluster's state, and there is no cluster: 'make upgrade-cluster' makes it again on it, 'make down' deletes it."; exit 1; fi; \
 		docker volume create --label software-factory.cluster=$(CLUSTER) $(STATE) >/dev/null && \
 		{ k3d cluster create --config deploy/k3d/cluster.yaml $(if $(K3D_REGISTRIES),--registry-config $(K3D_REGISTRIES)) || { docker volume rm $(STATE) >/dev/null; exit 1; }; }; }
+
+up: cluster-node ## Create the local cluster; Argo CD then deploys everything from main (or REVISION=<branch>); refused while another session holds it (FORCE=1)
 	@# A cluster without the console's HTTPS port gets it in place: k3d makes the cluster's load balancer again, and keeps
 	@# everything in the cluster, the store included. The load balancer's configured ports, so a stopped one counts too.
 	@docker inspect -f '{{json .HostConfig.PortBindings}}' k3d-$(CLUSTER)-serverlb | grep -q '"443/tcp"' || { \

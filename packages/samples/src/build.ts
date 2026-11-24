@@ -134,9 +134,10 @@ export interface GateRun {
   details?: Record<string, Partial<PayloadOf<'gate.finished'>>>;
   /**
    * The tests-first check, a signal and not required: how many of the change's new tests fail on the base, of how
-   * many, and its output. It passes when at least one fails there.
+   * many, and its output. It passes when at least one fails there. `skipped` for a change that adds or changes no
+   * test, which has nothing to run there: the check runs nothing, says nothing, and takes no time.
    */
-  testsFirst?: { failing: number; of: number; output?: string };
+  testsFirst?: { failing: number; of: number; output?: string } | 'skipped';
 }
 
 /** The pages verification compares with the version before, and the names of their screenshots. */
@@ -464,22 +465,30 @@ export class Item {
       commit,
       checks,
     });
-    const signal = testsFirst && {
-      conclusion: testsFirst.failing > 0 ? ('success' as const) : ('failure' as const),
-      summary: `${testsFirst.failing} of ${testsFirst.of} new tests fail on the base`,
-    };
-    const order = [...gates, ...(testsFirst ? [[TESTS_FIRST, 41] as [string, number]] : [])].sort(
+    const skipped = testsFirst === 'skipped';
+    const signal =
+      testsFirst &&
+      (skipped
+        ? { conclusion: 'skipped' as const, summary: undefined }
+        : {
+            conclusion: testsFirst.failing > 0 ? ('success' as const) : ('failure' as const),
+            summary: `${testsFirst.failing} of ${testsFirst.of} new tests fail on the base`,
+          });
+    // Skipped, it ends as soon as the job before it finds no test, and its run took no time.
+    const order = [...gates, ...(testsFirst ? [[TESTS_FIRST, skipped ? 16 : 41] as [string, number]] : [])].sort(
       (a, b) => a[1] - b[1],
     );
     for (const [check, duration] of order) {
       const failed = run.failure?.check === check;
-      const tests = check === TESTS_FIRST && signal;
+      const tests = check === TESTS_FIRST && signal ? signal : undefined;
       this.at(
         clock(start + duration + 6),
         'gate.finished',
         'actions',
         tests
-          ? `${check} ${tests.conclusion === 'success' ? 'passed' : 'failed'}: ${tests.summary}`
+          ? tests.conclusion === 'skipped'
+            ? `${check} was skipped: the change adds or changes no test`
+            : `${check} ${tests.conclusion === 'success' ? 'passed' : 'failed'}: ${tests.summary}`
           : failed
             ? `${check} failed: ${run.failure?.summary}`
             : `${check} passed`,
@@ -489,8 +498,11 @@ export class Item {
           check,
           conclusion: tests ? tests.conclusion : failed ? 'failure' : 'success',
           required: !tests,
-          durationMs: duration * 1000,
-          ...(tests && { summary: tests.summary, ...(testsFirst.output && { output: testsFirst.output }) }),
+          durationMs: tests?.conclusion === 'skipped' ? 0 : duration * 1000,
+          ...(tests?.summary && {
+            summary: tests.summary,
+            ...(typeof testsFirst === 'object' && testsFirst.output && { output: testsFirst.output }),
+          }),
           ...(failed && { summary: run.failure?.summary, output: run.failure?.output }),
           ...run.details?.[check],
         },

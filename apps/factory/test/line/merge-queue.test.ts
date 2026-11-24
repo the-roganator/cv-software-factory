@@ -395,6 +395,16 @@ describe('the line, merging through the queue', () => {
     ]);
   });
 
+  it('names a check that failed on the queue’s commit when GitHub left its run in progress with its conclusion', async () => {
+    await controls({});
+    const { workItem, pass, github } = await readyToMerge();
+    await pass();
+    github.dequeue(12, 'FAILED_CHECKS', ['test'], 'in_progress');
+    await pass();
+    await pass();
+    expect((await payloads(workItem, 'pull-request.dequeued')).map((p) => p.failed)).toEqual([['test']]);
+  });
+
   it('holds a head the queue took out for any other reason, and adds it no more', async () => {
     await controls({});
     const { workItem, pass, github } = await readyToMerge();

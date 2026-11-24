@@ -68,7 +68,7 @@ import { type GitHub, GitHubError } from './client.ts';
 import { isOwnCommit } from './own-commit.ts';
 import { type PinSource, treeSource } from './pin-guard.ts';
 import type { Watch } from './poller.ts';
-import { outcomeOf } from './reads.ts';
+import { finished, outcomeOf } from './reads.ts';
 import type { Registry } from './registry.ts';
 import { pipeline, type Signatures, UnsignedError } from './signatures.ts';
 
@@ -823,7 +823,7 @@ export async function failedJob(
     if (run.id > (latest.get(run.name)?.id ?? -1)) latest.set(run.name, run);
   }
   const failed = [...latest.values()]
-    .filter((r) => r.status === 'completed' && outcomeOf(r.conclusion) === 'failure')
+    .filter((r) => finished(r) && outcomeOf(r.conclusion) === 'failure')
     .sort((a, b) => b.id - a.id);
   for (const run of failed) {
     const url = run.html_url ?? '';

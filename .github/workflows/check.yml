@@ -369,6 +369,7 @@ jobs:
           TESTS: ${{ matrix.tests }}
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         with:
           # One for each part, numbered from 0 in the order above.
           name: browser-test-report-${{ strategy.job-index }}
@@ -444,9 +445,12 @@ jobs:
       # Chromium's fonts and packages from Ubuntu's mirror took minutes on a bad day for nothing the scan reads.
       - run: pnpm --filter @software-factory/console exec playwright install --only-shell chromium
         timeout-minutes: 3
+      # Its pull and ZAP's start are bounded and tried again (apps/console/zap/start.ts); a scan takes a minute or two.
       - run: node apps/console/zap/scan.ts
+        timeout-minutes: 12
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 5
         with:
           name: zap-report
           path: apps/console/zap-report

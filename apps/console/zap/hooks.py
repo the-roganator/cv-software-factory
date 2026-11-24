@@ -49,6 +49,9 @@ def stop_with_zap(zap):
 
 def zap_started(zap, target):
     answered.set()
+    # For scan.ts, which starts ZAP again when it has not answered within its limit (start.ts): this attempt's own
+    # marker, named by it, so a ZAP stopped for not answering that answers late never marks the next.
+    open(os.path.join('/zap/wrk', os.path.basename(os.environ['SF_ANSWERED'])), 'w').close()
     # Every request ZAP sends, Martin's session with it: through the proxy, the console's server never sees the cookie.
     for header, value in (('Cookie', os.environ['SF_SESSION_COOKIE']), ('X-CSRF-Token', os.environ['SF_CSRF_TOKEN'])):
         zap.replacer.add_rule(description=header, enabled='true', matchtype='REQ_HEADER', matchregex='false',

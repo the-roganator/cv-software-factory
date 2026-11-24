@@ -4,6 +4,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { NEVER_STARTED } from '../zap/start.ts';
 
 const rules = readFileSync(new URL('../zap/rules.tsv', import.meta.url), 'utf-8')
   .split('\n')
@@ -55,4 +56,6 @@ it("reads the status hooks.py ends the scan with when ZAP stops before it answer
   // zap-baseline.py exits 0 to 3 for its own outcomes.
   expect(Number(stopped)).toBeGreaterThan(3);
   expect(scan).toContain(`const ZAP_STOPPED = ${stopped};`);
+  // And none of them is the status a ZAP that never answered ends with (start.ts).
+  expect(NEVER_STARTED).toBeGreaterThan(Number(stopped));
 });

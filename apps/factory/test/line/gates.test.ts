@@ -54,6 +54,13 @@ describe('the gates, as events', () => {
     });
   });
 
+  it('take a run GitHub left in progress with its conclusion set as finished, as its check suite does', () => {
+    const stuck = { ...run(2, 'pull request / title', 'success'), status: 'in_progress' };
+    const drafts = gateEvents(pr(), [run(1, 'test', 'success'), stuck], ['test', 'pull request / title'], nothing);
+    expect(drafts.map((d) => d.type)).toEqual(['gates.started', 'gate.finished', 'gate.finished', 'gates.finished']);
+    expect(drafts[2]?.payload).toMatchObject({ check: 'pull request / title', conclusion: 'success' });
+  });
+
   it('read a pull request as unmerged again once the work went back to Plan for one of its own', () => {
     const merged = { type: 'pull-request.merged', payload: { commit: SHA } };
     expect(gateRecord([merged]).merged).toBe(true);

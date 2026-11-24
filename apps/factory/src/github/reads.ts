@@ -302,6 +302,15 @@ const EXIT_CODE = /^Process completed with exit code \d+\.?$/;
 export const outcomeOf = (conclusion: string | null): 'success' | 'failure' | 'skipped' =>
   conclusion === 'success' || conclusion === 'neutral' ? 'success' : conclusion === 'skipped' ? 'skipped' : 'failure';
 
+/**
+ * Whether an Actions check run has finished: completed, or given a conclusion, which GitHub sets only as a run ends.
+ * GitHub has left a run that ended `in_progress` for good, its conclusion and completion time set and its check suite
+ * completed; waiting on its status alone would wait for ever. The one rule for it: the line's gates and this worker's
+ * waits read it.
+ */
+export const finished = (run: { status: string; conclusion: string | null | undefined }): boolean =>
+  run.status === 'completed' || (run.conclusion ?? null) !== null;
+
 /** The errors a read of what a run said waits out: the next read asks again. Any other gives the run no reasons. */
 const PASSING: readonly string[] = ['rate-limited', 'server', 'network'];
 
@@ -559,7 +568,7 @@ export class LiveReads implements Reads {
           completedAt: run.completed_at ?? null,
           title: run.output?.title ?? null,
         };
-        if (run.status !== 'completed') return read;
+        if (!finished(run)) return read;
         const failed = outcomeOf(run.conclusion) === 'failure' && latest.get(run.name) === run.id;
         const counted = actions(run) && scans.get(run.name) === run.id;
         if (!failed && !counted) return read;

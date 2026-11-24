@@ -294,6 +294,11 @@ describe('the deploy queue watch', () => {
     // No required check read is no check passed.
     expect(checksWait(green(), [])?.waits).toBe('checks');
     expect(checksWait(forged, REQUIRED)?.waits).toBe('checks');
+    // A run GitHub left in progress with its conclusion set has finished: its conclusion is read.
+    const stuck = green().map((r) => (r.name === 'pull request title' ? { ...r, status: 'in_progress' as const } : r));
+    expect(checksWait(stuck, REQUIRED)).toBeUndefined();
+    const stuckRed = [...green(), { ...run('lockfile scan', 'failure'), status: 'in_progress' as const }];
+    expect(checksWait(stuckRed, REQUIRED)?.waits).toBe('failed');
     // A failure re-run green, at the same head, passes: the latest run of each name is read.
     expect(checksWait([...red, run('lockfile scan')], REQUIRED)).toBeUndefined();
     for (const runs of [red, missing, forged]) {

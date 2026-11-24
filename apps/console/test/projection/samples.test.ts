@@ -424,6 +424,33 @@ describe('the samples’ move of the app’s lockfile, #1335', () => {
     expect(after?.issue).toEqual({ repository: 'the-roganator/cv-worlds-worst-website', number: 1336 });
   });
 
+  it('says nothing of tests first, which it skipped for a move with no test, not even among the signals', () => {
+    const sheet = projectSheet(project(SAMPLES, END), '1335');
+    // Not “tests pass on base” in the round: the check ran nothing.
+    expect(sheet?.rounds.at(-1)?.gates?.testsFirst).toBeUndefined();
+    // Its waiting picture is the scan's, which shows no tests first; a merge picture takes the round's, undefined.
+    expect(project(SAMPLES, END).cards.find((c) => c.number === '1335')?.picture.type).toBe('scan');
+    // Left out of the signals, where a tick would read as a pass; the required checks are counted as they were.
+    expect(sheet?.signals.map((g) => g.check)).toEqual(['factory review']);
+    expect(sheet?.gates.every((g) => g.required)).toBe(true);
+    expect(sheet?.gates).toHaveLength(13);
+  });
+
+  it('reads a failed tests first as its tests passing on the base, as before', () => {
+    const failed = SAMPLES.map((e) =>
+      e.work_item === '1335' && e.type === 'gate.finished' && e.payload.check === 'Tests first'
+        ? {
+            ...e,
+            payload: { ...e.payload, conclusion: 'failure' as const, summary: '0 of 0 new tests fail on the base' },
+          }
+        : e,
+    );
+    expect(projectSheet(project(failed, END), '1335')?.rounds.at(-1)?.gates?.testsFirst).toEqual({
+      failedOnBase: false,
+      figure: '0 of 0',
+    });
+  });
+
   it('leaves #1325 its issue, with no move', () => {
     expect(projectSheet(view, '1325')?.issue).toEqual({
       repository: 'the-roganator/cv-worlds-worst-website',

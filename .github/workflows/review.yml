@@ -2,7 +2,8 @@
 # App, on a pull request's head and on the merge queue's commit for it (scripts/review-gate.ts). It passes, by the
 # first rule that holds (scripts/review-routing.ts): when Martin opened the pull request, or approved its head after the
 # last push; an exact pin of the factory's App's, every changed line a digest of an image build.yml signed on main,
-# from a commit that descends from the one it replaces; a move, in either repository and whoever opened it, exactly the
+# from a commit that descends from the one it replaces, or of Dependabot's in a repository that calls these workflows,
+# every changed line a call of them, each moved from one commit to one later commit on this repository's main; a move, in either repository and whoever opened it, exactly the
 # moves the scan of main asked for and nothing else (below), named `major` when one crosses a major and clears no
 # Critical; and, in the app's repository alone, the App's pull request with no risk tags, which the gate works out from
 # the diff and test integrity's run, or, while the caller's AUTONOMY variable is `lights-out`, one whose tags are not a

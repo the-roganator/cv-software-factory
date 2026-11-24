@@ -16,7 +16,8 @@
  * - **Adding it to the queue** (`enqueuePullRequest`) names the head the line was told the gate judged, and GitHub
  *   takes it only at that head (`expectedHeadOid`), so a push after the verdict cannot ride it. It is guarded as every
  *   action on a pull request is: the App's own (`issues.ts`), from a branch of this repository the factory owns
- *   (`branches.ts`), and never a red-team attack's.
+ *   (`branches.ts`), and never a red-team attack's; or Dependabot's, from its GitHub Actions branch of this
+ *   repository into `main`, the one pull request of anyone else's the factory queues (`guardQueue`).
  *
  * The line asks again on each pass: the factory has no webhook, and a conditional request that finds nothing changed
  * costs nothing against the rate limit. The queue's GraphQL read is not conditional, so the line asks it only of a pull
@@ -25,7 +26,7 @@
 import { z } from 'zod';
 import { type Judged, readVerdict, type Verdict } from '../../../../policy/review-verdict.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
-import { BranchRefused, guardBranch, redTeamBranch } from './branches.ts';
+import { BranchRefused, guardBranch, guardDependabotPin, redTeamBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
 import type { CheckRun } from './reads.ts';
 
@@ -142,21 +143,37 @@ export interface QueueCandidate {
   state: string;
   draft: boolean;
   head: { ref: string; sha: string; repo: string | null };
+  /** The branch it is into. */
+  base: string;
 }
 
 /**
  * Refuses to add a pull request to the queue unless it is from a branch of this repository the factory owns and is not
  * a red-team attack's (a `BranchRefused`, so the worker signs it as `github-guard`), and unless it is open, ready, and
- * at the head the line names (a conflict: the line looks again). Whose it is, the issue guard asks first.
+ * at the head the line names (a conflict: the line looks again). Whose it is, the issue guard asks first, and says
+ * (`opener`): the App's own, as above; or Dependabot's, which is held instead to its GitHub Actions branch of this
+ * repository, into `main` (`guardDependabotPin`), and to nothing the factory owns. That is all this guard knows of
+ * Dependabot's pull request. What it changes is the review gate's to judge, and GitHub's queue takes it only with the
+ * gate's check passed; that the gate passed it as an exact pin of the factory's workflows, at this head, and that
+ * Martin's autonomy level queues one, are the watch's to read before it asks (`workflowPinQueueWatch`).
  */
-export function guardQueue(repo: string, number: number, pull: QueueCandidate, expectedHead: string): void {
-  // A fork's branch of the same name is not the factory's.
+export function guardQueue(
+  repo: string,
+  number: number,
+  pull: QueueCandidate,
+  expectedHead: string,
+  opener: 'app' | 'dependabot' = 'app',
+): void {
+  // A fork's branch of the same name is not the factory's, nor Dependabot's own.
   if (pull.head.repo !== repo) throw new BranchRefused(`Pull request #${number} is not from a branch of ${repo}.`);
-  guardBranch(pull.head.ref);
-  if (redTeamBranch(pull.head.ref)) {
-    throw new BranchRefused(
-      `${pull.head.ref} is a red-team attack's branch: the factory never adds one to the merge queue.`,
-    );
+  if (opener === 'dependabot') guardDependabotPin(pull.head.ref, pull.base);
+  else {
+    guardBranch(pull.head.ref);
+    if (redTeamBranch(pull.head.ref)) {
+      throw new BranchRefused(
+        `${pull.head.ref} is a red-team attack's branch: the factory never adds one to the merge queue.`,
+      );
+    }
   }
   if (pull.state !== 'open') throw new GitHubError('conflict', `Pull request #${number} is not open.`, 409);
   if (pull.draft) throw new GitHubError('conflict', `Pull request #${number} is a draft.`, 409);

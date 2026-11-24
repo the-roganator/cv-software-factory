@@ -12,7 +12,14 @@ import { createAttackServer } from './attacks.ts';
 import { WatchedHeads } from './branches.ts';
 import { GitHub } from './client.ts';
 import { type GitHubConfig, REPOSITORIES, stateKeyName } from './config.ts';
-import { deployQueueWatch, pinHeadsOf, pinQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
+import {
+  deployQueueWatch,
+  pinHeadsOf,
+  pinQueueWatch,
+  QUEUED_DEPLOYS,
+  WORKFLOW_PIN_REPOS,
+  workflowPinQueueWatch,
+} from './deploy-queue.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
 import { IssueGuard, openedBy, outsideIssuesWatch } from './issues.ts';
@@ -116,6 +123,15 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
       poller.watch(
         `queue pins in ${repo}`,
         pinQueueWatch({ github, reads: liveReads, actions, recorder, heads, log, level }, repo, only),
+      );
+    }
+    // Dependabot's bump of the commit the app calls the factory's workflows at, which the App cannot write: added to
+    // the merge queue once the gate passes it as an exact pin, the autonomy level queues one and its checks are green.
+    // In a dry run the watch adds and records nothing.
+    for (const repo of WORKFLOW_PIN_REPOS.filter((r) => config.repositories.includes(r))) {
+      poller.watch(
+        `queue workflow pins in ${repo}`,
+        workflowPinQueueWatch({ github, reads: liveReads, actions, recorder, level, log }, repo),
       );
     }
     // Each issue opened by anyone but Martin or the App gets one reply, recorded instead in a dry run.

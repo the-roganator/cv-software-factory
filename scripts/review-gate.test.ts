@@ -25,7 +25,7 @@ import {
   verdict,
   writeAnswers,
 } from './review-gate.ts';
-import { APP_REPO, FACTORY_APP } from './review-routing.ts';
+import { APP_REPO, DEPENDABOT, FACTORY_APP } from './review-routing.ts';
 
 const HEAD = 'a'.repeat(40);
 const EARLIER = 'b'.repeat(40);
@@ -752,6 +752,135 @@ describe('judging a pull request through the API', () => {
         JSON.stringify({ [`9@${HEAD}`]: { move: 'x'.repeat(1001) } }),
       ])
         expect(readAnswers(bad), bad).toBeUndefined();
+    });
+  });
+
+  describe('an exact pin of the factory’s workflows', () => {
+    const FACTORY = 'the-roganator/cv-software-factory';
+    const OLD = '1'.repeat(40);
+    const NEW = '2'.repeat(40);
+    const call = (workflow: string, commit: string) =>
+      `    uses: ${FACTORY}/.github/workflows/${workflow}.yml@${commit} # main`;
+    const caller = (workflow: string, commit: string) => `jobs:\n  ${workflow}:\n${call(workflow, commit)}\n`;
+    const bump: PullRequest = {
+      ...theirs,
+      user: { id: DEPENDABOT },
+      head: { ...theirs.head, ref: 'dependabot/github_actions/factory-0b5a7c9d1e' },
+      changed_files: 2,
+    };
+    const moved = (workflow: string) => ({
+      filename: `.github/workflows/${workflow}.yml`,
+      status: 'modified',
+      patch: `@@ -1,3 +1,3 @@\n jobs:\n   ${workflow}:\n-${call(workflow, OLD)}\n+${call(workflow, NEW)}`,
+    });
+    /** The app's repository with two callers, both moved, and the factory's with NEW on main, ahead of OLD. */
+    const bumped = (over: Record<string, unknown> = {}) => {
+      github({
+        '/pulls/9/files': [moved('codeql'), moved('review')],
+        '/contents/.github/workflows?ref=': [
+          { name: 'codeql.yml', path: '.github/workflows/codeql.yml', type: 'file' },
+          { name: 'review.yml', path: '.github/workflows/review.yml', type: 'file' },
+          { name: 'check.yml', path: '.github/workflows/check.yml', type: 'file' },
+          { name: 'notes', path: '.github/workflows/notes', type: 'dir' },
+        ],
+        '/contents/.github/workflows/codeql.yml': caller('codeql', NEW),
+        '/contents/.github/workflows/review.yml': caller('review', NEW),
+        '/contents/.github/workflows/check.yml':
+          'jobs:\n  check:\n    steps:\n      - uses: actions/checkout@1111 # v4\n',
+        [`/repos/${FACTORY}/compare/${OLD}...${NEW}`]: { status: 'ahead' },
+        [`/repos/${FACTORY}/compare/${NEW}...main`]: { status: 'ahead' },
+        ...over,
+      });
+      const asked: string[] = [];
+      const answer = globalThis.fetch;
+      vi.stubGlobal('fetch', async (url: string) => {
+        asked.push(new URL(url).pathname);
+        return answer(url);
+      });
+      return asked;
+    };
+    afterEach(() => vi.useRealTimers());
+
+    it('passes Dependabot’s bump as an exact pin, with no reading of test integrity, on its head and on the queue’s commit', async () => {
+      bumped();
+      for (const each of [run, { ...run, queue: { number: 9, commit: EARLIER } }]) {
+        const said = await judge(each, bump);
+        expect(said).toMatchObject({
+          pass: true,
+          rule: 'exact-pin',
+          title:
+            "An exact pin of the factory's workflows: its 2 calls of them move to 2222222, which is on the factory's main and ahead of 1111111",
+        });
+        // Test integrity's run of a change under .github/ is no reading, and holds the App's: never this.
+        expect(said.pending).toBeUndefined();
+      }
+    });
+
+    it('holds one that leaves a call behind, or moves to a commit that is not on the factory’s main, saying why', async () => {
+      bumped({ '/contents/.github/workflows/review.yml': caller('review', OLD) });
+      expect((await judge(run, bump)).title).toBe(
+        "Not an exact pin of the factory's workflows: .github/workflows/review.yml at its head still calls the factory at 1111111: every call moves together: waits for Martin to approve aaaaaaa",
+      );
+      bumped({ [`/repos/${FACTORY}/compare/${NEW}...main`]: { status: 'diverged' } });
+      const said = await judge(run, bump);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toBeUndefined();
+      expect(said.title).toContain("Not an exact pin of the factory's workflows: 2222222 is not on the factory's main");
+    });
+
+    it('holds one whose commit GitHub does not have, trying once: an answer a later try would not change', async () => {
+      const asked = bumped({ [`/repos/${FACTORY}/compare/${OLD}...${NEW}`]: 404 });
+      const said = await judge(run, bump);
+      expect(asked.filter((path) => path.includes('/compare/'))).toHaveLength(2);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toBeUndefined();
+      expect(said.title).toContain(
+        "Not an exact pin of the factory's workflows: the gate could not check it: GET /repos/",
+      );
+    });
+
+    it('waits, never passing, while GitHub does not answer, having tried again', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      const asked = bumped({ [`/repos/${FACTORY}/compare/${NEW}...main`]: 503 });
+      const judging = judge(run, bump);
+      await vi.runAllTimersAsync();
+      const said = await judging;
+      expect(asked.filter((path) => path.endsWith('...main'))).toHaveLength(PIN_BACKOFF_MS.length + 1);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.unchecked).toContain('503');
+      expect(said.pending).toContain('the gate could not check its exact pin');
+      expect(said.title).toContain('Not judged yet: the gate could not check its exact pin');
+    });
+
+    it('reads nothing of the factory for anyone else’s, nor for a change that touches no call of its workflows', async () => {
+      const reads = (asked: string[]) => asked.filter((path) => /\/compare\/|contents\/\.github\/workflows/.test(path));
+      // A stranger's, with the very same change: refused on who opened it, before anything is read.
+      let asked = bumped();
+      const strangers = await judge(run, { ...bump, user: { id: 42 } });
+      expect(strangers.title).toBe(
+        "Not an exact pin of the factory's workflows: Dependabot did not open it: waits for Martin to approve aaaaaaa",
+      );
+      expect(reads(asked)).toEqual([]);
+      // The App's is judged by its own rules, which hold every change under .github/.
+      asked = bumped();
+      const apps = await judge(run, { ...bump, user: { id: FACTORY_APP } });
+      expect(apps).toMatchObject({ pass: false, rule: 'held' });
+      expect(apps.title).toContain(
+        "it changes .github/workflows/codeql.yml, so test integrity's run is not the workflow on main's",
+      );
+      expect(reads(asked)).toEqual([]);
+      // Dependabot's of third-party actions alone: no exact pin of the factory's, and nothing said of one.
+      asked = bumped({
+        '/pulls/9/files': [
+          {
+            filename: '.github/workflows/check.yml',
+            status: 'modified',
+            patch: '-      - uses: actions/checkout@1111 # v4\n+      - uses: actions/checkout@2222 # v5',
+          },
+        ],
+      });
+      expect((await judge(run, { ...bump, changed_files: 1 })).title).toBe('Waits for Martin to approve aaaaaaa');
+      expect(reads(asked)).toEqual([]);
     });
   });
 

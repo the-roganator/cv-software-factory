@@ -14,9 +14,10 @@
  * - `improvement`: the app's typed list of flag names changed, or a line of the app's code, added or removed, that
  *   names a flag or asks one, so new behaviour behind a flag already on the list is caught too.
  *
- * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin`, `move` or `major` (exactly the
- * moves the scan of main asked for, made by the gate and compared with the pull request, whoever opened it,
- * scripts/move.ts), in the app's repository `low-risk` and `lights-out`, or `held` (`route`).
+ * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin` (the App's, of images signed on
+ * main, `exactPin`; or Dependabot's, of the commit the factory's workflows are called at, `workflowPin`), `move` or
+ * `major` (exactly the moves the scan of main asked for, made by the gate and compared with the pull request, whoever
+ * opened it, scripts/move.ts), in the app's repository `low-risk` and `lights-out`, or `held` (`route`).
  */
 
 import { APP_REPOSITORY, FACTORY_REPOSITORY, repositoryOfImage } from '../apps/factory/src/repositories.ts';
@@ -42,6 +43,13 @@ export const REVIEW_APP = 5470762;
 
 /** The factory's App's bot user (`mrogan-software-factory[bot]`), which opens its pull requests. */
 export const FACTORY_APP = 337765427;
+
+/**
+ * GitHub's Dependabot (`dependabot[bot]`), by its user id, as Martin and the App are known: it alone opens its pull
+ * requests, and one that moves only the commit the factory's workflows are called at passes as an exact pin
+ * (`workflowPin`).
+ */
+export const DEPENDABOT = 49699333;
 
 /** This repository, the factory's: where the App's pull requests pass only as pins or moves (ADR 0022). */
 export const FACTORY_REPO = FACTORY_REPOSITORY;
@@ -117,6 +125,9 @@ export const fromHere = (pr: PullRequest) => pr.head.repo?.full_name === pr.base
 
 /** Whether the factory's App opened a pull request, from a branch here. */
 export const appOpened = (pr: PullRequest) => pr.user?.id === FACTORY_APP && fromHere(pr);
+
+/** Whether GitHub's Dependabot opened a pull request, from a branch here. */
+export const dependabotOpened = (pr: PullRequest) => pr.user?.id === DEPENDABOT && fromHere(pr);
 
 /**
  * Whether Martin has had his say on a pull request at its head. A review that only comments says nothing; of the rest,
@@ -602,6 +613,165 @@ export async function exactPin(
   return { pins };
 }
 
+// Exact pins of the factory's workflows
+
+/** Where the factory's workflows are, as a caller's `uses:` names them. */
+const FACTORY_WORKFLOWS = `${FACTORY_REPO}/.github/workflows/`;
+
+/**
+ * A call of one of the factory's workflows at a commit of its main, as a caller writes the whole line: the key, the
+ * workflow, the commit in full, and the comment that says which branch the commit is on. Its first group is all that
+ * comes before the commit, and its second the commit.
+ */
+const WORKFLOW_CALL = new RegExp(
+  String.raw`^(\s+uses: ${literally(FACTORY_WORKFLOWS)}[\w-]+\.yml)@([0-9a-f]{40}) # main$`,
+);
+
+/** Whether a line names the factory's workflows at all, however it is written: GitHub reads a repository in any case. */
+export const callsFactory = (line: string): boolean => line.toLowerCase().includes(FACTORY_WORKFLOWS.toLowerCase());
+
+/** A call of the factory's workflows a pull request moves: in which file, and the commit it replaces and the one it sets. */
+export interface CallMove {
+  file: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Each call of the factory's workflows a file's patch moves, or why the patch is not an exact pin: the file is a
+ * workflow, modified, and every line it removes or adds is one call of the factory's workflows at a commit, each
+ * removed one replaced, in its place, by one that reads the same but for the commit.
+ */
+export function callMoves(file: FileChange): CallMove[] | { reason: string } {
+  const { filename } = file;
+  if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(filename) || file.previous_filename !== undefined)
+    return { reason: `${filename} is not a workflow under .github/workflows/` };
+  if (file.status !== 'modified') return { reason: `${filename} is ${file.status}, not modified` };
+  if (file.patch === undefined) return { reason: `GitHub gives no patch of ${filename} to read` };
+  const moves: CallMove[] = [];
+  let removed: { before: string; commit: string }[] = [];
+  let added: { before: string; commit: string }[] = [];
+  const close = (): string | undefined => {
+    if (removed.length !== added.length) return `${filename} adds or removes a call rather than moving its commit`;
+    for (const [i, was] of removed.entries()) {
+      const now = added[i];
+      if (!now || now.before !== was.before) return `${filename} changes more of a call than its commit`;
+      moves.push({ file: filename, from: was.commit, to: now.commit });
+    }
+    removed = [];
+    added = [];
+    return undefined;
+  };
+  for (const line of file.patch.split('\n')) {
+    if (line.startsWith('-') || line.startsWith('+')) {
+      const call = WORKFLOW_CALL.exec(line.slice(1));
+      if (!call)
+        return {
+          reason: `${filename} changes a line that is not a call of the factory's workflows at a commit of main: ${line.slice(0, 120)}`,
+        };
+      (line.startsWith('-') ? removed : added).push({ before: call[1] ?? '', commit: call[2] ?? '' });
+    } else {
+      // A line both sides share, a hunk's header, or "\ No newline at end of file": the moves so far are paired.
+      const wrong = close();
+      if (wrong) return { reason: wrong };
+    }
+  }
+  const wrong = close();
+  if (wrong) return { reason: wrong };
+  if (moves.length === 0) return { reason: `${filename} moves no call` };
+  return moves;
+}
+
+/** What an exact pin of the factory's workflows moves: every call, from one commit to one commit. */
+export interface WorkflowPin {
+  from: string;
+  to: string;
+  /** The workflows whose calls it moves, by file, in the order GitHub lists them. */
+  files: string[];
+}
+
+export interface WorkflowPinChecks {
+  /**
+   * How `head` stands to `base` in the factory's repository, by the compare API (`compare/<base>...<head>`): `ahead`
+   * when `head` descends from `base`, `identical`, `behind` when `base` descends from `head`, or `diverged`.
+   */
+  compare: (base: string, head: string) => Promise<string>;
+  /** Every line of the workflows at the pull request's head that names the factory's workflows, with its file. */
+  calls: () => Promise<{ file: string; line: string }[]>;
+}
+
+/**
+ * Whether a pull request is an exact pin of the factory's workflows: Dependabot's bump of the commit a repository
+ * calls them at, and nothing else. Undefined for a change that touches no such call, which is not this rule's to
+ * judge; for one that does, its pin, or why it is not an exact one, the first of these that fails:
+ *
+ * - it is in a repository that calls the factory's workflows, so not the factory's own, which calls none by commit;
+ * - GitHub's Dependabot opened it, from a branch of the repository itself, into `main`;
+ * - GitHub lists every file it changes, each a workflow under `.github/workflows/`, modified, whose every changed line
+ *   is one call of the factory's workflows (`uses: <the factory>/.github/workflows/<name>.yml@<commit> # main`) that
+ *   reads as the line it replaces but for the commit (`callMoves`);
+ * - every call it moves goes from one commit to one commit, and no call at its head is left at another (`calls`): a
+ *   repository calls every workflow of the factory's at one commit;
+ * - the new commit descends from the old (`compare(old, new)` is `ahead`), so the pin moves forward. That alone does
+ *   not say whose commit it is: GitHub answers for any commit in the repository's network, a fork's among them;
+ * - the new commit is on the factory's `main` (`compare(new, 'main')` is `ahead` or `identical`: `main` descends from
+ *   it, or is it). Nothing is signed here for a certificate to say so, as it does for an image, so it is asked. `main`
+ *   takes only what Martin merged or the factory merged within what he set, and is never rewritten.
+ *
+ * A check that could not be made (GitHub not answering) throws, as `checks` do: that is no judgement of the pin.
+ */
+export async function workflowPin(
+  repo: string,
+  pr: PullRequest,
+  files: readonly FileChange[],
+  checks: WorkflowPinChecks,
+  complete: boolean,
+): Promise<{ moved: WorkflowPin } | { reason: string } | undefined> {
+  const touches = files.some((file) => file.patch !== undefined && changedLines(file.patch).some(callsFactory));
+  if (!touches) return undefined;
+  if (repo === FACTORY_REPO) return { reason: 'the factory calls none of its own workflows by commit' };
+  if (pr.user?.id !== DEPENDABOT) return { reason: 'Dependabot did not open it' };
+  if (!fromHere(pr)) return { reason: "it is from a fork's branch" };
+  if (pr.base.ref !== 'main') return { reason: `it is into ${pr.base.ref}, not main` };
+  if (!complete) return { reason: 'GitHub lists only some of its files, and the rest are unread' };
+  const moves: CallMove[] = [];
+  for (const file of files) {
+    const moved = callMoves(file);
+    if (!Array.isArray(moved)) return moved;
+    moves.push(...moved);
+  }
+  const [first] = moves;
+  if (!first) return { reason: 'it moves no call' };
+  const { from, to } = first;
+  const other = moves.find((move) => move.from !== from || move.to !== to);
+  if (other)
+    return {
+      reason: `it moves ${first.file} from ${short(from)} to ${short(to)} and ${other.file} from ${short(other.from)} to ${short(other.to)}: every call moves from one commit to one commit`,
+    };
+  if (from === to) return { reason: `it leaves the calls at ${short(to)}, the same commit` };
+  for (const { file, line } of await checks.calls()) {
+    const call = WORKFLOW_CALL.exec(line);
+    if (!call)
+      return { reason: `${file} at its head calls the factory's workflows by something other than a commit of main` };
+    if (call[2] !== to)
+      return {
+        reason: `${file} at its head still calls the factory at ${short(call[2] ?? '')}: every call moves together`,
+      };
+  }
+  const [forward, onMain] = await Promise.all([checks.compare(from, to), checks.compare(to, 'main')]);
+  if (forward !== 'ahead')
+    return {
+      reason:
+        forward === 'behind'
+          ? `${short(to)} is behind ${short(from)}, the commit it replaces: a pin moves forward`
+          : forward === 'identical'
+            ? `${short(to)} is the commit it replaces`
+            : `${short(to)} does not descend from ${short(from)}, the commit it replaces`,
+    };
+  if (onMain !== 'ahead' && onMain !== 'identical') return { reason: `${short(to)} is not on the factory's main` };
+  return { moved: { from, to, files: [...new Set(moves.map((move) => move.file))] } };
+}
+
 // The rule
 
 /**
@@ -631,6 +801,12 @@ export interface Facts {
    * it changes digests alone), or why the check could not be made, after the gate tried again.
    */
   pin?: { pins: Pin[] } | { reason: string; digests?: true } | { unchecked: string };
+  /**
+   * The check of an exact pin of the factory's workflows (`workflowPin`), for anyone's pull request but the App's that
+   * Martin has not passed and that touches a call of them: what it moves, why it is not an exact pin, or why the check
+   * could not be made, after the gate tried again. Undefined for a change that touches none.
+   */
+  workflows?: { moved: WorkflowPin } | { reason: string } | { unchecked: string };
   /**
    * Whether it is a move (scripts/move.ts), for a pull request from a branch here that Martin has not passed and is no
    * exact pin: `move` or `major` with its verdict's title; why a change that touches the scan's moves is refused, a
@@ -668,7 +844,34 @@ export function route(facts: Facts): Decision {
   // A risk label someone other than Martin took off holds it, whoever opened it: a move passes without him too.
   if (facts.labelsRemoved.length)
     return held(`Someone other than Martin removed its ${facts.labelsRemoved.join(', ')} label`);
-  const { pin, move } = facts;
+  const { pin, move, workflows } = facts;
+  // A check that could not be made is no judgement, of the pin or of its risk: a wait for the gate to judge it again,
+  // in either repository, which never passes it and never falls through to its tags.
+  const unchecked = (cause_: string): Decision => {
+    const cause = `the gate could not check its exact pin: ${cause_}`;
+    return {
+      ...held(`Not judged yet: ${cause}`),
+      pending: cause,
+      unchecked: cause_,
+      ...(facts.retargeted ? { retargeted: true as const } : {}),
+    };
+  };
+  // Dependabot's bump of the commit the factory's workflows are called at, and nothing else: an exact pin, whatever
+  // its tags (`.github/` is Martin's by CODEOWNERS) and with no reading of test integrity, which is the App's rules'
+  // alone to need. `workflowPin` holds every condition; who opened it and where are asked again here.
+  if (workflows && dependabotOpened(pr) && pr.base.ref === 'main' && repo !== FACTORY_REPO) {
+    if ('moved' in workflows) {
+      const { from, to, files } = workflows.moved;
+      const calls = files.length === 1 ? 'call' : `${files.length} calls`;
+      return {
+        pass: true,
+        title: `An exact pin of the factory's workflows: its ${calls} of them move to ${short(to)}, which is on the factory's main and ahead of ${short(from)}`,
+        rule: 'exact-pin',
+        tags,
+      };
+    }
+    if ('unchecked' in workflows) return unchecked(workflows.unchecked);
+  }
   if (appOpened(pr)) {
     if (pin && 'pins' in pin) {
       const images = [...new Set(pin.pins.map((p) => p.image.slice(p.image.lastIndexOf('/') + 1)))];
@@ -679,17 +882,7 @@ export function route(facts: Facts): Decision {
         tags,
       };
     }
-    // A check that could not be made is no judgement, of the pin or of its risk: a wait for the gate to judge it again,
-    // in either repository, which never passes it and never falls through to its tags.
-    if (pin && 'unchecked' in pin) {
-      const cause = `the gate could not check its exact pin: ${pin.unchecked}`;
-      return {
-        ...held(`Not judged yet: ${cause}`),
-        pending: cause,
-        unchecked: pin.unchecked,
-        ...(facts.retargeted ? { retargeted: true as const } : {}),
-      };
-    }
+    if (pin && 'unchecked' in pin) return unchecked(pin.unchecked);
   }
   // A head the move job has not judged yet is no judgement: a wait, which the run its push started settles.
   if (move && 'pending' in move) return { ...held(`Not judged yet: ${move.pending}`), pending: move.pending };
@@ -698,13 +891,17 @@ export function route(facts: Facts): Decision {
   if (move && 'rule' in move && fromHere(pr)) return { pass: true, title: move.title, rule: move.rule, tags };
   // Why a change that touches the scan's moves is refused, for anyone's; for the App's, why any change is no move.
   const refused = move && 'reason' in move ? move.reason : undefined;
-  if (!appOpened(pr))
-    return {
-      pass: false,
-      title: refused ? `Not a move: ${refused}: ${lower(martin.title)}` : martin.title,
-      rule: 'held',
-      tags,
-    };
+  if (!appOpened(pr)) {
+    // A change that touches a call of the factory's workflows and is no exact pin of them says why, as a change of
+    // digests that is no exact pin does: a check that could not be made, of one that is not Dependabot's into main,
+    // is a reason too, as nothing would pass it.
+    const calls =
+      !workflows || 'moved' in workflows ? undefined : 'reason' in workflows ? workflows.reason : workflows.unchecked;
+    const notPin = calls && `Not an exact pin of the factory's workflows${refused ? ` (${calls})` : `: ${calls}`}`;
+    const notMove = refused && (notPin ? `nor a move: ${refused}` : `Not a move: ${refused}`);
+    const why = [notPin, notMove].filter(Boolean).join(', ');
+    return { pass: false, title: why ? `${why}: ${lower(martin.title)}` : martin.title, rule: 'held', tags };
+  }
   const notMove = refused ?? (move && 'none' in move ? move.none : undefined);
   if (repo !== APP_REPO) {
     const exact = pin && 'reason' in pin ? pin.reason : undefined;
@@ -750,6 +947,10 @@ export function route(facts: Facts): Decision {
  * this commit, each by a rule that passes, and each held now by `exact-pin`, whose pins at a head do not change while
  * its base does not: one whose base has ever been changed is judged afresh. Every other fact was read afresh by this
  * run and passes. `earlier` is the block of that check, read by `readVerdict`.
+ *
+ * An exact pin of the factory's workflows stands the same way. What its check read is as fixed at a head as an
+ * image's signature: the lines the head changes and the calls it holds, and how two commits of the factory stand to
+ * each other. Only `main` moves, and only forward, as its ruleset lets nobody rewrite it: a commit that was on it is.
  */
 export function stands(
   earlier: Block,

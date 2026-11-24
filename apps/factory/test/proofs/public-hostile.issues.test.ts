@@ -13,14 +13,16 @@ import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MARTIN as REVIEW_GATE_MARTIN } from '../../../../scripts/review-gate.ts';
+import { DEPENDABOT as REVIEW_GATE_DEPENDABOT } from '../../../../scripts/review-routing.ts';
 import { DRY_RUN_NUMBERS_FROM, DryRunActions, LiveActions } from '../../src/github/actions.ts';
-import { IssueGuard, IssueRefused, MARTIN, OUTSIDE_REPLY, openedBy } from '../../src/github/issues.ts';
+import { BranchRefused } from '../../src/github/branches.ts';
+import { DEPENDABOT_USER, IssueGuard, IssueRefused, MARTIN, OUTSIDE_REPLY, openedBy } from '../../src/github/issues.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker } from '../../src/github/worker-client.ts';
 import { closeIssue } from '../../src/line/issues.ts';
 import { doorReads } from '../github/door-reads.ts';
-import { calls, quiet, REPO } from '../github/fake.ts';
+import { calls, quiet, REPO, type Route, type Sent } from '../github/fake.ts';
 import { AT, github, records, writes } from '../github/issues-harness.ts';
 
 describe('the issue guard', () => {
@@ -187,6 +189,129 @@ describe('the guard on pull requests', () => {
     expect(kept.filter((r) => r.action === 'updatePullRequest').map((r) => r.args.number)).toEqual([pr.number]);
     expect(kept.filter((r) => r.action === 'readyForReview').map((r) => r.args.number)).toEqual([pr.number]);
     expect(kept.filter((r) => r.type === 'action.refused')).toHaveLength(3);
+  });
+});
+
+describe('Dependabot’s pull request, which the App did not open', () => {
+  const HEAD = 'a'.repeat(40);
+  const BUMP = 'dependabot/github_actions/factory-0b5a7c9d1e';
+  /** A pull request as the queue's guard reads it from GitHub, and GitHub's answer to the enqueue. */
+  const pull = (number: number, over: { ref?: string; from?: string; base?: string } = {}): Route => ({
+    method: 'GET',
+    path: `/repos/${REPO}/pulls/${number}`,
+    answer: () => ({
+      body: {
+        state: 'open',
+        draft: false,
+        node_id: `PR_node_${number}`,
+        head: { ref: over.ref ?? BUMP, sha: HEAD, repo: { full_name: over.from ?? REPO } },
+        base: { ref: over.base ?? 'main' },
+      },
+    }),
+  });
+  const queued: Route = {
+    method: 'POST',
+    path: '/graphql',
+    answer: () => ({ body: { data: { enqueuePullRequest: { mergeQueueEntry: { position: 1, state: 'QUEUED' } } } } }),
+  };
+  const queues = (sent: Sent[]) => sent.filter((s) => s.path === '/graphql');
+
+  it('knows Dependabot as the review gate does', () => {
+    expect(DEPENDABOT_USER).toBe(REVIEW_GATE_DEPENDABOT);
+  });
+
+  it('is added to the merge queue from its GitHub Actions branch into main, at the head named', async () => {
+    const { github: gh, sent } = github([pull(150), queued]);
+    const actions = new LiveActions(gh);
+    expect(await actions.enqueuePullRequest(REPO, 150, HEAD)).toEqual({ position: 1, state: 'QUEUED' });
+    expect(queues(sent).map((s) => s.body)).toMatchObject([
+      { variables: { input: { pullRequestId: 'PR_node_150', expectedHeadOid: HEAD } } },
+    ]);
+    // And nothing else is written.
+    expect(writes(sent).map((s) => s.path)).toEqual(['/graphql']);
+  });
+
+  it('has nothing else done to it: no comment, label, update, review, readying, close or description', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'issues-'));
+    const { github: gh, sent } = github([pull(150), queued]);
+    const guard = new IssueGuard({
+      openedBy: openedBy(gh),
+      recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), log: quiet, now: AT }),
+    });
+    const actions = new LiveActions(gh, { guard });
+    const ref = { number: 150, url: '', nodeId: 'PR_node_150' };
+    const thread = { path: 'src/a.ts', line: 1, body: 'b', reply: 'r' };
+    const attempts: [string, () => Promise<unknown>][] = [
+      ['comment', () => actions.comment(REPO, 150, 'Queued.')],
+      ['the outside reply', () => actions.comment(REPO, 150, OUTSIDE_REPLY)],
+      ['label', () => actions.addLabels(REPO, 150, ['pin'])],
+      ['update', () => actions.updatePullRequest(REPO, 150, { title: 'ci: bump' })],
+      ['review', () => actions.review(REPO, 150, { commit: HEAD, body: 'b', comments: [] })],
+      ['resolve threads', () => actions.resolveThreads(REPO, 150, [thread])],
+      ['ready', () => actions.readyForReview(REPO, ref)],
+      ['back to draft', () => actions.convertToDraft(REPO, ref)],
+      ['close', () => actions.closePullRequest(REPO, 150, 'Closing.')],
+      ['describe a deploy', () => actions.describeDeploy(REPO, 150, { commit: HEAD, carries: [] })],
+      ['close as an issue', () => actions.closeIssue(REPO, 150, 'completed')],
+      ['reopen', () => actions.reopenIssue(REPO, 150, 'Again.')],
+    ];
+    for (const [what, attempt] of attempts) await expect(attempt(), what).rejects.toBeInstanceOf(IssueRefused);
+    expect(writes(sent)).toEqual([]);
+    // Each kept as a refusal, once for each thing asked: two comments and two closes are asked in the same words.
+    const kept = (await records(dir)).map((r) => r.payload.action as string);
+    expect(kept).toHaveLength(attempts.length - 2);
+    for (const action of kept) expect(action).toContain(`pull request #150 in ${REPO}`);
+    // The factory writes to no branch of Dependabot's: the branch guard refuses it as any it does not own.
+    await expect(actions.deleteBranch(REPO, BUMP)).rejects.toBeInstanceOf(BranchRefused);
+    await expect(actions.setBranch(REPO, BUMP, HEAD)).rejects.toBeInstanceOf(BranchRefused);
+    expect(writes(sent)).toEqual([]);
+  });
+
+  it.each([
+    ['of another ecosystem', { ref: 'dependabot/npm_and_yarn/vitest-5.1.0' }],
+    ['of the images', { ref: 'dependabot/docker/node-24.22.3-trixie-slim' }],
+    ['of a group across ecosystems', { ref: 'dependabot/tooling-7ddd2f2d32' }],
+    ['from the prefix alone', { ref: 'dependabot/github_actions' }],
+    ['from a branch that only ends as its own does', { ref: 'x/dependabot/github_actions/factory-0b5a7c9d1e' }],
+    ['from a branch whose name is not plain', { ref: 'dependabot/github_actions/../../main' }],
+    ['from one of the factory’s branches', { ref: 'factory/1296-prices' }],
+    ['from a fork’s branch of that name', { from: 'dependabot/cv-worlds-worst-website' }],
+    ['into another branch', { base: 'release' }],
+  ])('is never added to the merge queue when it is one %s', async (_what, over) => {
+    const { github: gh, sent } = github([pull(150, over), queued]);
+    const actions = new LiveActions(gh);
+    await expect(actions.enqueuePullRequest(REPO, 150, HEAD)).rejects.toBeInstanceOf(BranchRefused);
+    expect(queues(sent)).toEqual([]);
+  });
+
+  it('opens the queue to nobody else: a stranger’s or Martin’s from a branch of that name, or an issue of Dependabot’s', async () => {
+    for (const number of [131, 121, 140, 151]) {
+      const { github: gh, sent } = github([pull(number), queued]);
+      const actions = new LiveActions(gh);
+      await expect(actions.enqueuePullRequest(REPO, number, HEAD), String(number)).rejects.toBeInstanceOf(IssueRefused);
+      // Refused on who opened it, before the pull request is read.
+      expect(calls(sent).map((s) => s.path)).toEqual([`/repos/${REPO}/issues/${number}`]);
+    }
+  });
+
+  it('is guarded the same way in a dry run, which records the enqueue and asks GitHub for none', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dry-run-'));
+    const { github: gh, sent } = github();
+    const artifacts = new DiskArtifacts(dir);
+    const guard = new IssueGuard({ openedBy: openedBy(gh) });
+    const candidate = (ref: string) => async () => ({
+      state: 'open',
+      draft: false,
+      head: { ref, sha: HEAD, repo: REPO },
+      base: 'main',
+    });
+    const bump = new DryRunActions(artifacts, quiet, AT, undefined, guard, candidate(BUMP));
+    await bump.enqueuePullRequest(REPO, 150, HEAD);
+    const npm = new DryRunActions(artifacts, quiet, AT, undefined, guard, candidate('dependabot/npm_and_yarn/x-1.0.0'));
+    await expect(npm.enqueuePullRequest(REPO, 150, HEAD)).rejects.toBeInstanceOf(BranchRefused);
+    await expect(bump.comment(REPO, 150, 'Queued.')).rejects.toBeInstanceOf(IssueRefused);
+    expect(writes(sent)).toEqual([]);
+    expect((await records(dir)).filter((r) => r.action === 'enqueuePullRequest')).toHaveLength(1);
   });
 });
 

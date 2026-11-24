@@ -73,6 +73,38 @@ export class WatchedHeads {
   }
 }
 
+/**
+ * Where Dependabot opens its pull requests for GitHub Actions from: the workflows' pins, the commit the factory's own
+ * workflows are called at among them. Dependabot's branches are never the factory's to move, delete or commit to; a
+ * pull request from one of these is the only one of anyone else's it adds to the merge queue (`guardDependabotPin`).
+ */
+export const DEPENDABOT_ACTIONS_PREFIX = 'dependabot/github_actions/';
+
+/** Whether a branch is one of Dependabot's for GitHub Actions, by its name: plain, and under that prefix. */
+export const dependabotActionsBranch = (branch: string): boolean =>
+  plainBranch(branch) &&
+  branch.startsWith(DEPENDABOT_ACTIONS_PREFIX) &&
+  branch.length > DEPENDABOT_ACTIONS_PREFIX.length;
+
+/**
+ * Throws `BranchRefused` unless a pull request of Dependabot's may be added to the merge queue by where it is from
+ * and into: from one of its GitHub Actions branches, into `main`. Any other ecosystem's branch (`npm_and_yarn`,
+ * `docker`), a group's across ecosystems, or another base is refused: those wait for Martin, or are the scan's moves,
+ * which the factory makes itself.
+ */
+export function guardDependabotPin(branch: string, base: string): void {
+  if (!dependabotActionsBranch(branch)) {
+    throw new BranchRefused(
+      `${branch} is not one of Dependabot's branches under ${DEPENDABOT_ACTIONS_PREFIX}: the factory adds no other pull request of Dependabot's to the merge queue.`,
+    );
+  }
+  if (base !== 'main') {
+    throw new BranchRefused(
+      `Dependabot's ${branch} is into ${base}, not main: the factory does not add it to the merge queue.`,
+    );
+  }
+}
+
 /** Throws `BranchRefused` for a branch the factory does not own, or one whose name is not plain. */
 export function guardBranch(branch: string): void {
   if (!plainBranch(branch)) {

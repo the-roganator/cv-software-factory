@@ -40,7 +40,7 @@ import {
   scratchBranch,
   withCarries,
 } from './deploys.ts';
-import { type IssueAction, IssueGuard, openedBy } from './issues.ts';
+import { type IssueAction, IssueGuard, type Opener, openedBy } from './issues.ts';
 import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
 import {
@@ -473,6 +473,7 @@ const QUEUE_PULL = z.object({
   draft: z.boolean().optional(),
   node_id: z.string().min(1),
   head: z.object({ ref: z.string(), sha: SHA, repo: z.object({ full_name: z.string() }).nullable() }),
+  base: z.object({ ref: z.string() }),
 });
 
 /** A pull request as the queue's guard reads it, from GitHub. */
@@ -486,6 +487,7 @@ export function queueCandidate(
       draft: pull.draft ?? false,
       nodeId: pull.node_id,
       head: { ref: pull.head.ref, sha: pull.head.sha, repo: pull.head.repo?.full_name ?? null },
+      base: pull.base.ref,
     };
   };
 }
@@ -871,10 +873,10 @@ export class LiveActions implements Actions {
   }
 
   async enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued> {
-    await this.#guard.check(repo, number, 'enqueuePullRequest');
+    const opener = await this.#guard.check(repo, number, 'enqueuePullRequest');
     // Read from GitHub once the guard has passed it, so the pull request queued is the one guarded, by its own id.
     const pull = await queueCandidate(this.#github)(repo, number);
-    guardQueue(repo, number, pull, expectedHead);
+    guardQueue(repo, number, pull, expectedHead, opener === 'dependabot' ? opener : 'app');
     const answer = await this.#github.graphql(
       repo,
       ENQUEUE,
@@ -1084,9 +1086,9 @@ export class DryRunActions implements Actions {
    * from `DRY_RUN_NUMBERS_FROM` up is one this dry run made, which GitHub never had, as the App: it passes, whether
    * this worker remembers it or has started again since.
    */
-  async #guarded(repo: string, number: number, action: IssueAction, body?: string): Promise<void> {
-    if (number >= DRY_RUN_NUMBERS_FROM) return;
-    await this.#guard.check(repo, number, action, body);
+  async #guarded(repo: string, number: number, action: IssueAction, body?: string): Promise<Opener> {
+    if (number >= DRY_RUN_NUMBERS_FROM) return 'app';
+    return this.#guard.check(repo, number, action, body);
   }
 
   /** A commit this dry run would have made, or undefined for any other. */
@@ -1377,12 +1379,14 @@ export class DryRunActions implements Actions {
           state: own.closedAt || this.#mergedNow(own) ? 'closed' : 'open',
           draft: own.draft,
           head: { ref: own.head, sha: this.headOf(own), repo },
+          base: own.base,
         },
         expectedHead,
       );
     } else {
-      await this.#guarded(repo, number, 'enqueuePullRequest');
-      guardQueue(repo, number, await this.#readPull(repo, number), expectedHead);
+      const opener = await this.#guarded(repo, number, 'enqueuePullRequest');
+      const pull = await this.#readPull(repo, number);
+      guardQueue(repo, number, pull, expectedHead, opener === 'dependabot' ? opener : 'app');
     }
     await this.#record('enqueuePullRequest', repo, { number, expectedHead });
     if (!own) return { position: null, state: null };

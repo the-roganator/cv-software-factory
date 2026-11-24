@@ -32,6 +32,7 @@ import {
   printOf,
   probeQuery,
   routineBranch,
+  saysNotPulled,
   settleMs,
   workflowPins,
 } from './decide.ts';
@@ -949,7 +950,7 @@ function unreadOf(state: State, test: Test, kept: Seen['unread'], final: boolean
     );
     for (const job of api<any>(test.repo, `actions/runs/${scan.id}/jobs?per_page=100`).jobs ?? []) {
       for (const note of api<any[]>(test.repo, `check-runs/${job.id}/annotations?per_page=100`))
-        if (String(note.message ?? '').includes(unread.image))
+        if (saysNotPulled(String(note.message ?? ''), unread.image))
           seen.said.push(`${note.annotation_level}: ${String(note.message).slice(0, 200)}`);
     }
     if (unread.alerts) seen.alertsBefore = openAlertsAt(test.repo, unread.file);

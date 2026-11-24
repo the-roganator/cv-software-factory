@@ -114,6 +114,17 @@ export function printOf(node: any, required: string[]): string | undefined {
   return createHash('sha256').update(JSON.stringify(said)).digest('hex');
 }
 
+// ── The scan's word on an image the registry did not serve ───────────────────────────────────────────────────────────
+
+/** How the scan's run begins its line for an image it could not pull, before the image's name (deadlines.ts). */
+export const NOT_PULLED = 'Not pulled: ';
+/** Whether a line of the scan's run says `image` was not pulled: the words, then a name that holds the image. */
+export const saysNotPulled = (message: string, image: string) =>
+  message.split('\n').some((line) => {
+    const at = line.indexOf(NOT_PULLED);
+    return at >= 0 && line.slice(at + NOT_PULLED.length).includes(image);
+  });
+
 // ── A failure that is certain before the limit ──────────────────────────────────────────────────────────────────────
 
 export interface PullFacts {

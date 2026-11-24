@@ -295,16 +295,20 @@ export const TESTS: Test[] = [
   },
   // The routine updates and the rest of 15 to 20.
   {
-    // Argo Rollouts' chart, 2.43.6 on the baseline with 2.43.12 out since 9 November and no finding in any of its
-    // images (its values pin the controller's image by digest, so no chart version in between changes what runs).
+    // pino, which the factory's and the console's images carry, staged at 10.3.1 (staged/factory/20-…) with 10.4.0
+    // out since 2 October 2026. npm's publish time is the registry's own, so the wait is over on a copy just reset;
+    // a chart's or an image's routine update counts from the day the scan first saw it, which a reset forgets. It
+    // rides with the day's other routine lockfile updates, in their one pull request, and the factory's deploy pin
+    // that follows the merge is its deploy. Every routine lockfile move has the one public name, in an image or not.
     id: '15',
-    title: 'a routine update: the argo-rollouts chart',
+    title: 'a routine update of a package in our images (pino)',
     repo: FACTORY,
     campaign: 'factory',
-    moves: ['argo-rollouts'],
+    moves: [FACTORY_DEV_LOCKFILE],
     routine: true,
-    pr: { by: 'pin' },
-    deployed: { kind: 'chart', apps: ['argo-rollouts'] },
+    pr: { by: 'lockfile' },
+    removes: { file: 'pnpm-lock.yaml', lines: ['  pino@10.3.1:'] },
+    deployed: { kind: 'deploy-pr' },
   },
   {
     // vitest, 5.1.0 in the app's lockfile with 5.1.1 out since 18 November, inside `package.json`'s range: the scan

@@ -321,6 +321,20 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     expect((await changes(workItem)).at(-1)).toMatchObject({ head: 'e', state: 'queued' });
   });
 
+  it('names a check that failed on the queue’s commit when GitHub left its run in progress with its conclusion', async () => {
+    await controls({});
+    const workItem = await heldForDeploy(sha('2'));
+    const { pass, github } = lineWith('exact-pin');
+    await pass();
+    // Added again until its tries run out, and the last taking out is recorded with what failed.
+    for (let time = 1; time <= QUEUE_TRIES; time++) {
+      github.dequeue(DEPLOY, 'failed_checks', ['e2e'], 'in_progress');
+      await pass();
+    }
+    await pass();
+    expect((await changes(workItem)).at(-1)).toMatchObject({ state: 'dequeued', failed: ['e2e'] });
+  });
+
   it('asks once at a head the GitHub worker refused, records it once, and waits for Martin', async () => {
     await controls({});
     const first = await heldForDeploy(sha('2'));

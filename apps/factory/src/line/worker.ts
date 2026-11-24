@@ -140,7 +140,7 @@ import { spentComment } from '../github/deploy-queue.ts';
 import { type Carry, DEPLOYS, type DeployProposal, MAX_CARRIES } from '../github/deploys.ts';
 import { askedIn } from '../github/made.ts';
 import { failedChecks } from '../github/merging.ts';
-import { outcomeOf } from '../github/reads.ts';
+import { finished, outcomeOf } from '../github/reads.ts';
 import type {
   ActingFor,
   ActionArgs,
@@ -2447,7 +2447,7 @@ export class Line {
       select ts from events where work_item = ${workItem} and type = 'pull-request.enqueued' order by seq desc limit 1`;
     if (recorded && Date.parse(queue.added.at) < new Date(recorded.ts).getTime() - 60_000) return undefined;
     const failed = queue.checks
-      .filter((run) => run.status === 'completed' && outcomeOf(run.conclusion) === 'failure')
+      .filter((run) => finished(run) && outcomeOf(run.conclusion) === 'failure')
       .map((run) => cutAt(run.name, 80))
       .slice(0, 40);
     const reason = cutAt((queue.removed.reason ?? 'unknown').toLowerCase(), 60);

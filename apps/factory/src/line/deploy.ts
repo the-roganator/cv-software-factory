@@ -58,7 +58,7 @@ import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { QUEUE_TRIES, spentComment } from '../github/deploy-queue.ts';
 import type { DeployBuild, DeployProposal } from '../github/deploys.ts';
 import { failedChecks, type ReviewVerdict } from '../github/merging.ts';
-import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
+import { type CheckRun, finished, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import { type Draft, judge, latestRuns } from './gates.ts';
 import { PENDING_LIMIT_MS } from './merging.ts';
@@ -381,7 +381,7 @@ async function queueDeploy(
     if (reason === 'merged') return done;
     // Each check's latest run on the queue's commit, as the gates read them: a re-run is not counted twice.
     const failed = [...latestRuns(queue.checks).values()]
-      .filter((run) => run.status === 'completed' && outcomeOf(run.conclusion) === 'failure')
+      .filter((run) => finished(run) && outcomeOf(run.conclusion) === 'failure')
       .map((run) => cutAt(run.name, 80))
       .slice(0, 40);
     const out: DeployChange = {

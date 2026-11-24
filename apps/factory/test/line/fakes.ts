@@ -176,7 +176,10 @@ export class FakeGitHub implements GitHubPort {
   conflicts: boolean | null = false;
   /** The pull requests in the merge queue, and the last taken out of it, with why. */
   readonly queued = new Set<number>();
-  readonly dequeued = new Map<number, { reason: string; failed: string[]; at: string; failures: number }>();
+  readonly dequeued = new Map<
+    number,
+    { reason: string; failed: string[]; at: string; failures: number; status: string }
+  >();
   /** How often the queue took each pull request out for failed checks, at the head it was then at. */
   readonly #queueFailures = new Map<number, { head: string; failures: number }>();
   /** The number GitHub gives each issue the line opens: a dry run's are `DRY_RUN_NUMBERS_FROM` up. */
@@ -184,13 +187,17 @@ export class FakeGitHub implements GitHubPort {
   #commits = 0;
 
   /** The merge queue taking a pull request out without merging it, with GitHub's reason and the checks that failed. */
-  dequeue(number: number, reason: string, failed: string[] = []): void {
+  /**
+   * The queue takes the pull request out, its `failed` checks failed on its commit; `status` is theirs, which GitHub
+   * has left `in_progress` on a run that ended with its conclusion.
+   */
+  dequeue(number: number, reason: string, failed: string[] = [], status = 'completed'): void {
     this.queued.delete(number);
     const head = String(this.pulls.get(number)?.head.sha);
     const before = this.#queueFailures.get(number);
     const failures = (before?.head === head ? before.failures : 0) + (reason.toLowerCase() === 'failed_checks' ? 1 : 0);
     this.#queueFailures.set(number, { head, failures });
-    this.dequeued.set(number, { reason, failed, at: new Date().toISOString(), failures });
+    this.dequeued.set(number, { reason, failed, at: new Date().toISOString(), failures, status });
   }
 
   async act<K extends ActionName>(
@@ -419,7 +426,7 @@ export class FakeGitHub implements GitHubPort {
           checks: (out?.failed ?? []).map((name, i) => ({
             id: 800 + i,
             name,
-            status: 'completed',
+            status: out?.status ?? 'completed',
             conclusion: 'failure',
             app: 'github-actions',
             startedAt: null,

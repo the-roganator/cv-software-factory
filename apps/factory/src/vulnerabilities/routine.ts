@@ -33,15 +33,19 @@
  * is `build.yml`'s, pinned by the deploy pull requests; a pin with no tag; and anything `policy/vulnerabilities.ts`
  * leaves alone (`ROUTINE.leave`).
  *
- * **The wait.** A release is listed once it is `ROUTINE.days` old, `majorDays` for a major, on top of the waits a fix
- * has (pnpm's `minimumReleaseAge`, mise's for a Node an image brings). Its day is npm's publish time, a chart's
- * `created`, a k3s release's publication, an image's own creation; and never later than the day the scan first saw
- * that target for that pin, which the state keeps (`StateRoutine.seen`), so an image that gives no day (a reproducible
- * build says 1970) and an index that dates every chart afresh still come due. Where the newest release is too young
- * and an older one is not, a package, a chart or k3s takes the newest that has waited; an image's line has one
- * newest, and it waits. A tag built again (the same tag at another digest) waits from the first day the scan saw the
- * pin behind it, whatever digest it served then, and moves to the digest it serves the day it lists: a tag rebuilt
- * every day comes due all the same, and the wait starts again only once the pin has moved.
+ * **The wait.** A release is listed once it has waited `ROUTINE.days`, `majorDays` for a major, on top of the waits a
+ * fix has (pnpm's `minimumReleaseAge`, mise's for a Node an image brings). A package's day is npm's publish time and
+ * a k3s release's its publication on GitHub, which the registry writes, not the publisher; neither is taken to be
+ * later than the day the scan first saw the release. An image and a chart have no such day: the time an image's
+ * configuration says it was made, and a chart index's `created`, are their publisher's to write, and a backdated one
+ * would list the day it appeared. So an image's tag and a chart's version wait from the day the scan first saw the pin
+ * behind them, which the state keeps (`StateRoutine.seen`); with no state to read (a proving run, a repository's
+ * first run, a state lost) no image or chart is listed, and the wait starts that day. The wait is kept by the pin and
+ * the release, never the release's digest: a tag built again while it waits, or after, is the release it was, and the
+ * move lists at the digest the tag serves that day, so a tag rebuilt every day comes due all the same. A record
+ * belongs to the pin as it was (its name, what it pins, and the digests an image's pins hold): once the pin moves,
+ * its records are dropped and the wait starts again. Where the newest release is too young and an older one is not,
+ * a package, a chart or k3s takes the newest that has waited; an image's line has one newest, and it waits.
  *
  * **It never fails the run.** A lookup that fails costs that pin's routine move for the day, with one warning for each
  * source, which never names a lockfile's package: the log is public.
@@ -52,7 +56,6 @@ import type { Routine } from '../../../../policy/vulnerabilities.ts';
 import { repositoryOfImage } from '../repositories.ts';
 import {
   CANDIDATES,
-  compareVersions,
   EARLIEST,
   K3S_IMAGE,
   k3sLine,
@@ -69,6 +72,7 @@ import { satisfies } from './node.ts';
 import { repositoryOf, splitReference } from './reference.ts';
 import { lockfileLine, type ReadTarget } from './scan.ts';
 import type { StateRoutine } from './state.ts';
+import { compareTags, compareVersions, majorOf } from './versions.ts';
 
 const DAY = 86_400_000;
 
@@ -100,7 +104,7 @@ export interface Lookups {
 export interface Asked {
   repository: string;
   targets: ReadTarget[];
-  sources: Pick<Sources, 'file' | 'versions' | 'created' | 'served'>;
+  sources: Pick<Sources, 'file' | 'versions' | 'served'>;
   lookups: Lookups;
   /** The wait and what is left alone, or none, and then nothing is listed. */
   policy: Routine | undefined;
@@ -302,22 +306,48 @@ export async function routine(asked: Asked): Promise<Listing> {
   counts.pins = groups.length + left;
   const behind: Behind[] = [];
   const records = new Map<string, Seen>();
+  /** The digests an image's pins hold, in order: what tells a pin from the same pin once it has moved on its tag. */
+  const heldOf = (group: Pinned) =>
+    [...new Set([...group.references].flatMap((each) => splitReference(each).digest ?? []))].sort();
+  /**
+   * What a wait is kept by: the pin as it is (its name, what it pins, and for an image the digests it holds) and the
+   * release, never a digest of the release, so a tag built again is the release it was, and a pin that has moved, to
+   * another tag or on its own, is another pin, whose records are dropped.
+   */
+  const waitKey = (pin: { name: string; from: string; held?: string[] | undefined }, target: Target) =>
+    JSON.stringify([
+      pin.name,
+      pin.from,
+      pin.held ?? [],
+      target.kind === 'image' ? `image ${target.tag}` : targetText(target),
+    ]);
   const before = new Map<string, number>();
   for (const each of asked.last ?? []) {
     const seen = Date.parse(each.seen);
-    if (!Number.isNaN(seen)) before.set(JSON.stringify([each.name, each.from, each.to]), seen);
+    const target = readTarget(each.to);
+    if (Number.isNaN(seen) || !target) continue;
+    const key = waitKey(each, target);
+    before.set(key, Math.min(before.get(key) ?? seen, seen));
   }
   /**
    * Whether a release has waited its days, and whatever else it waits for: its record is kept either way, with the
-   * day the scan first saw it, which its own day is never taken to be later than.
+   * day the scan first saw it for this pin. `own` is the release's day where its registry, not its publisher, gives
+   * one, never taken to be later than that first sight; with none (an image, a chart), first sight is its day.
    */
-  const waited = (group: Pinned, target: Target, own: number, days: number, also = 0, first?: number) => {
-    const to = targetText(target);
-    const key = JSON.stringify([group.name, group.from, to]);
-    const last = first ?? before.get(key);
+  const waited = (group: Pinned, target: Target, own: number, days: number, also = 0) => {
+    const held = heldOf(group);
+    const key = waitKey({ ...group, held }, target);
+    const last = before.get(key);
     const seen = last !== undefined && last < now ? last : now;
     const day = Number.isFinite(own) && own >= EARLIEST && own < seen ? own : seen;
-    records.set(key, { name: group.name, from: group.from, to, pins: pinsOf(group), seen: dayText(seen) });
+    records.set(key, {
+      name: group.name,
+      from: group.from,
+      to: targetText(target),
+      pins: pinsOf(group),
+      ...(held.length ? { held } : {}),
+      seen: dayText(seen),
+    });
     return day + days * DAY <= now && also <= now;
   };
   const pinsOf = (group: Pinned) =>
@@ -334,31 +364,16 @@ export async function routine(asked: Asked): Promise<Listing> {
     if (leftAlone(policy, repository, { image: name }, false)) return 'left';
     const latest = await newestOf(reference, lookups.tags);
     // A registry that lists nothing as new as the pin moves nothing back.
-    if (!latest || (latest.version && compareVersions(latest.tag, tag) < 0)) return 'current';
+    if (!latest || (latest.version && compareTags(latest.tag, tag) < 0)) return 'current';
     // The digest alone is wanted: asked with a request a registry does not count as a pull, where the sources have one.
     const digest = await (sources.served ?? lookups.digest)(latest.reference);
-    const pins = new Set([...group.references].map((each) => splitReference(each).digest));
-    pins.delete(undefined);
-    const rebuilt = latest.tag === tag;
-    if (rebuilt && (!pins.size || [...pins].every((pin) => pin === digest))) return 'current';
+    const held = heldOf(group);
+    if (latest.tag === tag && held.every((pin) => pin === digest)) return 'current';
     const target: Target = { kind: 'image', tag: latest.tag, digest };
     if (!usable(target)) return 'current';
-    if (rebuilt) {
-      // The same tag, built again: the wait counts from the first day the pin was seen behind its tag, whatever
-      // digest the tag served then, so a tag rebuilt every day still comes due, and moves to what it serves that day.
-      // A record whose target is a digest the pin has is of a move since made: the wait starts again after it.
-      let first: number | undefined;
-      for (const each of asked.last ?? []) {
-        const was = each.name === group.name && each.from === group.from ? readTarget(each.to) : undefined;
-        const seen = Date.parse(each.seen);
-        if (was?.kind !== 'image' || was.tag !== tag || pins.has(was.digest) || Number.isNaN(seen)) continue;
-        first = Math.min(first ?? seen, seen);
-      }
-      if (!waited(group, target, Number.NaN, policy.days, 0, first)) return 'waiting';
-    } else {
-      if (!sources.created) return 'current';
-      if (!waited(group, target, time(await sources.created(`${name}@${digest}`)), policy.days)) return 'waiting';
-    }
+    // The wait is from the first day the scan saw the pin behind this tag, whatever digest the tag served then: the
+    // day an image says it was made is its publisher's to write. Once waited, it moves to what the tag serves today.
+    if (!waited(group, target, Number.NaN, policy.days)) return 'waiting';
     // An image that runs Node brings its Node, which waits for mise as Node's own move does.
     const ready = await lookups.nodeReady(latest.reference);
     return ready !== undefined && ready <= now ? list(group, target) : 'waiting';
@@ -366,22 +381,24 @@ export async function routine(asked: Asked): Promise<Listing> {
 
   const chart = async (group: Pinned): Promise<Outcome> => {
     const pin = group.chart;
-    if (!pin || !PLAIN.test(pin.version)) return 'current';
-    const majorOf = (version: string) => Number(version.split('.')[0]);
+    // The pin read as a fix for it reads it (`chartFix`): by its major, a `v` before it or none.
+    const pinnedMajor = pin ? majorOf(pin.version) : undefined;
+    if (!pin || pinnedMajor === undefined) return 'current';
     const newer = (await lookups.chartVersions(pin)).filter(
       (each) => PLAIN.test(each.version) && compareVersions(each.version, pin.version) > 0,
     );
     if (!newer.length) return 'current';
     // The pinned major while it has anything newer; only then the next major there is.
-    const same = newer.filter((each) => majorOf(each.version) === majorOf(pin.version));
-    const next = Math.min(...newer.map((each) => majorOf(each.version)));
+    const same = newer.filter((each) => majorOf(each.version) === pinnedMajor);
+    const [next] = newer.map((each) => majorOf(each.version) ?? '').sort(compareVersions);
     const major = !same.length;
     const candidates = (major ? newer.filter((each) => majorOf(each.version) === next) : same).sort(newestFirst);
     let tried = 0;
     for (const candidate of candidates) {
       const target: Target = { kind: 'chart', chart: pin.chart, version: candidate.version, major };
       if (!usable(target)) continue;
-      if (!waited(group, target, time(candidate.created), major ? policy.majorDays : policy.days)) continue;
+      // From the first day the scan saw the version: the index's `created` is its publisher's to write.
+      if (!waited(group, target, Number.NaN, major ? policy.majorDays : policy.days)) continue;
       // The newest that has waited and renders with our values, a few tried: one that does not is passed over.
       if (++tried > CANDIDATES) break;
       if (await lookups.rendered({ ...pin, version: candidate.version })) return list(group, target);
@@ -448,19 +465,20 @@ export async function routine(asked: Asked): Promise<Listing> {
   const reads = { image, chart, k3s, npm };
   // The pins not read today, whose records of the last run stand: a day's fault restarts no release's wait.
   const unread = new Set<string>();
-  const pinOf = (each: { name: string; from: string }) => JSON.stringify([each.name, each.from]);
+  const pinOf = (each: { name: string; from: string; held?: string[] | undefined }) =>
+    JSON.stringify([each.name, each.from, each.held ?? []]);
   await pool(
     groups.map((group) => async () => {
       if (asked.taken?.has(pinKey(group))) {
         counts.current++;
-        unread.add(pinOf(group));
+        unread.add(pinOf({ ...group, held: heldOf(group) }));
         return;
       }
       try {
         counts[await reads[group.how](group)]++;
       } catch (error) {
         counts.unread++;
-        unread.add(pinOf(group));
+        unread.add(pinOf({ ...group, held: heldOf(group) }));
         const source = sourceOf(group);
         const fault = faults.get(source) ?? { pins: 0, why: group.how === 'npm' ? '' : firstLine(error) };
         fault.pins++;
@@ -473,8 +491,9 @@ export async function routine(asked: Asked): Promise<Listing> {
       `::warning::${source} could not be read for ${fault.pins} ${fault.pins === 1 ? 'pin' : 'pins'}${fault.why ? ` (${fault.why})` : ''}: no routine move is listed for ${fault.pins === 1 ? 'it' : 'them'} today.`,
     );
   for (const { move: _, ...each } of asked.last ?? []) {
-    const key = JSON.stringify([each.name, each.from, each.to]);
-    if (unread.has(pinOf(each)) && !records.has(key) && before.has(key)) records.set(key, each);
+    const target = readTarget(each.to);
+    const key = target && waitKey(each, target);
+    if (key && unread.has(pinOf(each)) && !records.has(key) && before.has(key)) records.set(key, each);
   }
   const sorted = [...records.values()].sort((a, b) =>
     a.name !== b.name
@@ -492,7 +511,10 @@ export async function routine(asked: Asked): Promise<Listing> {
   return { behind, records: sorted, counts };
 }
 
-/** The state's records of the day's routine listing: each release's, with its move's place in the list where it has one. */
+/**
+ * The state's records of the day's routine listing: each release's, with its move's place in the list where it has
+ * one, and its major where the move is one. Every routine move listed has its record, a lockfile's or not.
+ */
 export function recorded(records: Seen[], list: Move[]): StateRoutine[] {
   return records.map((record) => {
     const at = list.findIndex(
@@ -503,7 +525,7 @@ export function recorded(records: Seen[], list: Move[]): StateRoutine[] {
         move.to !== undefined &&
         targetText(move.to) === record.to,
     );
-    return at < 0 ? record : { move: at + 1, ...record };
+    return at < 0 ? record : { move: at + 1, ...record, ...(list[at]?.major ? { major: true } : {}) };
   });
 }
 

@@ -32,9 +32,10 @@ interface World {
   findings?: Finding[];
   files?: Record<string, string>;
   tags?: Record<string, string[]>;
-  /** Each tag's index digest, by `<repository>:<tag>`; and when the image at `<repository>@<digest>` was made. */
+  /** Each tag's index digest, by `<repository>:<tag>`. */
   digests?: Record<string, string>;
-  created?: Record<string, string | undefined>;
+  /** How many days ago the scan first ran over this world: that run's records are the last state's. */
+  waited?: number | undefined;
   /** Each package's releases, by its name. */
   packages?: Record<string, PackageVersions>;
   charts?: Record<string, { version: string; created: string }[]>;
@@ -80,10 +81,6 @@ function sourcesOf(world: World) {
       return world.digests?.[reference] ?? digest('d');
     },
     manifests: async () => ({ digest: digest('f'), platforms: [] }),
-    async created(reference) {
-      ask(`created ${reference}`);
-      return world.created?.[reference];
-    },
     async chartVersions(_repo, chart) {
       ask(`chart ${chart}`);
       return world.charts?.[chart] ?? [];
@@ -110,8 +107,17 @@ function sourcesOf(world: World) {
   return { sources, asked };
 }
 
-/** One run of the scan over the world: what it judged, the pins it found behind, and the day's moves. */
+/**
+ * The scan over the world: what it judged, the pins it found behind, and the day's moves. Where the world says how
+ * long ago the scan first ran over it, that run comes first, and its records are the last state's.
+ */
 async function listed(world: World, now = NOW) {
+  if (world.waited === undefined || world.last) return run(world, now, world.last);
+  const first = await run(world, now - world.waited * DAY, undefined);
+  return run(world, now, first.records);
+}
+
+async function run(world: World, now: number, last: StateRoutine[] | undefined) {
   const repository = world.repository ?? REPOSITORY;
   const handoff: Handoff = {
     repository,
@@ -133,7 +139,7 @@ async function listed(world: World, now = NOW) {
     sources,
     lookups: judged.lookups,
     policy: 'policy' in world ? world.policy : POLICY,
-    last: world.last,
+    last,
     taken: pinsOf(moves(judged.judged, context)),
     minimumReleaseAge: world.minimumReleaseAge ?? 24 * 60,
     now,
@@ -164,11 +170,11 @@ const image = (reference: string, over: Partial<ReadTarget> = {}): ReadTarget =>
   ...over,
 });
 const PINNED = image(`example/image:2.17.0@${digest('a')}`);
-/** A registry with a newer tag on the line, made the days ago given. */
+/** A registry with a newer tag on the line, which the scan first saw the days ago given. */
 const newer = (days: number): Partial<World> => ({
   tags: { 'example/image': ['2.16.9', '2.17.0', '2.18.1', '3.0.0', '2.19.0-rc1'] },
   digests: { 'example/image:2.18.1': digest('b') },
-  created: { [`example/image@${digest('b')}`]: ago(days) },
+  waited: days,
 });
 
 describe('an image’s pin that is behind', () => {
@@ -186,11 +192,7 @@ describe('an image’s pin that is behind', () => {
         results: [],
       }),
     ]);
-    expect(asked).toEqual([
-      'tags example/image',
-      'served example/image:2.18.1',
-      `created example/image@${digest('b')}`,
-    ]);
+    expect(asked).toEqual(['tags example/image', 'served example/image:2.18.1']);
   });
 
   it('is not behind at the line’s newest tag and the digest it has now, or with nothing newer listed', async () => {
@@ -247,6 +249,7 @@ describe('an image’s pin that is behind', () => {
         from: 'nonroot',
         to: `image nonroot@${digest('d')}`,
         pins: [{ file: 'deploy/x.yaml', line: 12 }],
+        held: [digest('a')],
         seen: '2026-11-10T04:30:00Z',
       },
     ]);
@@ -271,9 +274,12 @@ describe('an image’s pin that is behind', () => {
         from: 'nonroot',
         to: `image nonroot@${digest('e')}`,
         pins: [{ file: 'deploy/x.yaml', line: 12 }],
+        held: [digest('a')],
         seen: ago(3),
       },
     ];
+    // While the pin holds what it held, the record is its own: listed still, at what the tag serves today.
+    expect((await listed(at('a', 'f', old))).routine[0]?.to).toMatchObject({ digest: digest('f') });
     // The pin moved to what was listed, and the tag serves that: nothing behind, and no record kept.
     const moved = await listed(at('e', 'e', old));
     expect(moved.listing.counts.current).toBe(1);
@@ -283,6 +289,18 @@ describe('an image’s pin that is behind', () => {
     expect(again.routine).toEqual([]);
     expect(again.records[0]).toMatchObject({ to: `image nonroot@${digest('f')}`, seen: '2026-11-10T04:30:00Z' });
     expect((await listed(at('e', '1', again.records), NOW + 3 * DAY)).routine).toHaveLength(1);
+    // The pin merged at day 3's digest while the state's last record is day 4's: the record is of the pin as it
+    // was, by the digest it held, so the move is not listed again the day after it was made.
+    const dayFour = [{ ...old[0], to: `image nonroot@${digest('f')}` } as StateRoutine];
+    const merged = await listed(at('e', '2', dayFour));
+    expect(merged.routine).toEqual([]);
+    expect(merged.records).toEqual([
+      expect.objectContaining({
+        to: `image nonroot@${digest('2')}`,
+        held: [digest('e')],
+        seen: '2026-11-10T04:30:00Z',
+      }),
+    ]);
     // A newer tag is a release of its own, and takes no day from the tag it replaces.
     const tagged = await listed({
       targets: [PINNED],
@@ -327,16 +345,16 @@ describe('an image’s pin that is behind', () => {
     expect(leftAlone({ ...POLICY, leave }, REPOSITORY, { package: 'example/image' }, false)).toBeUndefined();
   });
 
-  it('waits until the image is three days old', async () => {
+  it('waits three days from the day the scan first saw the pin behind the tag', async () => {
     const young = await listed({ targets: [PINNED], ...newer(3 - 1 / 1440) });
     expect(young.routine).toEqual([]);
     expect(young.listing.counts).toMatchObject({ waiting: 1, listed: 0 });
     expect((await listed({ targets: [PINNED], ...newer(3) })).routine).toHaveLength(1);
   });
 
-  it('dates an image that gives no day from the day the scan first saw that target, which the state keeps', async () => {
-    const undated = { ...newer(0), created: { [`example/image@${digest('b')}`]: '1970-01-01T00:00:00Z' } };
-    const first = await listed({ targets: [PINNED], ...undated });
+  it('keeps the day it first saw a tag in the state, and lists nothing with no state to read', async () => {
+    const world = { targets: [PINNED], ...newer(0), waited: undefined };
+    const first = await listed(world);
     expect(first.routine).toEqual([]);
     expect(first.records).toEqual([
       {
@@ -344,29 +362,52 @@ describe('an image’s pin that is behind', () => {
         from: '2.17.0',
         to: `image 2.18.1@${digest('b')}`,
         pins: [{ file: 'deploy/x.yaml', line: 12 }],
+        held: [digest('a')],
         seen: '2026-11-10T04:30:00Z',
       },
     ]);
     // The next days' runs read the record back: listed on the third day, never before, and the day never moves.
-    const second = await listed({ targets: [PINNED], ...undated, last: first.records }, NOW + 2 * DAY);
+    const second = await listed({ ...world, last: first.records }, NOW + 2 * DAY);
     expect(second.routine).toEqual([]);
     expect(second.records[0]?.seen).toBe('2026-11-10T04:30:00Z');
-    const third = await listed({ targets: [PINNED], ...undated, last: second.records }, NOW + 3 * DAY);
+    const third = await listed({ ...world, last: second.records }, NOW + 3 * DAY);
     expect(third.routine).toHaveLength(1);
     expect(third.records).toEqual([{ move: 1, ...first.records[0] }]);
-    // With the state lost, the wait starts again; and another digest of the tag is another target, first seen now.
-    expect((await listed({ targets: [PINNED], ...undated }, NOW + 3 * DAY)).routine).toEqual([]);
-    const rebuilt = { ...undated, digests: { 'example/image:2.18.1': digest('c') }, created: {} };
-    const again = await listed({ targets: [PINNED], ...rebuilt, last: second.records }, NOW + 3 * DAY);
-    expect(again.routine).toEqual([]);
-    expect(again.records[0]).toMatchObject({ to: `image 2.18.1@${digest('c')}`, seen: '2026-11-13T04:30:00Z' });
+    // With no state (a proving run, a state lost) the wait starts that day, however long the tag has been there.
+    expect((await listed(world, NOW + 30 * DAY)).routine).toEqual([]);
   });
 
-  it('never takes a release’s own day to be later than the day the scan first saw it', async () => {
-    const last: StateRoutine[] = [
-      { name: 'example/image', from: '2.17.0', to: `image 2.18.1@${digest('b')}`, pins: [], seen: ago(4) },
-    ];
-    expect((await listed({ targets: [PINNED], ...newer(1), last })).routine).toHaveLength(1);
+  it('never takes the day a publisher writes: an image that says it was made long ago waits from first sight', async () => {
+    // Nothing of the image's configuration is asked, so a backdated one cannot list the day it appears.
+    const { routine: found, asked } = await listed({ targets: [PINNED], ...newer(0) });
+    expect(found).toEqual([]);
+    expect(asked).toEqual(['tags example/image', 'served example/image:2.18.1']);
+  });
+
+  it('lists a newer tag that is built again while it waits, at the digest it serves the day it lists', async () => {
+    const serving = (letter: string, last?: StateRoutine[]): World => ({
+      targets: [PINNED],
+      tags: { 'example/image': ['2.17.0', '2.18.1'] },
+      digests: { 'example/image:2.18.1': digest(letter) },
+      ...(last ? { last } : {}),
+    });
+    const day0 = await listed(serving('b'));
+    const day1 = await listed(serving('c', day0.records), NOW + DAY);
+    const day2 = await listed(serving('d', day1.records), NOW + 2 * DAY);
+    expect([day0, day1, day2].map((day) => day.routine.length)).toEqual([0, 0, 0]);
+    expect(day2.records).toEqual([
+      expect.objectContaining({ to: `image 2.18.1@${digest('d')}`, seen: '2026-11-10T04:30:00Z' }),
+    ]);
+    const day3 = await listed(serving('e', day2.records), NOW + 3 * DAY);
+    expect(day3.routine[0]?.to).toEqual({ kind: 'image', tag: '2.18.1', digest: digest('e') });
+    // A tag newer still is another release, first seen the day it appears.
+    const next = serving('e', day3.records);
+    next.tags = { 'example/image': ['2.17.0', '2.18.1', '2.19.0'] };
+    const day4 = await listed(next, NOW + 4 * DAY);
+    expect(day4.routine).toEqual([]);
+    expect(day4.records.map((record) => [record.to, record.seen])).toEqual([
+      [`image 2.19.0@${digest('d')}`, '2026-11-14T04:30:00Z'],
+    ]);
   });
 
   it('waits, for an image that runs another Node, until mise may install that Node, as its fix does', async () => {
@@ -376,7 +417,7 @@ describe('an image’s pin that is behind', () => {
       files: { 'mise.toml': 'minimum_release_age = "3d"\n[tools]\nnode = "24.22.1"\n' },
       tags: { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim', '24.23.0-alpine', '25.0.0-trixie-slim'] },
       digests: { 'node:24.23.0-trixie-slim': digest('b') },
-      created: { [`node@${digest('b')}`]: ago(5) },
+      waited: 5,
       runs: { [`node@${digest('b')}`]: '24.23.0' },
       releases: [{ version: 'v24.23.0', date: released }],
     });
@@ -401,7 +442,7 @@ describe('an image’s pin that is behind', () => {
       files: { 'apps/console/Dockerfile': `FROM build:1 AS build\nFROM ${runtime}\n` },
       tags: { 'gcr.io/distroless/static': ['1.2.0', '1.3.0'] },
       digests: { 'gcr.io/distroless/static:1.3.0': digest('b') },
-      created: { [`gcr.io/distroless/static@${digest('b')}`]: ago(9) },
+      waited: 9,
     };
     const { routine: found, asked } = await listed(world);
     expect(found).toEqual([
@@ -455,7 +496,13 @@ describe('an image’s pin that is behind', () => {
     const listing = await routine({
       repository: REPOSITORY,
       targets: [PINNED],
-      sources: { ...scanned, created: async (reference) => void asked.push(reference) },
+      sources: {
+        ...scanned,
+        served: async (reference) => {
+          asked.push(reference);
+          return digest('b');
+        },
+      },
       lookups: judged.lookups,
       policy: POLICY,
       taken,
@@ -514,26 +561,29 @@ const RENDERED = 'image: docker.io/grafana/grafana:12.1.0\n';
 
 describe('a chart that is behind', () => {
   it('moves to the newest version on its major that has waited and renders with our values', async () => {
-    const world: World = {
-      targets: [
-        chartTarget(),
-        chartTarget({ key: 'chart grafana busybox', image: 'busybox:1.37', label: 'busybox:1.37' }),
-      ],
-      charts: {
-        grafana: [
-          { version: '13.2.7', created: ago(60) },
-          { version: '13.6.0', created: ago(20) },
-          { version: '13.7.0', created: ago(6) },
-          { version: '13.8.0', created: ago(4) },
-          { version: '13.9.0', created: ago(2) },
-          { version: '13.9.1-beta.1', created: ago(9) },
-          { version: '14.0.0', created: ago(30) },
-        ],
-      },
-      // 13.8.0 does not render with our values: passed over, and said.
-      renders: { 'grafana@13.7.0': RENDERED, 'grafana@13.6.0': RENDERED },
-    };
-    const { routine: found, asked, lines, records } = await listed(world);
+    const targets = [
+      chartTarget(),
+      chartTarget({ key: 'chart grafana busybox', image: 'busybox:1.37', label: 'busybox:1.37' }),
+    ];
+    const index = (...versions: string[]) => ({
+      // Every version says it was published long ago: the index's day is its publisher's, and is not taken.
+      grafana: versions.map((version) => ({ version, created: ago(400) })),
+    });
+    // 13.8.0 does not render with our values: passed over, and said.
+    const renders = { 'grafana@13.7.0': RENDERED, 'grafana@13.6.0': RENDERED };
+    const first = await listed({ targets, renders, charts: index('13.2.7', '13.6.0', '13.7.0', '14.0.0') });
+    expect(first.routine).toEqual([]);
+    expect(first.listing.counts.waiting).toBe(1);
+    expect(first.asked).toEqual(['chart grafana']);
+    const later = index('13.2.7', '13.6.0', '13.7.0', '13.8.0', '13.9.1-beta.1', '14.0.0');
+    const second = await listed({ targets, renders, charts: later, last: first.records }, NOW + DAY);
+    later.grafana.push({ version: '13.9.0', created: ago(400) });
+    const {
+      routine: found,
+      asked,
+      lines,
+      records,
+    } = await listed({ targets, renders, charts: later, last: second.records }, NOW + 4 * DAY);
     expect(found).toEqual([
       expect.objectContaining({
         name: 'grafana',
@@ -546,39 +596,59 @@ describe('a chart that is behind', () => {
     ]);
     expect(asked).toEqual(['chart grafana', 'render grafana@13.8.0', 'render grafana@13.7.0']);
     expect(lines.filter((line) => line.includes('does not render'))).toHaveLength(1);
-    // The release still waiting is kept with the day it was first seen, and has no move yet.
-    expect(records.map((record) => [record.to, record.move])).toEqual([
-      ['chart grafana 13.7.0', 1],
-      ['chart grafana 13.8.0', undefined],
-      ['chart grafana 13.9.0', undefined],
+    // Each release is kept with the day it was first seen; one still waiting, or passed over, has no move.
+    expect(records.map((record) => [record.to, record.seen, record.move])).toEqual([
+      ['chart grafana 13.7.0', '2026-11-10T04:30:00Z', 1],
+      ['chart grafana 13.8.0', '2026-11-11T04:30:00Z', undefined],
+      ['chart grafana 13.9.0', '2026-11-14T04:30:00Z', undefined],
     ]);
   });
 
-  it('takes the next major only when its own has nothing newer, once that is a week old', async () => {
-    const world = (days: number): World => ({
+  it('takes the next major only when its own has nothing newer, once it has waited a week', async () => {
+    const world = (waited: number, ...more: string[]): World => ({
       targets: [chartTarget()],
-      charts: {
-        grafana: [
-          { version: '14.0.0', created: ago(40) },
-          { version: '14.3.1', created: ago(days) },
-          { version: '15.0.0', created: ago(30) },
-        ],
-      },
+      charts: { grafana: ['14.0.0', '14.3.1', '15.0.0', ...more].map((version) => ({ version, created: ago(400) })) },
       renders: { 'grafana@14.3.1': RENDERED, 'grafana@14.0.0': RENDERED, 'grafana@15.0.0': RENDERED },
+      waited,
     });
-    expect((await listed(world(7))).routine[0]).toMatchObject({
+    const major = await listed(world(7));
+    expect(major.routine[0]).toMatchObject({
       to: { kind: 'chart', chart: 'grafana', version: '14.3.1', major: true },
       major: true,
       lane: 'worker',
     });
-    // Inside its week the newest waits, and the newest of that major that has waited is taken.
-    expect((await listed(world(6))).routine[0]?.to).toMatchObject({ version: '14.0.0', major: true });
+    // Its record says so, sealed, for a reader to hold the public move to.
+    expect(major.records.find((record) => record.move === 1)).toMatchObject({
+      to: 'chart grafana 14.3.1 (a major)',
+      major: true,
+    });
+    expect((await listed(world(6))).routine).toEqual([]);
     // A newer release on the pinned major, however young, keeps the major out.
-    const held = world(7);
-    held.charts?.grafana?.push({ version: '13.3.0', created: ago(1) });
-    const waiting = await listed(held);
+    const waiting = await listed(world(7, '13.3.0'));
     expect(waiting.routine).toEqual([]);
     expect(waiting.listing.counts.waiting).toBe(1);
+  });
+
+  it('reads a pin written with a `v` as a fix for it does, and a major of any size', async () => {
+    const pin = chartTarget({ chart: { ...CHART, version: 'v13.2.7' } });
+    const { routine: found } = await listed({
+      targets: [pin],
+      charts: { grafana: ['13.2.7', '13.3.0'].map((version) => ({ version, created: ago(9) })) },
+      renders: { 'grafana@13.3.0': RENDERED },
+      waited: 3,
+    });
+    expect(found[0]).toMatchObject({ from: 'v13.2.7', to: { kind: 'chart', version: '13.3.0', major: false } });
+    const big = '90071992547409930';
+    const huge = chartTarget({ chart: { ...CHART, version: `${big}.0.0` } });
+    const next = await listed({
+      targets: [huge],
+      charts: {
+        grafana: [`${big}1.0.0`, `${big}2.0.0`, `${big}.0.1`].map((version) => ({ version, created: ago(9) })),
+      },
+      renders: { [`grafana@${big}.0.1`]: RENDERED },
+      waited: 3,
+    });
+    expect(next.routine[0]?.to).toMatchObject({ version: `${big}.0.1`, major: false });
   });
 
   it('names the Makefile’s chart as its Applications’ are named, in the worker’s lane', async () => {
@@ -600,6 +670,7 @@ describe('a chart that is behind', () => {
     const { routine: found } = await listed({
       targets: [argocd],
       charts: { 'argo-cd': [{ version: '10.9.6', created: ago(4) }] },
+      waited: 4,
       renders: { 'argo-cd@10.9.6': 'image: quay.io/argoproj/argocd:v3.6.2\n' },
     });
     expect(found[0]).toMatchObject({
@@ -975,12 +1046,15 @@ describe('the listing never fails the run', () => {
     ],
     tags: { 'example/image': ['2.17.0', '2.18.1'], 'example/other': ['1.0.0', '1.1.0'] },
     digests: { 'example/image:2.18.1': digest('b'), 'example/other:1.1.0': digest('c') },
-    created: { [`example/image@${digest('b')}`]: ago(5), [`example/other@${digest('c')}`]: ago(5) },
+    waited: 5,
   });
 
   it('costs a pin whose lookup fails its move alone, with one warning for its source and no package named', async () => {
     const whole = await listed(world());
-    expect(whole.routine.map((move) => move.name)).toEqual(['example-a', 'example/image', 'example/other']);
+    // The lockfile's move, whose name is withheld, comes after every move that is named.
+    expect(whole.routine.map((move) => move.name)).toEqual(['example/image', 'example/other', 'example-a']);
+    // Every routine move listed has its record, with its place.
+    expect(whole.records.map((record) => record.move).sort()).toEqual([1, 2, 3]);
     const down = await listed({ ...world(), down: ['tags example/other', 'versions example-a'] });
     expect(down.routine.map((move) => move.name)).toEqual(['example/image']);
     expect(down.listing.counts).toMatchObject({ listed: 1, unread: 2 });
@@ -994,11 +1068,7 @@ describe('the listing never fails the run', () => {
   });
 
   it('keeps a waiting release’s first day through a day its registry could not be read', async () => {
-    const undated: World = {
-      targets: [PINNED],
-      ...newer(0),
-      created: { [`example/image@${digest('b')}`]: '1970-01-01T00:00:00Z' },
-    };
+    const undated: World = { targets: [PINNED], ...newer(0), last: [] };
     const first = await listed(undated);
     const faulty = await listed({ ...undated, last: first.records, down: ['tags example/image'] }, NOW + DAY);
     expect(faulty.routine).toEqual([]);

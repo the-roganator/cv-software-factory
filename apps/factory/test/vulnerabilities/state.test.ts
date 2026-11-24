@@ -195,6 +195,18 @@ describe('the day’s routine listing, in a state', () => {
       change(state);
     });
 
+  it('opens with a move’s major, and the digests an image’s pins held', () => {
+    const sealed = withRoutine((s) => {
+      const records = s.routine as Record<string, unknown>[];
+      Object.assign(records[0] ?? {}, { major: true });
+      Object.assign(records[1] ?? {}, { held: [`sha256:${'a'.repeat(64)}`] });
+    });
+    expect(open(sealed, KEY, REPOSITORY, STATE.run).routine).toEqual([
+      { ...ROUTINE[0], major: true },
+      { ...ROUTINE[1], held: [`sha256:${'a'.repeat(64)}`] },
+    ]);
+  });
+
   it('opens with it and without it', () => {
     expect(open(withRoutine(), KEY, REPOSITORY, STATE.run).routine).toEqual(ROUTINE);
     expect('routine' in open(seal(STATE, KEY), KEY, REPOSITORY, STATE.run)).toBe(false);
@@ -225,6 +237,12 @@ describe('the day’s routine listing, in a state', () => {
       'gives routine move 1 a pin that is not one',
     ],
     ['no day', (s) => Object.assign(routine(s), { seen: '2026-11-06' }), 'gives routine move 1 no day'],
+    [
+      'a digest held that is none',
+      (s) => Object.assign(routine(s), { held: ['sha256:abc'] }),
+      'gives routine move 1 digests that are not ones',
+    ],
+    ['a major that is no answer', (s) => Object.assign(routine(s), { major: 'yes' }), 'a major that is not one'],
   ])('refuses %s, naming the move by its place alone', (_name, change, message) => {
     expect(() => open(withRoutine(change), KEY, REPOSITORY, STATE.run)).toThrow(message);
   });

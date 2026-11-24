@@ -65,7 +65,7 @@ export type Left = {
 
 /** The wait before a pin that is merely behind is listed as a move, and what is never listed so. */
 export interface Routine {
-  /** How old a release is, in days, before a pin with no finding is moved to it. */
+  /** How long a release waits, in days, before a pin with no finding is moved to it. */
   days: number;
   /** The same for a major: a chart's next major, or a release its manifest's range does not admit. */
   majorDays: number;

@@ -8,8 +8,8 @@
  * Dockerfiles is one move of three pins, and a package in two versions one move. A chart's images are the chart's own: two charts that run one image are two moves.
  *
  * A pin that is merely behind, with no finding (routine.ts's `Behind`), is a routine move: it clears nothing, has no
- * deadline and no results, and is listed after the findings' moves, by name, so a finding's move keeps the place it
- * would have with none listed. One pin is one move: a pin a finding's move has gets no routine move that day. Routine
+ * deadline and no results, and is listed after the findings' moves, by name, a lockfile's last in an order that says
+ * nothing of its package, so a finding's move keeps the place it would have with none listed. One pin is one move: a pin a finding's move has gets no routine move that day. Routine
  * is worked out (`isRoutine`), never a field.
  *
  * Its lane says who moves it, worked out, never chosen, in this order:
@@ -35,6 +35,7 @@
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
 
+import { createHash } from 'node:crypto';
 import { APP_REPOSITORY } from '../repositories.ts';
 import { dayText, type Target, targetText } from './fixes.ts';
 import type { Kind } from './inventory.ts';
@@ -301,7 +302,20 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
     move.lane = laneOf(move, new Set([each.kind]), context);
     if (move.lane !== 'none') routine.push(move);
   }
-  routine.sort((a, b) => order(a.name, b.name) || order(a.from, b.from));
+  // By name; then the lockfile's, whose names moves.json withholds, in an order that says nothing of them: by a
+  // hash of each one's repository, files, name and version, so a hidden name has no place among the names printed.
+  const hidden = (move: Move) =>
+    createHash('sha256')
+      .update(JSON.stringify([move.repository, move.pins.map((pin) => pin.file), move.name, move.from]))
+      .digest('hex');
+  const places = new Map(routine.map((move) => [move, move.lockfile ? hidden(move) : '']));
+  routine.sort(
+    (a, b) =>
+      Number(a.lockfile) - Number(b.lockfile) ||
+      order(places.get(a) ?? '', places.get(b) ?? '') ||
+      order(a.name, b.name) ||
+      order(a.from, b.from),
+  );
   return [...out, ...routine];
 }
 
@@ -379,9 +393,19 @@ export interface MovesFile {
    * by severity, as the log's line of deadlines gives them, fix or none. It is optional, under the same `MOVES_VERSION`,
    * so a file from a scan that predates it (the app's, at an older commit of the workflow) reads as it did; a reader
    * built before it refuses a file that has it, so the worker reads this repository's moves again once it is deployed.
-   * `routine` is how many of the moves are routine, written only on a day that has one, optional as `open` is.
+   * `routine` is how many of the moves are routine, and `routineUnread` how many pins the routine listing could not
+   * read that day (a registry that gave no answer): both are written by a scan that made a routine listing, zero
+   * included, and neither by one that made none, so a reader takes "absent" as "this scan made no routine listing",
+   * and a move no longer listed as made only where `routineUnread` is zero. Optional as `open` is.
    */
-  totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts; routine?: number } & DayCounts;
+  totals: {
+    fixed: number;
+    moves: number;
+    lanes: Record<Lane, number>;
+    open?: Counts;
+    routine?: number;
+    routineUnread?: number;
+  } & DayCounts;
   moves: PublicMove[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];
@@ -414,6 +438,8 @@ export function movesFile(
   scanned: ScannedImage[] = [],
   day: DayCounts = NO_COUNTS,
   open?: Counts,
+  /** The day's routine listing, where the scan made one: how many pins it could not read. */
+  listing?: { unread: number },
 ): MovesFile {
   const lanes = Object.fromEntries(LANES.map((lane) => [lane, list.filter((m) => m.lane === lane).length])) as Record<
     Lane,
@@ -431,7 +457,8 @@ export function movesFile(
       moves: list.length,
       lanes,
       ...(open ? { open: { ...open } } : {}),
-      ...(routine ? { routine } : {}),
+      ...(listing || routine ? { routine } : {}),
+      ...(listing ? { routineUnread: listing.unread } : {}),
       ...day,
     },
     moves: list.map(publicMove),

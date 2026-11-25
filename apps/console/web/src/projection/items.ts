@@ -590,11 +590,11 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         const { repository, number, move } = event.payload;
         state.issue = { repository, number };
         // Written again for another target while a pull request is open: the wait for the merge was the older
-        // target's, and ends as the line reads it, while Build starts afresh on the pull request.
+        // target's, and ends as the line reads it, while Build starts afresh on the pull request. A record that named
+        // no target named none the pull request is known to have.
         if (
           state.pullRequest !== undefined &&
           !merged &&
-          issueTo !== undefined &&
           move?.to !== undefined &&
           move.to !== issueTo &&
           state.hold?.cause === 'merge'

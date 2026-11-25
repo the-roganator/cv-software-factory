@@ -1415,7 +1415,8 @@ describe('Verify on the line', () => {
     });
   });
 
-  it('waits two days from the release for a scan whose routine listing is whole, so the next day’s has its turn', async () => {
+  /** A routine update's work item, merged and released, with its row at Release. */
+  async function routineReleased() {
     const repository = 'the-roganator/cv-worlds-worst-website';
     const grpc = { name: '@grpc/grpc-js', ecosystem: 'npm' as const, from: '1.14.4', to: '1.14.5' };
     const workItem = await nextWorkItem(database.as.triage);
@@ -1460,23 +1461,30 @@ describe('Verify on the line', () => {
     ]);
     await database.owner`insert into line (work_item, stage, issue) values (${workItem}, 'release', 29)`;
     await promote(workItem);
-    const { line: it, github } = line({ release: null, verify: {}, verifyEveryMs: 5 * 60_000 });
-    /** A scan of the release that read its image and made no routine listing, finished now. */
-    const scanned = () => {
-      github.moves = {
-        repository,
-        run: {
-          id: 42,
-          event: 'schedule',
-          conclusion: 'success',
-          headSha: commitOf(CANARY),
-          updatedAt: new Date(now).toISOString(),
-          url: 'https://github.test/runs/42',
-        },
-        file: { scanned: [{ digests: [digestOf(CANARY)] }], totals: {} } as unknown as Moves['file'],
-        moves: [],
-      };
+    return { workItem, repository };
+  }
+
+  /** A scan of the release that read its image and made no routine listing, finished now. */
+  const scannedBy = (github: ReturnType<typeof line>['github'], repository: string) => {
+    github.moves = {
+      repository,
+      run: {
+        id: 42,
+        event: 'schedule',
+        conclusion: 'success',
+        headSha: commitOf(CANARY),
+        updatedAt: new Date(now).toISOString(),
+        url: 'https://github.test/runs/42',
+      },
+      file: { scanned: [{ digests: [digestOf(CANARY)] }], totals: {} } as unknown as Moves['file'],
+      moves: [],
     };
+  };
+
+  it('waits two days from the release for a scan whose routine listing is whole, so the next day’s has its turn', async () => {
+    const { workItem, repository } = await routineReleased();
+    const { line: it, github } = line({ release: null, verify: {}, verifyEveryMs: 5 * 60_000 });
+    const scanned = () => scannedBy(github, repository);
     const HOUR = 60 * 60_000;
     // The daily scan comes 23 hours after the release, and its listing is not whole.
     now += 23 * HOUR;
@@ -1503,6 +1511,26 @@ describe('Verify on the line', () => {
       reason: expect.stringContaining(
         `No scan made a whole routine listing in 48 hours after the release: the scan of ${commitOf(CANARY).slice(0, 7)} listed no routine updates at all`,
       ),
+    });
+  });
+
+  it('scales that wait from Verify’s own, as the policy’s is: a run that shortens the one shortens both', async () => {
+    const { workItem, repository } = await routineReleased();
+    const HOUR = 60 * 60_000;
+    const { line: it, github } = line({ release: null, verify: {}, verifyEveryMs: 60_000, verifyWaitMs: HOUR });
+    now += HOUR / 2;
+    scannedBy(github, repository);
+    await pass(it);
+    await pass(it);
+    // Past Verify's own shortened wait, the listing's is still running.
+    now += HOUR;
+    await pass(it);
+    expect(await payloads(workItem, 'hold.started')).toEqual([]);
+    now += HOUR / 2;
+    await pass(it);
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
+      cause: 'verify',
+      reason: expect.stringContaining('No scan made a whole routine listing in 2 hours after the release'),
     });
   });
 

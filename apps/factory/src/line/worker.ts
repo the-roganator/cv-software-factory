@@ -1055,14 +1055,18 @@ export class Line {
         if (!dependency || !own) return false;
         const { body } = moveIssue(workItem, own, await this.#publicTicket(workItem, state), dependency.signal);
         // One GitHub no longer has, or that the App may no longer change, is left as it is, and logged: asking again
-        // would not help. The record is then of what the line would have it name, and the move goes on from that.
-        await this.#o.github
+        // would not help, so the row names this signal as the one it was last written for, and it is not asked again
+        // until triage joins another. Nothing is recorded: the issue names what it named, and the agents no more.
+        const written = await this.#o.github
           .act('updateIssue', this.#o.repo, { number: next.issue, body }, { workItem })
+          .then(() => true)
           .catch((error: unknown) => {
             if (!issueGone(error)) throw error;
             this.#o.log.warn({ workItem, issue: next.issue, err: error }, 'the issue cannot be written again');
+            return false;
           });
         await this.#queue.setIssue(workItem, next.issue, dependency.seq);
+        if (!written) return;
         this.#o.log.info({ workItem, issue: next.issue }, 'wrote the work item’s issue again, for the newest scan');
         await this.#recordIssue(workItem, state, next.issue, dependency.signal, true);
         return;
@@ -1277,6 +1281,10 @@ export class Line {
       }
       case 'finish':
         if (next.discarded !== undefined) await this.#closeDiscarded(item, state, next.discarded);
+        if (next.left) {
+          const { pullRequest, reason } = next.left;
+          await this.#closePullRequest(workItem, pullRequest, closedWithComment(reason, workItem));
+        }
         await this.#o.steps.finish(workItem);
         this.#o.log.info({ workItem }, 'the work item is over');
         return;
@@ -1489,7 +1497,10 @@ export class Line {
     switch (found.kind) {
       case 'wait': {
         // A wait for a scan whose routine listing is whole has the policy's longer limit: the next day's scan's turn.
-        const waitMs = found.listing ? RELEASE.verify.listingWaitHours * 3_600_000 : this.#o.verifyWaitMs;
+        // Scaled from Verify's own wait as the policy's is, so a run that shortens the one shortens both.
+        const waitMs = found.listing
+          ? (this.#o.verifyWaitMs * RELEASE.verify.listingWaitHours) / RELEASE.verify.waitHours
+          : this.#o.verifyWaitMs;
         const hours = waitMs / 3_600_000;
         if (now.getTime() - target.at.getTime() < waitMs) {
           this.#lookAgainAt.set(workItem, now.getTime() + this.#o.verifyEveryMs);
@@ -2033,7 +2044,8 @@ export class Line {
       const alone = move !== undefined && state.spec !== undefined && movesAlone(state.spec);
       // A scan triage joined since the line decided on this step is the issue's to name first: the step waits for the
       // pass that writes it, so no agent is told a move its issue has not named, and the pin step writes none.
-      if (issueBehind(fold((await this.#events(workItem)).events), item.issue)) return;
+      const now = fold((await this.#events(workItem)).events);
+      if (issueBehind(now, { issue: item.issue, scanSince: await this.#scanSince(item, now) })) return;
       let started: Awaited<ReturnType<typeof definition.start>>;
       try {
         const told = afresh ? { ...item, session: null } : item;
@@ -2080,7 +2092,7 @@ export class Line {
       if (outcome.kind === 'pinned') {
         // A move main already has is done, not failed: another change made it, and nothing is left to make.
         if (!outcome.pins && move) {
-          return await this.#madeAlready(item, agent, provider, outcome.job, move, commit, open?.number);
+          return await this.#madeAlready(item, agent, provider, outcome.job, move, commit);
         }
         this.#o.log.info({ workItem, agent, job: outcome.job }, 'the move asks for nothing but its pins: no coder');
         // The move is the whole change, as a coder says it (`{"moved": true}`): the line titles and notes it.
@@ -2249,8 +2261,8 @@ export class Line {
   /**
    * A move the pin step found main has already, as the second of two moves that overlap finds it once the first merged:
    * nothing is left to make, so the work item closes with no change of its own, and its issue as completed, saying so.
-   * So does its pull request, unmerged, when it has one open (`pull`): one built afresh for a newer target that main has
-   * since.
+   * A pull request it has open, built afresh for a newer target that main has since, closes as the work item finishes
+   * (`finish`), after the close is recorded.
    */
   async #madeAlready(
     item: QueueItem,
@@ -2259,20 +2271,18 @@ export class Line {
     job: string,
     move: NonNullable<Step['move']>,
     commit: string,
-    pull?: number,
   ): Promise<void> {
     const { workItem } = item;
     const reason = cutTo(
       `Main already has its move, at ${commit.slice(0, 7)}: ${move.name} at ${versionsWords(move.to)}`,
       200,
     );
-    const comment = [
-      `Main already has this move, at ${commit.slice(0, 7)}: \`${move.name}\` at ${versionsWords(move.to)}. Another change made it.`,
-      '',
-      `The factory’s work item #${workItem} is closed with no change of its own.`,
-    ].join('\n');
-    if (pull !== undefined) await this.#closePullRequest(workItem, pull, comment);
     if (item.issue) {
+      const comment = [
+        `Main already has this move, at ${commit.slice(0, 7)}: \`${move.name}\` at ${versionsWords(move.to)}. Another change made it.`,
+        '',
+        `The factory’s work item #${workItem} is closed with no change of its own.`,
+      ].join('\n');
       // One that is gone, or that the App may not change, has nothing to close.
       await closeIssue(
         this.#o.github,
@@ -2823,12 +2833,23 @@ export class Line {
    * What the line knows of a work item beside its events: its row in the queue, its spend against the cap, and for a
    * held or waiting one, or one at the point after Plan where its spec is checked, what the rest of the line says.
    */
+  /**
+   * Whether triage has joined a dependency signal to a move since the one its row names as the one its issue was last
+   * written for (`Facts.scanSince`). Asked of the store only for a move with a signal and a recorded issue, unmerged.
+   */
+  async #scanSince(item: QueueItem, state: WorkItemState): Promise<boolean> {
+    if (!state.scanned || state.merged || item.issue === null || state.issueRecorded !== item.issue) return false;
+    const newest = await this.#dependencySignal(item.workItem);
+    return newest !== undefined && newest.seq !== item.issueSignal;
+  }
+
   async #facts(item: QueueItem, events: readonly LineEvent[]): Promise<Facts> {
     const facts: Facts = { ...item };
     const limitUsd = this.#inForce?.workItemLimitUsd ?? this.#o.workItemLimitUsd;
     if (limitUsd !== null) facts.spend = { spentUsd: await workItemSpend(this.#o.sql, item.workItem), limitUsd };
     const s = fold(events);
     if (s.closed) return facts;
+    facts.scanSince = await this.#scanSince(item, s);
     const waits = !s.hold && s.waiting !== undefined && !s.waiting.ended;
     // A ticket just taken, before its issue or the planner: not once a step has failed or handed back work.
     const taken = !s.spec && atTake(s) && item.issue === null && item.failures === 0 && item.effects === null;
@@ -3169,6 +3190,10 @@ function providerOfStep(called: readonly Draft[]): 'anthropic' | 'bedrock' | 'lo
 export const signalId = (workItem: string, key: string) => uuidFrom(`line:${workItem}:${key}`);
 
 /** An error's own message, for an event: its causes are for the log, where they can name the cluster's addresses. */
+/** The comment on a pull request a work item leaves open as it closes with no change: the close's own reason. */
+const closedWithComment = (reason: string, workItem: string) =>
+  [`${reason}.`, '', `The factory’s work item #${workItem} is closed with no change of its own.`].join('\n');
+
 const messageOf = (error: unknown) => (error as Error)?.message ?? String(error);
 
 /** The summary of a work item closed on Martin's answer: what became of its pull request, and why if it is open. */

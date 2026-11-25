@@ -82,12 +82,14 @@
  * verified reopens the same way when the line runs live (`dryRunLeft`), with nothing come back to tell.
  *
  * A dependency's move follows the scan. Triage joins a signal that names another target, or other findings, to the
- * move's open ticket, and until the change merges the line takes it up before anything else: it writes its issue again
- * to name what that signal says (`issueBehind`), so one issue carries the move and no agent is told what the issue has
- * not named. An issue written again for another target leaves an open pull request's pins behind it (`behind`): Build
- * starts afresh on that pull request, as a first round does, from main with the pin step's move to the new target, and
- * the pull request takes the new head, to be gated, reviewed and written up as any new head is. Once the change has
- * merged, the newer signal is Verify's to read.
+ * move's open ticket, or one whose counts of the rest differ, and until the change merges the line takes it up before
+ * anything else: it writes its issue again from that signal (`issueBehind`), so one issue carries the move and no agent
+ * is told what the issue has not named. An issue written again for another target leaves an open pull request's pins
+ * behind it (`behind`): Build starts afresh on that pull request, as a first round does, from main with the pin step's
+ * move to the new target, and the pull request takes the new head, to be gated, reviewed and written up as any new
+ * head is. One in the merge queue is the queue's first: merged at the older target, the newer signal is Verify's to
+ * read, which finds the move still listed and sends the work back to Plan; taken out, it is built afresh. A work item
+ * that closes because main already has the newer target closes the pull request left at the older one as it finishes.
  *
  * The events are folded into where the work item is (`fold`), and `decide` turns that into one next action. Each
  * action either appends events, which moves the work item on, or waits for something outside the line: the gates
@@ -352,6 +354,8 @@ export interface WorkItemState {
   /** How many of `persisted` came before the last reopening: `LIMITS.persists` bounds those since, a fix's own. */
   persistedBefore: number;
   closed: boolean;
+  /** Why it closed, as its close says. */
+  closedWhy: string | undefined;
   /**
    * Martin's reason, when he closed the work item himself, as a discard (`admin/close.ts`): the line then closes its
    * pull request and issue as it finishes, whatever it takes. Only his roles discard a work item the line has.
@@ -425,6 +429,7 @@ const initial = (): WorkItemState => ({
   reopened: [],
   persistedBefore: 0,
   closed: false,
+  closedWhy: undefined,
   discarded: undefined,
   firstSense: undefined,
   seenOn: [],
@@ -463,31 +468,20 @@ function endMergeWait(state: WorkItemState): void {
 }
 
 /**
- * What an issue's record, or a signal read as one, says of a move: its versions and each finding, as triage compares
- * two signals of one move (`moveSays`), less what no issue's record keeps. The pins' lines are no part of it.
+ * Whether a move's issue is to be written again: triage has joined a dependency signal since the one the issue was
+ * last written for (`Facts.scanSince`), and it joins one only when the signal says other than the last did
+ * (`moveSays`: the versions, the findings, the counts of the rest, or whether it is a routine update), each of which
+ * the issue prints. The line then writes the issue again before anything else (`rewrite-issue`), so no agent runs
+ * ahead of it. Only an issue GitHub has and the line recorded, the one its row names: a dry run's is neither. Not once
+ * the change has merged, when the newer signal is Verify's, or the work item has closed.
  */
-const saysOf = (move: DisclosedMove | undefined): string =>
-  JSON.stringify([
-    move?.from,
-    move?.to,
-    (move?.findings ?? [])
-      .map((f) => [f.advisory, f.package, f.severity.scanner, f.severity.publisher ?? '', f.fixed ?? ''].join(' '))
-      .sort(),
-  ]);
-
-/**
- * Whether a move's issue names other than its newest signal says: another target, or other findings. The line then
- * writes the issue again before anything else (`rewrite-issue`), so no agent runs ahead of it. Only an issue GitHub
- * has and the line recorded, the one its row names: a dry run's is neither. Not once the change has merged, when the
- * newer signal is Verify's, or the work item has closed.
- */
-export const issueBehind = (state: WorkItemState, issue: number | null): boolean =>
+export const issueBehind = (state: WorkItemState, facts: Pick<Facts, 'issue' | 'scanSince'>): boolean =>
   !state.closed &&
   !state.merged &&
-  issue !== null &&
-  state.issueRecorded === issue &&
+  facts.issue !== null &&
+  state.issueRecorded === facts.issue &&
   state.scanned !== undefined &&
-  saysOf(state.scanned) !== saysOf(state.issueNames);
+  facts.scanSince === true;
 
 /** Why Build starts afresh on a pull request whose pins are an older target's, as its return and the coder say it. */
 export const TARGET_MOVED =
@@ -538,11 +532,11 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         break;
       case 'issue.opened': {
         const { number, move } = event.payload;
-        const named = state.issueNames?.to;
-        // Written again for another target while a pull request is open: the pull request's pins are behind it. What
-        // the line holds of the older head says nothing of the one to come: its review, and a merge held or waited
-        // for, which would be the older target's.
-        if (state.pullRequest && !state.merged && named !== undefined && move?.to !== undefined && move.to !== named) {
+        // Written again for another target while a pull request is open: the pull request's pins are behind it. A
+        // record that names no target, as of an issue opened before any signal, names none the pull request is known
+        // to have: it is behind the first target written after it. What the line holds of the older head says nothing
+        // of the one to come: its review, and a merge held or waited for, which would be the older target's.
+        if (state.pullRequest && !state.merged && move?.to !== undefined && move.to !== state.issueNames?.to) {
           state.behind = true;
           state.review = undefined;
           state.accepted = undefined;
@@ -842,6 +836,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
       case 'work-item.closed':
         state.closed = true;
         state.discarded = event.payload.outcome === 'discarded' ? event.payload.reason : undefined;
+        state.closedWhy = event.payload.reason;
         break;
       // The same defect came back after it was verified: a fresh pass, as after a return to Plan. Nothing that held
       // or answered the closed pass carries over to it.
@@ -1058,9 +1053,11 @@ export type Next =
   | { do: 'close'; reason: string; merged: boolean }
   /**
    * The work item is over: it closed. Closed by Martin himself (`discarded`), its pull request, unmerged, and its issue
-   * close with it, with his reason.
+   * close with it, with his reason. Closed with its pull request's pins still behind its issue (`left`), as when main
+   * already has the newer target, that pull request closes with it, unmerged, with the close's reason: the close is
+   * recorded first, so a failure before the pull request closes is finished here, never read as someone else's close.
    */
-  | { do: 'finish'; discarded?: string };
+  | { do: 'finish'; discarded?: string; left?: { pullRequest: number; reason: string } };
 
 /** What the line knows of a work item beside its events: its issue, and how often its step in hand has failed. */
 export interface Facts {
@@ -1078,6 +1075,12 @@ export interface Facts {
    * after Plan where a spec is checked against them. None known, no wait.
    */
   overlaps?: { workItem: string; files: string[] }[];
+  /**
+   * Whether triage has joined a dependency signal to a move since the one its row says its issue was last written
+   * for, or could not be written for: given for a move whose issue is recorded, until its change merges. Not known, no
+   * issue is written again.
+   */
+  scanSince?: boolean;
   /** For each work item it waits on, when it closed, or null while it is open. Not known, it waits on. */
   waitedOn?: Record<string, { closedAt: string } | null>;
   /**
@@ -1122,7 +1125,7 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
   const s = fold(events);
   const decision = decided(s, facts);
   // A move's issue names what the newest scan says before the line does anything else with the work item, where it is.
-  if (issueBehind(s, facts.issue) && facts.issue !== null) {
+  if (issueBehind(s, facts) && facts.issue !== null) {
     return { stage: decision.stage, next: { do: 'rewrite-issue', issue: facts.issue } };
   }
   return decision;
@@ -1130,7 +1133,12 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
 
 function decided(s: WorkItemState, facts: Facts): Decision {
   if (s.closed) {
-    return { stage: 'ended', next: { do: 'finish', ...(s.discarded !== undefined && { discarded: s.discarded }) } };
+    if (s.discarded !== undefined) return { stage: 'ended', next: { do: 'finish', discarded: s.discarded } };
+    const left =
+      s.behind && s.pullRequest && !s.merged
+        ? { left: { pullRequest: s.pullRequest.number, reason: s.closedWhy ?? '' } }
+        : {};
+    return { stage: 'ended', next: { do: 'finish', ...left } };
   }
   // A merge held for Martin is decided again on what GitHub says now: the gate may have judged its head again.
   if (s.hold?.cause === 'merge' && facts.merge && !s.merged) {
@@ -1236,8 +1244,10 @@ function decided(s: WorkItemState, facts: Facts): Decision {
     return { stage: 'build', next: { do: 'return', from: 'review', to: 'build', reason } };
   }
   // The pull request's pins are an older target's than its issue names: Build starts afresh on it. One in the merge
-  // queue is the queue's first: merged, the newer target is Verify's; taken out, it comes back here.
-  if (s.behind && !s.rebuild && !s.enqueued) {
+  // queue is the queue's first, and nothing runs on the head it holds: merged, the newer target is Verify's; taken out,
+  // it comes back here.
+  if (s.behind && !s.rebuild) {
+    if (s.enqueued) return { stage: 'review', next: { do: 'wait', for: 'queue' } };
     return { stage: 'build', next: { do: 'return', from: 'review', to: 'build', reason: TARGET_MOVED } };
   }
   if (!s.pullRequest || s.rebuild) {

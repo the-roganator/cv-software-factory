@@ -11,8 +11,9 @@
  * moved from another run or repository does not open.
  *
  * Losing it resets no deadline: a scan that finds no state it can open reads the alerts, as a proving run always does
- * (deadlines.ts's `seen` and `stated`), and writes the next. The alerts hold every day but a renamed item's from
- * before its rename.
+ * (deadlines.ts's `seen` and `stated`), and writes the next. The alerts hold every day; what they do not hold is a
+ * finding whole, so only a state carries an image's findings into a run that could not read it (deadlines.ts's
+ * `carried`).
  *
  *     node apps/factory/src/vulnerabilities/state.ts new        a key, base64, for SCAN_STATE_KEY
  *
@@ -21,6 +22,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { dayText, type Fix, readTarget, targetText } from './fixes.ts';
+import { DIGEST } from './reference.ts';
 import { SEVERITIES, type Severity } from './sarif.ts';
 import { ZipError, zipEntry } from './zip.ts';
 
@@ -59,6 +61,22 @@ export interface StateFinding {
   fix?: { target: string; day: string } | undefined;
   /** Its move's place in the run's `moves.json`, from 1; absent for one with no fix, or excepted. */
   move?: number | undefined;
+  /**
+   * The rest of the finding as the scan read it (sarif.ts's `Finding`), which makes the same result again on a run
+   * that cannot pull its image (deadlines.ts's `carried`): its item's key and the item as the list names it, the label
+   * its message names, with the digest read, the publisher's rating, the CVSS score, where in the image it is, and the
+   * advisory's title and link. Its description is left out: with it the state would be several times the size, and
+   * only the rule's long text, never a result or its alert, is made from it. A state written before these has none,
+   * and carries nothing.
+   */
+  item?: string | undefined;
+  listed?: string | undefined;
+  label?: string | undefined;
+  publisher?: Severity | undefined;
+  score?: number | undefined;
+  path?: string | undefined;
+  title?: string | undefined;
+  url?: string | undefined;
 }
 
 export interface State {
@@ -67,6 +85,35 @@ export interface State {
   /** The run that wrote it (GITHUB_RUN_ID), which its seal binds. */
   run: string;
   findings: StateFinding[];
+  /**
+   * The day's routine moves, which no finding carries: what `moves.json` withholds of a lockfile's, and each one's
+   * day; and each release the scan saw that is still inside its wait, which is no move yet.
+   */
+  routine?: StateRoutine[] | undefined;
+}
+
+/** A release a pin with no finding is behind (routine.ts), listed as a move or still waiting to be. */
+export interface StateRoutine {
+  /** Its place in the run's `moves.json`, from 1; absent while the release waits, and for one passed over. */
+  move?: number | undefined;
+  /** What moves: a package, an image's repository, a chart's name, `k3s`. */
+  name: string;
+  from: string;
+  /** Its target, as fixes.ts writes one (`targetText`). */
+  to: string;
+  pins: { file: string; line: number }[];
+  /**
+   * For an image, the digests its pins held when it was seen, in order: a pin that holds another has moved, and the
+   * record is no longer its own.
+   */
+  held?: string[] | undefined;
+  /** Set on the record of a routine move that is a major (its `Move.major`); absent otherwise. */
+  major?: boolean | undefined;
+  /**
+   * When the scan first saw this release for this pin, UTC to the second: an image's and a chart's wait counts from
+   * it, and a package's and k3s's from their registry's day, never taken to be later than it.
+   */
+  seen: string;
 }
 
 /** A state that cannot be read: sealed with another key, for another run or repository, or not a state at all. */
@@ -155,7 +202,7 @@ const isText = (value: unknown): value is string =>
 /** What is wrong with a state's shape, or undefined: the first thing, by the finding's place in the list alone. */
 function problemOf(state: unknown, repository: string, run: string): string | undefined {
   if (typeof state !== 'object' || state === null) return 'is not an object';
-  const { version, findings, ...rest } = state as Record<string, unknown>;
+  const { version, findings, routine, ...rest } = state as Record<string, unknown>;
   if (version !== STATE_VERSION) return `is version ${JSON.stringify(version)}, not ${STATE_VERSION}`;
   if (rest.repository !== repository) return "is another repository's";
   if (rest.run !== run) return "is another run's";
@@ -181,6 +228,45 @@ function problemOf(state: unknown, repository: string, run: string): string | un
     }
     if (f.move !== undefined && (!Number.isInteger(f.move) || (f.move as number) < 1 || f.fix === undefined))
       return `gives ${at} a move that is not one`;
+    // What carries it on a run that cannot pull its image, each held to its shape where it is there.
+    for (const name of ['item', 'listed', 'label'])
+      if (f[name] !== undefined && !isText(f[name])) return `gives ${at} a value for ${name} that is not text`;
+    // A path in an image and an advisory's own words, as Trivy gave them: any text the state's own size allows.
+    for (const name of ['path', 'title', 'url'])
+      if (f[name] !== undefined && typeof f[name] !== 'string')
+        return `gives ${at} a value for ${name} that is not text`;
+    if (f.publisher !== undefined && !SEVERITIES.includes(f.publisher as Severity))
+      return `gives ${at} a publisher's rating that is not one`;
+    if (f.score !== undefined && !(typeof f.score === 'number' && Number.isFinite(f.score) && f.score >= 0))
+      return `gives ${at} a score that is not one`;
+  }
+  if (routine === undefined) return undefined;
+  if (!Array.isArray(routine)) return 'lists routine moves that are not a list';
+  for (const [index, each] of routine.entries()) {
+    const at = `routine move ${index + 1}`;
+    if (typeof each !== 'object' || each === null) return `has no ${at}`;
+    const r = each as Record<string, unknown>;
+    if (r.move !== undefined && (!Number.isInteger(r.move) || (r.move as number) < 1))
+      return `gives ${at} a place that is not one`;
+    for (const name of ['name', 'from']) if (!isText(r[name])) return `gives ${at} no ${name}`;
+    if (typeof r.to !== 'string' || !readTarget(r.to)) return `gives ${at} a target the grammar does not read`;
+    if (!Array.isArray(r.pins) || !r.pins.length) return `gives ${at} no pins`;
+    for (const pin of r.pins as (Record<string, unknown> | null)[])
+      if (
+        typeof pin !== 'object' ||
+        pin === null ||
+        !isText(pin.file) ||
+        !Number.isInteger(pin.line) ||
+        (pin.line as number) < 0
+      )
+        return `gives ${at} a pin that is not one`;
+    if (
+      r.held !== undefined &&
+      (!Array.isArray(r.held) || !r.held.every((each) => typeof each === 'string' && DIGEST.test(each)))
+    )
+      return `gives ${at} digests that are not ones`;
+    if (r.major !== undefined && typeof r.major !== 'boolean') return `gives ${at} a major that is not one`;
+    if (!isDay(r.seen)) return `gives ${at} no day it was first seen`;
   }
   return undefined;
 }

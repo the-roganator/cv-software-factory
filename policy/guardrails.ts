@@ -281,7 +281,9 @@ export const GUARDRAILS = [
       'The factory acts only on issues and pull requests it created, and reads no issue as work: Martin asks for work ' +
       'in the console. An issue anyone else opens gets one polite bot reply, and nothing more. Outside PRs are never ' +
       'run with secrets, reviewed with credentials or merged automatically: the review gate passes none Martin has not ' +
-      'approved at its head. No self-hosted runners on public repos.',
+      'approved at its head. One pull request the factory did not create it adds to the merge queue, and does nothing ' +
+      "else to: Dependabot's that only moves the commit the factory's own workflows are called at to a later commit of " +
+      "the factory's main, once the review gate has passed it as exactly that. No self-hosted runners on public repos.",
     mechanism:
       'The factory reads no issue as work, and acts only on what it opened; an outside pull request runs with no ' +
       'secret and is never passed without Martin.',

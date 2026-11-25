@@ -116,7 +116,8 @@ const ANSWERED = {
 export const PUBLIC_VIEWS = {
   // A vulnerable lockfile move's package and versions are withheld (`WITHHELD_PACKAGE`); its title, which triage
   // writes, never names them. The work items Dependabot's own pull requests open (a routine update, `security` false)
-  // keep the name their pull request already makes public; triage opens none of those.
+  // keep the name their pull request already makes public, and so does a routine update the scan lists, which no
+  // finding is behind.
   'work-item.opened': ({ payload: { visitor: _key, ...payload }, ...event }) =>
     redacted({
       ...event,
@@ -169,7 +170,7 @@ export const PUBLIC_VIEWS = {
   'ticket.opened': ({ payload, ...event }) => {
     const { fingerprint } = payload;
     // A routine update's ticket (category `dependency`) names no finding, and the line's pin step reads its name from
-    // the public view; triage opens none today.
+    // the public view.
     if (!('ecosystem' in fingerprint) || !lockfileMove(fingerprint) || payload.category !== 'security')
       return redacted({ ...event, payload });
     return redacted({

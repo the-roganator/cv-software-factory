@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { excusedNote, judgedNote } from '../apps/factory/src/gates/test-integrity.ts';
 import {
   type Found,
@@ -15,7 +16,11 @@ import {
 import {
   APP_REPO,
   type CheckRun,
+  callMoves,
   codeOwners,
+  DEPENDABOT,
+  declarationOf,
+  declaresOtherwise,
   digestMoves,
   EXCUSED,
   exactPin,
@@ -40,7 +45,9 @@ import {
   TEST_INTEGRITY_CHECK,
   tagsOf,
   testIntegrityRun,
+  type WorkflowPinChecks,
   words,
+  workflowPin,
 } from './review-routing.ts';
 
 const HEAD = 'a'.repeat(40);
@@ -906,6 +913,654 @@ images:
     const other = kustomization.replace('ghcr.io/the-roganator/cv-software-factory/factory', 'ghcr.io/someone/factory');
     expect(await exactPin([file(moved)], checks({ content: async () => other }), true)).toMatchObject({
       reason: expect.stringContaining("not an image the factory's or the app's build.yml signs"),
+    });
+  });
+});
+
+describe('an exact pin of the factory’s workflows', () => {
+  const OLD = '1'.repeat(40);
+  const NEW = '2'.repeat(40);
+  const OTHER = '3'.repeat(40);
+  const WORKFLOWS = ['codeql', 'app-gates', 'pull-request', 'review', 'scorecard', 'vulnerabilities'];
+  const CALLERS = ['codeql', 'gates', 'pull-request', 'review', 'scorecard', 'vulnerabilities'];
+  const call = (workflow: string, commit: string, ref = `${commit} # main`) =>
+    `    uses: ${FACTORY_REPO}/.github/workflows/${workflow}.yml@${ref}`;
+  const moved = (workflow: string, from = OLD, to = NEW) =>
+    `@@ -24,3 +24,3 @@ jobs:\n   ${workflow}:\n-${call(workflow, from)}\n+${call(workflow, to)}\n     secrets:`;
+  const file = (caller: string, patch: string, over: Partial<FileChange> = {}): FileChange => ({
+    filename: `.github/workflows/${caller}.yml`,
+    status: 'modified',
+    patch,
+    ...over,
+  });
+  /** Dependabot's bump as it opens it: each caller's one line moved, and nothing else. */
+  const bump = (from = OLD, to = NEW) => CALLERS.map((caller, i) => file(caller, moved(WORKFLOWS[i] ?? '', from, to)));
+  const dependabots = (over: Partial<PullRequest> = {}) =>
+    pr(DEPENDABOT, APP_REPO, {
+      head: { sha: HEAD, ref: 'dependabot/github_actions/factory-0b5a7c9d1e', repo: { full_name: APP_REPO } },
+      ...over,
+    });
+  /** The factory's commits: NEW on main and ahead of OLD; OTHER ahead of OLD too, on another branch. */
+  const checks = (over: Partial<WorkflowPinChecks> = {}): WorkflowPinChecks => ({
+    compare: async (base, head) => {
+      if (base === OLD && (head === NEW || head === OTHER)) return 'ahead';
+      if (base === NEW && head === 'main') return 'ahead';
+      if (base === OTHER && head === 'main') return 'diverged';
+      return 'behind';
+    },
+    calls: async () =>
+      CALLERS.map((caller, i) => ({
+        file: `.github/workflows/${caller}.yml`,
+        number: 25,
+        line: call(WORKFLOWS[i] ?? '', NEW),
+      })),
+    declared: async () => DECLARES,
+    ...over,
+  });
+  /** One of the factory's workflows, as a caller calls it: what it declares, among its other events and its jobs. */
+  const DECLARES = `# The app's gates.
+name: gates
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      skip:
+        description: Whether the change is one the gates do not judge.
+        type: boolean
+        default: false
+    secrets:
+      SCAN_STATE_KEY:
+        description: The key the caller's scan seals its state with.
+        required: false
+    outputs:
+      kind:
+        description: What the change is.
+        value: \${{ jobs.kind.outputs.kind }}
+
+permissions: {}
+
+jobs:
+  kind:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          on:
+            workflow_call:
+              inputs: {}
+`;
+  const judged = (
+    files: FileChange[],
+    over: { pr?: PullRequest; repo?: string; checks?: WorkflowPinChecks; complete?: boolean } = {},
+  ) =>
+    workflowPin(over.repo ?? APP_REPO, over.pr ?? dependabots(), files, over.checks ?? checks(), over.complete ?? true);
+  const refused = async (...args: Parameters<typeof judged>) => {
+    const said = await judged(...args);
+    if (!said || !('reason' in said)) throw new Error(`not refused: ${JSON.stringify(said)}`);
+    return said.reason;
+  };
+
+  it('moves only the commit of a call, each in its place', () => {
+    expect(callMoves(file('codeql', moved('codeql')))).toEqual([
+      { file: '.github/workflows/codeql.yml', workflow: 'codeql.yml', from: OLD, to: NEW },
+    ]);
+  });
+
+  it('passes Dependabot’s bump: every call moved from one commit to one on the factory’s main, ahead of it', async () => {
+    expect(await judged(bump())).toEqual({
+      moved: { from: OLD, to: NEW, files: CALLERS.map((caller) => `.github/workflows/${caller}.yml`) },
+    });
+    // The newest commit of main is on it too.
+    const tip = checks({
+      compare: async (base, head) => (head === 'main' ? 'identical' : base === OLD ? 'ahead' : 'behind'),
+    });
+    expect(await judged(bump(), { checks: tip })).toHaveProperty('moved');
+  });
+
+  it('is not this rule’s to judge when no changed line names the factory’s workflows, and reads nothing', async () => {
+    const reading = checks({
+      compare: async () => {
+        throw new Error('read');
+      },
+      calls: async () => {
+        throw new Error('read');
+      },
+    });
+    const action = '-      - uses: actions/checkout@1111 # v4\n+      - uses: actions/checkout@2222 # v5';
+    const elsewhere = `-    uses: someone/else/.github/workflows/codeql.yml@${OLD} # main\n+    uses: someone/else/.github/workflows/codeql.yml@${NEW} # main`;
+    for (const files of [
+      [file('check', action)],
+      [file('codeql', elsewhere)],
+      [{ filename: 'src/a.ts', status: 'modified', patch: '+const a = 1;' }],
+      [file('codeql', moved('codeql'), { patch: undefined })],
+      [],
+    ])
+      expect(await judged(files, { checks: reading })).toBeUndefined();
+  });
+
+  it('refuses one anyone else opened, a fork’s, one into another branch, and any in a repository but the app’s', async () => {
+    for (const author of [FACTORY_APP, MARTIN, 42, null])
+      expect(await refused(bump(), { pr: dependabots({ user: author === null ? null : { id: author } }) })).toBe(
+        'Dependabot did not open it',
+      );
+    const fork = dependabots({
+      head: { sha: HEAD, ref: 'dependabot/github_actions/x', repo: { full_name: 'dependabot/fork' } },
+    });
+    expect(await refused(bump(), { pr: fork })).toBe("it is from a fork's branch");
+    const gone = dependabots({ head: { sha: HEAD, ref: 'dependabot/github_actions/x', repo: null } });
+    expect(await refused(bump(), { pr: gone })).toBe("it is from a fork's branch");
+    const stacked = dependabots({ base: { ref: 'release', repo: { full_name: APP_REPO } } });
+    expect(await refused(bump(), { pr: stacked })).toBe('it is into release, not main');
+    const here = pr(DEPENDABOT, FACTORY_REPO);
+    expect(await refused(bump(), { pr: here, repo: FACTORY_REPO })).toBe(
+      'the factory calls none of its own workflows by commit',
+    );
+    // Any other repository that calls them: the exception is the app's alone.
+    const other = 'the-roganator/another-caller';
+    expect(await refused(bump(), { pr: pr(DEPENDABOT, other), repo: other })).toBe(
+      `it is in ${other}, and only the app's bump of them passes as an exact pin`,
+    );
+  });
+
+  it('refuses anything beside the calls: a third-party action, another repository’s workflow, a second line, a file', async () => {
+    const reason = (patch: string) => refused([...bump().slice(1), file('codeql', patch)]);
+    const one = moved('codeql');
+    // A third-party action's pin, as Dependabot's ungrouped pull request carries beside the factory's.
+    expect(
+      await reason(`${one}\n-      - uses: actions/checkout@1111 # v4\n+      - uses: actions/checkout@2222 # v5`),
+    ).toContain(
+      "changes a line that is not a call of the factory's workflows at a commit of main: -      - uses: actions/checkout@1111",
+    );
+    expect(
+      await reason(
+        `${one}\n-    uses: someone/else/.github/workflows/x.yml@${OLD} # main\n+    uses: someone/else/.github/workflows/x.yml@${NEW} # main`,
+      ),
+    ).toContain('not a call of the factory');
+    // A second line of a workflow: an input, a permission, a job.
+    for (const line of ['+      ref: main', '-      contents: read', '+  another:', '+', '-# a comment'])
+      expect(await reason(`${one}\n${line}`), line).toContain('not a call of the factory');
+    // The factory's, by a tag or a branch rather than a commit; the comment changed or gone; another key; more indent.
+    for (const added of [
+      call('codeql', NEW, 'v1.52.0'),
+      call('codeql', NEW, 'main'),
+      call('codeql', NEW, `${NEW.slice(0, 7)} # main`),
+      call('codeql', NEW, `${NEW} # v1.52.0`),
+      call('codeql', NEW, NEW),
+      call('codeql', NEW, `${NEW} # main `),
+      call('codeql', NEW).replace('uses:', 'with:'),
+      call('codeql', NEW).toUpperCase(),
+    ])
+      expect(await reason(`-${call('codeql', OLD)}\n+${added}`), added).toContain('not a call of the factory');
+    // Each removed call is replaced in its place by one that reads the same but for the commit.
+    expect(await reason(`-${call('codeql', OLD)}\n+${call('review', NEW)}`)).toBe(
+      '.github/workflows/codeql.yml changes more of a call than its commit',
+    );
+    expect(await reason(`-${call('codeql', OLD)}\n+  ${call('codeql', NEW)}`)).toBe(
+      '.github/workflows/codeql.yml changes more of a call than its commit',
+    );
+    expect(await reason(`${one}\n+${call('review', NEW)}`)).toBe(
+      '.github/workflows/codeql.yml adds or removes a call rather than moving its commit',
+    );
+    expect(await reason(`-${call('codeql', OLD)}`)).toBe(
+      '.github/workflows/codeql.yml adds or removes a call rather than moving its commit',
+    );
+    // A file outside the workflows, one added, removed or renamed, and one GitHub gives no patch of.
+    const beside = (other: FileChange) => refused([...bump(), other]);
+    expect(await beside({ filename: 'src/a.ts', status: 'modified', patch: '+const a = 1;' })).toBe(
+      'src/a.ts is not a workflow under .github/workflows/',
+    );
+    expect(await beside({ filename: '.github/dependabot.yml', status: 'modified', patch: '+x' })).toBe(
+      '.github/dependabot.yml is not a workflow under .github/workflows/',
+    );
+    expect(await beside({ filename: '.github/workflows/sub/x.yml', status: 'modified', patch: one })).toContain(
+      'is not a workflow under',
+    );
+    for (const status of ['added', 'removed'])
+      expect(await beside(file('new', `+${call('codeql', NEW)}`, { status }))).toBe(
+        `.github/workflows/new.yml is ${status}, not modified`,
+      );
+    expect(await beside(file('new', one, { status: 'renamed', previous_filename: '.github/workflows/old.yml' }))).toBe(
+      '.github/workflows/new.yml is not a workflow under .github/workflows/',
+    );
+    expect(await beside(file('big', one, { patch: undefined }))).toBe(
+      'GitHub gives no patch of .github/workflows/big.yml to read',
+    );
+    // Past what GitHub lists, the files it leaves out could be anything.
+    expect(await refused(bump(), { complete: false })).toBe(
+      'GitHub lists only some of its files, and the rest are unread',
+    );
+  });
+
+  it('refuses pins moved to two commits, from two, or only some of them', async () => {
+    const two = [...bump().slice(1), file('codeql', moved('codeql', OLD, OTHER))];
+    expect(await refused(two)).toBe(
+      'it moves .github/workflows/gates.yml from 1111111 to 2222222 and .github/workflows/codeql.yml from 1111111 to 3333333: every call moves from one commit to one commit',
+    );
+    expect(await refused([...bump().slice(1), file('codeql', moved('codeql', OTHER, NEW))])).toContain(
+      'every call moves from one commit to one commit',
+    );
+    // Five of the six: the sixth, which the pull request does not change, is still at the old commit at its head.
+    const left = checks({
+      calls: async () => [
+        { file: '.github/workflows/gates.yml', number: 70, line: call('app-gates', NEW) },
+        { file: '.github/workflows/codeql.yml', number: 25, line: call('codeql', OLD) },
+      ],
+    });
+    expect(await refused(bump().slice(1), { checks: left })).toBe(
+      '.github/workflows/codeql.yml at its head still calls the factory at 1111111: every call moves together',
+    );
+    // One left at a tag, which no bump of a commit moves.
+    const naming = (line: string) =>
+      refused(bump(), {
+        checks: checks({ calls: async () => [{ file: '.github/workflows/codeql.yml', number: 25, line }] }),
+      });
+    const held = (line: string) =>
+      `.github/workflows/codeql.yml:25 at its head names the factory's workflows in a line that is not a call of one at a commit of main (\`${line}\`), which holds every bump of them until it is one, or does not name them`;
+    expect(await naming(call('codeql', NEW, 'v1'))).toBe(held(call('codeql', NEW, 'v1').trim()));
+    // A comment that names the path holds every bump too: the words say which line of which file, whole.
+    const comment = `# See ${FACTORY_REPO}/.github/workflows/codeql.yml for what this runs.`;
+    expect(await naming(`    ${comment}`)).toBe(held(comment));
+  });
+
+  it('refuses a commit not on the factory’s main, one behind the old, the same, and one that has diverged', async () => {
+    // Ahead of the old pin, as a fork's commit or another branch's can be, and not on main.
+    expect(await refused(bump(OLD, OTHER), { checks: checks({ calls: async () => [] }) })).toBe(
+      "3333333 is not on the factory's main",
+    );
+    const ahead = checks({
+      compare: async (base, head) => (base === OLD ? 'ahead' : head === 'main' ? 'behind' : 'x'),
+    });
+    expect(await refused(bump(), { checks: ahead })).toBe("2222222 is not on the factory's main");
+    const standing = (status: string) =>
+      refused(bump(), { checks: checks({ compare: async (_base, head) => (head === 'main' ? 'ahead' : status) }) });
+    expect(await standing('behind')).toBe('2222222 is behind 1111111, the commit it replaces: a pin moves forward');
+    expect(await standing('diverged')).toBe('2222222 does not descend from 1111111, the commit it replaces');
+    expect(await standing('identical')).toBe('2222222 is the commit it replaces');
+  });
+
+  it('throws a check it could not make, which is no judgement', async () => {
+    const down = async () => {
+      throw new Error('GET /compare: 503');
+    };
+    await expect(judged(bump(), { checks: checks({ compare: down }) })).rejects.toThrow('503');
+    await expect(judged(bump(), { checks: checks({ calls: down }) })).rejects.toThrow('503');
+    await expect(judged(bump(), { checks: checks({ declared: down }) })).rejects.toThrow('503');
+  });
+
+  describe('what a called workflow declares to its caller', () => {
+    const MARTINS =
+      "what its caller gives it may have to change with it, so this bump is Martin's, who moves the pin and the caller together";
+    /** The bump, with the factory's app-gates.yml as `was` at the old commit and `now` at the new. */
+    const between = (was: string | undefined, now: string | undefined) =>
+      judged(bump(), {
+        checks: checks({
+          declared: async (workflow, commit) =>
+            workflow !== 'app-gates.yml' ? DECLARES : commit === OLD ? was : commit === NEW ? now : undefined,
+        }),
+      });
+    const refusedBetween = async (was: string | undefined, now: string | undefined) => {
+      const said = await between(was, now);
+      if (!said || !('reason' in said)) throw new Error(`not refused: ${JSON.stringify(said)}`);
+      return said.reason;
+    };
+    const otherwise = (what: string) =>
+      `the factory's app-gates.yml declares otherwise at 2222222 than at 1111111 (${what}): ${MARTINS}`;
+
+    it('reads each workflow called at the head, at the old commit and the new, and passes one that declares the same', async () => {
+      const read: string[] = [];
+      const reading = checks({
+        declared: async (workflow, commit) => {
+          read.push(`${workflow}@${commit.slice(0, 1)}`);
+          return DECLARES;
+        },
+      });
+      expect(await judged(bump(), { checks: reading })).toHaveProperty('moved');
+      expect(read.sort()).toEqual(WORKFLOWS.flatMap((workflow) => [`${workflow}.yml@1`, `${workflow}.yml@2`]).sort());
+    });
+
+    it('passes a change that is no change to what it declares: a comment, a description, the order, its jobs, another event', async () => {
+      for (const now of [
+        DECLARES.replace('    inputs:', '    # What a caller says of the change.\n    inputs:'),
+        DECLARES.replace('        type: boolean', '        type: boolean # true or false'),
+        DECLARES.replace('Whether the change is one the gates do not judge.', 'Whether to judge nothing.'),
+        DECLARES.replace(
+          "        description: The key the caller's scan seals its state with.",
+          "        description: >-\n          The key the caller's scan\n          seals its state with.",
+        ),
+        DECLARES.replace(
+          '        type: boolean\n        default: false',
+          '        default: false\n        type: boolean',
+        ),
+        DECLARES.replace('        type: boolean', "        type: 'boolean'"),
+        DECLARES.replace('    runs-on: ubuntu-24.04', '    runs-on: ubuntu-26.04'),
+        DECLARES.replace('  pull_request:', '  pull_request:\n  merge_group:'),
+        DECLARES.replace(/\n/g, '\r\n'),
+      ])
+        expect(await between(DECLARES, now), now).toHaveProperty('moved');
+    });
+
+    it('refuses an added secret or input, a removed input, a renamed output and one declared otherwise, naming each', async () => {
+      const secret = DECLARES.replace('    outputs:', '      NEW_KEY:\n        required: true\n    outputs:');
+      expect(await refusedBetween(DECLARES, secret)).toBe(otherwise('the secret NEW_KEY is added'));
+      const input = DECLARES.replace(
+        '    secrets:',
+        '      ref:\n        type: string\n        required: true\n    secrets:',
+      );
+      expect(await refusedBetween(DECLARES, input)).toBe(otherwise('the input ref is added'));
+      expect(await refusedBetween(input, DECLARES)).toBe(otherwise('the input ref is removed'));
+      const renamed = DECLARES.replace('      kind:\n        description', '      what:\n        description');
+      expect(await refusedBetween(DECLARES, renamed)).toBe(
+        otherwise('the output kind is removed, the output what is added'),
+      );
+      // The same names, asked for otherwise: a secret made required, an input's type, an output's value.
+      expect(await refusedBetween(DECLARES, DECLARES.replace('required: false', 'required: true'))).toBe(
+        otherwise('the secret SCAN_STATE_KEY is declared otherwise'),
+      );
+      expect(await refusedBetween(DECLARES, DECLARES.replace('type: boolean', 'type: string'))).toBe(
+        otherwise('the input skip is declared otherwise'),
+      );
+      expect(await refusedBetween(DECLARES, DECLARES.replace('default: false', 'default: "false"'))).toBe(
+        otherwise('the input skip is declared otherwise'),
+      );
+      // A part gone whole.
+      const none = DECLARES.replace(/ {4}secrets:\n(?: {6,}.*\n)+/, '');
+      expect(await refusedBetween(DECLARES, none)).toBe(otherwise('the secret SCAN_STATE_KEY is removed'));
+    });
+
+    it('refuses a workflow that is gone, or declares no workflow_call, at either commit', async () => {
+      expect(await refusedBetween(DECLARES, undefined)).toBe(
+        `the factory's app-gates.yml is not there at 2222222: ${MARTINS}`,
+      );
+      expect(await refusedBetween(undefined, DECLARES)).toContain('is not there at 1111111');
+      const uncalled = DECLARES.replace(/ {2}workflow_call:\n(?: {4,}.*\n)+/, '');
+      expect(await refusedBetween(DECLARES, uncalled)).toBe(
+        `the factory's app-gates.yml declares no workflow_call at 2222222: ${MARTINS}`,
+      );
+      expect(await refusedBetween(uncalled, DECLARES)).toContain('declares no workflow_call at 1111111');
+      expect(await refusedBetween(DECLARES, 'name: gates\njobs: {}\n')).toContain(
+        'declares no workflow_call at 2222222',
+      );
+    });
+
+    it('refuses a declaration whose lines differ and that it does not read, and passes one written the same at both', async () => {
+      const listed = DECLARES.replace('        type: boolean', '        type: choice\n        options: [a, b]');
+      expect(await refusedBetween(DECLARES, listed)).toBe(
+        `the factory's app-gates.yml declares its workflow_call in other words at 2222222 than at 1111111, which the gate does not read (a value it does not read: [a, b]): ${MARTINS}`,
+      );
+      expect(await between(listed, listed)).toHaveProperty('moved');
+      const braces = 'on: { workflow_call: { inputs: { skip: { type: boolean } } } }\njobs: {}\n';
+      expect(await refusedBetween(DECLARES, braces)).toContain('which the gate does not read');
+    });
+
+    it('takes a name a file gives as a key like any other: __proto__, constructor, toString, hasOwnProperty', async () => {
+      for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+        const input = DECLARES.replace(
+          '    secrets:',
+          `      ${name}:\n        type: string\n        required: true\n    secrets:`,
+        );
+        expect(await refusedBetween(DECLARES, input), name).toBe(otherwise(`the input ${name} is added`));
+        expect(await refusedBetween(input, DECLARES), name).toBe(otherwise(`the input ${name} is removed`));
+        const secret = DECLARES.replace('    outputs:', `      ${name}:\n        required: true\n    outputs:`);
+        expect(await refusedBetween(DECLARES, secret), name).toBe(otherwise(`the secret ${name} is added`));
+        expect(
+          await refusedBetween(
+            secret,
+            secret.replace(`${name}:\n        required: true`, `${name}:\n        required: false`),
+          ),
+          name,
+        ).toBe(otherwise(`the secret ${name} is declared otherwise`));
+        // A part of the declaration named so is a part too.
+        const part = DECLARES.replace('    outputs:', `    ${name}:\n      x:\n        required: true\n    outputs:`);
+        expect(await refusedBetween(DECLARES, part), name).toBe(otherwise(`the ${name} x is added`));
+      }
+    });
+
+    it('refuses a declaration written with an anchor, an alias or a merge key, the same lines at both commits or not', async () => {
+      const elsewhere = (at: string) =>
+        `the factory's app-gates.yml declares its workflow_call at ${at} with an anchor, an alias or a merge key, so what it declares is outside the lines the gate compares: ${MARTINS}`;
+      // The inputs are written under another event, and a required one is added there: the declaration's lines are the same.
+      const aliased = (more = '') =>
+        `on:\n  workflow_dispatch:\n    inputs: &i\n      skip:\n        type: boolean\n${more}  workflow_call:\n    inputs: *i\njobs: {}\n`;
+      expect(await refusedBetween(aliased(), aliased('      ref:\n        required: true\n'))).toBe(
+        elsewhere('1111111'),
+      );
+      expect(await refusedBetween(aliased(), aliased())).toBe(elsewhere('1111111'));
+      expect(await refusedBetween(DECLARES, aliased())).toBe(elsewhere('2222222'));
+      for (const written of [
+        'on:\n  workflow_call: *c\njobs: {}\n',
+        'on:\n  workflow_call: &c\n    inputs:\n      skip:\n        type: boolean\njobs: {}\n',
+        'on:\n  workflow_call:\n    <<: *c\n    inputs:\n      skip:\n        type: boolean\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      skip: &s\n        type: boolean\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      skip:\n        <<: *s\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      skip:\n        default: *d\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs: { skip: *s }\njobs: {}\n',
+        'on:\n  workflow_call:\n    inputs:\n      *k :\n        type: boolean\njobs: {}\n',
+      ])
+        expect(await refusedBetween(written, written), written).toBe(elsewhere('1111111'));
+      // An expression that multiplies or ands is none of them.
+      const expression = DECLARES.replace(
+        'jobs.kind.outputs.kind }}',
+        "jobs.kind.result == 'success' && inputs.skip }}",
+      );
+      expect(await between(expression, expression)).toHaveProperty('moved');
+      expect(
+        await between(DECLARES, DECLARES.replace('What the change is.', 'What the change is, a*b && *c.')),
+      ).toHaveProperty('moved');
+    });
+
+    it('never takes two numbers written otherwise for one, nor a number for its text', async () => {
+      const withDefault = (value: string) => DECLARES.replace('default: false', `default: ${value}`);
+      for (const [was, now] of [
+        ['20.10', '20.1'],
+        ['010', '10'],
+        ['1e2', '100'],
+        ['0x10', '16'],
+        ['0x10', '"0x10"'],
+        ['20', '"20"'],
+        ['+5', '5'],
+        ['.5', '0.5'],
+        ['1.0', '1'],
+        ['20', '21'],
+      ] as const) {
+        expect(await refusedBetween(withDefault(was), withDefault(now)), `${was} ${now}`).toContain(MARTINS);
+        expect(await refusedBetween(withDefault(now), withDefault(was)), `${now} ${was}`).toContain(MARTINS);
+      }
+      // The same number written the same, and one read whole, pass.
+      expect(await between(withDefault('20.10'), withDefault('20.10'))).toHaveProperty('moved');
+      expect(await between(withDefault('20'), withDefault('20 # minutes'))).toHaveProperty('moved');
+    });
+
+    it('refuses wherever YAML itself reads two declarations as different', () => {
+      /** A declaration as YAML reads it, less what tells a reader alone, its keys in order. */
+      const canonical = (value: unknown): unknown =>
+        typeof value !== 'object' || value === null
+          ? value
+          : Object.entries(value)
+              .filter(([key]) => key !== 'description')
+              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+              .map(([key, each]) => [key, canonical(each)]);
+      const asYaml = (text: string) =>
+        JSON.stringify(canonical((parse(text) as { on?: { workflow_call?: unknown } }).on?.workflow_call ?? {}));
+      const input = (name: string, more = '') =>
+        DECLARES.replace(
+          '    secrets:',
+          `      ${name}:\n        type: string\n        required: true\n${more}    secrets:`,
+        );
+      const aliased = (more = '') =>
+        `on:\n  workflow_dispatch:\n    inputs: &i\n      skip:\n        type: boolean\n${more}  workflow_call:\n    inputs: *i\njobs: {}\n`;
+      const withDefault = (value: string) => DECLARES.replace('default: false', `default: ${value}`);
+      const shapes = [
+        DECLARES,
+        ...['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'ref'].map((name) => input(name)),
+        input('__proto__', '        default: x\n'),
+        aliased(),
+        aliased('      ref:\n        required: true\n'),
+        aliased('      __proto__:\n        required: true\n'),
+        ...[
+          '20.10',
+          '20.1',
+          '010',
+          '10',
+          '1e2',
+          '100',
+          '0x10',
+          '16',
+          '"0x10"',
+          '"20"',
+          '20',
+          'true',
+          '"true"',
+          '~',
+          "''",
+        ].map(withDefault),
+        DECLARES.replace('required: false', 'required: true'),
+        DECLARES.replace('Whether the change is one the gates do not judge.', 'Whether to judge nothing.'),
+        DECLARES.replace(
+          '        type: boolean\n        default: false',
+          '        default: false\n        type: boolean',
+        ),
+      ];
+      let differing = 0;
+      for (const was of shapes)
+        for (const now of shapes) {
+          if (asYaml(was) === asYaml(now)) continue;
+          differing++;
+          expect(declaresOtherwise('x.yml', { from: OLD, to: NEW }, was, now), `${was}\n---\n${now}`).toBeDefined();
+        }
+      expect(differing).toBeGreaterThan(500);
+    });
+
+    it('comes after the commits’ own reasons: a commit that is not on main is refused for that', async () => {
+      const other = checks({ calls: async () => [], declared: async () => undefined });
+      expect(await refused(bump(OLD, OTHER), { checks: other })).toBe("3333333 is not on the factory's main");
+    });
+
+    it('reads a declaration as YAML does, for every workflow of the factory’s that a caller may call', () => {
+      const folder = new URL('../.github/workflows/', import.meta.url);
+      const callable: string[] = [];
+      for (const name of readdirSync(folder).filter((each) => each.endsWith('.yml'))) {
+        const text = readFileSync(new URL(name, folder), 'utf-8');
+        const on = (parse(text) as { on?: unknown }).on;
+        const declared = declarationOf(text);
+        const calledBy = typeof on === 'object' && on !== null && !Array.isArray(on) && 'workflow_call' in on;
+        if (!calledBy) {
+          expect(declared, name).toBeUndefined();
+          continue;
+        }
+        callable.push(name);
+        expect(declared, name).toHaveProperty('read', (on as { workflow_call: unknown }).workflow_call ?? {});
+      }
+      // Each workflow the app calls is among them.
+      for (const workflow of WORKFLOWS) expect(callable).toContain(`${workflow}.yml`);
+    });
+
+    it('reads `on:` however a workflow that declares nothing writes it', () => {
+      for (const on of [
+        'on: workflow_call',
+        'on: [push, workflow_call]',
+        'on:\n  - push\n  - workflow_call',
+        'on:\n  workflow_call:',
+        'on:\n  workflow_call: {}',
+        "'on':\n  workflow_call: # none\n  push:",
+      ])
+        expect(declarationOf(`${on}\njobs: {}\n`), on).toMatchObject({ read: {} });
+      for (const on of ['on: push', 'on: [push]', 'on:\n  - push', 'on:\n  push:\n    workflow_call:', 'jobs: {}'])
+        expect(declarationOf(`${on}\njobs: {}\n`), on).toBeUndefined();
+      // The same at both commits, a workflow with nothing declared passes.
+      expect(
+        declaresOtherwise('x.yml', { from: OLD, to: NEW }, 'on: workflow_call\n', 'on:\n  workflow_call:\n'),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('as the rule decides it', () => {
+    const pin = { moved: { from: OLD, to: NEW, files: CALLERS.map((caller) => `.github/workflows/${caller}.yml`) } };
+    const theirs = facts({ pr: dependabots(), tags: [tag('code-owned', '.github/workflows/codeql.yml (/.github/)')] });
+
+    it('passes as an exact pin, whatever its tags, AUTONOMY and test integrity’s reading, naming the commit', () => {
+      for (const autonomy of ['', 'lights-out'])
+        for (const testIntegrity of [
+          { read: true as const },
+          {
+            read: false as const,
+            reason: "it changes .github/workflows/codeql.yml, so test integrity's run is not the workflow on main's",
+          },
+          { read: false as const, reason: 'test integrity has not run at aaaaaaa', pending: true as const },
+        ]) {
+          const said = route({ ...theirs, autonomy, testIntegrity, workflows: pin });
+          expect(said).toMatchObject({
+            pass: true,
+            rule: 'exact-pin',
+            title:
+              "An exact pin of the factory's workflows: its 6 calls of them move to 2222222, which is on the factory's main and ahead of 1111111",
+          });
+          expect(said.pending).toBeUndefined();
+        }
+      // Before a move is asked of it: a head the move job has not judged does not hold an exact pin.
+      expect(route({ ...theirs, workflows: pin, move: { pending: 'the move job did not judge #7' } })).toMatchObject({
+        pass: true,
+        rule: 'exact-pin',
+      });
+    });
+
+    it('comes after Martin’s say, a read that failed and a risk label removed', () => {
+      expect(route({ ...theirs, workflows: pin, reviews: [approved()] }).rule).toBe('martin-approved-head');
+      expect(route({ ...theirs, workflows: pin, unread: 'GET /files: 502' })).toMatchObject({ pass: false });
+      expect(route({ ...theirs, workflows: pin, labelsRemoved: ['code-owned'] })).toMatchObject({ pass: false });
+    });
+
+    it('never passes one that is not Dependabot’s, from a branch here, into main, outside the factory’s repository', () => {
+      for (const other of [
+        { ...theirs, pr: pr(42) },
+        { ...theirs, pr: pr(FACTORY_APP) },
+        { ...theirs, pr: dependabots({ head: { sha: HEAD, ref: 'x', repo: { full_name: 'someone/fork' } } }) },
+        { ...theirs, pr: dependabots({ base: { ref: 'release', repo: { full_name: APP_REPO } } }) },
+        { ...theirs, repo: FACTORY_REPO, pr: pr(DEPENDABOT, FACTORY_REPO) },
+      ])
+        expect(route({ ...other, autonomy: 'lights-out', workflows: pin })).toMatchObject({
+          pass: false,
+          rule: 'held',
+        });
+    });
+
+    it('holds one that is not exact saying why, with why it is no move beside it', () => {
+      const reason = '.github/workflows/check.yml changes a line that is not a call of the factory’s workflows';
+      expect(route({ ...theirs, workflows: { reason } }).title).toBe(
+        `Not an exact pin of the factory's workflows: ${reason}: waits for Martin to approve aaaaaaa`,
+      );
+      const move = { reason: 'it changes .github/workflows/check.yml, and no move is made under .github/' };
+      expect(route({ ...theirs, workflows: { reason }, move }).title).toBe(
+        `Not an exact pin of the factory's workflows (${reason}), nor a move: ${move.reason}: waits for Martin to approve aaaaaaa`,
+      );
+      // Anyone's that touches a call, a stranger's among them; and no hold is a wait.
+      const strangers = route({ ...theirs, pr: pr(42), workflows: { reason: 'Dependabot did not open it' } });
+      expect(strangers.title).toBe(
+        "Not an exact pin of the factory's workflows: Dependabot did not open it: waits for Martin to approve aaaaaaa",
+      );
+      expect(strangers.pending).toBeUndefined();
+      // The App's is judged by its own rules, as before: `.github/` is Martin's.
+      expect(route({ ...theirs, pr: pr(FACTORY_APP), workflows: { reason } }).title).toContain(
+        'Held for its risk tags (code-owned)',
+      );
+    });
+
+    it('waits, never judging, when the check could not be made, and an earlier pass at its head stands', () => {
+      const unchecked = route({ ...theirs, workflows: { unchecked: 'GET /compare: 503' } });
+      expect(unchecked).toMatchObject({
+        pass: false,
+        rule: 'held',
+        unchecked: 'GET /compare: 503',
+        pending: 'the gate could not check its exact pin: GET /compare: 503',
+        title:
+          'Not judged yet: the gate could not check its exact pin: GET /compare: 503: waits for Martin to approve aaaaaaa',
+      });
+      const entry = { number: 7, head: HEAD, rule: 'exact-pin' as const, tags: [] };
+      const earlier: Verdict = { version: 1, commit: QUEUE, judged: [entry] };
+      expect(stands(earlier, QUEUE, [{ number: 7, head: HEAD, said: unchecked }])).toBe(true);
+      // Never one whose base was changed, nor one Martin's approval passed then.
+      const moved_ = route({ ...theirs, retargeted: true, workflows: { unchecked: 'GET /compare: 503' } });
+      expect(stands(earlier, QUEUE, [{ number: 7, head: HEAD, said: moved_ }])).toBe(false);
+      const approvedThen: Verdict = { ...earlier, judged: [{ ...entry, rule: 'martin-approved-head' }] };
+      expect(stands(approvedThen, QUEUE, [{ number: 7, head: HEAD, said: unchecked }])).toBe(false);
     });
   });
 });

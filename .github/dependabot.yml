@@ -1,5 +1,11 @@
 # Weekly dependency updates, each as a pull request through the same checks as any other change.
 # The cooldown waits a few days after a release before proposing it: most malicious releases are pulled within hours.
+#
+# The daily scan lists most of the same pins when they are merely behind, as routine updates, after the same waits
+# (`ROUTINE` in policy/vulnerabilities.ts: three days, seven for a major), and the factory's App makes each move
+# (docs/COMPONENTS/SECURITY-SCANNING.md#routine-updates). So a pull request opened from here for a pin the scan lists
+# closes itself once main has the version. What only Dependabot proposes waits for Martin: the actions the workflows
+# use, and what the scan leaves alone (`ROUTINE.leave`).
 version: 2
 
 # Playwright's library (npm) and its browsers' image (docker, apps/factory/Dockerfile.browser) are one release, so they
@@ -90,7 +96,9 @@ updates:
   #
   # A docker cooldown holds only where the registry gives Dependabot the image's publication date. Where it gives none,
   # the pull request opens with Dependabot's warning that no publication date was available, and the image arrives at
-  # the first weekly run after its release, held by its digest and review alone. By registry, from each one's bumps:
+  # the first weekly run after its release, held by its digest and review alone. The scan's routine update of such an
+  # image waits three days whatever the registry or the image says: from the day the scan first saw the pin behind
+  # its tag, which the scan's state keeps. By registry, from each one's bumps:
   #   Docker Hub (node, postgres, nginxinc/nginx-unprivileged)       no date
   #   gcr.io (distroless/nodejs24-debian13)                          no date
   #   Microsoft's, mcr.microsoft.com (playwright, devcontainers)     no date
@@ -100,7 +108,7 @@ updates:
   #   Quay (prometheuscommunity/postgres-exporter)                   unknown until its first bump
   # Trivy is the scanner every workflow runs, pinned once, in deploy/images/trivy/Dockerfile, which nothing builds: a
   # docker update may not write under .github/ (GitHub refused one there, run 42667462814). The cooldown is kept for it
-  # so that it holds if GHCR gives a date, and a bump waits for Martin, as deploy/ is his.
+  # so that it holds if GHCR gives a date, and a bump of Dependabot's waits for Martin, as deploy/ is his.
   # Syft, which the dependency graph runs and build.yml attests SBOMs with, is pinned once, in
   # deploy/images/syft/Dockerfile, which nothing builds: outside .github/, where Dependabot's docker updates may not
   # write. Both read its version from there, so its bump is the whole change (scripts/workflows.test.ts).

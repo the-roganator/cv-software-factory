@@ -1,7 +1,7 @@
 /**
  * The day's lookups, kept between runs: what deadlines.ts asked a registry or a publisher's releases (npm's publish
- * times, Node's release index, an image's tags, digest and manifests, a chart repository's versions and a chart's
- * rendering, a tool's releases, a k3s release), each answer asked once a day (UTC) and reused by every run that day.
+ * times and a package's releases, Node's release index, an image's tags, digest and manifests, a
+ * chart repository's versions and a chart's rendering, a tool's releases, a k3s release), each answer asked once a day (UTC) and reused by every run that day.
  * A release published after the day's first lookup is seen the next day, as the daily scan sees it.
  *
  * Only answers are kept: a lookup that failed is asked again by the next run. Nothing that depends on the advisory
@@ -84,9 +84,12 @@ export function memoised(
     }
     return pending;
   };
+  const { versions, served } = sources;
   return {
     ...sources,
     published: (name, version) => once(`published ${name} ${version}`, () => sources.published(name, version)),
+    ...(versions && { versions: (name) => once(`versions ${name}`, () => versions(name)) }),
+    ...(served && { served: (reference) => once(`served ${reference}`, () => served(reference)) }),
     releases: () => once('releases', () => sources.releases()),
     tags: (repository) => once(`tags ${repository}`, () => sources.tags(repository)),
     digest: (reference) => once(`digest ${reference}`, () => sources.digest(reference)),
@@ -118,4 +121,36 @@ function renderKey(
       JSON.stringify([chart.repo, chart.chart, chart.version, chart.release, kubeVersion ?? null, values, renderer]),
     )
     .digest('hex');
+}
+
+/** The lookups of registries and releases a run makes, each call counted: `file` and the scan's own state are not. */
+const LOOKUPS = [
+  'published',
+  'versions',
+  'releases',
+  'tags',
+  'image',
+  'digest',
+  'manifests',
+  'served',
+  'chartVersions',
+  'render',
+  'toolReleases',
+  'tool',
+  'k3s',
+  'node',
+] as const satisfies readonly (keyof Sources)[];
+
+/** The sources, with each lookup made through them counted, whatever answers it: the day's memo, or the registry. */
+export function counted(sources: Sources, count: { made: number }): Sources {
+  const out: Record<string, unknown> = { ...sources };
+  for (const name of LOOKUPS) {
+    const lookup = sources[name] as ((...args: unknown[]) => unknown) | undefined;
+    if (!lookup) continue;
+    out[name] = (...args: unknown[]) => {
+      count.made++;
+      return lookup(...args);
+    };
+  }
+  return out as unknown as Sources;
 }

@@ -16,18 +16,26 @@
 #
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
-#   fails and uploads nothing, so no alert closes because its item went unread. Before the upload, deadlines.ts finds
+#   fails and uploads nothing, so no alert closes because its item went unread. One item is contained: another's
+#   image Trivy could not read (the registry did not serve it, or its read failed) costs that image alone, its findings carried into the upload from the last
+#   run's state, so none of its alerts closes (deadlines.ts's `carried`), or the run fails as for any other where
+#   they cannot be. Before the upload, deadlines.ts finds
 #   what fixes each finding and since when, reading the state the last run kept for each finding's days (state.ts, ADR
 #   0021: the artifact `state` of the newest earlier run on the default branch, sealed with the key in the environment
 #   `scan-state`, which only main may use), or the alerts where there is none it can open, ends each result's message
-#   with its fix (`Fixed by <target>, first seen <day>.`), judges each deadline and groups the results into moves:
+#   with its fix (`Fixed by <target>, first seen <day>.`), judges each deadline and groups the results into moves,
+#   and after them lists each pin that is merely behind as a routine update, once its release has waited
+#   (routine.ts), which changes no verdict and fails no run:
 #   their table is in the log and the step summary, and `moves.json`, the artifact `moves`, holds the same. It seals
-#   the state the next run reads, uploaded before the results, so every upload has its state. A source
-#   it cannot read fails the run before the upload, so no message loses its day. After the upload it holds its
+#   the state the next run reads, uploaded before the results, so every upload has its state. A registry or a release
+#   index that does not answer costs the results that asked it, which keep the fix the last run gave them, and the
+#   run fails on it after the upload, naming it; the state or the alerts not read fails the run before the upload,
+#   so no message loses its day. After the upload it holds its
 #   categories' alerts to policy/vulnerabilities.ts, read from this repository's main alone: each excepted result's
 #   alert dismissed as won't fix, and any dismissed with no exception in force reopened (alerts.ts). Then the run
 #   fails on a new High or Critical with a fix, one due within a day, or one past its deadline, its last lines naming
-#   the moves that hold them. One scan at a time uploads, so no two uploads' alerts interleave.
+#   the moves that hold them, and on an image or a source not read, naming each. One scan at a time uploads, so no two uploads'
+#   alerts interleave.
 # - pins: needs scan. The moves no pin's line writes (a lockfile's package, what mise pins, an image that brings another
 #   pin with it), made by the pin step on the commit the scan read and sealed with the scan's key, the artifact `pins`
 #   (scripts/pins.ts): here for the GitHub worker's pin watch to commit, in the app for its line's pin step to make
@@ -35,7 +43,7 @@
 #   main from what it sealed.
 # - scan proof: on a pull request that changes the scan or the graph, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
-#   not showing CVE-2026-111497, and its log carries the counts, the deadlines' and the moves' too, read against the
+#   not showing CVE-2026-111497, and on an image not read, which it has no state to carry, and its log carries the counts, the deadlines' and the moves' too, read against the
 #   repository's alerts, as a scan with no state reads them (it holds no key), and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job
 #   that writes refuses any event but a push to the default branch, the schedule or a run by hand there; this one writes
 #   nothing, and runs on a pull request alone, from a branch of this repository: its first step refuses a fork's, whose
@@ -277,6 +285,9 @@ jobs:
         env:
           TOKEN: ${{ github.token }}
         run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
+      # It passes, and says the results are for upload (`sarif`), when every item was read, or every item but an image
+      # of another's Trivy could not read: that one it hands to the next step, which carries its findings from
+      # the last run's state, and the job's last step fails on it once everything is uploaded and kept.
       - name: Scan
         id: scan
         env:
@@ -290,7 +301,11 @@ jobs:
       # moves (deadlines.ts, moves.ts). It reads the state the last run kept, with the job's token and the key, for each
       # finding's days (code scanning's alerts, where there is none it can open), and seals the next. It reads npm's registry, Node's release index, k3s's releases, the charts' repositories, the tools'
       # releases, and the newer images on each line with a fixed finding (crane for the tags and the index digests,
-      # Trivy on the scan's database). It fails, and nothing is uploaded, on a source it cannot read.
+      # Trivy on the scan's database): one that does not answer costs the results that asked it, which keep the last
+      # run's fix, and fails the run at its end. It fails, and nothing is uploaded, when the state and the alerts cannot be read, or an image was
+      # not read and its findings cannot be carried from the state. For the pins that are merely behind (routine.ts)
+      # it reads the same, and a package's releases and a tag's digest, with no layer pulled: one of those that does
+      # not answer costs that pin's routine update for the day.
       - name: Deadlines and moves
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         env:
@@ -341,8 +356,8 @@ jobs:
       - id: kept
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         run: echo "kept=true" >> "$GITHUB_OUTPUT"
-      # The scan writes the file only when every item was read and it is within code scanning's limits: no run over 5,000
-      # results, and no more than 20 runs.
+      # The file is written only when every item was read, or an image not read has the last run's findings in it, and
+      # it is within code scanning's limits: no run over 5,000 results, and no more than 20 runs.
       - name: Refuse to upload from anything but the default branch's push, the schedule or a run by hand
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         env:
@@ -359,7 +374,14 @@ jobs:
         with:
           # No `category`: each run names its own (`automationDetails.id`), which the action keeps.
           sarif_file: ${{ runner.temp }}/scan/vulnerabilities.sarif
-          checkout_path: ${{ github.workspace }}/scanned
+          # The workspace, where none of the results' files are: the scanned checkout is in `scanned`, below it. The
+          # action hashes the line of each result whose file it finds under this path, and warns, once a result, that
+          # its hash is not the `primaryLocationLineHash` the scan set (sarif.ts); a file it does not find it does not
+          # hash. Either way it sends each fingerprint as the scan wrote it. The workspace is no repository, so the
+          # commit and the ref are given: the ones the scanned checkout is at.
+          checkout_path: ${{ github.workspace }}
+          ref: ${{ github.ref }}
+          sha: ${{ github.sha }}
           # The alerts are held to the policy once code scanning has processed the upload.
           wait-for-processing: true
       # Each excepted result's alert dismissed, and each of the scan's categories' alerts dismissed with no exception in
@@ -370,7 +392,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node factory/apps/factory/src/vulnerabilities/alerts.ts "$RUNNER_TEMP/scan/exceptions.json"
       # The verdict judged before the upload, once each new finding's alert exists: fails on a new High or Critical with
-      # a fix, one due within a day, or one past its deadline, naming the moves that hold them.
+      # a fix, one due within a day, or one past its deadline, naming the moves that hold them; and on an image the
+      # scan could not read, naming it and why, with its findings the last run's, and on a source that did not
+      # answer, naming it.
       - name: Deadlines
         if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
         env:

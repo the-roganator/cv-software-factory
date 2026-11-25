@@ -11,6 +11,7 @@ import type { Move as PinnedMove } from '../../../runner/src/pins.ts';
 import type { DependencyPull } from '../github/dependabot.ts';
 import { groupMovesTo } from '../github/dependabot.ts';
 import { filesIn } from '../github/patches.ts';
+import { compareVersions } from '../vulnerabilities/versions.ts';
 import type { StepContext } from './agents/agent.ts';
 import type { Signal } from './agents/evidence.ts';
 
@@ -46,7 +47,8 @@ export function restWords(scan: Scan): string {
  * any), and the scan's findings, each by its advisory's id. The issue is where a finding's package and advisory first
  * become public, as Dependabot's own pull request would make them: so it is built from the ticket's own payload and
  * the signal, never from a public view, which may withhold both. `rated` gives the category and the severity, as the
- * line reads them for every ticket.
+ * line reads them for every ticket. A routine update's signal carries no scan, and its issue says why it moves: a
+ * newer release, and no advisory.
  */
 export function moveIssue(
   workItem: string,
@@ -73,7 +75,9 @@ export function moveIssue(
           ...scan.findings.map((finding) => `  - ${findingLine(finding)}`),
           ...(rest ? [`  - and more: ${rest}`] : []),
         ]
-      : []),
+      : signal?.symptom === 'outdated-dependency'
+        ? ['- A routine update: the scan lists a newer release, with no advisory behind it and no deadline.']
+        : []),
     '',
     'The factory is working on it: its move will come as a pull request that refers here. The issue closes when the move is verified in production, by the scan of the release.',
   ].join('\n');
@@ -96,37 +100,6 @@ export const movesAlone = (spec: PayloadOf<'spec.written'>): boolean =>
  */
 export const targetWords = (move: Pick<PinnedMove, 'ecosystem' | 'to'>, as = (word: string) => word): string =>
   move.ecosystem === 'npm' ? `${as(move.to)} or later` : as(move.to);
-
-/**
- * Two versions compared as semver orders them: by major, minor and patch, then a pre-release before its release, and
- * pre-releases by their dot-separated identifiers, numbers as numbers and below words (`rc.9` before `rc.10`).
- */
-export function compareVersions(a: string, b: string): number {
-  const parse = (v: string) => {
-    const [core = '', pre] = (v.split('+')[0] ?? '').split(/-(.*)/s);
-    return { nums: core.split('.').map((n) => Number.parseInt(n, 10) || 0), pre };
-  };
-  const [x, y] = [parse(a), parse(b)];
-  for (let i = 0; i < 3; i++) {
-    const d = (x.nums[i] ?? 0) - (y.nums[i] ?? 0);
-    if (d) return d < 0 ? -1 : 1;
-  }
-  if (x.pre === y.pre) return 0;
-  if (x.pre === undefined) return 1;
-  if (y.pre === undefined) return -1;
-  const [xs, ys] = [x.pre.split('.'), y.pre.split('.')];
-  for (let i = 0; i < Math.max(xs.length, ys.length); i++) {
-    const [p, q] = [xs[i], ys[i]];
-    if (p === undefined) return -1;
-    if (q === undefined) return 1;
-    if (p === q) continue;
-    const [pn, qn] = [/^\d+$/.test(p), /^\d+$/.test(q)];
-    if (pn && qn) return Number(p) < Number(q) ? -1 : 1;
-    if (pn !== qn) return pn ? -1 : 1;
-    return p < q ? -1 : 1;
-  }
-  return 0;
-}
 
 /** Why the line will not title a move: the pins say no version it can name, or one below the move's floor. */
 export class UnreadMove extends Error {
@@ -197,17 +170,19 @@ const TITLE_CHARS = 80;
 /**
  * A move's commit title, the line's own: `fix(deps): move <name> to <version>`, the version the pin step wrote
  * (`writtenVersion`), within the title's rule however long the name or the version. A version too long to fit is
- * left out, then the name's scope, then the name is cut.
+ * left out, then the name's scope, then the name is cut. A routine update's, which no advisory asked for, is a
+ * chore's (`chore(deps): …`): it fixes nothing, and the app's release notes list no chore.
  */
-export function moveTitle(name: string, version: string): string {
+export function moveTitle(name: string, version: string, routine = false): string {
   const unscoped = name.replace(/^@[^/]+\//, '');
+  const type = routine ? 'chore(deps)' : 'fix(deps)';
   const said = [
-    `fix(deps): move ${name} to ${version}`,
-    `fix(deps): move ${name}`,
-    `fix(deps): move ${unscoped} to ${version}`,
-    `fix(deps): move ${unscoped}`,
+    `${type}: move ${name} to ${version}`,
+    `${type}: move ${name}`,
+    `${type}: move ${unscoped} to ${version}`,
+    `${type}: move ${unscoped}`,
   ].find((title) => title.length <= TITLE_CHARS);
-  return said ?? cutTo(`fix(deps): move ${unscoped}`, TITLE_CHARS);
+  return said ?? cutTo(`${type}: move ${unscoped}`, TITLE_CHARS);
 }
 
 /**

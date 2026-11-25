@@ -1,0 +1,102 @@
+# Test 15, a routine update of a package our images carry: pino back to 10.3.1 in the factory's and the console's manifests, with 10.4.0 out since 2 October 2026 and no advisory between them
+diff --git a/apps/console/package.json b/apps/console/package.json
+index 62c89de7..6b47f000 100644
+--- a/apps/console/package.json
++++ b/apps/console/package.json
+@@ -18,7 +18,7 @@
+     "@opentelemetry/sdk-node": "^0.301.2",
+     "@software-factory/events": "workspace:*",
+     "@software-factory/store": "workspace:*",
+-    "pino": "^10.4.0",
++    "pino": "^10.3.1",
+     "postgres": "^4.1.1"
+   },
+   "devDependencies": {
+diff --git a/apps/factory/package.json b/apps/factory/package.json
+index 1f1275f7..83283081 100644
+--- a/apps/factory/package.json
++++ b/apps/factory/package.json
+@@ -37,7 +37,7 @@
+     "@software-factory/store": "workspace:*",
+     "@software-factory/triage": "workspace:*",
+     "diff": "^9.0.0",
+-    "pino": "^10.4.0",
++    "pino": "^10.3.1",
+     "pixelmatch": "^8.0.0",
+     "playwright": "^1.65.0",
+     "pngjs": "^7.0.0",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 3b74e123..a704f676 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -231,8 +231,8 @@ importers:
+         specifier: workspace:*
+         version: link:../../packages/store
+       pino:
+-        specifier: ^10.4.0
+-        version: 10.4.0
++        specifier: ^10.3.1
++        version: 10.3.1
+       postgres:
+         specifier: ^4.1.1
+         version: 4.1.1
+@@ -340,8 +340,8 @@ importers:
+         specifier: ^9.0.0
+         version: 9.0.0
+       pino:
+-        specifier: ^10.4.0
+-        version: 10.4.0
++        specifier: ^10.3.1
++        version: 10.3.1
+       pixelmatch:
+         specifier: ^8.0.0
+         version: 8.0.0
+@@ -2335,8 +2335,8 @@ packages:
+   pino-std-serializers@7.1.0:
+     resolution: {integrity: sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw==}
+ 
+-  pino@10.4.0:
+-    resolution: {integrity: sha512-bk1ZMTwG/Vymx+zPoa28MhNzucFvXJWp3csrSuxuHPSMeUettaCoQ5Jvg07mtC4JGNpcfTwz41oVCnNgBK9+vA==}
++  pino@10.3.1:
++    resolution: {integrity: sha512-r34yH/GlQpKZbU1BvFFqOjhISRo1MNx1tWYsYvmj6KIRHSPMT2+yHOEb1SG6NMvRoHRF0a07kCOox/9yakl1vg==}
+     hasBin: true
+ 
+   pixelmatch@8.0.0:
+@@ -2425,6 +2425,10 @@ packages:
+     resolution: {integrity: sha512-Ug69mNOpfvKDAc2Q8DRpMjjzdtrnv9HcSMX+4VsZxD1aZ6ZzrIE7rlzXBtWTyhULSMKg076AW6WR5iZpD0JiOg==}
+     engines: {node: '>=8'}
+ 
++  real-require@0.2.0:
++    resolution: {integrity: sha512-57frrGM/OCTLqLOAh0mhVA9VBMHd+9U7Zb2THMGdBUoZVOtGbJzjxsYGDJ3A9AYYCP4hn6y1TVbaOfzWtm5GFg==}
++    engines: {node: '>= 12.13.0'}
++
+   real-require@1.0.0:
+     resolution: {integrity: sha512-P4nbQYQfePJxRSmY+v/KINxVucm4NF3p3s7pJveMTtom52FR4YGltUQLB8idDXwDDWW+eYrWDFbuzUnjoWHF7g==}
+ 
+@@ -4535,7 +4539,7 @@ snapshots:
+ 
+   pino-std-serializers@7.1.0: {}
+ 
+-  pino@10.4.0:
++  pino@10.3.1:
+     dependencies:
+       '@pinojs/redact': 0.4.0
+       atomic-sleep: 1.0.0
+@@ -4544,7 +4548,7 @@ snapshots:
+       pino-std-serializers: 7.1.0
+       process-warning: 5.1.0
+       quick-format-unescaped: 4.0.4
+-      real-require: 1.0.0
++      real-require: 0.2.0
+       safe-stable-stringify: 2.5.0
+       sonic-boom: 4.2.1
+       thread-stream: 4.2.0
+@@ -4633,6 +4637,8 @@ snapshots:
+       parse-json: 5.2.0
+       type-fest: 0.6.0
+ 
++  real-require@0.2.0: {}
++
+   real-require@1.0.0: {}
+ 
+   redent@3.0.0:

@@ -201,7 +201,7 @@ const STEPS = [
 <tr><th>Images</th><td>Ours are built and signed on <code>main</code>. Anyone else's is pinned by digest: a tag can be moved, a digest cannot.</td></tr>
 </table>
 <p>A fix that can be installed starts a clock: <b>2 days</b> for a Critical, <b>7</b> High, <b>30</b> Medium, <b>90</b> Low. A missed deadline fails the scan.</p>
-<p>The pin watch opens <b>one pull request for the day's moves at each file</b>, changing the pins and nothing else. A lockfile's or a tool's move is made in the scan's own run, and the watch commits what it made. A move the App may not write (a workflow's pin, the Makefile's) becomes an issue.</p>
+<p>The pin watch opens <b>one pull request for the day's moves at each file</b>, changing the pins and nothing else. A lockfile's or a tool's move is made in the scan's own run, and the watch commits what it made. A move the App may not write (a workflow's pin) becomes an issue.</p>
 <details><summary>In the docs</summary><p><a href="${DOCS}/SECURITY-SCANNING.md">The scan</a>, its <a href="${DOCS}/SECURITY-SCANNING.md#moves">moves</a> and <a href="${DOCS}/SECURITY-SCANNING.md#exceptions">exceptions</a>; <a href="${DOCS}/SUPPLY-CHAIN.md">signing</a>; <a href="adr/0013-vulnerabilities-found-everywhere-fixed-by-a-deadline.md">ADR 0013</a>.</p></details>`,
   },
   {
@@ -238,7 +238,7 @@ const STEPS = [
 </table>
 <ul>
 <li>The worker queues <b>only the commit it wrote itself</b>. A matching name or label is not enough.</li>
-<li>A move the App <b>may not write</b> (a workflow's pin, the Makefile's) goes to Martin as an issue. It, and k3s's move, which his cluster's own command applies once its pull request merges, is a card in Needs you and reaches his phone, once.</li>
+<li>A move the App <b>may not write</b> (a workflow's pin) goes to Martin as an issue. It, and k3s's move, which his cluster's own command applies once its pull request merges, is a card in Needs you and reaches his phone, once.</li>
 <li>In <b>the app's repository</b> the line does the patching, by the same rule and the same level.</li>
 </ul>
 <details><summary>In the docs</summary><p><a href="${DOCS}/PATCHING.md">Patching</a>; <a href="${DOCS}/GITHUB-WORKER.md">the GitHub worker</a>; <a href="adr/0017-the-worker-queues-the-local-deploy-pins.md">ADR 0017</a>.</p></details>`,

@@ -9,6 +9,7 @@
  * forms the database writes (`24.x`, `24.22.x`, `^24.22.1`, `>=6.0.0 <6.2.0`, `4.4.2`), joined by `||`.
  */
 import type { Severity } from './sarif.ts';
+import { compareVersions, numbersOf } from './versions.ts';
 
 export const NODE_DATABASE = 'https://raw.githubusercontent.com/nodejs/security-wg/main/vuln/core/index.json';
 
@@ -32,14 +33,16 @@ interface NodeAdvisory {
   patched?: string | undefined;
 }
 
-type Version = [number, number, number];
+/** A release's three numbers, each as its digits (versions.ts), so none is rounded. */
+type Version = [string, string, string];
 
-const parse = (text: string): Version | undefined => {
-  const [, a, b, c] = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(text.trim()) ?? [];
-  return a === undefined ? undefined : [Number(a), Number(b), Number(c)];
-};
+const parse = (text: string): Version | undefined =>
+  /^v?\d+\.\d+\.\d+$/.test(text.trim()) ? (numbersOf(text) as Version) : undefined;
 
-const compare = (a: Version, b: Version) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+const compare = (a: Version, b: Version) => compareVersions(a.join('.'), b.join('.'));
+
+/** The number after one, whatever its size. */
+const next = (digits: string) => String(BigInt(digits) + 1n);
 
 /** One comparator: true when the version meets it; a form not read here throws, so a run never misreads a range. */
 function meets(version: Version, comparator: string): boolean {
@@ -53,20 +56,20 @@ function meets(version: Version, comparator: string): boolean {
   const wild = parts.length < 3 || parts.some((part) => part === 'x' || part === '*');
   if (wild) {
     // A partial version, as semver reads one: `24` and `24.x` are 24.0.0 up to 25.0.0, not including it.
-    const fixed = parts.filter((part) => /^\d+$/.test(part)).map(Number);
+    const fixed = parts.filter((part) => /^\d+$/.test(part)).flatMap(numbersOf);
     if (parts.slice(0, fixed.length).some((part) => !/^\d+$/.test(part)))
       throw new Error(`a range not read: ${comparator}`);
-    const low: Version = [fixed[0] ?? 0, fixed[1] ?? 0, 0];
-    const high: Version = fixed.length === 1 ? [low[0] + 1, 0, 0] : [low[0], low[1] + 1, 0];
+    const low: Version = [fixed[0] ?? '0', fixed[1] ?? '0', '0'];
+    const high: Version = fixed.length === 1 ? [next(low[0]), '0', '0'] : [low[0], next(low[1]), '0'];
     const inside = compare(version, low) >= 0 && compare(version, high) < 0;
     // A caret keeps the major (`^24.22` is 24.22.0 up to 25.0.0); a tilde, the minor where one is given.
-    const major: Version = [low[0] + 1, 0, 0];
+    const major: Version = [next(low[0]), '0', '0'];
     switch (operator) {
       case '':
       case '=':
         return inside;
       case '^':
-        return compare(version, low) >= 0 && compare(version, low[0] === 0 && fixed.length > 1 ? high : major) < 0;
+        return compare(version, low) >= 0 && compare(version, low[0] === '0' && fixed.length > 1 ? high : major) < 0;
       case '~':
         return inside;
       case '>=':
@@ -98,7 +101,7 @@ function meets(version: Version, comparator: string): boolean {
       return (
         order >= 0 &&
         version[0] === bound[0] &&
-        (bound[0] !== 0 || (version[1] === bound[1] && (bound[1] !== 0 || version[2] === bound[2])))
+        (bound[0] !== '0' || (version[1] === bound[1] && (bound[1] !== '0' || version[2] === bound[2])))
       );
     case '~':
       return order >= 0 && version[0] === bound[0] && version[1] === bound[1];
@@ -138,7 +141,7 @@ export function entries(json: string): [string, CoreEntry][] {
  * refuses the database when it is fetched, rather than stopping the scan partway.
  */
 export function readable(database: [string, CoreEntry][]) {
-  const probe: Version = [0, 0, 0];
+  const probe: Version = ['0', '0', '0'];
   for (const [id, entry] of database)
     for (const range of [entry.vulnerable, entry.patched]) {
       if (range === undefined) continue;

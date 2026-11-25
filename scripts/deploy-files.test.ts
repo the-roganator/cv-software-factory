@@ -30,6 +30,7 @@ describe('the files a deploy changes', () => {
       // copy: never this checkout's.
       '.claude/skills/patching-harness/bin/catalogue.ts',
       '.claude/skills/patching-harness/bin/copies.sh',
+      '.claude/skills/patching-harness/bin/decide.test.ts',
       '.claude/skills/patching-harness/bin/forge.ts',
       // The app's gates, which run the journeys on the factory's browser at the digest pinned here; called from the
       // app's repository at a pinned commit, and never by this repository's checks.

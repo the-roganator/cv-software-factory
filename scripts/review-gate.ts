@@ -1,7 +1,8 @@
 /**
  * The review gate (ADR 0014): whether a pull request has Martin's say, posted as the `review` check by the review App.
  * It passes when Martin opened the pull request from a branch here, or when his latest verdict on it approves the commit
- * at its head; otherwise by the rest of approval routing's rules (`review-routing.ts`). A move's answer, which reads the
+ * at its head; otherwise by the rest of approval routing's rules (`review-routing.ts`): an exact pin, the App's of
+ * images signed on main or Dependabot's of the commit the factory's workflows are called at, among them. A move's answer, which reads the
  * pull request's commits and the scan's moves, is worked out by review.yml's `move` job, with the scan's state key
  * alone (`scripts/moves.ts`), and taken here from `MOVES`: the gate itself, which holds the review App's key, imports
  * nothing that reads a head. Nothing else in the rule depends on the base, so a pull request into any branch is judged, a stacked one's into
@@ -48,11 +49,13 @@ import {
   type Annotation,
   appOpened,
   type CheckRun,
+  callsFactory,
   codeOwners,
   type Decision,
   exactPin,
   excusedTests,
   FACTORY_APP,
+  FACTORY_REPO,
   type Facts,
   type FileChange,
   fromHere,
@@ -74,6 +77,7 @@ import {
   type Verdict,
   verdict,
   words,
+  workflowPin,
 } from './review-routing.ts';
 
 export { MARTIN, type PullRequest, type Review, type Verdict, verdict } from './review-routing.ts';
@@ -643,6 +647,53 @@ async function ahead(repo: string, from: string, to: string, token: string): Pro
   return status === 'ahead';
 }
 
+/**
+ * The most one try at the check of an exact pin of the factory's workflows may take: the listing of the head's
+ * workflows, then each of them at once, then the two comparisons and each called workflow at both commits (two reads
+ * for each, twelve for six) at once, each read with the 30 seconds `request` gives one. The reads of what the
+ * workflows declare are made beside the comparisons, so they add requests and no time.
+ */
+export const WORKFLOW_PIN_TRY_MS = 90_000;
+
+/** A file GitHub's contents API lists in a folder. */
+interface Listed {
+  name: string;
+  path: string;
+  type: string;
+}
+
+/**
+ * Every line of the workflows at a commit of `repo` that names the factory's workflows, with its file: what a bump of
+ * the commit they are called at must have moved, every one. A repository with no workflows has none.
+ */
+async function factoryCalls(
+  repo: string,
+  ref: string,
+  token: string,
+): Promise<{ file: string; number: number; line: string }[]> {
+  const where = `/repos/${repo}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`;
+  const listed = await api<Listed[] | Listed>('GET', where, token);
+  if (!Array.isArray(listed)) throw new Answered(`.github/workflows is not a folder at ${short(ref)}`);
+  const workflows = listed.filter((each) => each.type === 'file' && /\.ya?ml$/.test(each.name));
+  const texts = await Promise.all(
+    workflows.map(async ({ path }) => {
+      const text = await fileAt(repo, path, ref, token);
+      if (text === undefined) throw new Answered(`${path} is not at ${short(ref)}`);
+      return text
+        .split('\n')
+        .map((line, at) => ({ file: path, number: at + 1, line: line.replace(/\r$/, '') }))
+        .filter(({ line }) => callsFactory(line));
+    }),
+  );
+  return texts.flat();
+}
+
+/** How `head` stands to `base` in a repository, by the compare API: `ahead`, `behind`, `identical` or `diverged`. */
+async function compared(repo: string, base: string, head: string, token: string): Promise<string> {
+  const { status } = await api<{ status: string }>('GET', `/repos/${repo}/compare/${base}...${head}`, token);
+  return status;
+}
+
 /** Whether a run is the `move` job, which works answers out and judges nothing. */
 const working = (each: Run) => each.moves?.kind === 'work';
 
@@ -721,10 +772,39 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
               : { unchecked: cause(error) },
           )
         : undefined;
+    // Anyone's but the App's, which writes no workflow, may be an exact pin of the factory's workflows: Dependabot's
+    // bump of the commit they are called at. Nothing is read for a change that touches no call of them, nor for one
+    // that fails on what the pull request itself says; the reads are GitHub's alone, tried again as an image's are.
+    const workflows: Facts['workflows'] =
+      !appOpened(judged) && !verdict(judged, reviews).pass && !work
+        ? await retrying(
+            () =>
+              workflowPin(
+                repo,
+                judged,
+                files,
+                {
+                  // The factory's repository is public, so the token of the repository that calls it reads it.
+                  compare: (base, to) => compared(FACTORY_REPO, base, to, read),
+                  calls: () => factoryCalls(repo, head, read),
+                  declared: (workflow, commit) => fileAt(FACTORY_REPO, `.github/workflows/${workflow}`, commit, read),
+                },
+                complete,
+              ),
+            { backoff: PIN_BACKOFF_MS, tryMs: WORKFLOW_PIN_TRY_MS, until: STARTED + PIN_TRIES_MS },
+          ).catch((error: unknown) =>
+            // As for an image's pin: a definite answer is a hold that says why, and anything else a wait.
+            definite(error) ? { reason: `the gate could not check it: ${cause(error)}` } : { unchecked: cause(error) },
+          )
+        : undefined;
     // Anyone's pull request from a branch here that Martin has not passed and is no exact pin may be a move: the
-    // scan's moves, made by the gate on main and compared with it. Never tried when the exact pin's check could not
-    // be made, which is a wait of its own.
-    const asked = fromHere(judged) && !verdict(judged, reviews).pass && (work || pin === undefined || 'reason' in pin);
+    // scan's moves, made by the gate on main and compared with it. Never tried when an exact pin's check could not
+    // be made, which is a wait of its own, nor for an exact pin of the factory's workflows, which is none.
+    const asked =
+      fromHere(judged) &&
+      !verdict(judged, reviews).pass &&
+      (work || pin === undefined || 'reason' in pin) &&
+      (workflows === undefined || 'reason' in workflows);
     const move = asked ? await answerOf(each, judged) : undefined;
     return route({
       ...facts(),
@@ -734,6 +814,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       // Anyone's change of base, or GitHub's own when the base branch went.
       retargeted: events.some((e) => RETARGETED.has(e.event)),
       ...(pin ? { pin } : {}),
+      ...(workflows ? { workflows } : {}),
       ...(move ? { move } : {}),
     });
   } catch (error) {
@@ -752,7 +833,8 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
 
 const RULE =
   "Passes a pull request Martin opened, or whose head he approved; an exact pin of the factory's App's, of images " +
-  'build.yml signed on main; a move, exactly the moves the scan of main asked for, made by the gate on main and ' +
+  "build.yml signed on main, or of Dependabot's, of the commit the factory's workflows are called at, moved to a later " +
+  "one on the factory's main; a move, exactly the moves the scan of main asked for, made by the gate on main and " +
   "compared with the pull request, named `major` when one crosses a major and clears no Critical by Trivy's rating; and in the app's " +
   "repository the App's with no risk tags, or at Lights-out those whose tags it allows (spec 4.3, ADR 0014).";
 

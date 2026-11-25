@@ -2,6 +2,7 @@
 # The confirming pass: every test on one code baseline, in batches of a few, with the two level checks.
 #   ./confirm.sh <a directory for its baseline logs>
 #   STEPS="C D" ./confirm.sh <dir> runs some of its steps (A B C D apps W; all by default).
+#   APP_TESTS="16 20" names the app tests the apps step runs, in that order (all eight by default).
 # It prints one section a step, and `harness.ts summary` at the end. One baseline (every staged set-up, no
 # STAGED_EXTRA) serves A, B, C, D, the apps and W: a batch differs only in the moves the pin watch takes, which the
 # harness's reset of the factory copy gives the scratch worker. X2 and X4 each build a baseline of their own. A batch's
@@ -55,10 +56,14 @@ trap red_off EXIT
 # A batch: the moves the scratch pin watch takes, in batch.env. No baseline is built for it: the harness's own reset of
 # the factory copy writes them where the worker reads them as it starts (copies.sh's pin_watch).
 batch() { # <tests>
-  local line
-  line="$(cd "$H" && mise exec -- node harness.ts only "$1" | grep '^PIN_WATCH_ONLY')" || { broke "batch $1"; return 1; }
-  LINE="$line" perl -0pi -e 's/^PIN_WATCH_ONLY=.*\n//mg; $_ .= "$ENV{LINE}\n"' "$BATCH"
-  echo "the pin watch takes: ${line#PIN_WATCH_ONLY=}"
+  # Written by the harness, which reads the line back as copies.sh will before it says so.
+  (cd "$H" && mise exec -- node harness.ts batch "$1") || { broke "batch $1"; return 1; }
+}
+# A baseline's STAGED_EXTRA in batch.env: the folder named, or with no name, none. Written whole, as a filter that
+# reads no line of an empty file appends none to it.
+extra() { # [<name>]
+  { grep -v '^STAGED_EXTRA=' "$BATCH" || true; if [ -n "${1:-}" ]; then echo "STAGED_EXTRA=$1"; fi; } >"$BATCH.new" &&
+    mv "$BATCH.new" "$BATCH"
 }
 # A baseline, with batch.env's STAGED_EXTRA: built, checked, reset and pinned, then root Synced and Healthy.
 baseline() { # <log>
@@ -83,6 +88,9 @@ baseline() { # <log>
   for _ in $(seq 1 90); do
     state=$(k -n argocd get app root -o jsonpath='{.status.sync.status} {.status.health.status}')
     [ "$state" = "Synced Healthy" ] && break
+    # Argo CD looks at the copies' main every few minutes: asked to look now, it takes the baseline just pushed at
+    # once. A refresh reads git and each resource's health again and changes nothing in the cluster.
+    k -n argocd annotate application root website argocd.argoproj.io/refresh=normal --overwrite >/dev/null 2>&1 || true
     synced=$(k -n argocd get app website -o jsonpath='{.status.sync.revision}')
     phase=$(k -n website get rollout website -o jsonpath='{.status.phase}')
     if [ "$synced" = "$app_main" ] && [ -n "$phase" ] && [ "$phase" != Healthy ]; then
@@ -118,30 +126,35 @@ based=yes
 if want A || want B || want C || want D || want apps || want W; then
   if [ -z "${KEEP_BASELINE:-}" ]; then
     echo "##### the baseline $(date -u +%H:%MZ)"
-    perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
+    extra
     baseline "$LOGS/confirm-baseline.log" || based=
   fi
 fi
 
 if want A && [ -n "$based" ]; then
-echo "##### A: 1,2,3,5,14a and the forgeries, Guarded $(date -u +%H:%MZ)"
+# With them the Makefile's pin (17), the workflow's pin that stays an issue (N6) and its forgery (N7). Test 19, the image no registry serves, is on the baseline, so every factory batch's scan has it and
+# each batch judges it.
+echo "##### A: 1,2,3,5,14a,17,N6,19 and the forgeries, Guarded $(date -u +%H:%MZ)"
 level guarded
-batch 1,2,3,5,14a && campaign --only 1,2,3,5,14a,N3a,N3b,N4,N5
+batch 1,2,3,5,14a,17,N6 && campaign --only 1,2,3,5,14a,17,N6,19,N3a,N3b,N4,N5,N7
 watches
 why
 fi
 
 if want B && [ -n "$based" ]; then
-echo "##### B: 4a,4b,6,7a,7b,9,14b, Guarded $(date -u +%H:%MZ)"
-batch 4a,4b,6,7a,7b,9,14b && campaign --only 4a,4b,6,7a,7b,9,14b --no-forge
+# The lockfile's routine updates are here beside its findings' moves: 15 merges and deploys with the day's others, and
+# 18, the one across a major, is held beside 4a and 4b.
+echo "##### B: 4a,4b,6,7a,7b,9,14b,15,18,19, Guarded $(date -u +%H:%MZ)"
+batch 4a,4b,6,7a,7b,9,14b,15,18 && campaign --only 4a,4b,6,7a,7b,9,14b,15,18,19 --no-forge
 watches
 why
 fi
 
 if want C && [ -n "$based" ]; then
-echo "##### C: 4a,4b at Lights-out $(date -u +%H:%MZ)"
-batch 2,4a,4b && {
-  level lights-out show && campaign --only 2,4a,4b --no-forge --lights-out
+# At Lights-out the majors merge, 18 among them; a workflow's pin is still an issue (N6) and its forgery still held (N7).
+echo "##### C: 4a,4b,18 at Lights-out, with N6, N7 and 19 $(date -u +%H:%MZ)"
+batch 2,4a,4b,18,N6 && {
+  level lights-out show && campaign --only 2,4a,4b,18,N6,N7,19 --lights-out
 }
 fi
 
@@ -218,7 +231,7 @@ d_settled() {
 until_d=$(($(date +%s) + 2100))
 while [ "$(date +%s)" -lt "$until_d" ]; do
   d_settled && { echo "settled $(date -u +%H:%MZ)"; break; }
-  sleep 60
+  sleep 20
 done
 deploy=$(gh pr list -R "$R" --state all -L 20 --json number,title,mergedAt,createdAt \
   -q "[.[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(deploy): \"))][0]|\"#\(.number) merged=\(.mergedAt)\"")
@@ -234,10 +247,12 @@ level guarded show
 fi
 
 # The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.
+# N8a rides beside test 20, Dependabot's pull request, which the line has no part in.
 if want apps && [ -n "$based" ]; then
-for test in 8a 10 11 12 13 N1; do
+for test in ${APP_TESTS:-8a 10 11 12 13 16 20 N1}; do  # APP_TESTS='16 20' runs some of them
   echo "##### app $test $(date -u +%H:%MZ)"
   with=(); [ "$test" = 13 ] && with=(--with X1a,X1b)
+  [ "$test" = 20 ] && with=(--with N8a)
   harness 12 app "$test" ${with[@]+"${with[@]}"} --limit "${LIMIT:-60}"
 done
 fi
@@ -276,9 +291,9 @@ level guarded
 # harness refuses any other test on this one).
 if [ "${X2:-yes}" != no ]; then
   echo "##### X2: a major that clears a Trivy Critical, Guarded $(date -u +%H:%MZ)"
-  perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg; $_ .= "STAGED_EXTRA=x2\n"' "$BATCH"
+  extra x2
   batch X2 && baseline "$LOGS/confirm-x2.log" && campaign --only X2 --no-forge
-  perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
+  extra
   watches
 fi
 fi
@@ -288,10 +303,10 @@ fi
 if want X4; then
 echo "##### X4: a half-made Node move, finished by the line $(date -u +%H:%MZ)"
 level guarded
-perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg; $_ .= "STAGED_EXTRA=x4\n"' "$BATCH"
+extra x4
 batch W1a,W1b && SKIP_CHECK=1 baseline "$LOGS/confirm-x4.log" &&
   harness 12 app X4 --limit "${LIMIT:-60}"
-perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
+extra
 fi
 echo "##### summary $(date -u +%H:%MZ)"
 (cd "$H" && set -o pipefail && mise exec -- node harness.ts summary | cut -c1-170) || broke "the summary"

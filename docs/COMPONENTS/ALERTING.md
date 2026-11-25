@@ -173,12 +173,12 @@ Martin is notified of each hold that waits for him, once, as it starts to wait (
 
 ## Moves
 
-Martin hears of a move, never of a finding: a finding with no fix is nothing he can do anything about, and the scan looks at it again each day ([patching](PATCHING.md)). Each move is counted from the dependency sense's days (`patching.read`, from its role alone) and the line's merges (`apps/factory/src/line/patching-alerts.ts`), in the same read of the store as the security events, and each kind is told once for each move, ever, at Notify (`PatchingMove`, one rule for each, with its own words in `PATCHING_WORDS`):
+Martin hears of a move, never of a finding: a finding with no fix is nothing he can do anything about, and the scan looks at it again each day ([patching](PATCHING.md)). Nor does he hear of a routine update, a pin merely behind that no finding asks to move: nothing is due, whoever's lane it is in, and its pull request or its issue is where it waits. Each move is counted from the dependency sense's days (`patching.read`, from its role alone) and the line's merges (`apps/factory/src/line/patching-alerts.ts`), in the same read of the store as the security events, and each kind is told once for each move, ever, at Notify (`PatchingMove`, one rule for each, with its own words in `PATCHING_WORDS`):
 
 | Kind | When |
 | --- | --- |
 | `move-fix` | a move first clears a High or a Critical: the scan found a fix |
-| `move-waits` | a move first waits on him: only his cluster's own command applies it, no pull request of the App's can write it, or the sense found something running that no scan read, known by what runs and where, not by its pod, so a rollout is not a new one. It is a card in Needs you. A major the autonomy level holds is none: its pull request's description says it waits |
+| `move-waits` | a move a finding asks for first waits on him: only his cluster's own command applies it, or no pull request of the App's can write it; or the sense found something running that no scan read, or a pin `main` holds that the cluster does not run yet, a routine update's too, known by what runs and where, not by its pod, so a rollout is not a new one. It is a card in Needs you. A major the autonomy level holds is none: its pull request's description says it waits |
 | `move-due-soon` | a move in the sense's last day comes within a day of its deadline. One first seen within a day of it, or past it, is told by `move-fix` alone, which names its deadline in Patching |
 | `move-overdue` | a move in the sense's last day passes its deadline |
 | `app-fix-merged` | the line queues and merges (its own role's `pull-request.merged`) a work item's pull request for a vulnerable dependency of the app (its `work-item.opened` carries `dependency.security`) that no merge hold waited on him for: one he approved after a hold is his. At Guarded the review gate's `move` rule allows it: a pull request that is exactly the scan's moves, and no `major` |

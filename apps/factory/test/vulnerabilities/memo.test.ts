@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Sources } from '../../src/vulnerabilities/deadlines.ts';
-import { dayOf, type MemoCount, memoised, readMemo, writeMemo } from '../../src/vulnerabilities/memo.ts';
+import { counted, dayOf, type MemoCount, memoised, readMemo, writeMemo } from '../../src/vulnerabilities/memo.ts';
 
 const NOON = Date.parse('2026-11-12T12:00:00Z');
 const dirs: string[] = [];
@@ -140,6 +140,43 @@ describe('the day’s lookups', () => {
     const helm = counting({ 'values.yaml': 'a: 2' });
     await memoised(helm.sources, memo, undefined, 'v4.1.0+g1').render({ ...CHART, version: '1.0.1' }, '1.38.0');
     expect([changed.calls, kube.calls, version.calls, helm.calls].map((calls) => calls.length)).toEqual([1, 1, 1, 1]);
+  });
+
+  it('keeps a package’s releases and the digest a tag serves, where the sources give them', async () => {
+    const file = fileIn();
+    const calls: string[] = [];
+    const routine = (): Sources =>
+      ({
+        ...counting().sources,
+        versions: async (name: string) => {
+          calls.push(`versions ${name}`);
+          return name === 'left-pad' ? { latest: '1.0.1', versions: [] } : undefined;
+        },
+        served: async (reference: string) => {
+          calls.push(`served ${reference}`);
+          return 'sha256:abc';
+        },
+      }) as Sources;
+    const memo = readMemo(file, dayOf(NOON));
+    const asked: MemoCount = { kept: 0, asked: 0 };
+    const made = { made: 0 };
+    const sources = counted(memoised(routine(), memo, asked), made);
+    expect(await sources.versions?.('left-pad')).toEqual({ latest: '1.0.1', versions: [] });
+    expect(await sources.versions?.('none-such')).toBeUndefined();
+    expect(await sources.served?.('postgres:18')).toBe('sha256:abc');
+    writeMemo(file, memo);
+    const again = counted(memoised(routine(), readMemo(file, dayOf(NOON)), asked), made);
+    expect(await again.versions?.('left-pad')).toEqual({ latest: '1.0.1', versions: [] });
+    expect(await again.served?.('postgres:18')).toBe('sha256:abc');
+    expect(calls).toEqual(['versions left-pad', 'versions none-such', 'served postgres:18']);
+    // Every lookup made is counted, whatever answered it; a file of the checkout's is none.
+    again.file('mise.toml');
+    expect(made).toEqual({ made: 5 });
+    expect(asked).toEqual({ kept: 2, asked: 3 });
+    // Sources that give neither are given neither.
+    const plain = counted(memoised(counting().sources, memo), made);
+    expect(plain.versions).toBeUndefined();
+    expect(plain.served).toBeUndefined();
   });
 
   it('never keeps what the advisory database or code scanning answers', async () => {

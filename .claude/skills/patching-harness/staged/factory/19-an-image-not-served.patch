@@ -1,0 +1,11 @@
+# Test 19: a Dockerfile nothing builds that pins an image no registry serves, so every scan of the pass has one image it cannot read
+diff --git a/scripts/unread/Dockerfile b/scripts/unread/Dockerfile
+new file mode 100644
+index 00000000..8198bf2f
+--- /dev/null
++++ b/scripts/unread/Dockerfile
+@@ -0,0 +1,4 @@
++# An image no registry serves, for the patching tests (test 19): the repository is real and public, the tag and the
++# digest are not, so the registry answers at once that it has no such manifest. Nothing builds, runs or deploys this
++# file; the vulnerability scan lists its pin, cannot read it, and must still make the day's other moves.
++FROM ghcr.io/anchore/grype:unread@sha256:59dc528f800d81b51b1b274166578f17e552af07edeef69718dec259d74c004e

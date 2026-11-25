@@ -122,6 +122,69 @@ describe('the moves Martin hears of, on the sense’s day', () => {
     expect(Object.values(tally.kinds).every((n) => n === 0)).toBe(true);
   });
 
+  it('tells him of no routine update, whoever’s lane it is in: nothing is due, and it clears nothing', () => {
+    const none = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+    const tally = emptyPatchingTally();
+    // Every move of the day merely behind, in each lane in turn: his cluster's, an issue's, the worker's, the line's.
+    for (const [day, lane] of (['cluster', 'issue', 'worker', 'line'] as const).entries()) {
+      const routine = moved({ ...DAY, rows: [] }, ({ deadline: _, ...move }) => ({
+        ...move,
+        deadline: undefined,
+        clears: none,
+        newToday: 0,
+        lane,
+      }));
+      addDay(tally, routine, READ + day * 24 * H);
+    }
+    judgeDeadlines(tally, READ + 30 * 24 * H);
+    expect(kinds(tally)).toEqual({
+      'move-fix': 0,
+      'move-waits': 0,
+      'move-due-soon': 0,
+      'move-overdue': 0,
+      'app-fix-merged': 0,
+    });
+    // The same pin with a finding its move clears, in his lane: he hears of it then, once.
+    addDay(
+      tally,
+      moved({ ...DAY, rows: [] }, () => ({ clears: { ...none, medium: 1 }, lane: 'issue' })),
+      READ + 31 * 24 * H,
+    );
+    const moves = DAY.repositories.reduce((sum, r) => sum + r.moves.length, 0);
+    expect(tally.kinds['move-waits']).toBe(moves);
+    // A k3s the cluster has not moved to is a row of the sense's, which waits on him whatever asked for the move.
+    const rows = emptyPatchingTally();
+    addDay(
+      rows,
+      moved(DAY, () => ({ clears: none, deadline: undefined })),
+      READ,
+    );
+    expect(rows.kinds['move-waits']).toBe(DAY.rows.length);
+  });
+
+  it('tells him of no move of the Makefile’s as his: it is the worker’s, as any pin the App writes', () => {
+    const tally = emptyPatchingTally();
+    const makefile = moved({ ...DAY, rows: [] }, () => ({
+      name: 'argo-cd',
+      pins: [{ file: 'Makefile', line: 9 }],
+      lockfile: false,
+      clears: { critical: 0, high: 0, medium: 3, low: 0, unknown: 0 },
+      lane: 'worker',
+    }));
+    addDay(tally, makefile, READ);
+    expect(tally.kinds['move-waits']).toBe(0);
+  });
+
+  it('still tells him of a line no longer built, which has no lane and clears nothing a move can', () => {
+    const tally = emptyPatchingTally();
+    const unbuilt = moved({ ...DAY, rows: [] }, () => ({
+      clears: { critical: 0, high: 2, medium: 0, low: 0, unknown: 0 },
+      lane: 'none',
+    }));
+    addDay(tally, unbuilt, READ);
+    expect(tally.kinds['move-fix']).toBeGreaterThan(0);
+  });
+
   it('has a move’s first High or Critical counted the day it gets one, not before', () => {
     const tally = emptyPatchingTally();
     addDay(

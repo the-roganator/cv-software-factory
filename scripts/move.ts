@@ -1,7 +1,8 @@
 /**
  * A move (spec 4.3): whether a pull request is exactly the scan's moves and nothing else. The review gate passes one as
  * `move`, or as `major` when one of its moves crosses a major and clears no Critical by Trivy's own rating, whatever the
- * publisher's (`namedMajor`, scripts/review-routing.ts).
+ * publisher's (`namedMajor`, scripts/review-routing.ts); a routine update across a major, which clears nothing, among
+ * them.
  *
  * The gate takes the moves the daily scan of `main` asked for (`ScanMove`: `moves.json` joined with the state the scan
  * sealed, read by scripts/moves.ts), makes them itself on the pull request's base, main's tip (for the merge queue's
@@ -15,7 +16,8 @@
  *   what the scan ran to make the moves the pin watch commits, in the same order (github/made.ts).
  *
  * The pull request carries a move when it rewrites a line one of the move's pins is on (a lockfile's, where the scan
- * found its package); it may carry several of the day's moves, and must carry each whole. Anything that differs is refused, and the
+ * found its package, or for a routine update, whose old entry a parent may keep, where the lockfile resolves it for a
+ * manifest); it may carry several of the day's moves, and must carry each whole. Anything that differs is refused, and the
  * reason says where: a line no move writes, a pin left unmoved, a version or digest other than the scan's, a file
  * added, removed, renamed or changed in mode, anything under `.github/`. What a lockfile's move withholds (its package
  * and versions) is never said: its name is the public list's, and a file the derivation writes is named by its line
@@ -25,14 +27,15 @@
  * moves to, whether it crosses a major, and what it clears. Who opened the pull request decides nothing here.
  */
 
-import { madeByLine, madeByStep, namedMajor, stepOf } from '../apps/factory/src/github/made.ts';
+import { madeByLine, madeByStep, namedMajor, routineStep, stepOf } from '../apps/factory/src/github/made.ts';
 import { spans } from '../apps/factory/src/github/pin-guard.ts';
 import { editAt } from '../apps/factory/src/github/pins.ts';
 import type { ReadMove } from '../apps/factory/src/github/scanning.ts';
 import { moveOf } from '../apps/factory/src/patching/sends.ts';
 import { repositoryOfImage } from '../apps/factory/src/repositories.ts';
 import { readTarget, type Target } from '../apps/factory/src/vulnerabilities/fixes.ts';
-import type { Move as PinStepMove } from '../apps/runner/src/pins.ts';
+import { isRoutine } from '../apps/factory/src/vulnerabilities/moves.ts';
+import { importedVersions, type Move as PinStepMove } from '../apps/runner/src/pins.ts';
 import type { MoveResult } from './review-routing.ts';
 
 export type { MoveResult } from './review-routing.ts';
@@ -132,7 +135,8 @@ function stepMove(move: ScanMove, app: boolean, base: MoveIO['base']): PinStepMo
   if (!madeByLine(move)) return undefined;
   const made = moveOf(move.repository, move);
   if (typeof made === 'string') return made;
-  return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to };
+  // A routine update is made as the line's pin step makes it: to exactly its target.
+  return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to, ...routineStep(move) };
 }
 
 /** Why the gate will not make a move by an edit, or nothing when it will. */
@@ -216,8 +220,24 @@ export async function proveMove(
     move.lockfile ? (move.withheld?.pins ?? move.pins).filter((pin) => LOCKFILE.test(pin.file)) : move.pins;
   // One the scan found at no line (0) is carried by none: any change to its file would carry it, and a pull request
   // that makes another move there would have to make it too.
+  // A routine update of a package moves the copy its manifests resolve, and leaves a copy a parent's range keeps
+  // (apps/runner/src/pins.ts's `movePackage`): the entry the scan found the package at may be a line the lockfile
+  // still has. So it is carried, too, by a change that rewrites where main's lockfile resolves the package for a
+  // manifest, at the version the move is from.
+  const resolved = (move: ScanMove) => {
+    const { withheld } = move;
+    if (!move.lockfile || !withheld || !isRoutine(move)) return [];
+    const from = new Set(withheld.from.split(', '));
+    return [...new Set(withheld.pins.map((pin) => pin.file))]
+      .filter((file) => LOCKFILE.test(file))
+      .flatMap((file) =>
+        importedVersions(byPath.get(file)?.base ?? '', withheld.package)
+          .filter((each) => from.has(each.version))
+          .map((each) => ({ file, line: each.line })),
+      );
+  };
   const carried = scan.filter((move) =>
-    pinsOf(move).some((pin) => pin.line >= 1 && touched.get(pin.file)?.has(pin.line)),
+    [...pinsOf(move), ...resolved(move)].some((pin) => pin.line >= 1 && touched.get(pin.file)?.has(pin.line)),
   );
   if (!carried.length) {
     const first = changed[0] as Changed;
@@ -270,12 +290,15 @@ export async function proveMove(
   const major = carried.filter(namedMajor);
   const names = carried.map((move) => (move.lockfile ? move.name : `${move.name} to ${shortTarget(move.to)}`));
   const title = `${carried.length === 1 ? 'The scan’s move' : `The scan’s ${plural(carried.length, 'move')}`} of ${names.join(', ')}, made by the gate on main and the same as the pull request`;
-  return major.length
-    ? {
-        rule: 'major',
-        title: `${title}; a major that clears no Critical by Trivy’s rating: ${major.map((m) => m.name).join(', ')}`,
-      }
-    : { rule: 'move', title };
+  if (!major.length) return { rule: 'move', title };
+  // A routine update clears nothing: its major has no finding behind it, which its title says in place of a rating.
+  const named = (moves: ScanMove[]) => moves.map((m) => m.name).join(', ');
+  const [routine, found] = [major.filter((m) => isRoutine(m)), major.filter((m) => !isRoutine(m))];
+  const why = [
+    ...(found.length ? [`a major that clears no Critical by Trivy’s rating: ${named(found)}`] : []),
+    ...(routine.length ? [`a routine update across a major, with no finding behind it: ${named(routine)}`] : []),
+  ];
+  return { rule: 'major', title: `${title}; ${why.join('; ')}` };
 }
 
 /** A target as a title names it: a tag without its digest, a chart's or a package's version. */

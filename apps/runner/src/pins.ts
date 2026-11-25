@@ -57,6 +57,7 @@ import {
   releasedAt,
   runsNode,
 } from '../../factory/src/vulnerabilities/registry.ts';
+import { compareVersions, numbersOf } from '../../factory/src/vulnerabilities/versions.ts';
 import { git, gitInput } from './git.ts';
 
 export {
@@ -80,6 +81,77 @@ export interface Move {
   name: string;
   from: string;
   to: string;
+  /**
+   * Whether it is a routine update, which no finding asks for: a package's then moves to exactly `to`, the release the
+   * scan waited for, where a finding's fix takes `to` as a floor. Nothing to any other move, whose target is exact.
+   */
+  routine?: boolean | undefined;
+}
+
+/** A terminal's colour codes: an escape, a bracket, numbers and a letter. */
+const COLOURS = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, 'g');
+
+/** The most of a tool's own reason a refusal keeps. */
+const MOST_REASON = 300;
+
+/**
+ * Why pnpm or mise failed, in its own words and one line: the last cause its report gives, as it would read unwrapped.
+ * A command's failure is its whole report, behind the command line that ran it: pnpm draws its causes as a tree and
+ * wraps each at about 76 columns, in the middle of a hyphenated word too (`High-`, `risk`). Here the command line and
+ * the advice after the causes (`help:`) are left out, the tree's marks taken off, each cause's lines joined again, and
+ * what only says that resolving failed (`Failed to resolve dependency:`) dropped from before the reason. With no
+ * report to read, the failure's first line stands, without its command.
+ */
+export function toolReason(error: unknown): string {
+  const failed = error as { stderr?: unknown; stdout?: unknown; message?: unknown } | null;
+  const said = [failed?.stderr, failed?.stdout].map((each) => (typeof each === 'string' ? each : '')).join('\n');
+  const message = typeof failed?.message === 'string' ? failed.message : String(error);
+  const report = said.trim()
+    ? said
+    : message
+        .split('\n')
+        .slice(/^Command failed/.test(message) ? 1 : 0)
+        .join('\n');
+  const causes: string[] = [];
+  let open = false;
+  // A terminal's colours are no part of what it said.
+  for (const raw of report.replace(COLOURS, '').split('\n')) {
+    if (/^\s*help:/.test(raw)) break;
+    const starts = /^\s*(?:[├╰]─▶|×|Error:)/.test(raw);
+    // The tree's own marks, and anything else that is no letter of the report: a control character among them.
+    const text = raw
+      .replace(/^\s*(?:[├╰]─▶|[│×]|Error:)?\s*/, '')
+      .replace(/[\p{Cc}─-╿▶×]/gu, ' ')
+      .trim();
+    if (!text) {
+      open = false;
+      continue;
+    }
+    const last = causes.at(-1);
+    if (starts || !open || last === undefined) causes.push(text);
+    // A line wrapped at a hyphen is one word again; any other wrap was at a space.
+    else causes[causes.length - 1] = last.endsWith('-') ? `${last}${text}` : `${last} ${text}`;
+    open = true;
+  }
+  const cause = causes.findLast((each) => !/^(?:updating dependencies|ERR_PNPM_\w+)$/.test(each)) ?? causes.at(-1);
+  const reason = (cause ?? message.split('\n')[0] ?? '')
+    .replace(/^(?:Failed to resolve dependency(?: tree)?:\s*)+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const plain = /^Command failed/.test(reason) || !reason ? 'it failed, and said nothing of why' : reason;
+  return plain.length > MOST_REASON ? `${plain.slice(0, MOST_REASON - 1)}…` : plain;
+}
+
+/**
+ * A refusal of pnpm's or mise's, as the step says any refusal: one line of plain words with the tool's own reason,
+ * and never the command line. The step's own refusals pass as they are.
+ */
+function toolRefused(tool: string, what: string, error: unknown): Error {
+  if (error instanceof PinsRefused || error instanceof PinsHeld) return error;
+  // The reason names what was asked for where the tool does (`for "lefthook@2.2.2"`): said once, before it.
+  const name = escaped(what.replace(/(?!^)@[^@]*$/, ''));
+  const reason = toolReason(error).replace(new RegExp(` for "?${name}(?:@[^"\\s]+)?"?`), '');
+  return new PinsRefused(`${tool} refused ${what}: ${reason}`);
 }
 
 /** The move needs a file only Martin may change: the work item waits for him, told the file and why. */
@@ -238,6 +310,28 @@ export function lockedVersions(lock: string, name: string): string[] {
   return [...new Set([...lock.matchAll(key)].map((m) => m[1] as string))].sort(compareVersions);
 }
 
+/**
+ * Where a pnpm lockfile's `importers:` resolve a package, each with its line (from 1) and the version there: the copy
+ * a manifest that names the package gets, as apart from a copy only another package's range brings.
+ */
+export function importedVersions(lock: string, name: string): { line: number; version: string }[] {
+  const lines = lock.split('\n');
+  const entry = new RegExp(`^ {6}'?${escaped(name)}'?:\\s*$`);
+  const out: { line: number; version: string }[] = [];
+  let importers = false;
+  for (const [at, line] of lines.entries()) {
+    if (/^\S/.test(line)) importers = line.trimEnd() === 'importers:';
+    if (!importers || !entry.test(line)) continue;
+    for (const next of [at + 1, at + 2]) {
+      const version = /^ {8}version:\s*'?([^\s'(]+)/.exec(lines[next] ?? '')?.[1];
+      if (!version) continue;
+      out.push({ line: next + 1, version });
+      break;
+    }
+  }
+  return out;
+}
+
 /** The packages whose dependencies resolve `name` at `version`, from a pnpm lockfile's `snapshots:`: its parents. */
 export function parentsAt(lock: string, name: string, version: string): string[] {
   const snapshots = lock
@@ -257,45 +351,6 @@ export function parentsAt(lock: string, name: string, version: string): string[]
 
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** A version's release and its pre-release, split at its first hyphen, as semver reads it. */
-const parts = (version: string): [string, string | undefined] => {
-  const at = version.indexOf('-');
-  return at < 0 ? [version, undefined] : [version.slice(0, at), version.slice(at + 1)];
-};
-
-/**
- * Orders two versions as semver does: by release, then a pre-release before its release, its identifiers compared
- * one by one, a number's as a number and before any word.
- */
-export function compareVersions(a: string, b: string): number {
-  const [mainA, preA] = parts(a);
-  const [mainB, preB] = parts(b);
-  const partsA = mainA.split('.').map(Number);
-  const partsB = mainB.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const d = (partsA[i] ?? 0) - (partsB[i] ?? 0);
-    if (d) return d;
-  }
-  if (preA === preB) return 0;
-  if (preA === undefined) return 1;
-  if (preB === undefined) return -1;
-  const idsA = preA.split('.');
-  const idsB = preB.split('.');
-  for (let i = 0; i < Math.max(idsA.length, idsB.length); i++) {
-    const x = idsA[i];
-    const y = idsB[i];
-    if (x === undefined) return -1;
-    if (y === undefined) return 1;
-    if (x === y) continue;
-    const numeric = /^\d+$/;
-    if (numeric.test(x) && numeric.test(y)) return Number(x) - Number(y);
-    if (numeric.test(x)) return -1;
-    if (numeric.test(y)) return 1;
-    return x < y ? -1 : 1;
-  }
-  return 0;
-}
-
 /**
  * Whether a manifest's range admits a version, for the ranges the step moves: `^`, `~` or an exact version. Any other
  * range is not one the step moves, and says so.
@@ -307,16 +362,18 @@ export function admits(spec: string, version: string): boolean {
   const base = `${floor[0]}.${floor[1]}.${floor[2]}${floor[3] ?? ''}`;
   if (op === '') return compareVersions(version, base) === 0;
   if (compareVersions(version, base) < 0) return false;
-  const [major, minor] = version.split('.').map(Number);
-  if (op === '~') return major === Number(floor[0]) && minor === Number(floor[1]);
-  if (Number(floor[0]) > 0) return major === Number(floor[0]);
-  if (Number(floor[1]) > 0) return major === 0 && minor === Number(floor[1]);
+  // Each number as its digits (versions.ts), so none is rounded.
+  const [major, minor] = numbersOf(version);
+  const [floorMajor, floorMinor] = numbersOf(base);
+  if (op === '~') return major === floorMajor && minor === floorMinor;
+  if (floorMajor !== '0') return major === floorMajor;
+  if (floorMinor !== '0') return major === '0' && minor === floorMinor;
   return compareVersions(version, base) === 0;
 }
 
 /** The line a caret range keeps a version on: its major, or below 1.0 its minor. */
 const lineOf = (version: string) => {
-  const [major, minor] = version.split('.');
+  const [major, minor] = numbersOf(version);
   return major === '0' ? `0.${minor}` : major;
 };
 
@@ -329,6 +386,15 @@ export const movedRange = (spec: string, version: string): string =>
  * under the app's own policy. A copy the parents' ranges hold below the target holds the work item for an override:
  * the copy the move names, and any on the target's line (its major, or below 1.0 its minor); one on another line is no
  * part of the move.
+ *
+ * A fix's target is a floor: pnpm takes the newest release the range admits at or above it. A routine update's is
+ * exact (`pnpm update <name>@<target>`): the scan listed that release once it had waited its days, and a newer one
+ * inside the range has not. pnpm takes a version only for a package a manifest names, writes its range there as the
+ * target with the range's operator kept, and moves every copy the target satisfies with it; so a routine update of a
+ * package no manifest names is refused, and so is one whose manifests' copy (`importedVersions`) ends anywhere but
+ * the target. A copy only a parent brings stays where that parent's range puts it, and is no part of a routine
+ * update: nothing is wrong with the version it is at, so nothing asks for an override. A fix holds for one, since
+ * every copy must leave the version its advisory names.
  */
 export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<void> {
   // A package at two versions: each copy to the target on its own line, the older line first.
@@ -354,10 +420,21 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   // Already made: every copy is at the target or past it, or every copy of the move's own is, and there is one.
   const there = (list: string[]) => list.every((v) => compareVersions(v, move.to) >= 0);
   if (there(versions) || (own.length > 0 && there(own))) return;
+  // A routine update is made once each manifest that names the package resolves the target, whatever a parent keeps.
+  const imported = importedVersions(before, move.name);
+  if (move.routine && imported.length > 0 && imported.every((each) => each.version === move.to)) return;
   if (!versions.includes(move.from)) {
     throw new PinsRefused(`The lockfile has ${move.name} at ${versions.join(', ')}, not at ${move.from}.`);
   }
   const manifests = await manifestsOf(dir);
+  const named = manifests.some(({ json }) =>
+    PINNED_FIELDS.some((field) => typeof json[field]?.[move.name] === 'string'),
+  );
+  if (move.routine && !named) {
+    throw new PinsRefused(
+      `No manifest names ${move.name}, and pnpm moves a package to an exact version only where one does: a routine update of it cannot be held to ${move.to}.`,
+    );
+  }
   for (const { path, json } of manifests) {
     let moved = false;
     // A peer's range says what the package works with, and pins nothing: it is never moved.
@@ -371,8 +448,30 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   }
   // Every project of a workspace, when the checkout is one, so a nested project's copy moves too.
   const workspace = /^packages:/m.test(await readFile(join(dir, 'pnpm-workspace.yaml'), 'utf8').catch(() => ''));
-  await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), move.name, '--depth', 'Infinity']);
+  const what = move.routine ? `${move.name}@${move.to}` : move.name;
+  // pnpm's own guards (a release younger than its age, a weaker provenance, a version it cannot record) refuse here.
+  await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), what, '--depth', 'Infinity']).catch(
+    (error: unknown) => {
+      throw toolRefused('pnpm', what, error);
+    },
+  );
   const after = await readFile(lockPath, 'utf8');
+  if (move.routine) {
+    // The manifests' copy alone is the move's: exactly the target, and a parent's copy where its range puts it.
+    const got = [...new Set(importedVersions(after, move.name).map((each) => each.version))];
+    const past = got.filter((v) => compareVersions(v, move.to) > 0);
+    if (past.length) {
+      throw new PinsRefused(
+        `${move.name} resolves to ${past.join(', ')}, past ${move.to}: a routine update moves to the release the scan listed, and no further.`,
+      );
+    }
+    if (got.length !== 1 || got[0] !== move.to) {
+      throw new PinsRefused(
+        `${move.name} resolves to ${got.join(', ') || 'no version'} where a manifest names it, not to ${move.to}: a routine update moves to exactly the release the scan listed.`,
+      );
+    }
+    return;
+  }
   const below = lockedVersions(after, move.name).filter((v) => itsOwn(v) && compareVersions(v, move.to) < 0);
   if (below.length) {
     const parents = below.flatMap((v) => parentsAt(after, move.name, v));
@@ -715,7 +814,16 @@ export async function moveLibrary(dir: string, image: string, tag: string, pnpm:
     'update',
     ...(workspace ? ['--recursive'] : []),
     ...[...named].sort().map((n) => `${n}@${release}`),
-  ]);
+  ]).catch((error: unknown) => {
+    throw toolRefused(
+      'pnpm',
+      [...named]
+        .sort()
+        .map((n) => `${n}@${release}`)
+        .join(' and '),
+      error,
+    );
+  });
   const left = copies(await readFile(lockPath, 'utf8')).filter(({ v }) => v !== release);
   if (left.length)
     throw new PinsRefused(
@@ -781,7 +889,9 @@ export async function moveTool(
       );
   }
   await writeFile(path, lock.replace(entry[0], entry[0].replace(`"${move.from}"`, `"${move.to}"`)));
-  await mise(dir, ['lock', move.name]);
+  await mise(dir, ['lock', move.name]).catch((error: unknown) => {
+    throw toolRefused('mise', `${move.name}@${move.to}`, error);
+  });
 }
 
 async function text(get: Get, url: string): Promise<string> {

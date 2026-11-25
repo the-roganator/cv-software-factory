@@ -46,6 +46,7 @@ import {
   failedAttemptLines,
   mentionsIn,
   need,
+  routineUpdate,
   scopedNamesInCode,
   titleFor,
   words,
@@ -198,7 +199,7 @@ function prompt(input: DescriberInput): string {
     'The gates and the reviewer have passed the change: do not run the tests, start the app, send it requests or change anything. Read what you need to explain it, and no more.',
     '',
     ...(asked.kind === 'request' ? improvementWriting(spec) : FIX_WRITING),
-    ...(asked.kind === 'ticket' && isMove(asked.ticket) ? moveWriting(moved) : []),
+    ...(asked.kind === 'ticket' && isMove(asked.ticket) ? moveWriting(moved, routineUpdate(signals)) : []),
   ].join('\n');
 }
 
@@ -219,12 +220,17 @@ const FIX_WRITING = [
 ];
 
 /** What the describer is told of a move's description, whose figures the line writes itself. */
-const moveWriting = (moved: string | undefined) => [
+const moveWriting = (moved: string | undefined, routine = false) => [
   '',
   'This change is a dependency’s move. The line adds a section of its own after your description: the spec, each pin before and after, and what the scan gates counted on `main` and on the change, from their own notices, and the Dependabot pull request it replaces, if there is one. So write no version, pin, digest, advisory or count of findings in the description or the summary: say what moves and why in words, naming the package or image that moves as the move’s signal names it, which the ticket’s issue, opened before the plan, made public, and what, if anything, the coder had to change beyond the pins.',
   ...(moved
     ? [
         `The summary’s \`title\`, \`description\` and \`story\` each name ${moved}, exactly so: the line refuses a summary of a move that leaves the package out of any of them. Still no version, advisory or count in any of them.`,
+      ]
+    : []),
+  ...(routine
+    ? [
+        'It is a routine update: a newer release, which no advisory asked for. Nothing was wrong, so say what moved, never that anything was fixed. The pull request’s title is of type chore with the scope deps, such as "chore(deps): move pino to 10.4.2": the line refuses any other.',
       ]
     : []),
 ];
@@ -274,7 +280,7 @@ export const describer = defineAgent<DescriberInput, DescriberResult>({
       failure,
     };
   },
-  schema: ({ asked, moved }) => describerResultFor(titleFor(asked), moved),
+  schema: ({ asked, moved, signals }) => describerResultFor(titleFor(asked, signals), moved),
   prompt,
   apply: async (described, _handback, { pullRequest: number, spec, asked }, context) => {
     const pr = await context.read('pullRequest', { number });

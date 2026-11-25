@@ -4,7 +4,9 @@
  * watches each move to the end or to wherever it stops, reading only GitHub and the scratch cluster. One line a test.
  *
  * Its only acts: `./copies.sh reset`, dispatching `vulnerabilities.yml` on a copy's main, restarting the scratch
- * cluster's GitHub worker and dependency sense so their passes come now and not on the hour, and, for an app test,
+ * cluster's GitHub worker and dependency sense so their passes come now and not on the hour, asking Argo CD to look at
+ * git now once a watched pull request has merged (a refresh, which hastens its poll and changes nothing in the
+ * cluster), `./copies.sh summon-dependabot` for the test of Dependabot's own pull request (20), and, for an app test,
  * telling the line which ticket it takes (W3 turns it to a second ticket and back). It never approves, queues, re-runs
  * a check, answers a hold or sets a variable (a test's `variables` are read, and confirm.sh sets them). Everything else
  * is a read.
@@ -18,15 +20,42 @@
  */
 // biome-ignore-all lint/suspicious/noExplicitAny: it reads GitHub's and the cluster's JSON as each gives it, untyped
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { APP, FACTORY, TESTS, type Test } from './catalogue.ts';
-import { BIN, WORK as CLONES, RUNS, SKILL } from './paths.ts';
+import {
+  branchFits,
+  certainFail,
+  isRoutine,
+  moveFits,
+  pickScan,
+  pinsFault,
+  pinWatchLine,
+  printOf,
+  probeQuery,
+  routineBranch,
+  saysNotPulled,
+  settleMs,
+  unreadMoves,
+  withSetting,
+  workflowPins,
+} from './decide.ts';
+import { BIN, WORK as CLONES, RUNS, SKILL, STATE as STATE_DIR } from './paths.ts';
 
 const CONTEXT = 'k3d-software-factory-scratch';
 const APP_BOT = 'the-roganator-scratch-factory[bot]';
 const REVIEW_APP = 5470762;
-const POLL_MS = 120_000;
+/**
+ * How often the watch looks. A look is cheap: two lists of the copy's pull requests and one of its issues (REST), and
+ * one GraphQL query that says which pull requests changed (`probe`); only a changed one is read in full, five requests.
+ * A batch of nine pull requests is some 550 REST requests an hour for the looks and 700 for the reads, of the 5,000 an
+ * hour Martin's login has.
+ */
+const POLL_MS = 20_000;
+/** The same, when the cheap look failed and every open pull request is read in full. */
+const SLOW_POLL_MS = 120_000;
+/** A watch says where each test stands when that changes, and at least this often. */
+const SAY_MS = 120_000;
 const WORK = join(CLONES, 'factory');
 
 // ── The only doors out ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -89,7 +118,9 @@ function pinWatchNames(tests: Test[]): string[] {
     ...new Set(
       tests.flatMap((t) =>
         t.pr.by === 'forged'
-          ? ['postgres']
+          ? ['N3a', 'N3b', 'N4'].includes(t.pr.forge)
+            ? ['postgres']
+            : []
           : t.pr.by === 'pin' || t.pr.by === 'lockfile'
             ? [...t.moves, ...(t.alsoTakes ?? [])]
             : [],
@@ -114,6 +145,11 @@ function preflight(state: State, appJustReset: boolean) {
     else if (missing.length)
       wrong.push(
         `the pin watch takes ${told}, not ${missing.join(', ')}: put \`node harness.ts only\`'s line in batch.env`,
+      );
+    else if (told === '*')
+      say(
+        state,
+        `pre-flight: the pin watch takes every move (*), not these tests' alone (${needed.join(', ')}): every pull request of the day opens and may merge beside them. \`node harness.ts batch ${state.only.join(',')}\` names them in batch.env`,
       );
     else say(state, `pre-flight: the pin watch takes ${told}`);
   }
@@ -264,6 +300,8 @@ interface Move {
   to: string;
   pins: { file: string }[];
   lockfile?: boolean;
+  /** Whether its target is on another major than its pin. */
+  major?: boolean;
   clears?: Record<string, number>;
 }
 interface Pull {
@@ -275,6 +313,9 @@ interface Pull {
   mergedAt?: string;
   mergeCommit?: string;
   head: string;
+  /** Its branch, and the moves its description marks or its title names (`pinMoves`). */
+  branch?: string;
+  carries?: string[];
   files: string[];
   red: string[];
   pending: string[];
@@ -312,6 +353,14 @@ interface Seen {
   timeline?: Timeline;
   /** For a test with `removes`: each line, whether the pull request's diff takes it out ('moved'), or not. */
   removed?: string[];
+  /** For a test that ends as an issue: when the run first saw the issue with no pull request beside it. */
+  issuedAt?: string | undefined;
+  /** Why the test has failed for good before its limit (`certainFail`), once it has. */
+  certain?: string | undefined;
+  /** For a test with `calls`: why the caller's pins are not one commit of the called repository's main, or '' when they are. */
+  pinned?: string | undefined;
+  /** For a test with `unread`: what the scan's run left and said, and the open alerts at the image's file. */
+  unread?: { artifacts: string[]; said: string[]; alertsBefore?: number; alertsAfter?: number };
 }
 interface State {
   id: string;
@@ -360,6 +409,10 @@ interface State {
   reset?: { startedAt: string; before: string; after: string } | undefined;
   scan1?: Scan | undefined;
   kickedAt?: string;
+  /** When the run summoned Dependabot (test 20). */
+  summonedAt?: string;
+  /** The scratch GitHub worker's poll, in seconds, as its Deployment sets it (60 when it sets none). */
+  workerPollS?: number;
   pods0?: Record<string, number>;
   /** Pods already failed when the run began (a canary's journeys Job from before it): no dirt of this run's. */
   failed0?: string[];
@@ -368,7 +421,7 @@ interface State {
   /** `errorAt`: when each error line was logged (ISO; '' where the line gave no time), so a move answers only for those since its pull request opened. */
   clean?: { errors: string[]; unhealthy: string[]; restarted: string[]; errorAt?: string[] };
   /** The forgeries forge.ts made for this run: each test's pull request and the commit that must be held. */
-  forged?: Record<string, { number: number; head: string }>;
+  forged?: Record<string, { number?: number; head?: string; refused?: string }>;
   seen: Record<string, Seen>;
   done?: boolean;
 }
@@ -466,7 +519,10 @@ function awaitScan(state: State, repo: string, scan: Scan, label: string): Scan 
     sleep(30_000);
   }
   const into = join(dirOf(state.id), label);
+  // Afresh: the folder may hold another run's, from a scan that was replaced or a re-read.
+  rmSync(into, { recursive: true, force: true });
   mkdirSync(into, { recursive: true });
+  delete scan.moves;
   try {
     sh('gh', ['run', 'download', String(scan.id), '-R', repo, '-n', 'moves', '-D', into]);
     scan.moves = JSON.parse(readFileSync(join(into, 'moves.json'), 'utf8')).moves;
@@ -493,7 +549,39 @@ function required(repo: string): string[] {
   return requiredOf.get(repo) ?? [];
 }
 
-const cache = new Map<string, { updatedAt: string; pull: Pull }>();
+const cache = new Map<string, { updatedAt: string; pull: Pull; print?: string | undefined }>();
+/**
+ * What this pass's cheap look said of each pull request the last pass read and may yet change, by `<repo>#<number>`:
+ * its print (decide.ts's `printOf`), or undefined where the look cannot stand for a reading. A pull request whose
+ * print is what it was when it was last read in full is not read again; any other is. The look comes before the
+ * readings, so a change between the two only costs a reading at the next pass, never a stale one kept.
+ */
+const probed = new Map<string, string | undefined>();
+/** Whether the last look failed: every open pull request was then read in full, and the watch waits longer. */
+let probeFailed = false;
+function probe(repo: string) {
+  const numbers = [...cache.entries()]
+    .filter(([key, kept]) => key.startsWith(`${repo}#`) && (kept.pull.pending.length > 0 || kept.pull.state === 'open'))
+    .map(([key]) => Number(key.slice(repo.length + 1)));
+  probed.clear();
+  probeFailed = false;
+  for (let i = 0; i < numbers.length; i += 30) {
+    const some = numbers.slice(i, i + 30);
+    try {
+      const said = graphql(repo, probeQuery(some)).repository;
+      for (const n of some) probed.set(`${repo}#${n}`, printOf(said[`p${n}`], required(repo)));
+    } catch {
+      probeFailed = true;
+    }
+  }
+}
+/** The moves a pin pull request carries: the names its description marks (one pull request for a file's moves), or the one its title names. */
+function pinMoves(p: { title: string; body?: string | null }): string[] {
+  const mark = /<!-- factory: pin-moves ([A-Za-z0-9%._~!*'()-]*) -->/.exec(p.body ?? '')?.[1];
+  if (mark) return JSON.parse(decodeURIComponent(mark)) as string[];
+  const named = /^chore\(pin\): move (.+) to \S+/.exec(p.title.replace(/^\[reset\] /, ''))?.[1];
+  return named ? [named] : /^chore\(pin\): /.test(p.title.replace(/^\[reset\] /, '')) ? ['?'] : [];
+}
 /** When the run's scan started: a person's act on a pull request counts as a touch from here on. */
 let clockStart = '';
 function readPull(repo: string, listed: any): Pull {
@@ -501,6 +589,8 @@ function readPull(repo: string, listed: any): Pull {
   const kept = cache.get(key);
   if (kept && kept.updatedAt === listed.updated_at && kept.pull.pending.length === 0 && kept.pull.state !== 'open')
     return kept.pull;
+  const print = probed.get(key);
+  if (kept && print !== undefined && kept.print === print) return kept.pull;
   const n = listed.number;
   const full = api<any>(repo, `pulls/${n}`);
   const head: string = full.head.sha;
@@ -568,6 +658,8 @@ function readPull(repo: string, listed: any): Pull {
     mergedAt: full.merged_at ?? undefined,
     mergeCommit: full.merged_at ? full.merge_commit_sha : undefined,
     head,
+    branch: full.head.ref,
+    carries: pinMoves(full),
     files,
     red,
     pending,
@@ -578,7 +670,7 @@ function readPull(repo: string, listed: any): Pull {
     queuedBy,
     queuedAt,
   };
-  cache.set(key, { updatedAt: listed.updated_at, pull });
+  cache.set(key, { updatedAt: listed.updated_at, pull, print });
   return pull;
 }
 
@@ -674,12 +766,41 @@ function cluster(): Cluster {
   });
   return { apps, pods };
 }
+/** What GitHub said of two commits: one never comes to be before or after another, so each pair is asked once. */
+const pasts = new Map<string, boolean>();
+/**
+ * Asks Argo CD to look at git now, for root and the app, at most twice a minute: it would look within its own two or
+ * three minutes anyway, and a refresh reads git and each resource's health again and changes nothing in the cluster.
+ */
+let refreshedAt = 0;
+function refresh() {
+  if (Date.now() - refreshedAt < 30_000) return;
+  refreshedAt = Date.now();
+  try {
+    kubectl([
+      '-n',
+      'argocd',
+      'annotate',
+      'application',
+      'root',
+      'website',
+      'argocd.argoproj.io/refresh=normal',
+      '--overwrite',
+    ]);
+  } catch {}
+}
+
 /** Whether `later` is `commit` or comes after it on main. */
 function past(repo: string, commit: string, later?: string): boolean {
   if (!later) return false;
   if (later === commit) return true;
+  const key = `${repo} ${commit}...${later}`;
+  const known = pasts.get(key);
+  if (known !== undefined) return known;
   try {
-    return ['ahead', 'identical'].includes(api<any>(repo, `compare/${commit}...${later}`).status);
+    const is = ['ahead', 'identical'].includes(api<any>(repo, `compare/${commit}...${later}`).status);
+    pasts.set(key, is);
+    return is;
   } catch {
     return false;
   }
@@ -766,9 +887,89 @@ function notDeployed(test: Test, seen: Seen, pull: Pull, now: Cluster, listed: a
  */
 const appLockfile = (m: Move, test: Test) =>
   Boolean(m.lockfile) &&
+  !isRoutine(m) &&
   m.lane === 'line' &&
   m.pins.some((p) => p.file !== 'pnpm-lock.yaml') &&
   (m.clears?.CRITICAL ?? 0) > 0 === (test.lockfile === 'critical');
+
+/**
+ * For a test whose pull request moves a caller's pins of another repository's workflows (`calls`): why the caller's
+ * main, after the merge, does not pin every one at a single commit that is on the called repository's main and after
+ * the one pinned before, or '' when it does.
+ */
+function pinnedFault(test: Test, merged: Pull): string {
+  const calls = test.calls;
+  if (!calls) return '';
+  const at = merged.mergeCommit ?? 'main';
+  const read = (ref: string) =>
+    Object.fromEntries(
+      api<any[]>(test.repo, `contents/.github/workflows?ref=${ref}`)
+        .filter((f) => /\.ya?ml$/.test(f.name))
+        .map((f) => [
+          f.path as string,
+          sh('gh', [
+            'api',
+            `repos/${test.repo}/contents/${f.path}?ref=${ref}`,
+            '-H',
+            'Accept: application/vnd.github.raw',
+          ]),
+        ]),
+    );
+  const after = read(at);
+  const to = Object.values(after).flatMap((text) => workflowPins(text, calls.repo))[0]?.commit;
+  if (!to) return `no pin of ${calls.repo}'s workflows on main`;
+  const fault = pinsFault(after, calls.repo, to, calls.count);
+  if (fault) return fault;
+  const parent = api<any>(test.repo, `commits/${at}`).parents?.[0]?.sha as string | undefined;
+  const was = Object.values(parent ? read(parent) : {}).flatMap((text) => workflowPins(text, calls.repo))[0]?.commit;
+  if (!past(calls.repo, to, mainOf(calls.repo))) return `${to.slice(0, 7)} is not on ${calls.repo}'s main`;
+  if (!was || was === to || !past(calls.repo, was, to))
+    return `${to.slice(0, 7)} is not after ${was?.slice(0, 7) ?? 'nothing'}, the commit pinned before`;
+  return '';
+}
+
+/** Open code scanning alerts on main whose newest instance is at `path`: every page, the numbers alone. */
+function openAlertsAt(repo: string, path: string): number {
+  repoOk(repo);
+  if (/["\\]/.test(path)) throw new Error('openAlertsAt: a path jq would read');
+  const out = sh(
+    'gh',
+    [
+      'api',
+      '--paginate',
+      `repos/${repo}/code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100`,
+      '--jq',
+      `.[] | select(.most_recent_instance.location.path == "${path}") | .number`,
+    ],
+    { timeout: 600_000 },
+  );
+  return out.split('\n').filter(Boolean).length;
+}
+
+/**
+ * For the test of an image the registry will not serve (`unread`): what the run's scan uploaded, each annotation of
+ * its jobs that names the image, and the open alerts at the image's file, counted once the scan is in and again at
+ * the run's end.
+ */
+function unreadOf(state: State, test: Test, kept: Seen['unread'], final: boolean): NonNullable<Seen['unread']> {
+  const unread = test.unread;
+  const scan = state.scan1;
+  if (!unread || !scan) return kept ?? { artifacts: [], said: [] };
+  const seen = kept ?? { artifacts: [], said: [] };
+  if (!kept) {
+    seen.artifacts = (api<any>(test.repo, `actions/runs/${scan.id}/artifacts?per_page=100`).artifacts ?? []).map(
+      (a: any) => a.name as string,
+    );
+    for (const job of api<any>(test.repo, `actions/runs/${scan.id}/jobs?per_page=100`).jobs ?? []) {
+      for (const note of api<any[]>(test.repo, `check-runs/${job.id}/annotations?per_page=100`))
+        if (saysNotPulled(String(note.message ?? ''), unread.image))
+          seen.said.push(`${note.annotation_level}: ${String(note.message).slice(0, 200)}`);
+    }
+    if (unread.alerts) seen.alertsBefore = openAlertsAt(test.repo, unread.file);
+  }
+  if (final && unread.alerts) seen.alertsAfter = openAlertsAt(test.repo, unread.file);
+  return seen;
+}
 
 function observe(state: State, tests: Test[], final = false) {
   if (final) cache.clear();
@@ -777,6 +978,7 @@ function observe(state: State, tests: Test[], final = false) {
   const listedOf = new Map<string, any[]>();
   const issuesOf = new Map<string, any[]>();
   let now: Cluster | undefined;
+  if (!final) for (const repo of new Set(tests.map((t) => t.repo))) probe(repo);
 
   for (const test of tests) {
     const seen: Seen = state.seen[test.id] ?? { moves: [], missing: [], pulls: [], issues: [] };
@@ -786,7 +988,8 @@ function observe(state: State, tests: Test[], final = false) {
     // Which of a name's moves, and where it stands among them: the pin watch's issues come in the scan's order.
     let nth = 0;
     for (const name of test.moves) {
-      const named = all.filter((m) => m.name === name);
+      // A routine move and a finding's may share a name (a lockfile's names no package): a test stands on one kind.
+      const named = all.filter((m) => m.name === name && moveFits(m, test));
       const want = test.clears;
       const move = want
         ? named.find((m) =>
@@ -800,7 +1003,10 @@ function observe(state: State, tests: Test[], final = false) {
       if (move) {
         seen.moves.push(move);
         nth = named.indexOf(move);
-      } else seen.missing.push(want ? `${name} (clearing ${JSON.stringify(want)})` : name);
+      } else
+        seen.missing.push(
+          want ? `${name} (clearing ${JSON.stringify(want)})` : test.routine ? `${name} (a routine update)` : name,
+        );
     }
     if (test.lockfile) {
       const move = all.find((m) => appLockfile(m, test));
@@ -818,14 +1024,6 @@ function observe(state: State, tests: Test[], final = false) {
     }
     const listed = listedOf.get(test.repo) ?? [];
     const fresh = listed.filter((p) => p.created_at >= since);
-    // The moves a pin pull request carries: the names its description marks (one pull request for a file's
-    // moves), or the one its title names.
-    const pinMoves = (p: any): string[] => {
-      const mark = /<!-- factory: pin-moves ([A-Za-z0-9%._~!*'()-]*) -->/.exec(p.body ?? '')?.[1];
-      if (mark) return JSON.parse(decodeURIComponent(mark)) as string[];
-      const named = /^chore\(pin\): move (.+) to \S+/.exec(p.title.replace(/^\[reset\] /, ''))?.[1];
-      return named ? [named] : /^chore\(pin\): /.test(p.title.replace(/^\[reset\] /, '')) ? ['?'] : [];
-    };
 
     let mine: any[] = [];
     const issues = () => {
@@ -834,13 +1032,16 @@ function observe(state: State, tests: Test[], final = false) {
       return (issuesOf.get(test.repo) ?? []).filter((i) => !i.pull_request && i.created_at >= since);
     };
     const forgedNumbers = new Set(Object.values(state.forged ?? {}).map((f) => f.number));
-    if (test.pr.by === 'forged') {
+    if (test.pr.by === 'none') {
+      mine = [];
+    } else if (test.pr.by === 'forged') {
       mine = listed.filter((p) => p.number === state.forged?.[test.id]?.number);
     } else if (test.pr.by === 'pin') {
       mine = fresh.filter(
         (p) =>
           p.user.login === APP_BOT &&
           pinMoves(p).some((name) => test.moves.includes(name)) &&
+          branchFits(p.head?.ref, test) &&
           !forgedNumbers.has(p.number),
       );
       seen.issues = issues()
@@ -869,7 +1070,11 @@ function observe(state: State, tests: Test[], final = false) {
       // with none marked, each unmarked one is a test's own, the nth of them.
       const writers = fresh
         .filter(
-          (p) => p.user.login === APP_BOT && !/^chore\((deploy|main)\)/.test(p.title) && !forgedNumbers.has(p.number),
+          (p) =>
+            p.user.login === APP_BOT &&
+            !/^chore\((deploy|main)\)/.test(p.title) &&
+            branchFits(p.head?.ref, test) &&
+            !forgedNumbers.has(p.number),
         )
         .map((p) => ({ p, pull: readPull(test.repo, p) }))
         .filter(({ pull }) => pull.files.includes('pnpm-lock.yaml'))
@@ -890,15 +1095,24 @@ function observe(state: State, tests: Test[], final = false) {
     seen.pulls = mine.map((p) => readPull(test.repo, p)).sort((a, b) => a.number - b.number);
     // What the recoveries left on the pull request, and what its diff takes out (N4): one pull request.
     const one = seen.pulls.length === 1 ? seen.pulls[0] : undefined;
-    if (one && (test.checksRun || test.queueRuns)) seen.timeline = timelineOf(test.repo, one.number);
+    // Its timeline too while it is red with nothing running: whether the App has said its head is out of runs.
+    const stuck = one?.state === 'open' && one.red.length > 0 && one.pending.length === 0 && !test.mustNot;
+    if (one && (test.checksRun || test.queueRuns || stuck)) seen.timeline = timelineOf(test.repo, one.number);
     if (one && test.removes) seen.removed = removedOf(test.repo, one.number, test.removes.file, test.removes.lines);
 
     const merged = seen.pulls.length === 1 && seen.pulls[0]?.mergedAt ? seen.pulls[0] : undefined;
     if (merged && !seen.deployedAt) {
+      if (!final && test.deployed.kind !== 'none') refresh();
       now ??= cluster();
       seen.notDeployed = notDeployed(test, seen, merged, now, listed);
       if (!seen.notDeployed) seen.deployedAt = new Date().toISOString();
     }
+    if (test.issue)
+      seen.issuedAt =
+        seen.issues.length && !seen.pulls.length ? (seen.issuedAt ?? new Date().toISOString()) : undefined;
+    // The caller's pins after the merge (test 20): each of its workflow files on main, read once.
+    if (merged && test.calls && seen.pinned === undefined) seen.pinned = pinnedFault(test, merged);
+    if (test.unread && state.scan1?.conclusion) seen.unread = unreadOf(state, test, seen.unread, final);
     state.seen[test.id] = seen;
   }
   save(state);
@@ -911,11 +1125,18 @@ function observe(state: State, tests: Test[], final = false) {
  * the run restarted it: `level` (a rule the autonomy level does not queue), `verdict` (a rule no level queues, or no
  * verdict yet), `checks`, `failed` and the rest (deploy-queue.ts's `QueueWait`). It says each once a head.
  */
-function workerWaits(state: State): Map<string, string> {
-  const waits = new Map<string, string>();
+/** The GitHub worker's log since the run restarted it (or since the reset). */
+function workerLog(state: State): string {
   const since = state.kickedAt ?? state.resetAt;
-  if (!since) return waits;
-  const text = kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${since}`], 300_000);
+  if (!since) return '';
+  try {
+    return kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${since}`], 300_000);
+  } catch {
+    return '';
+  }
+}
+function workerWaits(text: string): Map<string, string> {
+  const waits = new Map<string, string>();
   for (const line of text.split('\n')) {
     if (!line.includes('pull request waits to be queued')) continue;
     try {
@@ -939,6 +1160,8 @@ function workerWaits(state: State): Map<string, string> {
  */
 function decidedHeld(state: State, test: Test, waits: Map<string, string>): boolean {
   const pulls = state.seen[test.id]?.pulls ?? [];
+  // A forgery GitHub refused at the push has no pull request, and nothing left to wait for.
+  if (state.forged?.[test.id]?.refused) return verdict(state, test).pass;
   if (!pulls.length || !verdict(state, test).pass) return false;
   return pulls.every((p) => {
     if (p.mergedAt || p.queuedBy || p.pending.length || p.gatePending) return false;
@@ -1011,12 +1234,10 @@ function where(pull: Pull): string {
   if (pull.queuedBy) return `gate passed it as ${pull.rule}, queued by ${pull.queuedBy}, not merged`;
   return `green, gate passed it as ${pull.rule}, never queued`;
 }
-/** How long the run watches a head said to be out of runs for anything after it (W1b). */
-const SETTLE_MS = 10 * 60_000;
 
 /**
  * A move whose required check fails every time (W1b): its head written again `runs - 1` times, then one
- * comment naming the last head, which stays: never merged, nobody touching it, and nothing after for `SETTLE_MS`.
+ * comment naming the last head, which stays: never merged, nobody touching it, and nothing after for nine of the worker's passes (`settleMs`).
  */
 function spentVerdict(state: State, test: Test, runs: number): { pass: boolean; why: string } {
   const seen = state.seen[test.id];
@@ -1045,7 +1266,7 @@ function spentVerdict(state: State, test: Test, runs: number): { pass: boolean; 
   if (!pull.red.includes('title'))
     return fail(`${tag}: \`title\` is not red at its head, so not the failure staged (${where(pull)})`);
   const end = Date.parse(state.watchedUntil ?? new Date().toISOString());
-  if (end - Date.parse(comment.at) < SETTLE_MS)
+  if (end - Date.parse(comment.at) < settleMs(state.workerPollS))
     return fail(`${tag} out of runs at ${clock(state, comment.at)}; watching for anything after`);
   const dirt = state.clean;
   const errors = dirt?.errorAt
@@ -1125,6 +1346,54 @@ function recoveryWords(state: State, test: Test, seen: Seen): string {
   return words.length ? `, ${words.join(', ')}` : '';
 }
 
+/**
+ * Whether a test read from the scan and GitHub alone (an issue for Martin, the unread image) passes as things stand,
+ * its end-of-run count aside.
+ */
+function verdictSoFar(state: State, test: Test): boolean {
+  if (test.issue) return verdict(state, test).pass;
+  const seen = state.seen[test.id]?.unread;
+  if (!test.unread || !seen) return false;
+  return verdict(
+    {
+      ...state,
+      seen: {
+        ...state.seen,
+        [test.id]: { ...state.seen[test.id], unread: { ...seen, alertsAfter: seen.alertsBefore ?? 0 } } as Seen,
+      },
+    },
+    test,
+  ).pass;
+}
+
+/** Whether a test stands on a move of the scan's, which the next scan must stop listing. */
+const standsOnMove = (test: Test) => test.moves.length > 0 || Boolean(test.lockfile);
+
+/**
+ * The scan with one image the registry will not serve (test 19): its run says so by name and ends red, yet leaves
+ * `moves.json` and the state, a move of it merges, and no alert at the image's file closes.
+ */
+function unreadVerdict(state: State, test: Test): { pass: boolean; why: string } {
+  const fail = (why: string) => ({ pass: false, why });
+  const seen = state.seen[test.id]?.unread;
+  const scan = state.scan1;
+  if (!scan?.conclusion || !seen) return fail('the scan has not finished');
+  if (!scan.moves) return fail(`scan ${scan.id} left no moves.json: one image cost the whole run`);
+  if (!seen.artifacts.includes('state')) return fail(`scan ${scan.id} kept no state`);
+  if (scan.conclusion !== 'failure') return fail(`scan ${scan.id} ended ${scan.conclusion}, not red`);
+  if (!seen.said.length) return fail(`scan ${scan.id} names ${test.unread?.image} in no annotation`);
+  const others = TESTS.filter((t) => inRun(state, t) && t !== test && !t.mustNot && !t.issue && standsOnMove(t));
+  const merged = others.filter((t) => state.seen[t.id]?.pulls.some((p) => p.mergedAt));
+  if (!merged.length) return fail(`scan ${scan.id} said so and listed ${scan.moves.length} moves; none has merged`);
+  const so = `scan ${scan.id} red, ${seen.said[0]?.slice(0, 90)}; ${scan.moves.length} moves listed, ${merged.length} of this run's merged`;
+  // An image the scan has never read has no alert to close; one it read before (`alerts`) is counted before and after.
+  if (!test.unread?.alerts) return { pass: true, why: `${so}; the image was never read, so it has no alert to close` };
+  if (seen.alertsAfter === undefined) return fail('its alerts have not been counted at the end');
+  if (seen.alertsAfter < (seen.alertsBefore ?? 0))
+    return fail(`${(seen.alertsBefore ?? 0) - seen.alertsAfter} alerts at ${test.unread?.file} closed`);
+  return { pass: true, why: `${so}; ${seen.alertsAfter} alerts open at its file, ${seen.alertsBefore ?? 0} before` };
+}
+
 function verdict(state: State, test: Test): { pass: boolean; why: string } {
   const seen = state.seen[test.id];
   const fail = (why: string) => ({ pass: false, why });
@@ -1136,10 +1405,16 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
       // A forgery passes only when the gate itself held the forged commit: a queue that never took it proves nothing.
       const made = state.forged?.[test.id];
       const pull = seen.pulls[0];
+      // A forgery of a workflow file is the App's push, which GitHub itself refuses for want of the permission: the
+      // refusal, in GitHub's words, is the pass. Had the push landed, the gate's hold is judged below as any other's.
+      if (made?.refused)
+        return test.refusedPush?.test(made.refused)
+          ? { pass: true, why: `GitHub refused the App's push of a workflow file: ${made.refused}`.slice(0, 420) }
+          : fail(`the forge's push was refused, but not as this test expects: ${made.refused}`.slice(0, 420));
       if (!made || !pull) return fail('not forged');
       if (pull.mergedAt) return fail(`#${pull.number} merged at ${clock(state, pull.mergedAt)}, and must not`);
       if (pull.head !== made.head)
-        return fail(`#${pull.number} is no longer at the forged commit ${made.head.slice(0, 7)}`);
+        return fail(`#${pull.number} is no longer at the forged commit ${(made.head ?? '').slice(0, 7)}`);
       if (pull.pending.includes('review')) return fail(`#${pull.number} not judged yet`);
       if (pull.rule !== 'held') return fail(`#${pull.number}: the gate passed the forgery as ${pull.rule}`);
       // Held for the reason the forgery is about, not another (a read that failed, a tag alone): X1's "not a move".
@@ -1167,10 +1442,21 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
         .slice(0, 420),
     };
   }
+  if (test.unread) return unreadVerdict(state, test);
   if (!state.scan1?.moves) return fail('the scan left no moves');
   if (!seen) return fail('not observed');
   if (seen.missing.length) return fail(`the scan made no move of ${seen.missing.join(', ')}`);
   const lanes = [...new Set(seen.moves.map((m) => m.lane))].join(', ');
+  if (test.issue) {
+    // A move that is Martin's to make: an issue, and no pull request of the App's, whatever the level.
+    if (lanes !== 'issue') return fail(`the scan's lane for it is ${lanes}, not issue`);
+    if (seen.pulls.length)
+      return fail(`the App opened #${seen.pulls.map((p) => p.number).join(', #')} for it, and must open none`);
+    if (!seen.issues.length) return fail('no issue for it, and no pull request');
+    return { pass: true, why: `issue #${seen.issues.join(', #')}, and no pull request of the App's` };
+  }
+  if (test.noIssue && seen.issues.length)
+    return fail(`issue #${seen.issues.join(', #')} for it: the move is the App's to write, not Martin's`);
   if (seen.pulls.length === 0 && state.line?.held)
     return fail(`no pull request; held on the line: ${state.line.held}`.slice(0, 420));
   if (seen.pulls.length === 0 && state.line?.stalled)
@@ -1200,30 +1486,50 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
     const left = [...pins].filter((f) => !pull.files.includes(f));
     if (extra.length) return fail(`${tag} changes more than its pins: ${extra.join(', ')}`);
     if (left.length) return fail(`${tag} leaves pins behind: ${left.join(', ')}`);
+    // A routine update rides apart from the moves a finding asks for: on a pin branch, carrying routine moves alone.
+    if (test.routine) {
+      if (!routineBranch(pull.branch)) return fail(`${tag} is on ${pull.branch}, not a branch of routine updates`);
+      const found = (pull.carries ?? []).filter((name) =>
+        (state.scan1?.moves ?? []).some((m) => m.name === name && !isRoutine(m)),
+      );
+      // A lockfile's moves share one public name, routine or not, so the names cannot say for them.
+      const told = found.filter((name) => !name.startsWith('a package in '));
+      if (told.length) return fail(`${tag} carries a finding's move too: ${told.join(', ')}`);
+    }
   }
   if (!pull.mergedAt) return fail(`${tag} ${where(pull)}`.slice(0, 420));
   if (pull.touched.length)
     return fail(`${tag} merged at ${clock(state, pull.mergedAt)}, touched: ${pull.touched.join('; ')}`);
   const fault = recoveryFault(state, test, seen, pull);
   if (fault) return fail(fault);
+  if (test.calls && seen.pinned) return fail(`${tag} merged at ${clock(state, pull.mergedAt)}; ${seen.pinned}`);
+  if (test.queuedBy === 'app' && pull.queuedBy !== APP_BOT)
+    return fail(`${tag} queued by ${pull.queuedBy ?? 'nobody'}, not the worker`);
   if (!seen.deployedAt)
     return fail(`${tag} merged at ${clock(state, pull.mergedAt)}, not deployed: ${seen.notDeployed}`);
   const took = (Date.parse(seen.deployedAt) - Date.parse(state.scan1.createdAt)) / 60_000;
   const so = `${tag} merged ${clock(state, pull.mergedAt)}, deployed ${clock(state, seen.deployedAt)}`;
   if (took > state.limitMin) return fail(`${so}, past the limit of ${state.limitMin} min`);
-  if (!state.scan2?.moves) return fail(`${so}; the next scan has not run`);
-  const mine = (m: Move) => (test.lockfile ? appLockfile(m, test) : test.moves.includes(m.name));
+  // A test that stands on no move of the scan's (test 20) has nothing for the next scan to stop listing.
+  const scanned = standsOnMove(test);
+  if (scanned && !state.scan2?.moves) return fail(`${so}; the next scan has not run`);
+  // The test's own kind of move: a routine update and a finding's move may share a name, and each test is one kind.
+  const mine = (m: Move) => (test.lockfile ? appLockfile(m, test) : test.moves.includes(m.name) && moveFits(m, test));
   const before = (state.scan1.moves ?? []).filter(mine).length;
-  const after = state.scan2.moves.filter(mine).length;
-  if (after > 0 && !(test.clears !== undefined && after < before)) return fail(`${so}; the next scan still reports it`);
+  const after = (state.scan2?.moves ?? []).filter(mine).length;
+  // Moves that share a name (a lockfile's names no package) are told apart by what they clear, or, routine, counted.
+  const shared = test.clears !== undefined || (test.routine && test.moves.some((n) => n.startsWith('a package in ')));
+  if (after > 0 && !(shared && after < before))
+    return fail(`${so}; the next scan still ${test.routine ? 'lists' : 'reports'} it`);
+  const ended = !scanned ? 'merged' : test.routine ? 'no longer listed' : 'cleared';
   const dirt = state.clean;
   // An error logged before the move's pull request opened is not the move's; one with no time counts against all.
   const errors = dirt?.errorAt
     ? dirt.errorAt.filter((at) => !at || at >= pull.createdAt).length
     : (dirt?.errors.length ?? 0);
   if (dirt && errors + dirt.unhealthy.length + dirt.restarted.length)
-    return fail(`${so}, cleared; not clean (see the run's last lines)`);
-  return { pass: true, why: `${so}, cleared${recoveryWords(state, test, seen)}, nobody touched it` };
+    return fail(`${so}, ${ended}; not clean (see the run's last lines)`);
+  return { pass: true, why: `${so}, ${ended}${recoveryWords(state, test, seen)}, nobody touched it` };
 }
 
 function report(state: State) {
@@ -1434,8 +1740,16 @@ function run(state: State) {
         timeout: 300_000,
       });
       const made = JSON.parse(out.slice(out.indexOf('{')));
-      state.forged = { ...state.forged, [test.id]: { number: made.number, head: made.head } };
-      say(state, `forged ${test.id}: #${made.number} at ${String(made.head).slice(0, 7)} (${made.forged?.what ?? ''})`);
+      state.forged = {
+        ...state.forged,
+        [test.id]: made.refused ? { refused: String(made.refused) } : { number: made.number, head: made.head },
+      };
+      say(
+        state,
+        made.refused
+          ? `forging ${test.id}: GitHub refused the push: ${String(made.refused).slice(0, 200)}`
+          : `forged ${test.id}: #${made.number} at ${String(made.head).slice(0, 7)} (${made.forged?.what ?? ''})`,
+      );
     } catch (error) {
       say(state, `forging ${test.id} failed: ${String((error as any)?.stderr || error).slice(0, 300)}`);
     }
@@ -1446,7 +1760,26 @@ function run(state: State) {
     kubectl(['-n', 'factory', 'rollout', 'status', 'deployment/patching', '--timeout=300s'], 320_000);
     kubectl(['-n', 'factory', 'rollout', 'status', 'deployment/github', '--timeout=300s'], 320_000);
     state.kickedAt = new Date().toISOString();
+    // The worker's poll, as its Deployment sets it: how long "nothing after" is (W1b) counts its passes.
+    const poll = kubectl([
+      '-n',
+      'factory',
+      'get',
+      'deployment/github',
+      '-o',
+      'jsonpath={.spec.template.spec.containers[0].env[?(@.name=="GITHUB_POLL_SECONDS")].value}',
+    ]).trim();
+    state.workerPollS = Number(poll) > 0 ? Number(poll) : 60;
     say(state, 'restarted the GitHub worker and the dependency sense, for their passes now');
+    save(state);
+  }
+
+  // Dependabot is summoned for the test of its own pull request (20), once the forgeries stand on the main it will
+  // leave: a commit of Martin's on the copy's main that changes dependabot.yml starts its run within a minute.
+  if (tests.some((t) => t.summons) && !state.summonedAt) {
+    const out = sh(join(BIN, 'copies.sh'), ['summon-dependabot'], { cwd: BIN, timeout: 10 * 60_000 });
+    state.summonedAt = new Date().toISOString();
+    say(state, `summoned Dependabot: ${out.trim().split('\n').at(-1)}`);
     save(state);
   }
 
@@ -1469,28 +1802,39 @@ function run(state: State) {
       store(
         `select o.work_item from events o where o.type = 'work-item.opened' and o.payload->'dependency'->>'name' = '${dependency}' and not exists (select 1 from events c where c.work_item = o.work_item and c.type = 'work-item.closed')${fresh ? ` and exists (select 1 from events g where g.work_item = o.work_item and g.type = 'signal.received' and g.ts >= '${scanned}')` : ''} order by o.seq desc limit 1`,
       )[0]?.[0];
+    // What triage made of this scan's send for a dependency: the work item it put the signal on, whatever it made of
+    // it. A send that says what the ticket already holds is counted and appends no event (test 8a, whose restored
+    // ticket has the same findings), but the inbox's row says which ticket it counted on, and that it has.
+    const triaged = (dependency: string) => {
+      const row = store(
+        `select work_item, outcome from inbox where sense = 'dependency' and signal->'move'->>'name' = '${dependency}' and received_at >= '${scanned}' and triaged_at is not null and work_item is not null order by received_at desc limit 1`,
+      )[0];
+      const open = row?.[0] && row[0] === ticket(dependency, false) ? row[0] : undefined;
+      if (open) say(state, `triage put this scan's signal for ${dependency} on #${open} (${row?.[1]})`);
+      return open;
+    };
     for (let i = 0; !state.workItem || (second && !state.then); i++) {
-      // The ticket the scan's send made or joined: one with a dependency signal since the scan started. A send that
-      // says what the ticket already holds is only counted, and appends no event (test 8a, whose restored ticket has
-      // the same findings), so after four minutes the open ticket for the dependency is taken as it stands.
-      const fresh = i <= 8;
-      if (i === 9)
+      // The ticket the scan's send made or joined: one with a dependency signal since the scan started, or the one the
+      // inbox says triage counted the send on. With neither in four minutes (an inbox that cannot be read), the open
+      // ticket for the dependency is taken as it stands.
+      const fresh = i <= 24;
+      if (i === 25)
         say(
           state,
           `no new signal on a ticket for ${name}${second ? ` or ${second}` : ''} in four minutes: taking the open ticket as it stands`,
         );
-      state.workItem ??= ticket(name, fresh);
-      const then = second && !state.then ? ticket(second, fresh) : undefined;
+      state.workItem ??= ticket(name, fresh) ?? (fresh ? triaged(name) : undefined);
+      const then = second && !state.then ? (ticket(second, fresh) ?? (fresh ? triaged(second) : undefined)) : undefined;
       // biome-ignore lint/suspicious/noThenProperty: the run's second ticket, never awaited
       if (then) state.then = { workItem: then, events: [] };
       if (state.workItem && (!second || state.then)) break;
-      if (i > 40) {
+      if (i > 120) {
         say(state, make(['stop-the-line', 'REASON=the patching test found no ticket']).trim());
         throw new Error(
           `triage opened no ticket for ${state.workItem ? second : only.dependency} from this scan within 20 minutes`,
         );
       }
-      sleep(30_000);
+      sleep(10_000);
     }
     if (state.then)
       say(
@@ -1623,29 +1967,65 @@ function run(state: State) {
     t.checksRun?.spent
       ? verdict(state, t).pass
       : Boolean(state.seen[t.id]?.deployedAt) && (!t.then || Boolean(state.then?.closed));
+  let said = '';
+  let saidAt = 0;
   while (!state.watchedUntil) {
     lineNow();
     thenNow();
     observe(state, tests);
     turns();
-    const lines = tests.map((t) => `${t.id}:${verdict(state, t).why.slice(0, 60)}`);
-    say(state, `watching (${clock(state, new Date().toISOString())})\n    ${lines.join('\n    ')}`);
+    const lines = tests.map((t) => `${t.id}:${verdict(state, t).why.slice(0, 60)}`).join('\n    ');
+    if (lines !== said || Date.now() - saidAt >= SAY_MS) {
+      say(state, `watching (${clock(state, new Date().toISOString())})\n    ${lines}`);
+      said = lines;
+      saidAt = Date.now();
+    }
     const refused = tests.every((t) => t.mustNot && verdict(state, t).pass);
     // A move that must not merge, or a major the level holds, counts as settled once it is decided (`decidedHeld`),
     // or, while it is still refused, an hour from the scan (Martin's first limit): a batch of them beside moves that
     // deployed ends then, not at a longer limit set for the slow ones.
     const hour = Date.now() >= Date.parse(state.scan1.createdAt) + 60 * 60_000;
     const mustHold = (t: Test) => t.mustNot || (t.major && !state.flags.includes('--lights-out'));
-    const waits = tests.some((t) => mustHold(t) && t.pr.by !== 'forged') ? workerWaits(state) : new Map();
+    // The worker's log, for its word on why a head waits, and on a scan it cannot read.
+    const byWorker = (t: Test) => t.repo === FACTORY && (t.pr.by === 'pin' || t.pr.by === 'lockfile');
+    const log = tests.some((t) => byWorker(t) || (mustHold(t) && t.pr.by !== 'forged')) ? workerLog(state) : '';
+    const waits = workerWaits(log);
+    const unread = unreadMoves(log, Date.now());
     const holds = (t: Test) =>
       Boolean(mustHold(t)) && ((hour && verdict(state, t).pass) || decidedHeld(state, t, waits));
-    const all = refused || tests.every((t) => done(t) || holds(t));
+    // A failure nothing left can undo ends that test's wait too: its verdict is read after the watch, as every one is.
+    for (const t of tests) {
+      const seen = state.seen[t.id];
+      if (!seen || seen.certain || t.checksRun?.spent || t.unread) continue;
+      const tl = seen.timeline;
+      seen.certain = certainFail({
+        mustHold: Boolean(mustHold(t)),
+        // One that ends as an issue has no pull request to judge: only the worker's own word can end it.
+        pulls: t.issue ? [] : seen.pulls,
+        spent: [...(tl?.spentRuns ?? []), ...(tl?.spentQueue ?? [])].map((c) => c.head),
+        moves: t.pr.by === 'pin' ? seen.moves : [],
+        unread: byWorker(t) ? unread : undefined,
+      });
+      if (seen.certain) say(state, `${t.id} has failed, whatever comes: ${seen.certain}`);
+    }
+    // One read from the scan and GitHub alone is settled once it passes: an issue opened and no pull request beside
+    // it five minutes on (the pin watch's pass that made the issue is long over), or the scan's run and a merge.
+    const settled = (t: Test) => {
+      if (!(t.issue || t.unread) || !verdictSoFar(state, t)) return false;
+      const issued = state.seen[t.id]?.issuedAt;
+      return Boolean(t.unread) || (issued !== undefined && Date.now() - Date.parse(issued) >= 5 * 60_000);
+    };
+    // A forgery GitHub refused at the push is over, whichever way its verdict reads: nothing more comes of it.
+    const refusedPush = (t: Test) => Boolean(state.forged?.[t.id]?.refused);
+    const all =
+      refused ||
+      tests.every((t) => done(t) || holds(t) || settled(t) || refusedPush(t) || Boolean(state.seen[t.id]?.certain));
     const stopped =
       Boolean(
         state.line?.held || state.line?.closed || state.line?.stalled || state.line?.strays.length || state.then?.held,
       ) && !all;
     if (all || stopped || Date.now() >= deadline || has('--once')) state.watchedUntil = new Date().toISOString();
-    else sleep(Math.min(POLL_MS, Math.max(1_000, deadline - Date.now())));
+    else sleep(Math.min(probeFailed ? SLOW_POLL_MS : POLL_MS, Math.max(1_000, deadline - Date.now())));
   }
   save(state);
 
@@ -1654,14 +2034,12 @@ function run(state: State) {
     state.stoppedAt = new Date().toISOString();
     save(state);
   }
-  if (!state.scan2 && !has('--once') && tests.some((t) => !t.mustNot && state.seen[t.id]?.deployedAt)) {
-    state.scan2 = dispatchScan(state, repo);
-    say(state, `the next scan: ${state.scan2.id}`);
-    save(state);
-  }
-  if (state.scan2 && !state.scan2.moves) {
-    awaitScan(state, repo, state.scan2, 'scan2');
-    save(state);
+  if (
+    !state.scan2 &&
+    !has('--once') &&
+    tests.some((t) => !t.mustNot && standsOnMove(t) && state.seen[t.id]?.deployedAt)
+  ) {
+    confirmingScan(state, repo, tests);
   }
   lineNow();
   thenNow();
@@ -1670,6 +2048,77 @@ function run(state: State) {
   state.done = true;
   save(state);
   report(state);
+}
+
+/**
+ * The scan that confirms a run's merges, read into `scan2`: the newest finished scan of main on a commit that holds
+ * every merged test's merge commit and left a `moves.json` (decide.ts's `pickScan`). The pushes of those merges start
+ * scans of their own, and the scan's job keeps one pending run, so one this run dispatched may be cancelled for a later
+ * push's: the later one is on a commit that holds the merges too, and is taken or waited for. One is dispatched only
+ * when none is finished, queued or running on such a commit. A scan cancelled or replaced is no test's failure; with
+ * none read in 40 minutes the run says so, and its lines read "the next scan has not run".
+ */
+function confirmingScan(state: State, repo: string, tests: Test[]) {
+  repoOk(repo);
+  const merges = [
+    ...new Set(
+      tests
+        .filter((t) => !t.mustNot && standsOnMove(t))
+        .flatMap((t) => (state.seen[t.id]?.pulls ?? []).map((p) => p.mergeCommit ?? ''))
+        .filter(Boolean),
+    ),
+  ];
+  const holds = (head: string) => merges.every((merge) => past(repo, merge, head));
+  const since = state.scan1?.createdAt ?? '';
+  const spent = new Set<number>();
+  const until = Date.now() + 40 * 60_000;
+  let said = 0;
+  while (Date.now() < until) {
+    const runs = (
+      JSON.parse(sh('gh', ['api', `repos/${repo}/actions/workflows/vulnerabilities.yml/runs?branch=main&per_page=30`]))
+        .workflow_runs ?? []
+    )
+      .filter((r: any) => r.created_at > since && r.id !== state.scan1?.id)
+      .map((r: any) => ({
+        id: r.id as number,
+        event: r.event as string,
+        status: r.status as string,
+        conclusion: r.conclusion as string | null,
+        headSha: r.head_sha as string,
+        createdAt: r.created_at as string,
+      }));
+    const pick = pickScan(runs, holds, spent);
+    if ('dispatch' in pick) {
+      const made = dispatchScan(state, repo);
+      say(
+        state,
+        `the next scan: ${made.id}, dispatched, as none is on a commit that holds the run's ${merges.length} merges`,
+      );
+      continue;
+    }
+    if ('wait' in pick) {
+      if (said !== pick.wait.id)
+        say(
+          state,
+          `the next scan: waiting for ${pick.wait.id} (${pick.wait.event}, at ${pick.wait.headSha.slice(0, 7)})`,
+        );
+      said = pick.wait.id;
+      sleep(POLL_MS);
+      continue;
+    }
+    const scan = awaitScan(state, repo, { id: pick.use.id, createdAt: pick.use.createdAt }, 'scan2');
+    if (scan.moves) {
+      state.scan2 = scan;
+      say(
+        state,
+        `the next scan: ${scan.id} (${pick.use.event}, at ${pick.use.headSha.slice(0, 7)}, ${scan.conclusion}), ${scan.moves.length} moves`,
+      );
+      save(state);
+      return;
+    }
+    spent.add(pick.use.id);
+  }
+  say(state, `the next scan: none on a commit that holds the run's merges left a moves.json in 40 minutes`);
 }
 
 // ── The command line ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1731,6 +2180,26 @@ if (command === 'factory' || command === 'app') {
   };
   save(state);
   run(state);
+} else if (command === 'batch') {
+  // `only`'s line written to the state folder's batch.env, in place of any there, and read back as copies.sh reads it.
+  const ids = (rest[0] ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const tests = TESTS.filter((t) => ids.includes(t.id));
+  if (!ids.length || tests.length !== ids.length)
+    throw new Error("batch <tests>: comma-separated tests of the catalogue's");
+  const names = pinWatchNames(tests);
+  if (!names.length) throw new Error('batch: none of those tests stands on a move of the pin watch');
+  const file = join(STATE_DIR, 'batch.env');
+  mkdirSync(STATE_DIR, { recursive: true });
+  writeFileSync(
+    file,
+    withSetting(existsSync(file) ? readFileSync(file, 'utf8') : '', 'PIN_WATCH_ONLY', pinWatchLine(names)),
+  );
+  const back = sh('bash', ['-c', 'source "$1"; printf %s "$PIN_WATCH_ONLY"', '-', file]);
+  if (back !== names.join(',')) throw new Error(`batch.env reads back as ${back}, not ${names.join(',')}`);
+  console.log(`the pin watch takes: ${back}`);
 } else if (command === 'only') {
   // The batch.env line that has the scratch pin watch take just these tests' moves (a forgery copies postgres's).
   const ids = (rest[0] ?? '')
@@ -1747,7 +2216,7 @@ if (command === 'factory' || command === 'app') {
       `not the pin watch's: ${none.join(', ')} (an app test runs alone already; Dependabot's is kept by DEPENDABOT_KEEP_*)`,
     );
   if (!names.length) throw new Error('only: none of those tests stands on a move of the pin watch');
-  console.log(`PIN_WATCH_ONLY='${names.join(',')}'`);
+  console.log(pinWatchLine(names));
   console.log(`in batch.env; then: node harness.ts factory --only ${ids.join(',')}, whose reset gives it the worker`);
 } else if (command === 'variables') {
   // The repository variables these tests need, `<repo>\t<name>\t<value>` a line, for confirm.sh to set and clear.
@@ -1765,13 +2234,23 @@ if (command === 'factory' || command === 'app') {
 } else if (command === 'report') {
   report(load(rest[0] ?? latestRun() ?? ''));
 } else if (command === 'reread') {
-  // A finished run read again from GitHub and the cluster as they stand: nothing is reset, scanned or restarted.
-  const state = load(rest[0] ?? latestRun() ?? '');
-  observe(
-    state,
-    TESTS.filter((t) => inRun(state, t)),
-    true,
-  );
+  // A finished run judged again from what it recorded: nothing is read from the copy or the cluster as they stand,
+  // which a later reset has emptied (its issues, its open pull requests, what was deployed). `--scan2 <id>` names the
+  // scan that confirms it, whose moves.json is read afresh: one that finished after the run stopped waiting.
+  const named = rest.indexOf('--scan2');
+  const state = load((named === 0 ? undefined : rest[0]) ?? latestRun() ?? '');
+  if (named >= 0) {
+    const id = Number(rest[named + 1]);
+    if (!Number.isInteger(id) || id <= 0) throw new Error('reread <run> --scan2 <id>: the id of a run of the scan');
+    const repo = state.campaign === 'app' ? APP : FACTORY;
+    const run = api<any>(repo, `actions/runs/${id}`);
+    if (run.path !== '.github/workflows/vulnerabilities.yml' || run.head_branch !== 'main')
+      throw new Error(`run ${id} is no scan of ${repo}'s main`);
+    const scan = awaitScan(state, repo, { id, createdAt: run.created_at }, 'scan2');
+    if (!scan.moves) throw new Error(`scan ${id} left no moves.json to read`);
+    state.scan2 = scan;
+    save(state);
+  }
   report(state);
 } else if (command === 'summary') {
   summary();

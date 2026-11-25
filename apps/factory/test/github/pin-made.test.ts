@@ -14,13 +14,13 @@ import type { Move as PinStepMove } from '../../../runner/src/pins.ts';
 import { LiveActions } from '../../src/github/actions.ts';
 import { WatchedHeads } from '../../src/github/branches.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
-import { groupOf, type MadeGroup, madeByStep, stepOf, toolAt, writtenBy } from '../../src/github/made.ts';
+import { groupKey, groupOf, type MadeGroup, madeByStep, stepOf, toolAt, writtenBy } from '../../src/github/made.ts';
 import { pinBranchFor } from '../../src/github/pin-guard.ts';
 import { carriedBy, PASS_MS, PIN_LABEL, type PinScope, pinWatch } from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { client, quiet, type Sent } from './fake.ts';
-import { day, digest, FakeRepo, FILES, move, writes } from './pins-harness.ts';
+import { day, digest, FakeRepo, FILES, move, NONE, day as today, writes } from './pins-harness.ts';
 
 const LOCK = [
   "lockfileVersion: '9.0'",
@@ -176,7 +176,17 @@ describe('the moves the scan made with the pin step', () => {
   it('groups a lockfile’s moves by the lockfile, and mise’s by mise’s files, and names their tool from its entry', () => {
     const [a, , tools] = scan() as [ReadMove, ReadMove, ReadMove];
     expect(writtenBy(a)).toEqual(['pnpm-lock.yaml']);
-    expect(groupOf(tools)).toEqual({ files: ['mise.lock'], major: false });
+    expect(groupOf(tools)).toEqual({ files: ['mise.lock'], major: false, routine: false });
+    // A routine update, which clears nothing, is in its files' other group, and a routine major in another again.
+    const behind = { ...tools, clears: NONE, deadline: undefined };
+    expect(groupOf(behind)).toEqual({ files: ['mise.lock'], major: false, routine: true });
+    expect(groupOf({ ...behind, major: true })).toEqual({ files: ['mise.lock'], major: true, routine: true });
+    const keys = [tools, behind, { ...tools, major: true }, { ...behind, major: true }].map((m) =>
+      groupKey(groupOf(m)),
+    );
+    expect(new Set(keys).size).toBe(4);
+    // What a scan made before it grouped routine updates apart says nothing of them, and is its moves' group.
+    expect(groupKey({ files: ['mise.lock'], major: false })).toBe(groupKey(groupOf(tools)));
     expect(toolAt(MISE_LOCK, 2)).toBe('k3d');
     expect(toolAt('[settings]\nx = 1\n', 2)).toBeUndefined();
     expect(stepOf(a, undefined)).toEqual({ ecosystem: 'npm', name: 'example-a', from: '1.0.0', to: '1.0.1' });
@@ -214,6 +224,82 @@ describe('the moves the scan made with the pin step', () => {
     expect(carriedBy(tools?.body)).toEqual(['ghcr.io/k3d-io/k3d-tools', 'ghcr.io/k3d-io/k3d-proxy']);
     expect(tools?.body).toContain('| `ghcr.io/k3d-io/k3d-tools` | 3 high, 5 medium | nothing |');
     expect(repo.issues).toEqual([]);
+  });
+
+  it('opens the lockfile’s routine updates apart from its fixes, each as the scan made it, and the gate passes each', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    // example-a has a finding its move clears; example-b is merely behind.
+    const fix = npm(1, 'example-a', '1.0.0', '1.0.1', 5);
+    const behind: ReadMove = { ...npm(2, 'example-b', '2.0.0', '2.0.3', 8), clears: NONE, deadline: undefined };
+    const FIXED = LOCK.replace('example-a@1.0.0', 'example-a@1.0.1');
+    const UPDATED = LOCK.replace('example-b@2.0.0', 'example-b@2.0.3');
+    const groups = [
+      lockGroup({
+        moves: [1],
+        changed: [{ path: 'pnpm-lock.yaml', text: FIXED }],
+        steps: lockGroup().steps.slice(0, 1),
+      }),
+      lockGroup({
+        routine: true,
+        moves: [2],
+        changed: [{ path: 'pnpm-lock.yaml', text: UPDATED }],
+        steps: lockGroup().steps.slice(1),
+      }),
+    ];
+    const w = harness(repo, () => made(scanned, [fix, behind], groups));
+    await w.pass();
+
+    const ROUTINE_BRANCH = pinBranchFor(['pnpm-lock.yaml'], false, true);
+    expect(ROUTINE_BRANCH).toMatch(/^factory\/pin\/pnpm-lock\.yaml-routine-[0-9a-f]{8}$/);
+    const pulls = openPins(repo);
+    expect(pulls.map((p) => p.head).sort()).toEqual([LOCK_BRANCH, ROUTINE_BRANCH].sort());
+    expect(repo.file(repo.refs.get(LOCK_BRANCH) as string, 'pnpm-lock.yaml')).toBe(FIXED);
+    expect(repo.file(repo.refs.get(ROUTINE_BRANCH) as string, 'pnpm-lock.yaml')).toBe(UPDATED);
+    const updates = pulls.find((p) => p.head === ROUTINE_BRANCH);
+    expect(updates).toMatchObject({ title: 'chore(pin): move example-b in pnpm-lock.yaml', labels: [PIN_LABEL] });
+    expect(updates?.body).toContain('makes one of the day’s routine updates in `pnpm-lock.yaml`');
+    expect(updates?.body).toContain(
+      'It is a routine update: a newer release, with no advisory behind it and no deadline.',
+    );
+    expect(updates?.body).toContain('| `example-b` | `2.0.0` | `2.0.3` |');
+    expect(updates?.body).not.toMatch(/Clears|\| Deadline|example-a/);
+    // The fix's says nothing of what the scan found, as before, and nothing of a routine update.
+    const fixes = pulls.find((p) => p.head === LOCK_BRANCH);
+    expect(fixes?.title).toBe('chore(pin): move example-a in pnpm-lock.yaml');
+    expect(fixes?.body).not.toMatch(/routine|medium|Clears|Deadline|example-b/);
+    expect(repo.issues).toEqual([]);
+
+    // The gate carries, of the day's lockfile moves, the one whose line each pull request rewrites, and makes it alone.
+    const day = [fix, behind];
+    const fixed = await gate(repo, LOCK_BRANCH, day, () => new Map([['pnpm-lock.yaml', FIXED]]));
+    expect(fixed.asked).toEqual([[{ ecosystem: 'npm', name: 'example-a', from: '1.0.0', to: '1.0.1' }]]);
+    expect(fixed.result).toMatchObject({ rule: 'move' });
+    const updated = await gate(repo, ROUTINE_BRANCH, day, () => new Map([['pnpm-lock.yaml', UPDATED]]));
+    // The routine update is asked of the step as one, which holds it to exactly its target (apps/runner/src/pins.ts).
+    expect(updated.asked).toEqual([
+      [{ ecosystem: 'npm', name: 'example-b', from: '2.0.0', to: '2.0.3', routine: true }],
+    ]);
+    expect(stepOf(behind, undefined)).toEqual(updated.asked[0]?.[0]);
+    expect(updated.result).toMatchObject({ rule: 'move' });
+    expect(JSON.stringify([fixed.result, updated.result])).not.toMatch(/example-a|example-b/);
+  });
+
+  it('leaves the routine updates waiting when the scan made them in no group of their own', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const fix = npm(1, 'example-a', '1.0.0', '1.0.1', 5);
+    const behind: ReadMove = { ...npm(2, 'example-b', '2.0.0', '2.0.3', 8), clears: NONE, deadline: undefined };
+    // A scan whose pins job made both in one group: the watch takes each move only as its own group made it.
+    const w = harness(repo, () => made(scanned, [fix, behind], [lockGroup()]));
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(w.lines.map((line) => line.msg)).toContain(
+      'the scan made other moves here than the watch takes: they wait for a run that made these',
+    );
+    expect(w.lines.map((line) => line.msg)).toContain(
+      'the scan made none of these moves with the pin step: they wait for a run that does',
+    );
   });
 
   it('is passed by the review gate, which asks the step for the same moves, in the same order', async () => {
@@ -270,6 +356,85 @@ describe('the moves the scan made with the pin step', () => {
       move: 2,
       reason: expect.stringContaining('TRUST_DOWNGRADE'),
     });
+  });
+
+  it('keeps one issue for a routine major pnpm refused, day after day, naming the move by its mark and no package', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const reason = 'pnpm refused example-b@3.0.0: High-risk trust downgrade (possible package takeover)';
+    /** The routine major, at a place in the day's list, and what the scan made of its group: nothing, and why. */
+    const day = (index: number, run: number, others: ReadMove[] = []): Moves => {
+      const major: ReadMove = {
+        ...npm(index, 'example-b', '2.0.0', '3.0.0', 8),
+        mark: 'markb0000000',
+        major: true,
+        clears: NONE,
+        deadline: undefined,
+      };
+      const group = lockGroup({
+        major: true,
+        routine: true,
+        moves: [],
+        refused: [{ move: index, reason }],
+        changed: [],
+        steps: [],
+      });
+      const read = today(scanned, [...others, major], run);
+      return {
+        ...read,
+        made: { version: 1, repository: read.repository, run: String(run), commit: scanned, groups: [group] },
+      };
+    };
+    let moves = day(1, 42_000_000_101);
+    const w = harness(repo, () => moves);
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(repo.issues).toHaveLength(1);
+    const [issue] = repo.issues;
+    expect(issue?.title).toMatch(/^Move a package in .*pnpm-lock\.yaml \(markb0000000\) to a newer release$/);
+    expect(issue?.labels).toEqual([PIN_LABEL]);
+    expect(issue?.body).toContain('<!-- factory: pin-issue lockfile-markb0000000 -->');
+    expect(issue?.body).toContain('The scan’s pin step could not make it on the commit it read: pnpm’s guards');
+    expect(issue?.body).toContain('**A routine update** A newer release, with no advisory behind it and no deadline.');
+    // What pnpm said names the package: it is the worker's log's, and never the public issue's.
+    expect(issue?.body).not.toMatch(/example-b|3\.0\.0|trust downgrade|its alerts/);
+    expect(w.lines.find((line) => line.reason)).toMatchObject({ level: 40, move: 1, mark: 'markb0000000', reason });
+
+    // The next day's scan: another run, the move at another place in its list, the release refused still.
+    const first = { number: issue?.number, body: issue?.body, title: issue?.title };
+    moves = day(2, 42_000_000_202, [k3d(1, 'k3d-tools')]);
+    await w.pass();
+    // And a worker started again that day.
+    await harness(repo, () => moves).pass();
+    expect(repo.issues).toHaveLength(1);
+    expect(repo.issues[0]).toMatchObject({ number: first.number, title: first.title, state: 'open' });
+    expect(repo.issues[0]?.body).toContain('<!-- factory: pin-issue lockfile-markb0000000 -->');
+    expect(repo.issues[0]?.body).toContain('runs/42000000202');
+    expect(repo.issues[0]?.comments).toEqual([]);
+    // Once pnpm takes the release and the scan makes the move, its pull request opens and the issue closes.
+    const read = today(scanned, [{ ...(day(1, 1).moves[0] as ReadMove) }], 42_000_000_303);
+    const UPDATED = LOCK.replace('example-b@2.0.0', 'example-b@3.0.0');
+    moves = {
+      ...read,
+      made: {
+        version: 1,
+        repository: read.repository,
+        run: '42000000303',
+        commit: scanned,
+        groups: [
+          lockGroup({
+            major: true,
+            routine: true,
+            moves: [1],
+            changed: [{ path: 'pnpm-lock.yaml', text: UPDATED }],
+            steps: [{ move: 1, ecosystem: 'npm', name: 'example-b', before: ['2.0.0'], after: ['3.0.0'] }],
+          }),
+        ],
+      },
+    };
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([pinBranchFor(['pnpm-lock.yaml'], true, true)]);
+    expect(repo.issues[0]?.state).toBe('closed');
   });
 
   it('waits when a file the step wrote has changed on main, or when the scan made none', async () => {

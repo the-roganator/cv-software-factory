@@ -16,6 +16,7 @@ import { treeSource } from '../../src/github/pin-guard.ts';
 import {
   branchOf,
   carriedBy,
+  namedMajor,
   PASS_MS,
   PIN_LABEL,
   type PinScope,
@@ -34,6 +35,7 @@ import {
   FILES,
   factoryMoves,
   move,
+  NONE,
   pinBranchOf,
   trivyCritical,
   writes,
@@ -391,8 +393,8 @@ describe('the pin watch’s issues', () => {
       expect(issue.body).not.toMatch(/@example\/tokens|3\.0\.[12]|GHSA-/);
     }
     const cd = repo.issues.find((i) => i.title.startsWith('Move example-cd'));
-    expect(cd?.body).toContain('no pull request of the App’s writes the Makefile');
-    expect(cd?.body).toContain('- `mise.toml:2`, pinning `10.9.5`');
+    expect(cd?.body).toContain('A workflow pins it, and the App writes no workflow');
+    expect(cd?.body).toContain('- `.github/workflows/platform.yml:2`, pinning `10.9.5`');
     expect(cd?.body).toContain('**Deadline** 2026-11-18T06:00:00Z.');
   });
 
@@ -428,6 +430,47 @@ describe('the pin watch’s issues', () => {
     expect(cd?.state).toBe('open');
     expect(cd?.title).toBe('Move example-cd to chart example-cd 10.16.0');
     expect(repo.issues).toHaveLength(3);
+  });
+
+  it('says of a routine update it cannot make that nothing is due: no counts, no deadline, and for a lockfile’s no alert', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const [cd, lockfile] = factoryMoves().filter((m) => m.name === 'example-cd' || m.lockfile) as [ReadMove, ReadMove];
+    let moves: ReadMove[] = [
+      { ...cd, clears: NONE, deadline: undefined },
+      { ...lockfile, clears: NONE, deadline: undefined, findings: [] },
+    ];
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    expect(repo.issues.map((i) => i.title).sort()).toEqual([
+      'Move a package in pnpm-lock.yaml (3f9a1c0b7e2d) to a newer release',
+      'Move example-cd to chart example-cd 10.15.0',
+    ]);
+    const workflow = repo.issues.find((i) => i.title.startsWith('Move example-cd'));
+    expect(workflow?.body).toContain(
+      'A workflow pins it, and the App writes no workflow: move it in a pull request of your own, when you choose to. Nothing is due.',
+    );
+    expect(workflow?.body).toContain(
+      '**A routine update** A newer release, with no advisory behind it and no deadline.',
+    );
+    const package_ = repo.issues.find((i) => i.title.startsWith('Move a package'));
+    expect(package_?.body).toContain(
+      '`a package in `pnpm-lock.yaml`` to a newer release.'.replace(
+        '`a package in `pnpm-lock.yaml``',
+        '`a package in pnpm-lock.yaml`',
+      ),
+    );
+    for (const issue of repo.issues) {
+      expect(issue.body).not.toMatch(/\*\*Clears\*\*|\*\*Deadline\*\*|its alerts|@example\/tokens|3\.0\.[12]/);
+      expect(issue.labels).toEqual([PIN_LABEL]);
+    }
+    // Gone from the day: closed with a sentence that claims nothing was cleared.
+    moves = [];
+    await w.pass();
+    expect(workflow?.state).toBe('closed');
+    expect(workflow?.comments.at(-1)).toContain(
+      "no longer lists this move as one the App cannot make: it is moved, made by a pull request of the factory's, or the scan has nothing left to move it for.",
+    );
   });
 
   it('opens an issue for a move whose pin’s line it cannot write', async () => {
@@ -849,6 +892,176 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(openPins(repo).map((p) => p.head)).toEqual([BRANCH]);
     expect(changed(repo, BRANCH)).toHaveLength(5);
     expect(await gate(repo, BRANCH, moves)).toMatchObject({ rule: 'move', title: expect.stringContaining('5 moves') });
+  });
+
+  /** A routine update: a pin merely behind, which clears nothing and has no deadline. */
+  const routine = (over: Partial<ReadMove> & Pick<ReadMove, 'name' | 'pins' | 'from' | 'to'>): ReadMove =>
+    move({ lane: 'worker', ...over, clears: NONE, deadline: undefined });
+  /** The chart's own routine update on the file's last pin, within its major or across one. */
+  const behind = (to = 'chart kyverno 3.6.1') =>
+    routine({ name: 'kyverno', pins: [{ file: KYVERNO, line: 9 }], from: '3.5.0', to, major: to.includes('major') });
+
+  it('opens a file’s routine updates apart from the moves a finding asks for, so none of them holds up a fix', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    // One image's move has a finding behind it; another image of the same file, and the chart, are merely behind.
+    const [fix, other] = four() as [ReadMove, ReadMove];
+    const moves = [fix, routine(other), behind()];
+    await harness(repo, () => day(scanned, moves)).pass();
+
+    const apart = branchOf(behind());
+    expect(apart).toMatch(/^factory\/pin\/deploy-base-admission-values-kyverno\.yaml-routine-[0-9a-f]{8}$/);
+    expect(
+      openPins(repo)
+        .map((p) => p.head)
+        .sort(),
+    ).toEqual([BRANCH, apart].sort());
+    // The fix's pull request carries the fix alone, and the routine updates' carries both of them.
+    expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([2]);
+    expect(changed(repo, apart).map((line) => [line.line, line.after])).toEqual([
+      [4, `  tag: v1.20.0@${digest('kyvernopre/v1.20.0')}`],
+      [9, 'chart: 3.6.1'],
+    ]);
+    const updates = openPins(repo).find((p) => p.head === apart);
+    expect(updates?.title).toBe(`chore(pin): move 2 pins in ${KYVERNO}`);
+    expect(updates?.labels).toEqual([PIN_LABEL]);
+    expect(carriedBy(updates?.body).sort()).toEqual(['kyverno', other.name].sort());
+    // Each is the scan's moves and nothing else, whichever of the file's moves the other pull request carries.
+    expect(await gate(repo, BRANCH, moves)).toMatchObject({ rule: 'move', title: expect.stringContaining('move of') });
+    expect(await gate(repo, apart, moves)).toMatchObject({ rule: 'move', title: expect.stringContaining('2 moves') });
+  });
+
+  it('says a routine update is one: no advisory behind it, no deadline, and nothing it clears', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const [fix, other] = four() as [ReadMove, ReadMove];
+    let moves = [fix, routine(other), behind()];
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    const apart = branchOf(behind());
+    const updates = openPins(repo).find((p) => p.head === apart);
+    expect(updates?.body).toContain(
+      "The factory's pin watch makes 2 of the day’s routine updates, as the scan of run [42000000101](https://github.com/the-roganator/cv-software-factory/actions/runs/42000000101) lists (judged 2026-11-11T06:15:00Z). Each is a routine update: a newer release, with no advisory behind it and no deadline. It changes nothing but the version or digest at each pin.",
+    );
+    expect(updates?.body).toContain(`| \`kyverno\` | \`${KYVERNO}:9\` | \`3.5.0\` | \`3.6.1\` |`);
+    expect(updates?.body).toContain('The review gate passes it as `move` when it is exactly the scan’s moves');
+    expect(updates?.body).not.toMatch(/Clears|\| Deadline|nothing \||none \||\bfix/);
+    // The fix's own description is as it was: what it clears, and its deadline.
+    const fixes = openPins(repo).find((p) => p.head === BRANCH);
+    expect(fixes?.body).toContain('| Move | Clears | Leaves on the same pins | Deadline |');
+    expect(fixes?.body).toContain(`| \`${fix.name}\` | 1 high, 2 medium | nothing | 2026-11-18T06:00:00Z |`);
+    expect(fixes?.body).not.toContain('routine');
+
+    // One routine update alone reads as one, and says what its pins still have open where they have anything.
+    moves = [fix, { ...behind(), leaves: { ...NONE, MEDIUM: 2 } }];
+    await w.pass();
+    expect(updates?.title).toBe('chore(pin): move kyverno to 3.6.1');
+    expect(updates?.body).toContain(
+      'moves `kyverno` from `3.5.0` to `chart kyverno 3.6.1`, as the scan of run [42000000101](https://github.com/the-roganator/cv-software-factory/actions/runs/42000000101) lists (judged 2026-11-11T06:15:00Z). It is a routine update: a newer release, with no advisory behind it and no deadline.',
+    );
+    expect(updates?.body).toContain('| Routine update | Leaves on the same pins |');
+    expect(updates?.body).toContain('| `kyverno` | 2 medium |');
+    expect(updates?.body).not.toMatch(/Clears|\| Deadline/);
+  });
+
+  it('opens a routine update across a major apart again: Martin’s at Guarded, which the gate names `major`', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const [fix, other] = four() as [ReadMove, ReadMove];
+    const across = behind('chart kyverno 4.0.0 (a major)');
+    expect(namedMajor(across)).toBe(true);
+    const moves = [fix, routine(other), across];
+    await harness(repo, () => day(scanned, moves)).pass();
+
+    const within = branchOf(routine(other));
+    const apart = branchOf(across);
+    expect(apart).toMatch(/-routine-major-[0-9a-f]{8}$/);
+    // Apart from a finding's major too, which the level holds the same way: neither waits on the other's checks.
+    expect(apart).not.toBe(branchOf(major()));
+    expect(
+      openPins(repo)
+        .map((p) => p.head)
+        .sort(),
+    ).toEqual([BRANCH, within, apart].sort());
+    const held = openPins(repo).find((p) => p.head === apart);
+    expect(held?.title).toBe('chore(pin): move kyverno to 4.0.0');
+    expect(held?.body).toContain(
+      'It crosses a major, with no advisory behind it, so the review gate passes it as `major` when it is exactly the scan’s moves.',
+    );
+    expect(held?.body).toContain('at Lights-out; at any other level it waits for you');
+    expect(held?.body).not.toContain('clears no Critical');
+    expect(await gate(repo, apart, moves)).toMatchObject({ rule: 'major' });
+    expect(await gate(repo, within, moves)).toMatchObject({ rule: 'move' });
+    expect(await gate(repo, BRANCH, moves)).toMatchObject({ rule: 'move' });
+  });
+
+  it('moves a pin from the routine updates’ pull request to the fixes’ on the day a finding asks for it', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const [fix] = four() as [ReadMove];
+    let moves = [fix, behind()];
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    const apart = branchOf(behind());
+    const updates = openPins(repo).find((p) => p.head === apart);
+    // The same pin, now with a finding its move clears: it is a fix, and rides with the file's fixes.
+    moves = [fix, { ...behind(), clears: { ...NONE, HIGH: 1 }, deadline: '2026-11-18T06:00:00Z' }];
+    await w.pass();
+    expect(updates?.state).toBe('closed');
+    expect(updates?.comments?.at(-1)).toContain(
+      "no longer lists a move here that a pull request of the factory's makes: `main` has moved its pins, or the scan has nothing left to move them for.",
+    );
+    expect(openPins(repo).map((p) => p.head)).toEqual([BRANCH]);
+    expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([2, 9]);
+  });
+
+  it('makes the Makefile’s pin of Argo CD’s chart, its version alone, as any pin of the worker’s lane', async () => {
+    const MAKEFILE = ['CLUSTER := software-factory', 'ARGOCD_CHART := 10.15.0', 'up:', '\thelm upgrade argocd', ''];
+    const owners = '/.github/ @mrogan\n/deploy/ @mrogan\n/Makefile @mrogan\n';
+    const repo = new FakeRepo({ ...FILES, Makefile: MAKEFILE.join('\n'), '.github/CODEOWNERS': owners });
+    const scanned = repo.main;
+    const chart = routine({
+      name: 'argo-cd',
+      pins: [{ file: 'Makefile', line: 2 }],
+      from: '10.15.0',
+      to: 'chart argo-cd 10.16.2',
+    });
+    const w = harness(repo, () => day(scanned, [chart]));
+    await w.pass();
+    expect(repo.issues).toEqual([]);
+    expect(w.records()).toEqual([]);
+    const [pull, ...others] = openPins(repo);
+    expect(others).toEqual([]);
+    expect(pull).toMatchObject({ head: branchOf(chart), title: 'chore(pin): move argo-cd to 10.16.2' });
+    expect(pull?.head).toMatch(/^factory\/pin\/makefile-routine-[0-9a-f]{8}$/);
+    expect(changed(repo, branchOf(chart))).toEqual([
+      { file: 'Makefile', line: 2, before: 'ARGOCD_CHART := 10.15.0', after: 'ARGOCD_CHART := 10.16.2' },
+    ]);
+    expect(await gate(repo, branchOf(chart), [chart])).toMatchObject({ rule: 'move' });
+    // A finding's move of the same pin is made the same way, on the file's own branch.
+    const fix = { ...chart, clears: { ...NONE, HIGH: 2 }, deadline: '2026-11-18T06:00:00Z' };
+    const other = new FakeRepo({ ...FILES, Makefile: MAKEFILE.join('\n'), '.github/CODEOWNERS': owners });
+    const read = other.main;
+    await harness(other, () => day(read, [fix])).pass();
+    expect(openPins(other).map((p) => p.head)).toEqual([branchOf(fix)]);
+    expect(branchOf(fix)).toMatch(/^factory\/pin\/makefile-[0-9a-f]{8}$/);
+  });
+
+  it('records the guard’s refusal of any other line of the Makefile, and opens nothing', async () => {
+    const MAKEFILE = ['OTHER_CHART := 10.15.0', 'ARGOCD_CHART := 10.15.0', ''];
+    const repo = new FakeRepo({ ...FILES, Makefile: MAKEFILE.join('\n') });
+    const scanned = repo.main;
+    const other = routine({
+      name: 'argo-cd',
+      pins: [{ file: 'Makefile', line: 1 }],
+      from: '10.15.0',
+      to: 'chart argo-cd 10.16.2',
+    });
+    const w = harness(repo, () => day(scanned, [other]));
+    await w.pass();
+    expect(appPulls(repo)).toEqual([]);
+    expect(w.records()).toHaveLength(1);
+    expect(JSON.stringify(w.records())).toContain('is not the Makefile’s pin of Argo CD’s chart');
   });
 
   it('leaves out a move whose line has changed since the scan, and one that is an issue, and carries the rest', async () => {

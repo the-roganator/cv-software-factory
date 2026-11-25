@@ -1,0 +1,27 @@
+# Test N6: a workflow run only by hand whose service is the Postgres exporter one release back, with findings the next clears: a workflow's pin, which is Martin's to move
+diff --git a/.github/workflows/held-pin.yml b/.github/workflows/held-pin.yml
+new file mode 100644
+index 00000000..6538209c
+--- /dev/null
++++ b/.github/workflows/held-pin.yml
+@@ -0,0 +1,20 @@
++# A pin a workflow holds, for the patching tests (N6): an older release of the Postgres exporter, with findings its
++# next release clears, named by a job that runs only by hand. The vulnerability scan lists its move, which is Martin's
++# to make: an issue, and no pull request of the factory's App.
++name: held pin
++
++on:
++  workflow_dispatch:
++
++permissions: {}
++
++jobs:
++  exporter:
++    runs-on: ubuntu-24.04
++    timeout-minutes: 5
++    services:
++      exporter:
++        image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
++    steps:
++      - name: Say what the exporter's image is
++        run: echo "the exporter's image started"

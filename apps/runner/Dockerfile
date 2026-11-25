@@ -43,9 +43,10 @@ FROM node AS runtime
 COPY --from=deps /repo /repo
 WORKDIR /repo
 COPY --chmod=a+rX,go-w apps/runner/src apps/runner/src
-# How the pin step reads an image's registry, which the daily scan reads the same way: one file of the factory's,
-# which imports nothing.
+# How the pin step reads an image's registry and orders two versions, which the daily scan does the same way: two
+# files of the factory's, which import nothing.
 COPY --chmod=a+rX,go-w apps/factory/src/vulnerabilities/registry.ts apps/factory/src/vulnerabilities/registry.ts
+COPY --chmod=a+rX,go-w apps/factory/src/vulnerabilities/versions.ts apps/factory/src/vulnerabilities/versions.ts
 # The skills a step can name, as a plugin the agent step loads (`plugin/README.md`).
 COPY --chmod=a+rX,go-w apps/runner/plugin apps/runner/plugin
 USER 65532:65532

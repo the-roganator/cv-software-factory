@@ -27,6 +27,8 @@
 /apps/factory/src/vulnerabilities/scan.ts       @mrogan
 /apps/factory/src/vulnerabilities/node.ts       @mrogan
 /apps/factory/src/vulnerabilities/trivy-pin.ts  @mrogan
+/apps/factory/src/vulnerabilities/versions.ts   @mrogan
+/apps/factory/src/vulnerabilities/routine.ts    @mrogan
 # The seal of the state the scan keeps, which the next scan and the GitHub worker read (ADR 0021)
 /apps/factory/src/vulnerabilities/state.ts      @mrogan
 /scripts/copilot-held-runs.ts @mrogan

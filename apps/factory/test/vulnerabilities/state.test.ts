@@ -120,6 +120,27 @@ describe('a state’s shape', () => {
     ],
     ['a move with no fix', (s) => Object.assign(finding(s), { fix: undefined }), 'a move that is not one'],
     ['a move that is no place', (s) => Object.assign(finding(s), { move: 0 }), 'a move that is not one'],
+    [
+      'an item’s key that is not text',
+      (s) => Object.assign(finding(s), { item: 7 }),
+      'gives finding 1 a value for item that is not text',
+    ],
+    [
+      'a control character in a label',
+      (s) => Object.assign(finding(s), { label: 'pnpm-lock.yaml\n' }),
+      'gives finding 1 a value for label that is not text',
+    ],
+    [
+      'a title that is not text',
+      (s) => Object.assign(finding(s), { title: ['a', 'list'] }),
+      'gives finding 1 a value for title that is not text',
+    ],
+    [
+      'a publisher’s rating that is none',
+      (s) => Object.assign(finding(s), { publisher: 'SEVERE' }),
+      "gives finding 1 a publisher's rating that is not one",
+    ],
+    ['a score that is no number', (s) => Object.assign(finding(s), { score: '7.5' }), 'a score that is not one'],
   ])('refuses %s, naming the finding by its place alone', (_name, change, message) => {
     expect(() => open(sealedWith(change), KEY, REPOSITORY, STATE.run)).toThrow(message);
   });
@@ -129,6 +150,101 @@ describe('a state the scan wrote', () => {
   it('opens with a finding Trivy gave no installed version, as the scan writes it', () => {
     const sealed = sealedWith((s) => Object.assign(finding(s), { installed: '' }));
     expect(open(sealed, KEY, REPOSITORY, STATE.run).findings[0]?.installed).toBe('');
+  });
+
+  it('opens with what carries a finding, whatever an advisory’s own words hold, and without it, as one written before', () => {
+    const carries = {
+      item: 'lockfile pnpm-lock.yaml',
+      listed: 'pnpm-lock.yaml',
+      label: 'pnpm-lock.yaml',
+      publisher: 'CRITICAL',
+      score: 9.8,
+      path: 'opt/pnpm/dist/node_modules/example-a',
+      title: 'example-a: a title\twith a tab, and “quotes”',
+      url: 'https://example.test/CVE-2099-20001',
+    };
+    const sealed = sealedWith((s) => Object.assign(finding(s), carries));
+    expect(open(sealed, KEY, REPOSITORY, STATE.run).findings[0]).toEqual({ ...STATE.findings[0], ...carries });
+    expect(open(seal(STATE, KEY), KEY, REPOSITORY, STATE.run).findings[0]).not.toHaveProperty('item');
+  });
+});
+
+describe('the day’s routine listing, in a state', () => {
+  const ROUTINE = [
+    {
+      move: 2,
+      name: 'example-b',
+      from: '1.2.0',
+      to: 'version 1.4.0',
+      pins: [{ file: 'pnpm-lock.yaml', line: 140 }],
+      seen: '2026-11-06T04:30:00Z',
+    },
+    // A release still inside its wait: seen, and no move yet.
+    {
+      name: 'node',
+      from: '24.22.1-trixie-slim',
+      to: `image 24.23.0-trixie-slim@sha256:${'b'.repeat(64)}`,
+      pins: [{ file: '.devcontainer/Dockerfile', line: 2 }],
+      seen: '2026-11-10T04:30:00Z',
+    },
+  ];
+  const routine = (state: Record<string, unknown>) => (state.routine as Record<string, unknown>[])[0] ?? {};
+  const withRoutine = (change: (state: Record<string, unknown>) => void = () => {}) =>
+    sealedWith((state) => {
+      state.routine = structuredClone(ROUTINE);
+      change(state);
+    });
+
+  it('opens with a move’s major, and the digests an image’s pins held', () => {
+    const sealed = withRoutine((s) => {
+      const records = s.routine as Record<string, unknown>[];
+      Object.assign(records[0] ?? {}, { major: true });
+      Object.assign(records[1] ?? {}, { held: [`sha256:${'a'.repeat(64)}`] });
+    });
+    expect(open(sealed, KEY, REPOSITORY, STATE.run).routine).toEqual([
+      { ...ROUTINE[0], major: true },
+      { ...ROUTINE[1], held: [`sha256:${'a'.repeat(64)}`] },
+    ]);
+  });
+
+  it('opens with it and without it', () => {
+    expect(open(withRoutine(), KEY, REPOSITORY, STATE.run).routine).toEqual(ROUTINE);
+    expect('routine' in open(seal(STATE, KEY), KEY, REPOSITORY, STATE.run)).toBe(false);
+    expect(
+      open(
+        withRoutine((s) => Object.assign(s, { routine: [] })),
+        KEY,
+        REPOSITORY,
+        STATE.run,
+      ).routine,
+    ).toEqual([]);
+  });
+
+  it.each<[string, (state: Record<string, unknown>) => void, string]>([
+    ['a listing that is no list', (s) => Object.assign(s, { routine: {} }), 'lists routine moves that are not a list'],
+    ['a place that is none', (s) => Object.assign(routine(s), { move: 0 }), 'gives routine move 1 a place'],
+    ['no name', (s) => Object.assign(routine(s), { name: '' }), 'gives routine move 1 no name'],
+    ['no `from`', (s) => Object.assign(routine(s), { from: undefined }), 'gives routine move 1 no from'],
+    [
+      'a target the grammar does not read',
+      (s) => Object.assign(routine(s), { to: 'version 1.4.0; rm -rf' }),
+      'gives routine move 1 a target the grammar does not read',
+    ],
+    ['no pins', (s) => Object.assign(routine(s), { pins: [] }), 'gives routine move 1 no pins'],
+    [
+      'a pin with no line',
+      (s) => Object.assign(routine(s), { pins: [{ file: 'pnpm-lock.yaml' }] }),
+      'gives routine move 1 a pin that is not one',
+    ],
+    ['no day', (s) => Object.assign(routine(s), { seen: '2026-11-06' }), 'gives routine move 1 no day'],
+    [
+      'a digest held that is none',
+      (s) => Object.assign(routine(s), { held: ['sha256:abc'] }),
+      'gives routine move 1 digests that are not ones',
+    ],
+    ['a major that is no answer', (s) => Object.assign(routine(s), { major: 'yes' }), 'a major that is not one'],
+  ])('refuses %s, naming the move by its place alone', (_name, change, message) => {
+    expect(() => open(withRoutine(change), KEY, REPOSITORY, STATE.run)).toThrow(message);
   });
 });
 

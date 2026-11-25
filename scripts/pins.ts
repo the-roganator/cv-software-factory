@@ -6,7 +6,8 @@
  *     node scripts/pins.ts <moves.json> <state.sealed> <checkout> <out>
  *
  * It opens the run's state for what `moves.json` withholds, as the GitHub worker does (github/scanning.ts's
- * `joined`), and makes each move the pin step makes, grouped by the files it writes, each group on a worktree of its
+ * `joined`), and makes each move the pin step makes, grouped by the files it writes, a major apart and the routine
+ * updates apart (`groupOf`), each group on a worktree of its
  * own at that commit, in the order of `moves.json` (scripts/derive.ts), as of the scan's time (`judged`): in the
  * factory those of the worker's lanes, which the pin watch commits; in the app those of the line's, whose pin step makes
  * them again with the digests this step was given. The review gate makes them again on main's tip, as of the same
@@ -28,6 +29,7 @@ import {
   type MadeStep,
   madeByLine,
   madeByStep,
+  reasonOf,
   sealMade,
   stepOf,
 } from '../apps/factory/src/github/made.ts';
@@ -49,10 +51,8 @@ const PULL_LANES = new Set(['worker', 'cluster']);
 const stepMakes = (move: ReadMove, app: boolean) =>
   app ? move.lane === 'line' && madeByLine(move) : PULL_LANES.has(move.lane) && madeByStep(move);
 
-/** The most of the step's words kept for one refusal. */
-const MOST_WORDS = 4000;
-
-const words = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, MOST_WORDS);
+/** The step's words for a refusal, as the file may hold a reason (github/made.ts's `reasonOf`), whatever it threw. */
+const words = (error: unknown) => reasonOf(error instanceof Error ? error.message : String(error));
 
 /** The moves to make, by group, in the order of `moves.json`. */
 export function groupsOf(moves: readonly ReadMove[], repository: string): Map<string, ReadMove[]> {
@@ -97,7 +97,7 @@ export async function makeGroup(
   derive: (dir: string, steps: PinStepMove[], derivation: Derivation) => Promise<Map<string, string>> = deriveOn,
   asOf?: number,
 ): Promise<MadeGroup> {
-  const { files, major } = groupOf(moves[0] as ReadMove);
+  const { files, major, routine } = groupOf(moves[0] as ReadMove);
   const dir = join(work, 'checkout');
   await gitIn(checkout)('worktree', 'add', '--quiet', '--detach', dir, 'HEAD');
   try {
@@ -113,7 +113,7 @@ export async function makeGroup(
     const lock = before('mise.lock');
     for (const move of moves) {
       const step = stepOf(move, lock || undefined);
-      if (typeof step === 'string') refused.push({ move: move.index, reason: step });
+      if (typeof step === 'string') refused.push({ move: move.index, reason: reasonOf(step) });
       else steps.push({ index: move.index, step });
     }
     const lockBefore = new Map([['pnpm-lock.yaml', before('pnpm-lock.yaml')]]);
@@ -141,6 +141,7 @@ export async function makeGroup(
     return {
       files,
       major,
+      ...(routine ? { routine } : {}),
       moves: made.map(({ index }) => index),
       refused: refused.sort((a, b) => a.move - b.move),
       changed: [...changed].map(([path, text]) => ({ path, text })).sort((a, b) => (a.path < b.path ? -1 : 1)),
@@ -174,7 +175,7 @@ async function main(argv: string[]) {
       const group = await makeGroup(checkout, each, work, deriveOn, Date.parse(file.judged));
       groups.push(group);
       console.log(
-        `${group.files.join(', ')}${group.major ? ' (major)' : ''}: made ${group.moves.length} of ${each.length} moves, wrote ${group.changed.length} files${group.refused.length ? `; the step refused move ${group.refused.map((r) => r.move).join(', ')} of moves.json` : ''}.`,
+        `${group.files.join(', ')}${group.routine ? ' (routine)' : ''}${group.major ? ' (major)' : ''}: made ${group.moves.length} of ${each.length} moves, wrote ${group.changed.length} files${group.refused.length ? `; the step refused move ${group.refused.map((r) => r.move).join(', ')} of moves.json` : ''}.`,
       );
     } finally {
       rmSync(work, { recursive: true, force: true });

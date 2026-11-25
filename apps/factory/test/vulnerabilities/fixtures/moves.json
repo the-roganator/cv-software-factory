@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "repository": "the-roganator/cv-software-factory",
+  "judged": "2026-11-10T04:30:00Z",
+  "run": "19234567890",
+  "totals": {
+    "fixed": 5,
+    "moves": 4,
+    "lanes": {
+      "line": 0,
+      "worker": 3,
+      "cluster": 1,
+      "issue": 0,
+      "none": 0
+    },
+    "open": {
+      "CRITICAL": 0,
+      "HIGH": 5,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "UNKNOWN": 0
+    },
+    "noFix": 0,
+    "excepted": 0,
+    "overdue": 0,
+    "dueWithinDay": 0,
+    "newHighWithFix": 5,
+    "newHighWithoutFix": 0
+  },
+  "moves": [
+    {
+      "repository": "the-roganator/cv-software-factory",
+      "name": "k3s",
+      "pins": [
+        {
+          "file": "deploy/k3d/cluster.yaml",
+          "line": 3
+        }
+      ],
+      "from": "v1.37.2+k3s1",
+      "to": "k3s v1.37.2+k3s10",
+      "major": false,
+      "clears": {
+        "CRITICAL": 0,
+        "HIGH": 2,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "leaves": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "deadline": "2026-11-17T04:30:00Z",
+      "newToday": 2,
+      "lane": "cluster",
+      "lockfile": false
+    },
+    {
+      "repository": "the-roganator/cv-software-factory",
+      "name": "example",
+      "pins": [
+        {
+          "file": "deploy/base/example.yaml",
+          "line": 14
+        }
+      ],
+      "from": "13.2.7",
+      "to": "chart example 14.3.1 (a major)",
+      "major": true,
+      "clears": {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "leaves": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "deadline": "2026-11-17T04:30:00Z",
+      "newToday": 1,
+      "lane": "worker",
+      "lockfile": false
+    },
+    {
+      "repository": "the-roganator/cv-software-factory",
+      "name": "a package in `pnpm-lock.yaml`",
+      "pins": [
+        {
+          "file": "pnpm-lock.yaml",
+          "line": 0
+        }
+      ],
+      "from": "",
+      "to": "",
+      "major": false,
+      "clears": {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "leaves": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "deadline": "2026-11-17T04:30:00Z",
+      "newToday": 1,
+      "lane": "worker",
+      "lockfile": true
+    },
+    {
+      "repository": "the-roganator/cv-software-factory",
+      "name": "node",
+      "pins": [
+        {
+          "file": ".devcontainer/Dockerfile",
+          "line": 2
+        }
+      ],
+      "from": "24.22.1-trixie-slim",
+      "to": "image 24.100.0-trixie-slim@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "major": false,
+      "clears": {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "leaves": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "deadline": "2026-11-17T04:30:00Z",
+      "newToday": 1,
+      "lane": "worker",
+      "lockfile": false
+    }
+  ],
+  "scanned": []
+}

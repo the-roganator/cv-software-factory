@@ -16,7 +16,7 @@ Because the repository is public, outside pull requests are treated as untrusted
 
 - Workflows from anyone outside the repository wait for my approval before they run, however many of their pull requests have merged.
 - Pull requests run with read-only permissions and no secrets (`pull_request`, never `pull_request_target`).
-- Nothing from outside is merged automatically.
+- Nothing from outside is merged automatically. The one pull request the factory merges that it did not open is Dependabot's, in the app's repository, when it only moves the commit the factory's own workflows are called at to a later commit of this repository's `main` ([approval routing](docs/COMPONENTS/APPROVAL-ROUTING.md#an-exact-pin-of-the-factorys-workflows)).
 
 ## Working on it
 

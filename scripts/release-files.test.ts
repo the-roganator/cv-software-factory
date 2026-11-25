@@ -85,6 +85,8 @@ describe('the files a release changes', () => {
       'apps/runner/src/prepare.ts',
       // package.json's packageManager, beside mise.lock's pnpm, and not its version line.
       'apps/runner/test/install-pnpm.test.ts',
+      // The pin step's tests with pnpm itself, on manifests written for a registry of their own.
+      'apps/runner/test/pins-exact.test.ts',
       // The pin step's tests, on invented manifests' ranges.
       'apps/runner/test/pins.test.ts',
       // A package.json of its own, written for a scratch copy.

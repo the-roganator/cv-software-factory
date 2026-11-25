@@ -505,5 +505,22 @@ export const commitTitle = titleOf('fix|test|refactor|perf', 'a Conventional Com
  */
 export const featureTitle = titleOf('feat', 'a Conventional Commit title of type feat, of 80 characters at most');
 
-/** The title a work item's pull request takes: an improvement's, or a fix's. */
-export const titleFor = (asked: Asked) => (asked.kind === 'request' ? featureTitle : commitTitle);
+/**
+ * A routine update's: a chore of the dependencies, `chore(deps): …`, and no other type or scope. No advisory asked for
+ * the move, so its commit claims no fix, in the app's history or its release notes.
+ */
+export const updateTitle = titleOf(
+  'chore',
+  'a Conventional Commit title of type chore, of 80 characters at most',
+).refine((title) => title.startsWith('chore(deps): '), 'a routine update’s title is `chore(deps): …`');
+
+/**
+ * Whether a work item is a routine update: its newest signal from the dependency sense names an outdated dependency,
+ * a pin merely behind, where a vulnerable one's names what the scan found. The newest, as the pin step moves to it.
+ */
+export const routineUpdate = (signals: readonly Pick<Signal, 'sense' | 'symptom'>[]): boolean =>
+  signals.findLast((signal) => signal.sense === 'dependency')?.symptom === 'outdated-dependency';
+
+/** The title a work item's pull request takes: an improvement's, a routine update's, or a fix's. */
+export const titleFor = (asked: Asked, signals: readonly Pick<Signal, 'sense' | 'symptom'>[] = []) =>
+  asked.kind === 'request' ? featureTitle : routineUpdate(signals) ? updateTitle : commitTitle;

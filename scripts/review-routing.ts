@@ -14,9 +14,10 @@
  * - `improvement`: the app's typed list of flag names changed, or a line of the app's code, added or removed, that
  *   names a flag or asks one, so new behaviour behind a flag already on the list is caught too.
  *
- * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin`, `move` or `major` (exactly the
- * moves the scan of main asked for, made by the gate and compared with the pull request, whoever opened it,
- * scripts/move.ts), in the app's repository `low-risk` and `lights-out`, or `held` (`route`).
+ * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin` (the App's, of images signed on
+ * main, `exactPin`; or Dependabot's, of the commit the factory's workflows are called at, `workflowPin`), `move` or
+ * `major` (exactly the moves the scan of main asked for, made by the gate and compared with the pull request, whoever
+ * opened it, scripts/move.ts), in the app's repository `low-risk` and `lights-out`, or `held` (`route`).
  */
 
 import { APP_REPOSITORY, FACTORY_REPOSITORY, repositoryOfImage } from '../apps/factory/src/repositories.ts';
@@ -42,6 +43,13 @@ export const REVIEW_APP = 5470762;
 
 /** The factory's App's bot user (`mrogan-software-factory[bot]`), which opens its pull requests. */
 export const FACTORY_APP = 337765427;
+
+/**
+ * GitHub's Dependabot (`dependabot[bot]`), by its user id, as Martin and the App are known: it alone opens its pull
+ * requests, and one that moves only the commit the factory's workflows are called at passes as an exact pin
+ * (`workflowPin`).
+ */
+export const DEPENDABOT = 49699333;
 
 /** This repository, the factory's: where the App's pull requests pass only as pins or moves (ADR 0022). */
 export const FACTORY_REPO = FACTORY_REPOSITORY;
@@ -117,6 +125,9 @@ export const fromHere = (pr: PullRequest) => pr.head.repo?.full_name === pr.base
 
 /** Whether the factory's App opened a pull request, from a branch here. */
 export const appOpened = (pr: PullRequest) => pr.user?.id === FACTORY_APP && fromHere(pr);
+
+/** Whether GitHub's Dependabot opened a pull request, from a branch here. */
+export const dependabotOpened = (pr: PullRequest) => pr.user?.id === DEPENDABOT && fromHere(pr);
 
 /**
  * Whether Martin has had his say on a pull request at its head. A review that only comments says nothing; of the rest,
@@ -602,6 +613,454 @@ export async function exactPin(
   return { pins };
 }
 
+// Exact pins of the factory's workflows
+
+/** Where the factory's workflows are, as a caller's `uses:` names them. */
+const FACTORY_WORKFLOWS = `${FACTORY_REPO}/.github/workflows/`;
+
+/**
+ * A call of one of the factory's workflows at a commit of its main, as a caller writes the whole line: the key, the
+ * workflow, the commit in full, and the comment that says which branch the commit is on. Its first group is all that
+ * comes before the commit, its second the workflow's file, and its third the commit.
+ */
+const WORKFLOW_CALL = new RegExp(
+  String.raw`^(\s+uses: ${literally(FACTORY_WORKFLOWS)}([\w-]+\.yml))@([0-9a-f]{40}) # main$`,
+);
+
+/** Whether a line names the factory's workflows at all, however it is written: GitHub reads a repository in any case. */
+export const callsFactory = (line: string): boolean => line.toLowerCase().includes(FACTORY_WORKFLOWS.toLowerCase());
+
+/** A call of the factory's workflows a pull request moves: in which file, and the commit it replaces and the one it sets. */
+export interface CallMove {
+  file: string;
+  /** The factory's workflow it calls, by its file's name. */
+  workflow: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Each call of the factory's workflows a file's patch moves, or why the patch is not an exact pin: the file is a
+ * workflow, modified, and every line it removes or adds is one call of the factory's workflows at a commit, each
+ * removed one replaced, in its place, by one that reads the same but for the commit.
+ */
+export function callMoves(file: FileChange): CallMove[] | { reason: string } {
+  const { filename } = file;
+  if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(filename) || file.previous_filename !== undefined)
+    return { reason: `${filename} is not a workflow under .github/workflows/` };
+  if (file.status !== 'modified') return { reason: `${filename} is ${file.status}, not modified` };
+  if (file.patch === undefined) return { reason: `GitHub gives no patch of ${filename} to read` };
+  const moves: CallMove[] = [];
+  let removed: { before: string; workflow: string; commit: string }[] = [];
+  let added: { before: string; workflow: string; commit: string }[] = [];
+  const close = (): string | undefined => {
+    if (removed.length !== added.length) return `${filename} adds or removes a call rather than moving its commit`;
+    for (const [i, was] of removed.entries()) {
+      const now = added[i];
+      if (!now || now.before !== was.before) return `${filename} changes more of a call than its commit`;
+      moves.push({ file: filename, workflow: was.workflow, from: was.commit, to: now.commit });
+    }
+    removed = [];
+    added = [];
+    return undefined;
+  };
+  for (const line of file.patch.split('\n')) {
+    if (line.startsWith('-') || line.startsWith('+')) {
+      const call = WORKFLOW_CALL.exec(line.slice(1));
+      if (!call)
+        return {
+          reason: `${filename} changes a line that is not a call of the factory's workflows at a commit of main: ${line.slice(0, 120)}`,
+        };
+      (line.startsWith('-') ? removed : added).push({
+        before: call[1] ?? '',
+        workflow: call[2] ?? '',
+        commit: call[3] ?? '',
+      });
+    } else {
+      // A line both sides share, a hunk's header, or "\ No newline at end of file": the moves so far are paired.
+      const wrong = close();
+      if (wrong) return { reason: wrong };
+    }
+  }
+  const wrong = close();
+  if (wrong) return { reason: wrong };
+  if (moves.length === 0) return { reason: `${filename} moves no call` };
+  return moves;
+}
+
+// What a called workflow declares
+
+/** A line of YAML that says something: not blank, and not a comment alone. */
+const says = (line: string) => line.trim() !== '' && !line.trimStart().startsWith('#');
+const indentOf = (line: string) => line.search(/\S/);
+
+/** What the gate does not read of a declaration, which holds a bump whose declaration's text differs. */
+class Unread extends Error {}
+
+/** A scalar on one line, as YAML's core schema reads it: quoted, or plain, less a comment after it. */
+function scalarOf(text: string): unknown {
+  const single = /^'((?:[^']|'')*)'\s*(?:#.*)?$/.exec(text);
+  if (single) return (single[1] ?? '').replace(/''/g, "'");
+  const double = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(text);
+  if (double) {
+    try {
+      return JSON.parse(`"${double[1] ?? ''}"`) as string;
+    } catch {
+      throw new Unread(`a quoted value it does not read: ${text.slice(0, 60)}`);
+    }
+  }
+  const plain = text.replace(/\s+#.*$/, '');
+  // A list, a map in braces, an anchor, a tag, or a key of its own: none is in what a workflow_call declares.
+  if (/^['"[\]{}&*!|>%@`,]|^[-?] |: |:$/.test(plain))
+    throw new Unread(`a value it does not read: ${plain.slice(0, 60)}`);
+  if (/^(true|True|TRUE)$/.test(plain)) return true;
+  if (/^(false|False|FALSE)$/.test(plain)) return false;
+  if (/^(null|Null|NULL|~)$/.test(plain)) return null;
+  // A number is read only as it is written whole: `20.10` and `20.1`, `010` and `10`, `1e2` and `100` are one number
+  // each and other texts, and a caller is given the text. Any other way of writing one is not read.
+  if (NUMBER.test(plain)) {
+    if (String(Number(plain)) !== plain) throw new Unread(`a number it does not read as it is written: ${plain}`);
+    return Number(plain);
+  }
+  return plain;
+}
+
+/** What YAML reads as a number when it is written plain: decimal, with an exponent, hexadecimal, octal, infinite or none. */
+const NUMBER =
+  /^[-+]?(\.\d+|\d+(\.\d*)?)([eE][-+]?\d+)?$|^0x[0-9a-fA-F]+$|^0o[0-7]+$|^[-+]?\.(inf|Inf|INF)$|^\.(nan|NaN|NAN)$/;
+
+/**
+ * Whether a line of a declaration holds an anchor, an alias or a merge key (`&name`, `*name`, `<<:`), as a key, a
+ * value or an item: what such a declaration says is written somewhere outside its own lines.
+ */
+const refersElsewhere = (line: string): boolean => {
+  if (!says(line)) return false;
+  const item = line.trim().replace(/^(?:-\s+)+/, '');
+  const value = /^(?:[\w.-]+|'[^']*'|"[^"\\]*")\s*:\s+(.*)$/.exec(item)?.[1] ?? '';
+  // In brackets or braces, one may be any item or value of it.
+  const within = /^[[{]/.test(value) && /(^|[\s[{,:])(?:[&*][\w-]|<<\s*:)/.test(value);
+  return /^[&*]\S/.test(item) || /^[&*]\S/.test(value) || /^<<\s*:/.test(item) || within;
+};
+
+/**
+ * A block of YAML that is maps of maps of scalars, read: each key on a line of its own, its value on that line, a map
+ * indented under it, or a block scalar (`|`, `>`), which is kept as its lines are. That is all a `workflow_call`
+ * declaration holds, and anything else (a list, braces, an anchor, a value over several lines) throws `Unread`: the
+ * gate runs with Node alone, no YAML library beside it, so it reads this much and holds what it cannot.
+ */
+function mapOf(lines: readonly string[]): Record<string, unknown> | null {
+  const first = lines.find(says);
+  if (first === undefined) return null;
+  const indent = indentOf(first);
+  // With no prototype: a name a file gives (`__proto__`, `constructor`, `toString`) is a key as any other.
+  const map: Record<string, unknown> = Object.create(null);
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i] ?? '';
+    if (!says(line)) {
+      i++;
+      continue;
+    }
+    const entry = /^\s*([\w.-]+|'[^']*'|"[^"\\]*")\s*:(?:\s+(.*))?$/.exec(line);
+    if (indentOf(line) !== indent || !entry) throw new Unread(`a line that is no key: ${line.trim().slice(0, 60)}`);
+    const key = (entry[1] ?? '').replace(/^(['"])(.*)\1$/, '$2');
+    if (Object.hasOwn(map, key)) throw new Unread(`${key} twice`);
+    let end = i + 1;
+    while (end < lines.length && (!says(lines[end] ?? '') || indentOf(lines[end] ?? '') > indent)) end++;
+    const under = lines.slice(i + 1, end);
+    const value = (entry[2] ?? '').replace(/^#.*$/, '').trim();
+    const header = value.replace(/\s+#.*$/, '');
+    if (/^[|>](?:[+-]\d?|\d[+-]?)?$/.test(header)) {
+      // As its lines are, less the indent and what follows it: a block scalar written another way is another value.
+      const stop = under.findIndex((each) => each.trim() !== '' && indentOf(each) <= indent);
+      const body = stop === -1 ? under : under.slice(0, stop);
+      const least = Math.min(...body.filter((each) => each.trim() !== '').map(indentOf));
+      map[key] = `${header}\n${body
+        .map((each) => each.slice(least))
+        .join('\n')
+        .trimEnd()}`;
+    } else if (value === '') map[key] = mapOf(under);
+    else if (under.some(says)) throw new Unread(`a value of ${key} over several lines`);
+    else map[key] = scalarOf(value);
+    i = end;
+  }
+  return map;
+}
+
+/**
+ * What a workflow's file declares under `on: workflow_call:`, or undefined when it declares no `workflow_call`: the
+ * declaration's own lines, as they are written, and those lines read (`mapOf`), or why the gate does not read them.
+ * One that holds an anchor, an alias or a merge key is not read, and is marked `elsewhere`: what it declares is
+ * written outside its lines, so the same lines at two commits may declare two things.
+ */
+export function declarationOf(
+  text: string,
+): { lines: string; read: Record<string, unknown> } | { lines: string; unread: string; elsewhere?: true } | undefined {
+  const all = text.replace(/\r\n?/g, '\n').split('\n');
+  const at = all.findIndex((line) => /^(on|'on'|"on")\s*:/.test(line));
+  if (at === -1) return undefined;
+  const inline = (all[at] ?? '')
+    .replace(/^[^:]*:/, '')
+    .replace(/(^|\s)#.*$/, '')
+    .trim();
+  // `on: workflow_call`, or a list of events with it: callable, and nothing declared. Braces could declare anything.
+  if (inline !== '') {
+    if (!/\bworkflow_call\b/.test(inline)) return undefined;
+    return /[{]/.test(inline) ? { lines: inline, unread: '`on:` written on one line' } : { lines: '', read: {} };
+  }
+  let end = at + 1;
+  while (end < all.length && (!says(all[end] ?? '') || indentOf(all[end] ?? '') > 0)) end++;
+  const events = all.slice(at + 1, end);
+  const first = events.find(says);
+  if (first === undefined) return undefined;
+  const indent = indentOf(first);
+  if (first.trimStart().startsWith('-')) {
+    return events.some((line) => /^\s*-\s+workflow_call\s*(#.*)?$/.test(line)) ? { lines: '', read: {} } : undefined;
+  }
+  const from = events.findIndex(
+    (line) =>
+      says(line) && indentOf(line) === indent && /^\s*(workflow_call|'workflow_call'|"workflow_call")\s*:/.test(line),
+  );
+  if (from === -1) return undefined;
+  let to = from + 1;
+  while (to < events.length && (!says(events[to] ?? '') || indentOf(events[to] ?? '') > indent)) to++;
+  const own = (events[from] ?? '')
+    .replace(/^[^:]*:/, '')
+    .replace(/(^|\s)#.*$/, '')
+    .trim();
+  const under = events.slice(from + 1, to);
+  const lines = [own, ...under].join('\n');
+  if ([`workflow_call: ${own}`, ...under].some(refersElsewhere))
+    return {
+      lines,
+      unread: 'an anchor, an alias or a merge key, which says it elsewhere in the file',
+      elsewhere: true,
+    };
+  if (own !== '' && !['{}', 'null', '~'].includes(own))
+    return { lines, unread: '`workflow_call:` written on one line' };
+  try {
+    return { lines, read: (own === '' ? mapOf(under) : null) ?? Object.create(null) };
+  } catch (error) {
+    if (error instanceof Unread) return { lines, unread: error.message };
+    throw error;
+  }
+}
+
+/** What each part of a declaration holds, as a reason names one. */
+const DECLARED = new Map([
+  ['inputs', 'input'],
+  ['secrets', 'secret'],
+  ['outputs', 'output'],
+]);
+
+/** A value with its keys in order, and no `description`, which tells a reader and asks nothing of a caller. */
+const ordered = (value: unknown): unknown =>
+  typeof value !== 'object' || value === null
+    ? value
+    : Object.fromEntries(
+        Object.entries(value)
+          .filter(([key]) => key !== 'description')
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([key, each]) => [key, ordered(each)]),
+      );
+
+/** What differs between two declarations, in words: each input, secret and output added, removed or declared otherwise. */
+function declaredOtherwise(was: Record<string, unknown>, now: Record<string, unknown>): string[] {
+  const differs: string[] = [];
+  const names = (part: unknown) => (typeof part === 'object' && part !== null ? (part as Record<string, unknown>) : {});
+  for (const part of [...new Set([...Object.keys(was), ...Object.keys(now)])].sort()) {
+    const [before, after] = [names(was[part]), names(now[part])];
+    const what = DECLARED.get(part) ?? part;
+    const found = differs.length;
+    for (const name of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
+      if (!Object.hasOwn(before, name)) differs.push(`the ${what} ${name} is added`);
+      else if (!Object.hasOwn(after, name)) differs.push(`the ${what} ${name} is removed`);
+      else if (JSON.stringify(ordered(before[name])) !== JSON.stringify(ordered(after[name])))
+        differs.push(`the ${what} ${name} is declared otherwise`);
+    }
+    // A part that is not names, such as one emptied: said whole.
+    if (differs.length === found && JSON.stringify(ordered(was[part])) !== JSON.stringify(ordered(now[part])))
+      differs.push(`its ${part} are declared otherwise`);
+  }
+  return differs;
+}
+
+/** Whose a bump is when what a called workflow declares differs, and what he does. */
+const MARTINS =
+  "what its caller gives it may have to change with it, so this bump is Martin's, who moves the pin and the caller together";
+
+/**
+ * Why a bump of the factory's workflows from one commit to another is not an exact pin by what one of them declares
+ * to its callers, or undefined when it declares the same at both: its `on: workflow_call:` declaration (its inputs,
+ * secrets and outputs) read at each commit and compared as what it says, not as it is written, so a comment, a
+ * description or the order of its keys is no difference. `was` and `now` are the workflow's file at each commit, or
+ * undefined where it is not there. A workflow that is gone at the new commit, or declares no `workflow_call` there,
+ * differs; where the declaration's lines differ and the gate does not read one of them (`mapOf`), it differs too, as
+ * nothing says it does not; and one written with an anchor, an alias or a merge key differs whatever its lines, as
+ * what it declares is written outside them.
+ *
+ * A caller gives a workflow its inputs and secrets and reads its outputs, and a bump moves the commit alone: one that
+ * needs the caller changed breaks only once it merges, and what breaks may be the gate that would judge its repair.
+ *
+ * The limit of this check: it reads what a workflow declares, not what it needs. A workflow that comes to need
+ * something of its caller it does not declare is passed: a trigger the caller must run it on (`review.yml` is run on
+ * `workflow_run`, which is the caller's to list), a permission the caller's job must grant, a variable or an
+ * environment of the caller's repository, a required check's name its ruleset must hold.
+ */
+export function declaresOtherwise(
+  workflow: string,
+  { from, to }: { from: string; to: string },
+  was: string | undefined,
+  now: string | undefined,
+): string | undefined {
+  const martins = (what: string) => `the factory's ${workflow} ${what}: ${MARTINS}`;
+  if (now === undefined) return martins(`is not there at ${short(to)}`);
+  if (was === undefined) return martins(`is not there at ${short(from)}, so what it declared there is not known`);
+  const [before, after] = [declarationOf(was), declarationOf(now)];
+  if (!after) return martins(`declares no workflow_call at ${short(to)}`);
+  if (!before) return martins(`declares no workflow_call at ${short(from)}, so what it declared there is not known`);
+  // Before the lines are compared: the same lines that say it elsewhere are no proof it is said the same.
+  const elsewhere = [
+    { at: from, declared: before },
+    { at: to, declared: after },
+  ].find(({ declared }) => 'elsewhere' in declared);
+  if (elsewhere)
+    return martins(
+      `declares its workflow_call at ${short(elsewhere.at)} with an anchor, an alias or a merge key, so what it declares is outside the lines the gate compares`,
+    );
+  if (before.lines === after.lines) return undefined;
+  const unread = 'unread' in before ? before.unread : 'unread' in after ? after.unread : undefined;
+  if ('unread' in before || 'unread' in after)
+    return martins(
+      `declares its workflow_call in other words at ${short(to)} than at ${short(from)}, which the gate does not read (${unread})`,
+    );
+  const differs = declaredOtherwise(before.read, after.read);
+  if (!differs.length) return undefined;
+  const said =
+    differs.length > 4 ? `${differs.slice(0, 4).join(', ')}, and ${differs.length - 4} more` : differs.join(', ');
+  return martins(`declares otherwise at ${short(to)} than at ${short(from)} (${said})`);
+}
+
+/** What an exact pin of the factory's workflows moves: every call, from one commit to one commit. */
+export interface WorkflowPin {
+  from: string;
+  to: string;
+  /** The workflows whose calls it moves, by file, in the order GitHub lists them. */
+  files: string[];
+}
+
+export interface WorkflowPinChecks {
+  /**
+   * How `head` stands to `base` in the factory's repository, by the compare API (`compare/<base>...<head>`): `ahead`
+   * when `head` descends from `base`, `identical`, `behind` when `base` descends from `head`, or `diverged`.
+   */
+  compare: (base: string, head: string) => Promise<string>;
+  /**
+   * Every line of the workflows at the pull request's head that names the factory's workflows, a comment's among them,
+   * with its file and its number there, from 1.
+   */
+  calls: () => Promise<{ file: string; number: number; line: string }[]>;
+  /** One of the factory's workflows, by its file's name, as a commit of the factory has it, or undefined if it has none. */
+  declared: (workflow: string, commit: string) => Promise<string | undefined>;
+}
+
+/**
+ * Whether a pull request is an exact pin of the factory's workflows: Dependabot's bump of the commit a repository
+ * calls them at, and nothing else. Undefined for a change that touches no such call, which is not this rule's to
+ * judge; for one that does, its pin, or why it is not an exact one, the first of these that fails:
+ *
+ * - it is in the app's repository, which calls the factory's workflows by commit: not the factory's own, which calls
+ *   none, and no other;
+ * - GitHub's Dependabot opened it, from a branch of the repository itself, into `main`;
+ * - GitHub lists every file it changes, each a workflow under `.github/workflows/`, modified, whose every changed line
+ *   is one call of the factory's workflows (`uses: <the factory>/.github/workflows/<name>.yml@<commit> # main`) that
+ *   reads as the line it replaces but for the commit (`callMoves`);
+ * - every call it moves goes from one commit to one commit, and no call at its head is left at another (`calls`): a
+ *   repository calls every workflow of the factory's at one commit;
+ * - the new commit descends from the old (`compare(old, new)` is `ahead`), so the pin moves forward. That alone does
+ *   not say whose commit it is: GitHub answers for any commit in the repository's network, a fork's among them;
+ * - the new commit is on the factory's `main` (`compare(new, 'main')` is `ahead` or `identical`: `main` descends from
+ *   it, or is it). Nothing is signed here for a certificate to say so, as it does for an image, so it is asked. `main`
+ *   takes only what Martin merged or the factory merged within what he set, and is never rewritten;
+ * - each workflow called at its head declares the same to its callers at the new commit as at the old
+ *   (`declaresOtherwise`, which says what that reading does not catch): a bump that may need its caller changed is
+ *   Martin's, as no bump of a commit alone can carry that change.
+ *
+ * A check that could not be made (GitHub not answering) throws, as `checks` do: that is no judgement of the pin.
+ */
+export async function workflowPin(
+  repo: string,
+  pr: PullRequest,
+  files: readonly FileChange[],
+  checks: WorkflowPinChecks,
+  complete: boolean,
+): Promise<{ moved: WorkflowPin } | { reason: string } | undefined> {
+  const touches = files.some((file) => file.patch !== undefined && changedLines(file.patch).some(callsFactory));
+  if (!touches) return undefined;
+  if (repo === FACTORY_REPO) return { reason: 'the factory calls none of its own workflows by commit' };
+  // The exception is the app's alone (ADR 0023, guardrail 10): in any other repository that came to call these
+  // workflows, a bump of them is Martin's, as the worker's guards hold its enqueue to the app's too.
+  if (repo !== APP_REPO) return { reason: `it is in ${repo}, and only the app's bump of them passes as an exact pin` };
+  if (pr.user?.id !== DEPENDABOT) return { reason: 'Dependabot did not open it' };
+  if (!fromHere(pr)) return { reason: "it is from a fork's branch" };
+  if (pr.base.ref !== 'main') return { reason: `it is into ${pr.base.ref}, not main` };
+  if (!complete) return { reason: 'GitHub lists only some of its files, and the rest are unread' };
+  const moves: CallMove[] = [];
+  for (const file of files) {
+    const moved = callMoves(file);
+    if (!Array.isArray(moved)) return moved;
+    moves.push(...moved);
+  }
+  const [first] = moves;
+  if (!first) return { reason: 'it moves no call' };
+  const { from, to } = first;
+  const other = moves.find((move) => move.from !== from || move.to !== to);
+  if (other)
+    return {
+      reason: `it moves ${first.file} from ${short(from)} to ${short(to)} and ${other.file} from ${short(other.from)} to ${short(other.to)}: every call moves from one commit to one commit`,
+    };
+  if (from === to) return { reason: `it leaves the calls at ${short(to)}, the same commit` };
+  const called = new Set<string>();
+  for (const { file, number, line } of await checks.calls()) {
+    const call = WORKFLOW_CALL.exec(line);
+    // Any line that names them, a comment among it: said whole, with where it is, as it holds every such bump.
+    if (!call)
+      return {
+        reason: `${file}:${number} at its head names the factory's workflows in a line that is not a call of one at a commit of main (\`${line.trim().slice(0, 120)}\`), which holds every bump of them until it is one, or does not name them`,
+      };
+    if (call[3] !== to)
+      return {
+        reason: `${file} at its head still calls the factory at ${short(call[3] ?? '')}: every call moves together`,
+      };
+    called.add(call[2] ?? '');
+  }
+  // Read at once with the comparisons, so they add no time to a try; each reason is given in the order above.
+  const [forward, onMain, declared] = await Promise.all([
+    checks.compare(from, to),
+    checks.compare(to, 'main'),
+    Promise.all(
+      [...called].sort().map(async (workflow) => {
+        const [was, now] = await Promise.all([checks.declared(workflow, from), checks.declared(workflow, to)]);
+        return { workflow, was, now };
+      }),
+    ),
+  ]);
+  if (forward !== 'ahead')
+    return {
+      reason:
+        forward === 'behind'
+          ? `${short(to)} is behind ${short(from)}, the commit it replaces: a pin moves forward`
+          : forward === 'identical'
+            ? `${short(to)} is the commit it replaces`
+            : `${short(to)} does not descend from ${short(from)}, the commit it replaces`,
+    };
+  if (onMain !== 'ahead' && onMain !== 'identical') return { reason: `${short(to)} is not on the factory's main` };
+  for (const { workflow, was, now } of declared) {
+    const reason = declaresOtherwise(workflow, { from, to }, was, now);
+    if (reason) return { reason };
+  }
+  return { moved: { from, to, files: [...new Set(moves.map((move) => move.file))] } };
+}
+
 // The rule
 
 /**
@@ -631,6 +1090,12 @@ export interface Facts {
    * it changes digests alone), or why the check could not be made, after the gate tried again.
    */
   pin?: { pins: Pin[] } | { reason: string; digests?: true } | { unchecked: string };
+  /**
+   * The check of an exact pin of the factory's workflows (`workflowPin`), for anyone's pull request but the App's that
+   * Martin has not passed and that touches a call of them: what it moves, why it is not an exact pin, or why the check
+   * could not be made, after the gate tried again. Undefined for a change that touches none.
+   */
+  workflows?: { moved: WorkflowPin } | { reason: string } | { unchecked: string };
   /**
    * Whether it is a move (scripts/move.ts), for a pull request from a branch here that Martin has not passed and is no
    * exact pin: `move` or `major` with its verdict's title; why a change that touches the scan's moves is refused, a
@@ -668,7 +1133,34 @@ export function route(facts: Facts): Decision {
   // A risk label someone other than Martin took off holds it, whoever opened it: a move passes without him too.
   if (facts.labelsRemoved.length)
     return held(`Someone other than Martin removed its ${facts.labelsRemoved.join(', ')} label`);
-  const { pin, move } = facts;
+  const { pin, move, workflows } = facts;
+  // A check that could not be made is no judgement, of the pin or of its risk: a wait for the gate to judge it again,
+  // in either repository, which never passes it and never falls through to its tags.
+  const unchecked = (cause_: string): Decision => {
+    const cause = `the gate could not check its exact pin: ${cause_}`;
+    return {
+      ...held(`Not judged yet: ${cause}`),
+      pending: cause,
+      unchecked: cause_,
+      ...(facts.retargeted ? { retargeted: true as const } : {}),
+    };
+  };
+  // Dependabot's bump of the commit the factory's workflows are called at, and nothing else: an exact pin, whatever
+  // its tags (`.github/` is Martin's by CODEOWNERS) and with no reading of test integrity, which is the App's rules'
+  // alone to need. `workflowPin` holds every condition; who opened it and where are asked again here.
+  if (workflows && dependabotOpened(pr) && pr.base.ref === 'main' && repo === APP_REPO) {
+    if ('moved' in workflows) {
+      const { from, to, files } = workflows.moved;
+      const calls = files.length === 1 ? 'call' : `${files.length} calls`;
+      return {
+        pass: true,
+        title: `An exact pin of the factory's workflows: its ${calls} of them move to ${short(to)}, which is on the factory's main and ahead of ${short(from)}`,
+        rule: 'exact-pin',
+        tags,
+      };
+    }
+    if ('unchecked' in workflows) return unchecked(workflows.unchecked);
+  }
   if (appOpened(pr)) {
     if (pin && 'pins' in pin) {
       const images = [...new Set(pin.pins.map((p) => p.image.slice(p.image.lastIndexOf('/') + 1)))];
@@ -679,17 +1171,7 @@ export function route(facts: Facts): Decision {
         tags,
       };
     }
-    // A check that could not be made is no judgement, of the pin or of its risk: a wait for the gate to judge it again,
-    // in either repository, which never passes it and never falls through to its tags.
-    if (pin && 'unchecked' in pin) {
-      const cause = `the gate could not check its exact pin: ${pin.unchecked}`;
-      return {
-        ...held(`Not judged yet: ${cause}`),
-        pending: cause,
-        unchecked: pin.unchecked,
-        ...(facts.retargeted ? { retargeted: true as const } : {}),
-      };
-    }
+    if (pin && 'unchecked' in pin) return unchecked(pin.unchecked);
   }
   // A head the move job has not judged yet is no judgement: a wait, which the run its push started settles.
   if (move && 'pending' in move) return { ...held(`Not judged yet: ${move.pending}`), pending: move.pending };
@@ -698,13 +1180,17 @@ export function route(facts: Facts): Decision {
   if (move && 'rule' in move && fromHere(pr)) return { pass: true, title: move.title, rule: move.rule, tags };
   // Why a change that touches the scan's moves is refused, for anyone's; for the App's, why any change is no move.
   const refused = move && 'reason' in move ? move.reason : undefined;
-  if (!appOpened(pr))
-    return {
-      pass: false,
-      title: refused ? `Not a move: ${refused}: ${lower(martin.title)}` : martin.title,
-      rule: 'held',
-      tags,
-    };
+  if (!appOpened(pr)) {
+    // A change that touches a call of the factory's workflows and is no exact pin of them says why, as a change of
+    // digests that is no exact pin does: a check that could not be made, of one that is not Dependabot's into main,
+    // is a reason too, as nothing would pass it.
+    const calls =
+      !workflows || 'moved' in workflows ? undefined : 'reason' in workflows ? workflows.reason : workflows.unchecked;
+    const notPin = calls && `Not an exact pin of the factory's workflows${refused ? ` (${calls})` : `: ${calls}`}`;
+    const notMove = refused && (notPin ? `nor a move: ${refused}` : `Not a move: ${refused}`);
+    const why = [notPin, notMove].filter(Boolean).join(', ');
+    return { pass: false, title: why ? `${why}: ${lower(martin.title)}` : martin.title, rule: 'held', tags };
+  }
   const notMove = refused ?? (move && 'none' in move ? move.none : undefined);
   if (repo !== APP_REPO) {
     const exact = pin && 'reason' in pin ? pin.reason : undefined;
@@ -750,6 +1236,10 @@ export function route(facts: Facts): Decision {
  * this commit, each by a rule that passes, and each held now by `exact-pin`, whose pins at a head do not change while
  * its base does not: one whose base has ever been changed is judged afresh. Every other fact was read afresh by this
  * run and passes. `earlier` is the block of that check, read by `readVerdict`.
+ *
+ * An exact pin of the factory's workflows stands the same way. What its check read is as fixed at a head as an
+ * image's signature: the lines the head changes and the calls it holds, and how two commits of the factory stand to
+ * each other. Only `main` moves, and only forward, as its ruleset lets nobody rewrite it: a commit that was on it is.
  */
 export function stands(
   earlier: Block,

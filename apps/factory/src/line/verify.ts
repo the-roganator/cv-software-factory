@@ -21,7 +21,8 @@
  *   release found live, which no analysis judged, holds for Martin.
  * - A dependency's move: the app's scan of the released commit, which read the image it runs, shows none of the
  *   findings the move's newest signal listed with a fix, and the canary's journeys passed at the release's last step
- *   (`byScan`). A finding still open and it persists.
+ *   (`byScan`). A finding still open and it persists. A routine update's, which no finding asked for, is verified by
+ *   the same scan no longer listing the move from the version it was at; still listed there, it persists.
  * - A visitor's report, or the planner's finding, alone: no sense can look again. The work item holds for Martin.
  *
  * A look that cannot tell yet (too soon after the promotion, too little traffic, a check that could not finish, a
@@ -68,10 +69,12 @@ import {
 import { keptLine } from '../logs/errors.ts';
 import { sameError } from '../logs/patterns.ts';
 import { errorLogs, TIMING } from '../logs/watcher.ts';
+import { moveOf } from '../patching/sends.ts';
 import type { FlagCheckAnswer, FlagCheckRequest } from '../probes/flag-check.ts';
 import type { VerifyAnswer, VerifyRequest } from '../probes/verify.ts';
 import { short } from '../release/recorded.ts';
 import { requestLogs, routeTemplates } from '../routes.ts';
+import { parseReference } from '../vulnerabilities/reference.ts';
 
 /** The ticket's first signal, as Verify reads it: never a report's words, which it has no use for. */
 export interface FirstSignal {
@@ -82,8 +85,11 @@ export interface FirstSignal {
   /** The class of defect the sense named, if it named one. */
   symptom?: SymptomClass;
   evidence: Evidence[];
-  /** A dependency's move, as its newest signal names it, with that signal's evidence above. */
-  move?: { repository: string; name: string };
+  /**
+   * A dependency's move, as its newest signal names it, with that signal's evidence above: its ecosystem and what it
+   * moves from and to are what a routine update's is looked for by in the scan of the release.
+   */
+  move?: { repository: string; name: string; ecosystem?: string; from?: string; to?: string };
 }
 
 /** The release to verify: the version the stable Service runs, which carries the fix, and when it was promoted. */
@@ -260,6 +266,15 @@ function countedBefore(scan: SignalScan): Required<ScanCounts> {
  * and its package: one still open and the move persists, which sends it back to Plan as any sense's does. None, and the
  * canary's journeys passed at the release's last step, and it has cleared. Verify reads the scan's findings, never a
  * version's name, and never an advisory's words: the read gives its id alone. It keeps the counts before and after.
+ *
+ * A routine update's signal (`outdated-dependency`) lists no finding: no advisory asked for the move. Its proof is the
+ * same scan, waited for the same way, no longer listing the move: no move of the signal's name and ecosystem from a
+ * version the signal moved from (`stillListed`), with the journeys passed. Still listed there, it persists. Only a
+ * whole routine listing shows a move gone: a scan that made none (`totals.routine` or `routineUnread` absent), or
+ * could not read some pin for it (`routineUnread` above none), is waited past as one that has not read the release
+ * is, and held for Martin by the same wait, told why. A
+ * vulnerable dependency's signal that lists no finding with a fix has nothing for the scan to show closed, and holds
+ * for Martin.
  */
 async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<Look> {
   const scan = signal.evidence.find((e): e is SignalScan => e.kind === 'scan');
@@ -267,10 +282,18 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
   if (!move) return { kind: 'hold', reason: 'The ticket’s signal names no move for the scan to look for' };
   // The findings the move fixes, by advisory and package: with none, the scan has nothing to show closed.
   const fixed = (scan?.findings ?? []).filter((finding) => finding.fixed !== undefined);
-  if (!fixed.length) {
+  // A routine update, which no finding asked for: the scan shows it made by no longer listing it.
+  const routine = !fixed.length && signal.symptom === 'outdated-dependency';
+  if (!fixed.length && !routine) {
     return {
       kind: 'hold',
       reason: 'The move’s signal lists no finding with a fix for the scan to look for: Martin judges it',
+    };
+  }
+  if (routine && (!move.from || !move.ecosystem)) {
+    return {
+      kind: 'hold',
+      reason: 'The routine update’s signal names no version it moved from for the scan to look for: Martin judges it',
     };
   }
   if (!c.scans) return { kind: 'wait', why: 'the line has no way to the scan’s moves (the GitHub worker)' };
@@ -295,6 +318,24 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
   if (!read.file.scanned.some((image) => image.digests.includes(digest))) {
     return { kind: 'wait', why: `the image running, ${digest.slice(0, 19)}, is not one the scan of ${of} read` };
   }
+  if (routine) {
+    // A routine update is shown made by the scan's routine listing no longer having it, which only a whole listing
+    // shows: a scan that made none, or could not read some pin for it, lists no move of a pin it did not read.
+    const { totals } = read.file;
+    if (totals.routine === undefined || totals.routineUnread === undefined) {
+      return {
+        kind: 'wait',
+        why: `the scan of ${of} listed no routine updates at all, so it cannot show this one made (${read.run.url})`,
+      };
+    }
+    if (totals.routineUnread > 0) {
+      const pins = `${totals.routineUnread} ${totals.routineUnread === 1 ? 'pin' : 'pins'}`;
+      return {
+        kind: 'wait',
+        why: `the scan of ${of} could not read ${pins} for its routine updates, so a move it does not list may be one it could not read (${read.run.url})`,
+      };
+    }
+  }
   const isFixed = (each: { advisory: string; package: string }) =>
     fixed.some((finding) => finding.advisory === each.advisory && finding.package === each.package);
   // What the scan still has open of the move: every finding on its pins (its moves of the same name, a lockfile's by
@@ -313,21 +354,56 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
     before: scan ? countedBefore(scan) : noCounts(),
     after,
   };
-  if (open.some(isFixed)) return finished(signal, target, 'persists', evidence);
+  if (routine ? stillListed(read, move) : open.some(isFixed)) return finished(signal, target, 'persists', evidence);
+  const shows = routine ? 'no longer lists the move' : 'shows the move’s findings closed';
   const journeys = target.analysis?.measures.find((m) => m.name === 'journeys');
   if (!target.analysis) {
     return {
       kind: 'hold',
-      reason: `The scan of ${of} shows the move’s findings closed, but no analysis ran its journeys: Martin judges it`,
+      reason: `The scan of ${of} ${shows}, but no analysis ran its journeys: Martin judges it`,
     };
   }
   if (journeys?.phase !== 'successful') {
     return {
       kind: 'hold',
-      reason: `The scan of ${of} shows the move’s findings closed, but its journeys did not pass at the last step: Martin judges it`,
+      reason: `The scan of ${of} ${shows}, but its journeys did not pass at the last step: Martin judges it`,
     };
   }
   return finished(signal, target, 'cleared', evidence);
+}
+
+/**
+ * Whether a scan still lists a move the signal named: one of the same name and ecosystem, as the dependency sense
+ * names a move (`moveOf`: a lockfile's by its package, from the state), from a version the signal moved from. A move
+ * of the name from the version the release moved to is a later update, another move. A finding's move there counts as
+ * a routine one does: either way the pin is where it was.
+ *
+ * An image whose tag stays and whose digest alone moves (`nonroot`) is listed from the same tag before and after, so
+ * its tag cannot say whether it moved: there the scan having read the image at the signal's digest says it did, and a
+ * move of it listed then is a later build's.
+ */
+function stillListed(read: Moves, move: NonNullable<FirstSignal['move']>): boolean {
+  const from = new Set((move.from ?? '').split(','));
+  const [tag, digest] = move.ecosystem === 'docker' ? (move.to ?? '').split('@') : [];
+  if (tag && digest && from.has(tag)) {
+    const { repository } = parseReference(move.name);
+    const moved = (read.file?.scanned ?? []).some((image) => {
+      const pinned = parseReference(image.image);
+      return pinned.repository === repository && pinned.digest === digest;
+    });
+    if (moved) return false;
+  }
+  return read.moves.some((each) => {
+    const listed = moveOf(read.repository, each);
+    // A move of the name the sense could not name as a signal does (no target, no ecosystem) cannot be told from
+    // this one: it is still listed, never taken for gone.
+    if (typeof listed === 'string') return (each.withheld?.package ?? each.name) === move.name;
+    return (
+      listed.name === move.name &&
+      listed.ecosystem === move.ecosystem &&
+      listed.from.split(',').some((version) => from.has(version))
+    );
+  });
 }
 
 /** A probe's check, or the crawler's, run again against the stable Service by the probes worker. */
@@ -654,7 +730,10 @@ export function whatCleared(
   const { evidence } = verification;
   if (evidence?.kind === 'scan') {
     const was = countWords(evidence.before);
-    return `The app’s scan of ${short(evidence.commit)}, which carries the release, shows none of the move’s findings that had a fix, of ${was || 'none'} before, and the journeys passed`;
+    // A routine update's signal listed no finding: its proof is the scan no longer listing the move (`byScan`).
+    if (!was)
+      return `The app’s scan of ${short(evidence.commit)}, which carries the release, no longer lists the move, a routine update no finding asked for, and the journeys passed`;
+    return `The app’s scan of ${short(evidence.commit)}, which carries the release, shows none of the move’s findings that had a fix, of ${was} before, and the journeys passed`;
   }
   return clearedBy({ ...verification, evidence }, undefined, policy);
 }

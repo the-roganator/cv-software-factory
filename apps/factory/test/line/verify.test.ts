@@ -801,23 +801,240 @@ describe('Verify by the scan', () => {
     });
   });
 
-  it('holds for Martin when the signal lists no finding with a fix, with nothing for the scan to show closed', async () => {
-    const routine: FirstSignal = { ...move, symptom: 'outdated-dependency', evidence: [] };
+  it('holds for Martin when a vulnerable dependency’s signal lists no finding with a fix, with nothing for the scan to show closed', async () => {
     const read = scans(recorded(true));
-    expect(await look(routine, released, options({ scans: read }))).toMatchObject({ kind: 'hold' });
+    const unfixed = { ...finding('GHSA-0000-0000-0001', 'high', '2.0.1'), fixed: undefined };
+    for (const evidence of [[], [{ kind: 'scan' as const, findings: [unfixed], rest: BEFORE_COUNTS }]]) {
+      expect(await look({ ...move, evidence }, released, options({ scans: read }))).toEqual({
+        kind: 'hold',
+        reason: 'The move’s signal lists no finding with a fix for the scan to look for: Martin judges it',
+      });
+    }
+    // A signal that names no symptom is no routine update's either.
+    const { symptom: _, ...unnamed } = { ...move, evidence: [] };
+    expect(await look(unnamed, released, options({ scans: read }))).toMatchObject({ kind: 'hold' });
     expect(read.asked).toEqual([]);
+  });
+
+  /** A routine update's signal: an outdated dependency, with no evidence, its move as the sense names one. */
+  const routine: FirstSignal = {
+    ...move,
+    symptom: 'outdated-dependency',
+    evidence: [],
+    move: { repository: REPO, name: 'invented-pkg', ecosystem: 'npm', from: '2.0.0', to: '2.0.3' },
+  };
+  const NO_COUNTS = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+  /** The recorded day with its lockfile's move a routine one: nothing found on the package, and a newer release. */
+  function listed(from = '2.0.0', to = 'version 2.0.3'): Moves {
+    const file = fixture<MovesFile>('moves.json');
+    const state = fixture<State>('state.json');
+    const none = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+    const moves = file.moves.map((each) => {
+      if (!each.lockfile) return each;
+      const { deadline: _, ...undated } = each;
+      return { ...undated, clears: none, leaves: none, newToday: 0 };
+    });
+    const day = { ...file, moves, totals: { ...file.totals, fixed: 2 } };
+    const open = state.findings.filter((each) => !each.advisory.startsWith('GHSA-'));
+    const record = {
+      move: 2,
+      name: 'invented-pkg',
+      from,
+      to,
+      pins: [{ file: 'pnpm-lock.yaml', line: 210 }],
+      seen: '2026-11-05T06:15:00Z',
+    };
+    return { repository: REPO, run, ...joined(REPO, run, day, { ...state, findings: open, routine: [record] }) };
+  }
+
+  /** A day whose scan made its routine listing whole: it counts its routine moves, and none of its pins unread. */
+  const whole = (day: Moves, unread = 0): Moves => ({
+    ...day,
+    file: day.file && {
+      ...day.file,
+      totals: {
+        ...day.file.totals,
+        routine: day.moves.filter((each) => each.findings.length === 0).length,
+        routineUnread: unread,
+      },
+    },
+  });
+
+  it('clears a routine update when the scan of the released commit no longer lists the move and the journeys passed', async () => {
+    const read = scans(whole(recorded(true)));
+    expect(await look(routine, released, options({ scans: read }))).toEqual({
+      kind: 'finished',
+      verification: {
+        outcome: 'cleared',
+        check: 'vulnerabilities',
+        version: SCANNED,
+        against: BEFORE,
+        evidence: { kind: 'scan', commit: SCANNED, before: NO_COUNTS, after: NO_COUNTS },
+        pages: [],
+        dryRun: false,
+      },
+    });
+    expect(read.asked).toEqual([REPO]);
+  });
+
+  it('persists while the scan still lists the routine update from the version it was at, as a routine move or a finding’s', async () => {
+    expect(await look(routine, released, options({ scans: scans(whole(listed())) }))).toMatchObject({
+      kind: 'finished',
+      verification: { outcome: 'persists', evidence: { kind: 'scan', commit: SCANNED, before: NO_COUNTS } },
+    });
+    // The same package from the same version, with findings on it since: the pin is where it was.
+    expect(await look(routine, released, options({ scans: scans(whole(recorded())) }))).toMatchObject({
+      verification: { outcome: 'persists', evidence: { after: BEFORE_COUNTS } },
+    });
+    // A package at two versions is listed from either.
+    const twice = { ...routine, move: { ...routine.move, from: '1.9.0,2.0.0' } } as FirstSignal;
+    expect(await look(twice, released, options({ scans: scans(whole(listed())) }))).toMatchObject({
+      verification: { outcome: 'persists' },
+    });
+  });
+
+  it('clears a routine update the scan lists again from the version it moved to: a later release is another move', async () => {
+    const later = listed('2.0.3', 'version 2.1.0');
+    expect(await look(routine, released, options({ scans: scans(whole(later)) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+    // Another package's move, or the same name in another ecosystem, is not this one.
+    const other = { ...routine, move: { ...routine.move, name: 'another-pkg' } } as FirstSignal;
+    expect(await look(other, released, options({ scans: scans(whole(listed())) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+    const image = { ...routine, move: { ...routine.move, ecosystem: 'docker' } } as FirstSignal;
+    expect(await look(image, released, options({ scans: scans(whole(listed())) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+  });
+
+  it('tells an image whose digest alone moved by the digest the scan read, since its tag is the same before and after', async () => {
+    // The recorded day lists `ghcr.io/example/base` from 1.2.0, and read it pinned at the digest of twos.
+    const base = (digest: string): FirstSignal => ({
+      ...routine,
+      move: {
+        repository: REPO,
+        name: 'ghcr.io/example/base',
+        ecosystem: 'docker',
+        from: '1.2.0',
+        to: `1.2.0@${digest}`,
+      },
+    });
+    expect(await look(base(RUNNING), released, options({ scans: scans(whole(recorded(true))) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+    expect(
+      await look(base(`sha256:${'9'.repeat(64)}`), released, options({ scans: scans(whole(recorded(true))) })),
+    ).toMatchObject({ verification: { outcome: 'persists' } });
+    // A tag that moves says so itself: listed from the old tag still, it has not moved, whatever digest was read.
+    const tagged: FirstSignal = {
+      ...routine,
+      move: {
+        repository: REPO,
+        name: 'ghcr.io/example/base',
+        ecosystem: 'docker',
+        from: '1.2.0',
+        to: `1.2.1@${RUNNING}`,
+      },
+    };
+    expect(await look(tagged, released, options({ scans: scans(whole(recorded(true))) }))).toMatchObject({
+      verification: { outcome: 'persists' },
+    });
+  });
+
+  it('waits for a routine update as for a fix: a scan that carries the release and read the image it runs', async () => {
+    const other = { ...released, version: 'd'.repeat(40) };
+    expect(await look(routine, other, options({ scans: scans(whole(recorded(true))) }))).toEqual({
+      kind: 'wait',
+      why: 'the scan’s last run on main is of ccccccc, which does not carry the release, ddddddd',
+    });
+    const unread = { ...released, digest: `sha256:${'9'.repeat(64)}` };
+    expect(await look(routine, unread, options({ scans: scans(whole(recorded(true))) }))).toMatchObject({
+      kind: 'wait',
+      why: expect.stringContaining('is not one the scan of ccccccc read'),
+    });
+    expect(await look(routine, released, options({}))).toMatchObject({ kind: 'wait' });
+  });
+
+  it('waits for a scan whose routine listing is whole: one that made none, or could not read a pin, shows no update made', async () => {
+    // The move is gone from each of these days, and none of them proves it: the next scan may.
+    const none = scans(recorded(true));
+    expect(await look(routine, released, options({ scans: none }))).toEqual({
+      kind: 'wait',
+      why: 'the scan of ccccccc listed no routine updates at all, so it cannot show this one made (https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/42000000001)',
+    });
+    const counted = whole(recorded(true));
+    delete counted.file?.totals.routineUnread;
+    expect(await look(routine, released, options({ scans: scans(counted) }))).toMatchObject({
+      kind: 'wait',
+      why: expect.stringContaining('listed no routine updates at all'),
+    });
+    expect(await look(routine, released, options({ scans: scans(whole(recorded(true), 1)) }))).toEqual({
+      kind: 'wait',
+      why: 'the scan of ccccccc could not read 1 pin for its routine updates, so a move it does not list may be one it could not read (https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/42000000001)',
+    });
+    expect(await look(routine, released, options({ scans: scans(whole(recorded(true), 3)) }))).toMatchObject({
+      kind: 'wait',
+      why: expect.stringContaining('could not read 3 pins'),
+    });
+    // A fix is shown by its findings, which every scan reads or fails: no routine listing is asked of it.
+    expect(await look(move, released, options({ scans: none }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+  });
+
+  it('takes a listed move of the name that no signal could name as still listed, never as gone', async () => {
+    // The package listed with no target the sense can name: it cannot be told from this move.
+    const unnamed = whole(listed());
+    const lockfile = unnamed.moves.find((each) => each.lockfile);
+    if (!lockfile?.withheld) throw new Error('the listed day has a lockfile’s move');
+    lockfile.withheld = { ...lockfile.withheld, to: '' };
+    expect(await look(routine, released, options({ scans: scans(unnamed) }))).toMatchObject({
+      verification: { outcome: 'persists' },
+    });
+    // The same of another package says nothing of this one.
+    lockfile.withheld = { ...lockfile.withheld, package: 'another-pkg' };
+    expect(await look(routine, released, options({ scans: scans(unnamed) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+  });
+
+  it('holds a routine update for Martin when no analysis passed the journeys, or its signal names no version it moved from', async () => {
+    const read = scans(whole(recorded(true)));
+    const { analysis: _analysis, ...found } = released;
+    expect(await look(routine, found, options({ scans: read }))).toEqual({
+      kind: 'hold',
+      reason: 'The scan of ccccccc no longer lists the move, but no analysis ran its journeys: Martin judges it',
+    });
+    const failed = {
+      ...released,
+      analysis: { release: 'website-7d9f', against: BEFORE, measures: [{ ...journeys, phase: 'failed' as const }] },
+    };
+    expect(await look(routine, failed, options({ scans: read }))).toEqual({
+      kind: 'hold',
+      reason:
+        'The scan of ccccccc no longer lists the move, but its journeys did not pass at the last step: Martin judges it',
+    });
+    const asked = scans(whole(recorded(true)));
+    const unversioned = { ...routine, move: { repository: REPO, name: 'invented-pkg' } };
+    expect(await look(unversioned, released, options({ scans: asked }))).toEqual({
+      kind: 'hold',
+      reason: 'The routine update’s signal names no version it moved from for the scan to look for: Martin judges it',
+    });
+    expect(asked.asked).toEqual([]);
   });
 
   it('waits while the image running is not one the scan read', async () => {
     const other = { ...released, digest: `sha256:${'9'.repeat(64)}` };
-    expect(await look(move, other, options({ scans: scans(recorded(true)) }))).toMatchObject({
+    expect(await look(move, other, options({ scans: scans(whole(recorded(true))) }))).toMatchObject({
       kind: 'wait',
       why: expect.stringContaining('is not one the scan of ccccccc read'),
     });
   });
 
   it('holds for Martin when the findings are closed but no analysis passed the journeys', async () => {
-    const read = scans(recorded(true));
+    const read = scans(whole(recorded(true)));
     const { analysis: _analysis, ...found } = released;
     expect(await look(move, found, options({ scans: read }))).toMatchObject({ kind: 'hold' });
     const failed = {
@@ -854,6 +1071,18 @@ describe('Verify by the scan', () => {
     });
     expect(said).toBe(
       'The app’s scan of ccccccc, which carries the release, shows none of the move’s findings that had a fix, of 1 high, 1 low before, and the journeys passed',
+    );
+    const routinely = whatCleared({
+      outcome: 'cleared',
+      check: 'vulnerabilities',
+      version: SCANNED,
+      against: BEFORE,
+      evidence: { kind: 'scan', commit: SCANNED, before: NO_COUNTS, after: NO_COUNTS },
+      pages: [],
+      dryRun: false,
+    });
+    expect(routinely).toBe(
+      'The app’s scan of ccccccc, which carries the release, no longer lists the move, a routine update no finding asked for, and the journeys passed',
     );
   });
 });

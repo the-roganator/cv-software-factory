@@ -148,6 +148,8 @@ const STEP = z
           .max(200),
         from: PINNED,
         to: PINNED,
+        // A routine update, which moves a package to exactly its target (pins.ts's `movePackage`).
+        routine: z.boolean().optional(),
       })
       // A package at two versions under one advisory is one move of both (`5.7.1,7.5.1`), which the pin step makes
       // copy by copy: Node and an image move from one pin to one.

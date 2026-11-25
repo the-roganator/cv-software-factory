@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest';
 import {
   admits,
   changesManifest,
-  compareVersions,
   digestOf,
   type Get,
   lockedVersions,
@@ -27,6 +26,7 @@ import {
   registryOnly,
   registryRange,
   releaseAge,
+  toolReason,
   writeLockfile,
   writePins,
 } from '../src/pins.ts';
@@ -179,6 +179,91 @@ describe('a package’s move', () => {
     expect(runs).toEqual([['update', 'vitest', '--depth', 'Infinity']]);
     // The range admitted it, so it is as it was: pnpm's own update moves it, as the app's own would.
     expect(JSON.parse(read(dir, 'package.json')).devDependencies.vitest).toBe('^5.0.5');
+  });
+
+  it('asks pnpm for exactly the target of a routine update, and refuses one that ends past it or that no manifest names', async () => {
+    const routine = { ecosystem: 'npm' as const, name: 'vitest', from: '5.0.5', to: '5.1.0', routine: true };
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
+    const { pnpm, runs } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.0', '4.2.1')));
+    await writePins(dir, routine, tools(pnpm));
+    expect(runs).toEqual([['update', 'vitest@5.1.0', '--depth', 'Infinity']]);
+    // A pnpm that resolved a newer release all the same: the wait the scan gave the target is not that release's.
+    const past = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
+    const newer = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.1', '4.2.1')));
+    await expect(writePins(past, routine, tools(newer.pnpm))).rejects.toThrow(
+      'vitest resolves to 5.1.1, past 5.1.0: a routine update moves to the release the scan listed, and no further.',
+    );
+    // The same lockfile is a fix's move made: its target is a floor.
+    await writePins(
+      checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') }),
+      { ...routine, routine: false },
+      tools(newer.pnpm),
+    );
+    // sonic-boom is pino's, named by no manifest: pnpm takes no version for it, and the step does not ask.
+    const indirect = fakePnpm(() => {});
+    await expect(
+      writePins(
+        checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') }),
+        { ecosystem: 'npm', name: 'sonic-boom', from: '4.2.1', to: '4.2.2', routine: true },
+        tools(indirect.pnpm),
+      ),
+    ).rejects.toThrow(
+      /^No manifest names sonic-boom, and pnpm moves a package to an exact version only where one does/,
+    );
+    expect(indirect.runs).toEqual([]);
+  });
+
+  /** pnpm's failure as the scan's run had it: the command line, then its report, drawn as a tree and wrapped. */
+  const TRUST = Object.assign(
+    new Error(
+      'Command failed: pnpm --config.manage-package-manager-versions=false --config.registry=https://registry.npmjs.org/ --lockfile-only --ignore-scripts --ignore-pnpmfile --reporter=silent --config.minimum-release-age=1443 update --recursive lefthook@2.2.2 --depth Infinity\nError:   × updating dependencies\n  ├─▶ Failed to resolve dependency tree: Failed to resolve dependency: High-\n  │   risk trust downgrade for "lefthook@2.2.2" (possible package takeover)\n  │   \n  │   Failed to resolve lefthook@^2.2.2\n  ╰─▶ Failed to resolve dependency: High-risk trust downgrade for\n      "lefthook@2.2.2" (possible package takeover)\n\n',
+    ),
+    { code: 1 },
+  );
+
+  it('says a refusal of pnpm’s in one line, with pnpm’s own reason and never its command line, on either path', async () => {
+    const failing: Pnpm = async () => {
+      throw TRUST;
+    };
+    const lefthook = (lock: string) =>
+      checkout({ 'package.json': MANIFEST('^5.0.5').replace('vitest', 'lefthook'), 'pnpm-lock.yaml': lock });
+    const LEFTHOOK = LOCK('5.0.5', '4.2.1').replaceAll('vitest', 'lefthook');
+    const routine = { ecosystem: 'npm' as const, name: 'lefthook', from: '5.0.5', to: '6.0.0', routine: true };
+    const error = await writePins(lefthook(LEFTHOOK), routine, tools(failing)).catch((e) => e);
+    expect(error).toBeInstanceOf(PinsRefused);
+    expect(error.message).toBe('pnpm refused lefthook@6.0.0: High-risk trust downgrade (possible package takeover)');
+    // A fix's move, whose target is a floor: the same guard of pnpm's, said the same way.
+    const fix = await writePins(lefthook(LEFTHOOK), { ...routine, routine: false }, tools(failing)).catch((e) => e);
+    expect(fix).toBeInstanceOf(PinsRefused);
+    expect(fix.message).toBe('pnpm refused lefthook: High-risk trust downgrade (possible package takeover)');
+  });
+
+  it('reads the last cause of any report of pnpm’s, joined where it was wrapped, and stops at its advice', () => {
+    expect(toolReason(TRUST)).toBe('High-risk trust downgrade for "lefthook@2.2.2" (possible package takeover)');
+    // From what the command wrote, where the failure carries it, as from its message.
+    const indirect = {
+      message: 'Command failed: pnpm update zod@4.0.0',
+      stderr:
+        'Error: ERR_PNPM_UPDATE_VERSION_ON_INDIRECT_DEP\n\n  × updating dependencies\n  ╰─▶ "zod" (requested "4.0.0") is not a direct dependency, so the\n      requested version cannot be recorded.\n  help: An update resolves a transitive dependency the way a fresh install\n        would.\n\n          overrides:\n            zod@<declared range>: 4.0.0\n',
+    };
+    expect(toolReason(indirect)).toBe(
+      '"zod" (requested "4.0.0") is not a direct dependency, so the requested version cannot be recorded.',
+    );
+    // A report with no tree, a failure with no report, and one of no shape at all: one line each, and no command.
+    expect(
+      toolReason(new Error('Command failed: mise lock k3d\nmise ERROR no release 9.9.9\nof k3d')).includes('\n'),
+    ).toBe(false);
+    expect(toolReason(new Error('Command failed: mise lock k3d\nmise ERROR no release 9.9.9'))).toBe(
+      'mise ERROR no release 9.9.9',
+    );
+    expect(toolReason(new Error('Command failed: pnpm --config.registry=x update a'))).toBe(
+      'it failed, and said nothing of why',
+    );
+    expect(toolReason(new Error('spawn pnpm ENOENT'))).toBe('spawn pnpm ENOENT');
+    expect(toolReason('x'.repeat(900))).toHaveLength(300);
+    expect(toolReason(undefined)).toBe('undefined');
+    for (const odd of [TRUST, indirect, 'a\u0000b\tc\r\nd', { stderr: '\u001b[31m× bad\u001b[0m\n' }])
+      expect(toolReason(odd)).not.toMatch(/[\p{Cc}│├╰─▶×]|Command failed/u);
   });
 
   it('moves the range first when it does not admit the target', async () => {
@@ -1053,14 +1138,6 @@ describe('the lockfile after a coder’s step', () => {
 
 describe('what the review sent back', () => {
   const tools = (pnpm: Pnpm, get: Get = noRegistry) => ({ pnpm, get, aside: mkdtempSync(join(tmpdir(), 'aside-')) });
-
-  it('orders pre-releases as semver does, identifier by identifier', () => {
-    expect(compareVersions('1.0.0-beta.2', '1.0.0-beta.10')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-rc-1', '1.0.0-rc-2')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-alpha', '1.0.0-alpha.1')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-1', '1.0.0-alpha')).toBeLessThan(0);
-    expect(compareVersions('1.0.0-rc.1', '1.0.0')).toBeLessThan(0);
-  });
 
   it('leaves a peer’s range alone, whatever shape it has: it pins nothing', async () => {
     const manifest = `${JSON.stringify({ devDependencies: { vitest: '^5.0.5' }, peerDependencies: { vitest: '>=4 || ^5' } }, null, 2)}\n`;

@@ -17,6 +17,10 @@
  * - At most one step at a time on the local model, whatever its stage: LM Studio answers one prediction at a time, so
  *   two steps on it would each take about twice as long. A step whose agent `policy/models.ts` sends there waits
  *   while another such step runs, and the next pass tries again. Steps on Claude never wait on it.
+ * - A move follows the scan until its change merges: when triage joins a signal that names another target or other
+ *   findings, the line writes the move's issue again, in place, and records what it names, before any other step; and
+ *   where a pull request is open for the older target, Build starts afresh on it, from main with the pin step's move
+ *   to the new one, pushed to the same pull request (`#pushAfresh`).
  * - It reads its pull requests' gates and merges through the GitHub worker about once a minute (`gates.ts`).
  * - About as often, for a change that passed its gates and review, it reads the review gate's verdict on its head and
  *   whether it conflicts with main, and adds it to the merge queue when the verdict, Martin's autonomy level and
@@ -194,6 +198,7 @@ import {
   dryRunLeft,
   type Facts,
   fold,
+  issueBehind,
   LIMITS,
   type LineAgent,
   type LineEvent,
@@ -1041,6 +1046,25 @@ export class Line {
             ? undefined
             : await this.#dependencySignal(workItem, item.issueSignal ?? undefined);
         await this.#recordIssue(workItem, state, next.issue, dependency?.signal);
+        return;
+      }
+      case 'rewrite-issue': {
+        // The issue and its record are written from one read of the newest dependency signal, as when it opened.
+        const dependency = await this.#dependencySignal(workItem);
+        const own = state.ticket;
+        if (!dependency || !own) return false;
+        const { body } = moveIssue(workItem, own, await this.#publicTicket(workItem, state), dependency.signal);
+        // One GitHub no longer has, or that the App may no longer change, is left as it is, and logged: asking again
+        // would not help. The record is then of what the line would have it name, and the move goes on from that.
+        await this.#o.github
+          .act('updateIssue', this.#o.repo, { number: next.issue, body }, { workItem })
+          .catch((error: unknown) => {
+            if (!issueGone(error)) throw error;
+            this.#o.log.warn({ workItem, issue: next.issue, err: error }, 'the issue cannot be written again');
+          });
+        await this.#queue.setIssue(workItem, next.issue, dependency.seq);
+        this.#o.log.info({ workItem, issue: next.issue }, 'wrote the work item’s issue again, for the newest scan');
+        await this.#recordIssue(workItem, state, next.issue, dependency.signal, true);
         return;
       }
       case 'hand-over': {
@@ -1970,7 +1994,14 @@ export class Line {
       // starts from there, which the change's tests are judged against, and is told of the work so far.
       const { github, repo } = this.#o;
       const number = state.pullRequest?.number;
-      const pr = number ? await github.read('pullRequest', repo, { number }) : undefined;
+      const open = number ? await github.read('pullRequest', repo, { number }) : undefined;
+      // A move's pull request whose pins are an older target's than its issue names (`behind`) is built afresh, as a
+      // first round is: from main, on the pin step's move to the newest target, by a coder with no session of the rounds
+      // before, whose work is not under it. Its push lands on the same pull request (`#pushAfresh`).
+      const afresh = agent === 'coder' && state.behind;
+      // Merged or closed since the line last read it: the next read of GitHub records that, and nothing is built.
+      if (afresh && open?.state !== 'open') return;
+      const pr = afresh ? undefined : open;
       const head = pr ? pr.head.sha : await github.read('head', repo, { branch: 'main' });
       const reads = pr && definition.readsChange;
       const plans = pr && definition.plansFromBase;
@@ -1982,17 +2013,21 @@ export class Line {
       // A pull request's head is checked out as GitHub has it; a dry run's, which GitHub never had, as the real
       // commit under it with the dry run's commits made on it in the runner.
       const checkout = pr ? await github.read('checkout', repo, { sha: commit }) : { commit, commits: [] };
-      // A dependency's move is the pin step's to write, before the coder's first round: once the pull request is open,
-      // its head has the pins.
+      // A dependency's move is the pin step's to write, before the coder's first round, and before each round that
+      // builds its pull request afresh: any other round starts from the pull request's head, which has the pins.
       const move = agent === 'coder' && !pr ? await this.#moveOf(workItem) : undefined;
       // Made as the scan made it, as the review gate makes it again.
       const made = move ? await this.#madeAs(repo) : undefined;
       // A move whose spec asks for nothing but the move is the pin step's alone: no agent runs, and the line makes the
       // commit from its patch. The coder runs on a move only for a criterion a test shows, or when the work comes back.
       const alone = move !== undefined && state.spec !== undefined && movesAlone(state.spec);
+      // A scan triage joined since the line decided on this step is the issue's to name first: the step waits for the
+      // pass that writes it, so no agent is told a move its issue has not named, and the pin step writes none.
+      if (issueBehind(fold((await this.#events(workItem)).events), item.issue)) return;
       let started: Awaited<ReturnType<typeof definition.start>>;
       try {
-        started = await definition.start({ ...this.#context(item, round, state, commit, base), change, move });
+        const told = afresh ? { ...item, session: null } : item;
+        started = await definition.start({ ...this.#context(told, round, state, commit, base), change, move });
       } catch (error) {
         if (!(error instanceof StepFailed)) throw error;
         return await this.#failed(workItem, agent, null, [], error.message);
@@ -2034,7 +2069,9 @@ export class Line {
       }
       if (outcome.kind === 'pinned') {
         // A move main already has is done, not failed: another change made it, and nothing is left to make.
-        if (!outcome.pins && move) return await this.#madeAlready(item, agent, provider, outcome.job, move, commit);
+        if (!outcome.pins && move) {
+          return await this.#madeAlready(item, agent, provider, outcome.job, move, commit, open?.number);
+        }
         this.#o.log.info({ workItem, agent, job: outcome.job }, 'the move asks for nothing but its pins: no coder');
         // The move is the whole change, as a coder says it (`{"moved": true}`): the line titles and notes it.
         const moved: Pending = {
@@ -2202,6 +2239,8 @@ export class Line {
   /**
    * A move the pin step found main has already, as the second of two moves that overlap finds it once the first merged:
    * nothing is left to make, so the work item closes with no change of its own, and its issue as completed, saying so.
+   * So does its pull request, unmerged, when it has one open (`pull`): one built afresh for a newer target that main has
+   * since.
    */
   async #madeAlready(
     item: QueueItem,
@@ -2210,15 +2249,17 @@ export class Line {
     job: string,
     move: NonNullable<Step['move']>,
     commit: string,
+    pull?: number,
   ): Promise<void> {
     const { workItem } = item;
     const reason = cutTo(`Main already has its move, at ${commit.slice(0, 7)}: ${move.name} at ${move.to}`, 200);
+    const comment = [
+      `Main already has this move, at ${commit.slice(0, 7)}: \`${move.name}\` at \`${move.to}\`. Another change made it.`,
+      '',
+      `The factory’s work item #${workItem} is closed with no change of its own.`,
+    ].join('\n');
+    if (pull !== undefined) await this.#closePullRequest(workItem, pull, comment);
     if (item.issue) {
-      const comment = [
-        `Main already has this move, at ${commit.slice(0, 7)}: \`${move.name}\` at \`${move.to}\`. Another change made it.`,
-        '',
-        `The factory’s work item #${workItem} is closed with no change of its own.`,
-      ].join('\n');
       // One that is gone, or that the App may not change, has nothing to close.
       await closeIssue(
         this.#o.github,
@@ -2284,6 +2325,19 @@ export class Line {
   #effectsContext(item: QueueItem, state: WorkItemState, pending: Pending): EffectsContext {
     const { workItem } = item;
     const { github, repo } = this.#o;
+    const on = { workItem, agent: pending.agent };
+    // The coder's push of a pull request built afresh, and nothing else of its step's, goes another way to GitHub.
+    const afresh = pending.agent === 'coder' && state.behind ? state.pullRequest : undefined;
+    const act = async <K extends ActionName>(action: K, args: ActionArgs[K]): Promise<ActionResult<K>> => {
+      if (afresh && 'branch' in args && args.branch === afresh.branch) {
+        // The branch is never set back to where the step started: the push below takes it straight to the new head.
+        if (action === 'setBranch') return undefined as ActionResult<K>;
+        if (action === 'applyPatch') {
+          return (await this.#pushAfresh(afresh, args as ActionArgs['applyPatch'], on)) as ActionResult<K>;
+        }
+      }
+      return github.act(action, repo, args, on);
+    };
     return {
       ...this.#context(item, pending.round, state, pending.commit, pending.base),
       move: pending.move,
@@ -2301,7 +2355,7 @@ export class Line {
         pending.done[name] = kept;
         return result;
       },
-      act: (action, args) => github.act(action, repo, args, { workItem, agent: pending.agent }),
+      act,
       // Its id is the same each time, and the inbox keeps the first: leaving it again does nothing.
       leaveSignal: async (key, signal) => {
         const observedAt = this.#o.now().toISOString();
@@ -2311,6 +2365,30 @@ export class Line {
       pinned: pending.pinned ?? {},
       log: this.#o.log,
     };
+  }
+
+  /**
+   * The push of a move's pull request built afresh: the step's commit, made on main as the step started from it, where
+   * the pull request's branch has the rounds before. The commit is made off to the side, so the branch goes from its
+   * older head straight to the new one: set back to main first, it would be level with its base, and GitHub closes a
+   * pull request with nothing in it. The pull request then takes the commit's title, which names the newer target; the
+   * describer writes its description again once the new head has passed its gates and review. Done again whole after
+   * a failure part way: the branch off to the side starts again from main each time.
+   */
+  async #pushAfresh(
+    pull: PayloadOf<'pull-request.pushed'>,
+    patch: ActionArgs['applyPatch'],
+    on: ActingFor,
+  ): Promise<string> {
+    const { github, repo } = this.#o;
+    const aside = `${pull.branch}-afresh`;
+    await github.act('setBranch', repo, { branch: aside, sha: patch.expectedHead, force: true }, on);
+    const head = await github.act('applyPatch', repo, { ...patch, branch: aside }, on);
+    await github.act('setBranch', repo, { branch: pull.branch, sha: head, force: true }, on);
+    await github.act('deleteBranch', repo, { branch: aside }, on);
+    const [title = pull.title] = patch.message.split('\n');
+    await github.act('updatePullRequest', repo, { number: pull.number, title }, on);
+    return head;
   }
 
   /**
@@ -2348,16 +2426,25 @@ export class Line {
   /**
    * Records the work item's issue, which GitHub has, as `issue.opened`: for a move, what its issue named, from the same
    * ticket and the signal its issue was written from (`disclosedMove`); with none, the package alone, which every move's
-   * issue names. It is the one moment of the move's disclosure in public.
+   * issue names. It is the moment of the move's disclosure in public, and recorded again each time the line writes the
+   * issue again for a newer scan (`again`): what the issue names now.
    */
-  async #recordIssue(workItem: string, state: WorkItemState, issue: number, signal: Signal | undefined): Promise<void> {
+  async #recordIssue(
+    workItem: string,
+    state: WorkItemState,
+    issue: number,
+    signal: Signal | undefined,
+    again = false,
+  ): Promise<void> {
     const own = state.request ? undefined : state.ticket;
     const move = own && 'ecosystem' in own.fingerprint ? disclosedMove(own.fingerprint, signal) : undefined;
     await this.#append(workItem, [
       {
         type: 'issue.opened',
         actor: 'factory',
-        summary: `Opened issue #${issue} in ${this.#o.repo}`,
+        summary: again
+          ? `Wrote issue #${issue} in ${this.#o.repo} again, for the scan’s newer move`
+          : `Opened issue #${issue} in ${this.#o.repo}`,
         payload: { repository: this.#o.repo, number: issue, ...(move && { move }) },
       },
     ]);

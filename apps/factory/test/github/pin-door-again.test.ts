@@ -189,7 +189,6 @@ describe('the door, asked again each earlier bypass', () => {
       'enablePullRequestAutoMerge',
       'graphql',
       'commitPins',
-      'updateIssue',
       'commitAgain',
       'constructor',
     ]) {

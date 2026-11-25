@@ -81,6 +81,14 @@
  * starts a fresh pass at Plan, as after a return to Plan, and the planner is told what came back. A ticket a dry run
  * verified reopens the same way when the line runs live (`dryRunLeft`), with nothing come back to tell.
  *
+ * A dependency's move follows the scan. Triage joins a signal that names another target, or other findings, to the
+ * move's open ticket, and until the change merges the line takes it up before anything else: it writes its issue again
+ * to name what that signal says (`issueBehind`), so one issue carries the move and no agent is told what the issue has
+ * not named. An issue written again for another target leaves an open pull request's pins behind it (`behind`): Build
+ * starts afresh on that pull request, as a first round does, from main with the pin step's move to the new target, and
+ * the pull request takes the new head, to be gated, reviewed and written up as any new head is. Once the change has
+ * merged, the newer signal is Verify's to read.
+ *
  * The events are folded into where the work item is (`fold`), and `decide` turns that into one next action. Each
  * action either appends events, which moves the work item on, or waits for something outside the line: the gates
  * (GitHub's checks, which the line reads and appends as events) or Martin. The bounds a step has (its turns and
@@ -141,6 +149,7 @@ import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { failedChecks } from '../github/merging.ts';
 import { whoAborted } from '../release/watch.ts';
 import { type MergeFacts, mergeDecision } from './merging.ts';
+import { type DisclosedMove, disclosedMove } from './moves.ts';
 import { type Finding, suggestionsLeft } from './review.ts';
 
 /** The agents the line runs, each in a runner. */
@@ -208,6 +217,15 @@ export interface WorkItemState {
   ticket: PayloadOf<'ticket.opened'> | undefined;
   /** The issue `issue.opened` last recorded, which the line's row should name too. */
   issueRecorded: number | undefined;
+  /** What that record says a move's issue names: its versions, pins and findings, as the issue was last written. */
+  issueNames: DisclosedMove | undefined;
+  /** What a move's newest dependency signal says of it, as an issue written from it would name it. */
+  scanned: DisclosedMove | undefined;
+  /**
+   * Whether the issue was written again for another target since the open pull request's last push: its pins are the
+   * older target's, until Build has started afresh on it and pushed.
+   */
+  behind: boolean;
   /** Whether anything was ever planned, pushed, merged or sent back: never cleared, not even by a fresh pass. */
   begun: boolean;
   /**
@@ -367,6 +385,9 @@ export interface WorkItemState {
 const initial = (): WorkItemState => ({
   ticket: undefined,
   issueRecorded: undefined,
+  issueNames: undefined,
+  scanned: undefined,
+  behind: false,
   begun: false,
   request: undefined,
   spec: undefined,
@@ -432,6 +453,47 @@ function gateFailures(state: WorkItemState, from: Stage): Pick<Rebuild, 'failure
 const forgetLook = (state: WorkItemState) => Object.assign(state, { rechecked: undefined, cleared: undefined });
 
 /**
+ * Ends the wait for a merge, whether its hold still stands or Martin answered it to wait: the head it waited to merge
+ * is not one to merge, as its gates failed after they passed, or its pins are an older target's.
+ */
+function endMergeWait(state: WorkItemState): void {
+  if (state.hold?.cause !== 'merge' && state.answer?.cause !== 'merge') return;
+  Object.assign(state, { hold: undefined, answer: undefined });
+  forgetLook(state);
+}
+
+/**
+ * What an issue's record, or a signal read as one, says of a move: its versions and each finding, as triage compares
+ * two signals of one move (`moveSays`), less what no issue's record keeps. The pins' lines are no part of it.
+ */
+const saysOf = (move: DisclosedMove | undefined): string =>
+  JSON.stringify([
+    move?.from,
+    move?.to,
+    (move?.findings ?? [])
+      .map((f) => [f.advisory, f.package, f.severity.scanner, f.severity.publisher ?? '', f.fixed ?? ''].join(' '))
+      .sort(),
+  ]);
+
+/**
+ * Whether a move's issue names other than its newest signal says: another target, or other findings. The line then
+ * writes the issue again before anything else (`rewrite-issue`), so no agent runs ahead of it. Only an issue GitHub
+ * has and the line recorded, the one its row names: a dry run's is neither. Not once the change has merged, when the
+ * newer signal is Verify's, or the work item has closed.
+ */
+export const issueBehind = (state: WorkItemState, issue: number | null): boolean =>
+  !state.closed &&
+  !state.merged &&
+  issue !== null &&
+  state.issueRecorded === issue &&
+  state.scanned !== undefined &&
+  saysOf(state.scanned) !== saysOf(state.issueNames);
+
+/** Why Build starts afresh on a pull request whose pins are an older target's, as its return and the coder say it. */
+export const TARGET_MOVED =
+  'The scan names another target for the move: Build starts afresh on main, with nothing of the rounds before, and the pull request takes the new head';
+
+/**
  * The planner's first step waits for the record of the issue the row names (`issue.opened`), which GitHub has: the
  * disclosure is recorded before a spec that may name the move. A dry run's issue, which GitHub never had, has none.
  */
@@ -472,9 +534,22 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         if (state.ticket)
           state.ticket = { ...state.ticket, severity: ticketSeverity(state.ticket.severity, [event.payload.severity]) };
         break;
-      case 'issue.opened':
-        state.issueRecorded = event.payload.number;
+      case 'issue.opened': {
+        const { number, move } = event.payload;
+        const named = state.issueNames?.to;
+        // Written again for another target while a pull request is open: the pull request's pins are behind it. What
+        // the line holds of the older head says nothing of the one to come: its review, and a merge held or waited
+        // for, which would be the older target's.
+        if (state.pullRequest && !state.merged && named !== undefined && move?.to !== undefined && move.to !== named) {
+          state.behind = true;
+          state.review = undefined;
+          state.accepted = undefined;
+          endMergeWait(state);
+        }
+        state.issueRecorded = number;
+        state.issueNames = move;
         break;
+      }
       case 'improvement.requested':
         state.request = event.payload;
         break;
@@ -500,6 +575,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         break;
       case 'pull-request.pushed':
         state.pullRequest = event.payload;
+        state.behind = false;
         state.builtTo = state.spec;
         state.respecified = false;
         state.rebuild = undefined;
@@ -534,10 +610,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
           // hold still stands or he answered it to wait: the failure sends the work back to Build, as on the push's
           // first run. A round recorded with the merge comes before it, and the merge carries the work item on to
           // Release whatever the round said.
-          if (!state.gatesPassed && (state.hold?.cause === 'merge' || state.answer?.cause === 'merge')) {
-            Object.assign(state, { hold: undefined, answer: undefined });
-            forgetLook(state);
-          }
+          if (!state.gatesPassed) endMergeWait(state);
         }
         break;
       case 'review.submitted':
@@ -596,15 +669,21 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         state.waiting = { on: event.payload.on, files: event.payload.files, ended: false };
         forgetLook(state);
         break;
-      case 'signal.received':
+      case 'signal.received': {
         state.firstSense ??= event.payload.sense;
         state.seenOn.push(event.payload.version);
+        // A move's newest signal, as the line reads it for the issue (`#dependencySignal`): never one with a report.
+        const { move, report } = event.payload;
+        if (event.payload.sense === 'dependency' && move && !report) {
+          state.scanned = disclosedMove({ name: move.name, ecosystem: move.ecosystem }, event.payload);
+        }
         // Seen since on the version it cleared on, or a later one: the defect is there after all. Triage records a
         // signal late only on the version before the look, which says nothing of it.
         if (state.cleared?.against && !sameVersion(state.cleared.against, event.payload.version)) {
           state.cleared = undefined;
         }
         break;
+      }
       case 'signal.rechecked':
         state.rechecked = event.payload;
         if (event.payload.outcome === 'cleared') state.cleared = event.payload;
@@ -793,8 +872,10 @@ function endCanaryHold(state: WorkItemState): void {
 function startAgain(state: WorkItemState): void {
   const { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore, closed } = state;
   const { firstSense, seenOn, lastSpec, shipped, replan, outOfScope, issueRecorded, begun } = state;
+  const { issueNames, scanned } = state;
   Object.assign(state, initial(), { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore });
   Object.assign(state, { closed, firstSense, seenOn, lastSpec, shipped, replan, outOfScope, issueRecorded, begun });
+  Object.assign(state, { issueNames, scanned });
 }
 
 /**
@@ -907,6 +988,11 @@ export type Next =
    * asks for it in place of the planner's first step, whose spec may name the move (`recordFirst`).
    */
   | { do: 'record-issue'; issue: number }
+  /**
+   * Write a move's issue again, in place, to name what its newest signal says, and record what it now names
+   * (`issue.opened` again): before anything else the work item needs (`issueBehind`).
+   */
+  | { do: 'rewrite-issue'; issue: number }
   /** Run an agent's step in a runner. A coder's later round resumes its own session. */
   | { do: 'step'; agent: LineAgent; round: number }
   /**
@@ -1024,6 +1110,15 @@ export const STAGE_OF: Record<LineAgent, 'plan' | 'build' | 'review'> = {
 
 export function decide(events: readonly LineEvent[], facts: Facts): Decision {
   const s = fold(events);
+  const decision = decided(s, facts);
+  // A move's issue names what the newest scan says before the line does anything else with the work item, where it is.
+  if (issueBehind(s, facts.issue) && facts.issue !== null) {
+    return { stage: decision.stage, next: { do: 'rewrite-issue', issue: facts.issue } };
+  }
+  return decision;
+}
+
+function decided(s: WorkItemState, facts: Facts): Decision {
   if (s.closed) {
     return { stage: 'ended', next: { do: 'finish', ...(s.discarded !== undefined && { discarded: s.discarded }) } };
   }
@@ -1129,6 +1224,11 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
   if (s.respecified && !s.rebuild) {
     const reason = 'The planner wrote the spec again: the change is held to the new one';
     return { stage: 'build', next: { do: 'return', from: 'review', to: 'build', reason } };
+  }
+  // The pull request's pins are an older target's than its issue names: Build starts afresh on it. One in the merge
+  // queue is the queue's first: merged, the newer target is Verify's; taken out, it comes back here.
+  if (s.behind && !s.rebuild && !s.enqueued) {
+    return { stage: 'build', next: { do: 'return', from: 'review', to: 'build', reason: TARGET_MOVED } };
   }
   if (!s.pullRequest || s.rebuild) {
     if (s.fenceRefusals >= LIMITS.fenceRefusals) {

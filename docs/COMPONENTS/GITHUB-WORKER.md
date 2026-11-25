@@ -34,7 +34,7 @@ Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checke
   - only on an issue the App opened ([its issues and pull requests only](#its-issues-and-pull-requests-only));
   - closing one, as completed, with a comment once (which a fix verified in production gets);
   - reopening one with a comment (`reopenIssue`, only while it is closed, saying it once since it closed);
-  - rewriting one's description (`updateIssue`), as the line does for a move's issue when a newer scan names another target or other findings ([taking work](ORCHESTRATOR.md#taking-work)); retitling one is the [pin watch](#pins)'s alone, and no worker can ask;
+  - rewriting one's description (`updateIssue`), as the line does for a move's issue when a newer scan names another target or other findings ([taking work](ORCHESTRATOR.md#taking-work)); the door refuses it for a pull request, whose description is `updatePullRequest`'s, and for an issue labelled `pin`, which is the [pin watch](#pins)'s, as retitling one is, and no worker can ask that;
   - a comment on its own (`comment`), as the line's hand-over of an improvement makes, made only when the issue does not say it already, word for word, so asking again after a failure or a crash says it once.
 
 ### The pin step's patches

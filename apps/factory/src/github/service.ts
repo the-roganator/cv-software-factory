@@ -126,8 +126,8 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
         pinQueueWatch({ github, reads: liveReads, actions, recorder, heads, log, level }, repo, only),
       );
     }
-    // The app's moves are its line's, from tickets: a move there that no ticket is made for (a workflow's pin, a line
-    // no longer built) is one issue, kept by the same watch, which makes no branch, commit or pull request there.
+    // The app's moves are its line's, from tickets: a move there that no ticket is made for (a line no longer built)
+    // is one issue, kept by the same watch, which makes no branch, commit or pull request there.
     for (const repo of ISSUE_REPOS.filter((r) => config.repositories.includes(r))) {
       poller.watch(
         `pin issues in ${repo}`,

@@ -42,8 +42,8 @@
  *   again only for a later target.
  * - **A pull request with no move left** is closed, with a sentence, and so is the issue of a move that is gone.
  * - **In the app's repository it keeps the issues alone** (`ISSUE_REPOS`): the app's moves are its line's, made from
- *   tickets, and no ticket is made for a move in the `issue` lane or on a line no longer built, so each is one issue
- *   there, opened, updated and closed as here. The watch reads no branch, file or pull request there and writes
+ *   tickets, and no ticket is made for a move on a line no longer built (`none`), the one lane but `line` the scan
+ *   gives an app's move (`laneOf`), so each is one issue there, opened, updated and closed as here. The watch reads no branch, file or pull request there and writes
  *   none: its pass there has the four actions on issues and no other (`issuesOnly`).
  *
  * What it writes names the move and its counts, never an advisory of an open finding, and never more of a lockfile's
@@ -92,7 +92,8 @@ export const PIN_REPOS: readonly string[] = [FACTORY_REPOSITORY];
 
 /**
  * The repositories where the watch keeps issues and nothing else: the app's, whose line makes its moves. A move there
- * that no ticket is made for (the `issue` lane, and a line no longer built) is an issue, as it is here.
+ * that no ticket is made for, on a line no longer built, is an issue, as it is here: `laneOf` gives every other move
+ * of the app's `line`.
  */
 export const ISSUE_REPOS: readonly string[] = [APP_REPOSITORY];
 

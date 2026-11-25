@@ -42,7 +42,7 @@ A step that hands back no change and does not say why has failed. So has one aft
 
 ## Suggestions
 
-The coder answers the reviewer's suggestions as the factory asks of any agent answering a review: it takes each, changing the code for it, or declines it with a reason (`declined`: its number and why, in at most 300 characters, which answers the suggestion's thread on the pull request and so is held to the rule for words the line publishes: [steps](ORCHESTRATOR.md#steps)). Each suggestion is answered once.
+The coder answers the reviewer's suggestions as the factory asks of any agent answering a review: it takes each, changing the code for it, or declines it with a reason (`declined`: its number and why, in at most 300 characters, which answers the suggestion's thread on the pull request and so is held to the rule for words the line publishes, as the reply is written: [steps](ORCHESTRATOR.md#steps)). Each suggestion is answered once.
 
 - **One declined** has its thread answered with the coder's reason and resolved by the [GitHub worker](GITHUB-WORKER.md), once the round is pushed. The next reviewer is told it, with the reason, and gives it again only if the reason does not hold.
 - **One taken** is the next reviewer's to find taken; its thread is resolved then ([reviewer](REVIEWER.md#what-the-line-does-with-it)).

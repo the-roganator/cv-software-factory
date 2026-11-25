@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   branchFits,
@@ -5,16 +9,20 @@ import {
   isRoutine,
   moveFits,
   type PullFacts,
+  pickScan,
   pinsFault,
+  pinWatchLine,
   printOf,
   probeQuery,
   routineBranch,
   routineMajorBranch,
+  type ScanRun,
   saysNotPulled,
   settleMs,
   staleTarget,
   targetOf,
   unreadMoves,
+  withSetting,
   workflowPins,
 } from './decide.ts';
 
@@ -240,6 +248,75 @@ describe("the scan's word on an image not read", () => {
     expect(saysNotPulled(`Image not read: a stage: ${image}:unread: MANIFEST_UNKNOWN`, image)).toBe(true);
     expect(saysNotPulled(`Read: ${image}`, image)).toBe(false);
     expect(saysNotPulled(`${image} first\nImage not read: another/image: gone`, image)).toBe(false);
+  });
+});
+
+describe('the scan that confirms a run', () => {
+  const run = (id: number, over: Partial<ScanRun> = {}): ScanRun => ({
+    id,
+    event: 'push',
+    status: 'completed',
+    conclusion: 'failure',
+    headSha: 'late',
+    createdAt: `2026-11-25T03:${String(id).padStart(2, '0')}:00Z`,
+    ...over,
+  });
+  const late = (sha: string) => sha === 'late';
+
+  it('is the newest finished scan on a commit that holds every merge', () => {
+    expect(pickScan([run(1), run(5), run(3, { headSha: 'early' })], late)).toEqual({ use: run(5) });
+  });
+
+  it('is never one GitHub cancelled: the one that replaced it is taken, or waited for', () => {
+    const dispatched = run(48, { event: 'workflow_dispatch', conclusion: 'cancelled' });
+    const pushed = run(50);
+    expect(pickScan([dispatched, pushed], late)).toEqual({ use: pushed });
+    const queued = run(50, { status: 'queued', conclusion: null });
+    expect(pickScan([dispatched, queued], late)).toEqual({ wait: queued });
+  });
+
+  it('takes a finished one before waiting for a newer, since either confirms', () => {
+    expect(pickScan([run(2), run(9, { status: 'in_progress', conclusion: null })], late)).toEqual({ use: run(2) });
+  });
+
+  it('is dispatched when no scan is on a commit that holds the merges, or the only ones left nothing', () => {
+    expect(pickScan([run(1, { headSha: 'early' })], late)).toEqual({ dispatch: true });
+    expect(pickScan([run(4)], late, new Set([4]))).toEqual({ dispatch: true });
+    expect(pickScan([run(4, { event: 'pull_request' })], late)).toEqual({ dispatch: true });
+    expect(pickScan([], late)).toEqual({ dispatch: true });
+  });
+});
+
+describe("a batch's line in batch.env", () => {
+  const names = [
+    'a package in `deploy/overlays/local/factory-image/kustomization.yaml` and `pnpm-lock.yaml`',
+    'kyverno: ghcr.io/kyverno/readiness-checker',
+    "an odd 'one'",
+  ];
+  const sourced = (text: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'batch-env-'));
+    try {
+      writeFileSync(join(dir, 'batch.env'), text);
+      // As copies.sh reads it: sourced by bash, then handed on as one value.
+      const show = ['source "$1"', 'printf %s "$' + '{PIN_WATCH_ONLY-unset}|$' + '{STAGED_EXTRA-unset}"'].join('; ');
+      return execFileSync('bash', ['-c', show, '-', join(dir, 'batch.env')], { encoding: 'utf8' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('reads back whole through a shell, spaces, backticks, colons and quotes too', () => {
+    expect(sourced(withSetting('', 'PIN_WATCH_ONLY', pinWatchLine(names)))).toBe(`${names.join(',')}|unset`);
+  });
+
+  it('is written to an empty file, and replaces the line a file has, keeping the rest', () => {
+    const first = withSetting('', 'PIN_WATCH_ONLY', pinWatchLine(['postgres']));
+    expect(first).toBe("PIN_WATCH_ONLY='postgres'\n");
+    const extra = withSetting(first, 'STAGED_EXTRA', 'STAGED_EXTRA=x2');
+    const second = withSetting(extra, 'PIN_WATCH_ONLY', pinWatchLine(['loki', 'grafana']));
+    expect(second).toBe("STAGED_EXTRA=x2\nPIN_WATCH_ONLY='loki,grafana'\n");
+    expect(sourced(second)).toBe('loki,grafana|x2');
+    expect(withSetting(second, 'STAGED_EXTRA', undefined)).toBe("PIN_WATCH_ONLY='loki,grafana'\n");
   });
 });
 

@@ -20,7 +20,7 @@
  */
 // biome-ignore-all lint/suspicious/noExplicitAny: it reads GitHub's and the cluster's JSON as each gives it, untyped
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { APP, FACTORY, TESTS, type Test } from './catalogue.ts';
 import {
@@ -28,16 +28,19 @@ import {
   certainFail,
   isRoutine,
   moveFits,
+  pickScan,
   pinsFault,
+  pinWatchLine,
   printOf,
   probeQuery,
   routineBranch,
   saysNotPulled,
   settleMs,
   unreadMoves,
+  withSetting,
   workflowPins,
 } from './decide.ts';
-import { BIN, WORK as CLONES, RUNS, SKILL } from './paths.ts';
+import { BIN, WORK as CLONES, RUNS, SKILL, STATE as STATE_DIR } from './paths.ts';
 
 const CONTEXT = 'k3d-software-factory-scratch';
 const APP_BOT = 'the-roganator-scratch-factory[bot]';
@@ -142,6 +145,11 @@ function preflight(state: State, appJustReset: boolean) {
     else if (missing.length)
       wrong.push(
         `the pin watch takes ${told}, not ${missing.join(', ')}: put \`node harness.ts only\`'s line in batch.env`,
+      );
+    else if (told === '*')
+      say(
+        state,
+        `pre-flight: the pin watch takes every move (*), not these tests' alone (${needed.join(', ')}): every pull request of the day opens and may merge beside them. \`node harness.ts batch ${state.only.join(',')}\` names them in batch.env`,
       );
     else say(state, `pre-flight: the pin watch takes ${told}`);
   }
@@ -511,7 +519,10 @@ function awaitScan(state: State, repo: string, scan: Scan, label: string): Scan 
     sleep(30_000);
   }
   const into = join(dirOf(state.id), label);
+  // Afresh: the folder may hold another run's, from a scan that was replaced or a re-read.
+  rmSync(into, { recursive: true, force: true });
   mkdirSync(into, { recursive: true });
+  delete scan.moves;
   try {
     sh('gh', ['run', 'download', String(scan.id), '-R', repo, '-n', 'moves', '-D', into]);
     scan.moves = JSON.parse(readFileSync(join(into, 'moves.json'), 'utf8')).moves;
@@ -2004,7 +2015,11 @@ function run(state: State) {
       const issued = state.seen[t.id]?.issuedAt;
       return Boolean(t.unread) || (issued !== undefined && Date.now() - Date.parse(issued) >= 5 * 60_000);
     };
-    const all = refused || tests.every((t) => done(t) || holds(t) || settled(t) || Boolean(state.seen[t.id]?.certain));
+    // A forgery GitHub refused at the push is over, whichever way its verdict reads: nothing more comes of it.
+    const refusedPush = (t: Test) => Boolean(state.forged?.[t.id]?.refused);
+    const all =
+      refused ||
+      tests.every((t) => done(t) || holds(t) || settled(t) || refusedPush(t) || Boolean(state.seen[t.id]?.certain));
     const stopped =
       Boolean(
         state.line?.held || state.line?.closed || state.line?.stalled || state.line?.strays.length || state.then?.held,
@@ -2024,13 +2039,7 @@ function run(state: State) {
     !has('--once') &&
     tests.some((t) => !t.mustNot && standsOnMove(t) && state.seen[t.id]?.deployedAt)
   ) {
-    state.scan2 = dispatchScan(state, repo);
-    say(state, `the next scan: ${state.scan2.id}`);
-    save(state);
-  }
-  if (state.scan2 && !state.scan2.moves) {
-    awaitScan(state, repo, state.scan2, 'scan2');
-    save(state);
+    confirmingScan(state, repo, tests);
   }
   lineNow();
   thenNow();
@@ -2039,6 +2048,77 @@ function run(state: State) {
   state.done = true;
   save(state);
   report(state);
+}
+
+/**
+ * The scan that confirms a run's merges, read into `scan2`: the newest finished scan of main on a commit that holds
+ * every merged test's merge commit and left a `moves.json` (decide.ts's `pickScan`). The pushes of those merges start
+ * scans of their own, and the scan's job keeps one pending run, so one this run dispatched may be cancelled for a later
+ * push's: the later one is on a commit that holds the merges too, and is taken or waited for. One is dispatched only
+ * when none is finished, queued or running on such a commit. A scan cancelled or replaced is no test's failure; with
+ * none read in 40 minutes the run says so, and its lines read "the next scan has not run".
+ */
+function confirmingScan(state: State, repo: string, tests: Test[]) {
+  repoOk(repo);
+  const merges = [
+    ...new Set(
+      tests
+        .filter((t) => !t.mustNot && standsOnMove(t))
+        .flatMap((t) => (state.seen[t.id]?.pulls ?? []).map((p) => p.mergeCommit ?? ''))
+        .filter(Boolean),
+    ),
+  ];
+  const holds = (head: string) => merges.every((merge) => past(repo, merge, head));
+  const since = state.scan1?.createdAt ?? '';
+  const spent = new Set<number>();
+  const until = Date.now() + 40 * 60_000;
+  let said = 0;
+  while (Date.now() < until) {
+    const runs = (
+      JSON.parse(sh('gh', ['api', `repos/${repo}/actions/workflows/vulnerabilities.yml/runs?branch=main&per_page=30`]))
+        .workflow_runs ?? []
+    )
+      .filter((r: any) => r.created_at > since && r.id !== state.scan1?.id)
+      .map((r: any) => ({
+        id: r.id as number,
+        event: r.event as string,
+        status: r.status as string,
+        conclusion: r.conclusion as string | null,
+        headSha: r.head_sha as string,
+        createdAt: r.created_at as string,
+      }));
+    const pick = pickScan(runs, holds, spent);
+    if ('dispatch' in pick) {
+      const made = dispatchScan(state, repo);
+      say(
+        state,
+        `the next scan: ${made.id}, dispatched, as none is on a commit that holds the run's ${merges.length} merges`,
+      );
+      continue;
+    }
+    if ('wait' in pick) {
+      if (said !== pick.wait.id)
+        say(
+          state,
+          `the next scan: waiting for ${pick.wait.id} (${pick.wait.event}, at ${pick.wait.headSha.slice(0, 7)})`,
+        );
+      said = pick.wait.id;
+      sleep(POLL_MS);
+      continue;
+    }
+    const scan = awaitScan(state, repo, { id: pick.use.id, createdAt: pick.use.createdAt }, 'scan2');
+    if (scan.moves) {
+      state.scan2 = scan;
+      say(
+        state,
+        `the next scan: ${scan.id} (${pick.use.event}, at ${pick.use.headSha.slice(0, 7)}, ${scan.conclusion}), ${scan.moves.length} moves`,
+      );
+      save(state);
+      return;
+    }
+    spent.add(pick.use.id);
+  }
+  say(state, `the next scan: none on a commit that holds the run's merges left a moves.json in 40 minutes`);
 }
 
 // ── The command line ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -2100,6 +2180,26 @@ if (command === 'factory' || command === 'app') {
   };
   save(state);
   run(state);
+} else if (command === 'batch') {
+  // `only`'s line written to the state folder's batch.env, in place of any there, and read back as copies.sh reads it.
+  const ids = (rest[0] ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const tests = TESTS.filter((t) => ids.includes(t.id));
+  if (!ids.length || tests.length !== ids.length)
+    throw new Error("batch <tests>: comma-separated tests of the catalogue's");
+  const names = pinWatchNames(tests);
+  if (!names.length) throw new Error('batch: none of those tests stands on a move of the pin watch');
+  const file = join(STATE_DIR, 'batch.env');
+  mkdirSync(STATE_DIR, { recursive: true });
+  writeFileSync(
+    file,
+    withSetting(existsSync(file) ? readFileSync(file, 'utf8') : '', 'PIN_WATCH_ONLY', pinWatchLine(names)),
+  );
+  const back = sh('bash', ['-c', 'source "$1"; printf %s "$PIN_WATCH_ONLY"', '-', file]);
+  if (back !== names.join(',')) throw new Error(`batch.env reads back as ${back}, not ${names.join(',')}`);
+  console.log(`the pin watch takes: ${back}`);
 } else if (command === 'only') {
   // The batch.env line that has the scratch pin watch take just these tests' moves (a forgery copies postgres's).
   const ids = (rest[0] ?? '')
@@ -2116,7 +2216,7 @@ if (command === 'factory' || command === 'app') {
       `not the pin watch's: ${none.join(', ')} (an app test runs alone already; Dependabot's is kept by DEPENDABOT_KEEP_*)`,
     );
   if (!names.length) throw new Error('only: none of those tests stands on a move of the pin watch');
-  console.log(`PIN_WATCH_ONLY='${names.join(',')}'`);
+  console.log(pinWatchLine(names));
   console.log(`in batch.env; then: node harness.ts factory --only ${ids.join(',')}, whose reset gives it the worker`);
 } else if (command === 'variables') {
   // The repository variables these tests need, `<repo>\t<name>\t<value>` a line, for confirm.sh to set and clear.
@@ -2134,13 +2234,23 @@ if (command === 'factory' || command === 'app') {
 } else if (command === 'report') {
   report(load(rest[0] ?? latestRun() ?? ''));
 } else if (command === 'reread') {
-  // A finished run read again from GitHub and the cluster as they stand: nothing is reset, scanned or restarted.
-  const state = load(rest[0] ?? latestRun() ?? '');
-  observe(
-    state,
-    TESTS.filter((t) => inRun(state, t)),
-    true,
-  );
+  // A finished run judged again from what it recorded: nothing is read from the copy or the cluster as they stand,
+  // which a later reset has emptied (its issues, its open pull requests, what was deployed). `--scan2 <id>` names the
+  // scan that confirms it, whose moves.json is read afresh: one that finished after the run stopped waiting.
+  const named = rest.indexOf('--scan2');
+  const state = load((named === 0 ? undefined : rest[0]) ?? latestRun() ?? '');
+  if (named >= 0) {
+    const id = Number(rest[named + 1]);
+    if (!Number.isInteger(id) || id <= 0) throw new Error('reread <run> --scan2 <id>: the id of a run of the scan');
+    const repo = state.campaign === 'app' ? APP : FACTORY;
+    const run = api<any>(repo, `actions/runs/${id}`);
+    if (run.path !== '.github/workflows/vulnerabilities.yml' || run.head_branch !== 'main')
+      throw new Error(`run ${id} is no scan of ${repo}'s main`);
+    const scan = awaitScan(state, repo, { id, createdAt: run.created_at }, 'scan2');
+    if (!scan.moves) throw new Error(`scan ${id} left no moves.json to read`);
+    state.scan2 = scan;
+    save(state);
+  }
   report(state);
 } else if (command === 'summary') {
   summary();

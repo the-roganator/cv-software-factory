@@ -14,6 +14,7 @@ import {
   settleMs,
   staleTarget,
   targetOf,
+  unreadMoves,
   workflowPins,
 } from './decide.ts';
 
@@ -239,6 +240,38 @@ describe("the scan's word on an image not read", () => {
     expect(saysNotPulled(`Image not read: a stage: ${image}:unread: MANIFEST_UNKNOWN`, image)).toBe(true);
     expect(saysNotPulled(`Read: ${image}`, image)).toBe(false);
     expect(saysNotPulled(`${image} first\nImage not read: another/image: gone`, image)).toBe(false);
+  });
+});
+
+describe("the worker's word that it cannot read the scan", () => {
+  const now = Date.parse('2026-11-25T01:00:00Z');
+  const line = (secondsAgo: number, why = "run 7's state cannot be read: no key") =>
+    JSON.stringify({
+      level: 40,
+      time: now - secondsAgo * 1000,
+      err: { message: `The scan's moves in example/factory-copy cannot be read: ${why}.` },
+      msg: 'watch failed',
+    });
+
+  it('is quoted once said on three passes, the last of them just now', () => {
+    const log = [line(150), '{"msg":"another line"}', line(90), line(20)].join('\n');
+    expect(unreadMoves(log, now)).toBe(
+      "The scan's moves in example/factory-copy cannot be read: run 7's state cannot be read: no key.",
+    );
+  });
+
+  it('is not taken from one or two passes, or from passes long over', () => {
+    expect(unreadMoves([line(90), line(20)].join('\n'), now)).toBeUndefined();
+    expect(unreadMoves([line(900), line(840), line(780)].join('\n'), now)).toBeUndefined();
+    expect(unreadMoves('', now)).toBeUndefined();
+  });
+
+  it('ends a move with no pull request, and no other', () => {
+    const unread = "The scan's moves in example/factory-copy cannot be read: no key.";
+    expect(certainFail({ mustHold: false, pulls: [], unread })).toMatch(/no pull request, and the worker cannot read/);
+    expect(certainFail({ mustHold: true, pulls: [], unread })).toBeUndefined();
+    const open = { number: 5, state: 'open', title: 't', head: 'h', red: [], pending: ['title'], touched: [] };
+    expect(certainFail({ mustHold: false, pulls: [open], unread })).toBeUndefined();
   });
 });
 

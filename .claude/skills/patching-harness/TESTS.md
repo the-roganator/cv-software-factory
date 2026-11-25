@@ -37,7 +37,7 @@ deploy and the next real scan. A local run is a filter before that, never the pr
 | 15 | Factory: a routine update, a pin behind with no advisory | none real; `pino` staged at 10.3.1, with 10.4.0 out | not listed by the scan |
 | 16 | App: a routine update, made by the line | `vitest` 5.1.0 to 5.1.1, in Dependabot's app #74 | left to Dependabot |
 | 17 | Factory: a Makefile pin with a finding | Argo CD's chart, `ARGOCD_CHART` 10.15.0 to 10.18.3 | an issue |
-| 18 | Either: a routine update that crosses a major | none real; lefthook staged at 1.13.6, with 2.x out | not listed by the scan |
+| 18 | Either: a routine update that crosses a major | none real; `@simplewebauthn/browser` staged at 13.3.0, with 14.0.0 out | not listed by the scan |
 | 19 | The scan, with one image the registry will not serve | none; a registry's limit on pulls has failed a whole run | the run failed, with no moves |
 | 20 | App: Dependabot's pull request that moves only the app's pins of the factory's workflows | the six `uses:` lines, to the factory's `main` | Dependabot's, with Martin's approval |
 
@@ -61,6 +61,11 @@ and is no part of the test.
 | N6 | A workflow pin, with or without a finding | stay an issue for Martin: no pull request of the App's, at any level |
 | N7 | Forged: a pull request that moves a workflow pin, claiming a move | be held by the gate, at Lights-out too |
 | N8 | Forged: 20's change, with a third-party action's line in it, or a commit not on the factory's `main`, or behind the old one | be held by the gate |
+
+N7 is held before the gate sees it: the App has no permission to write a workflow file, and GitHub refuses its push,
+which is the test's pass; were the push to land, the gate must hold its pull request. N8 is proven live for one hold
+(a pull request anyone but Dependabot opened), and its three changes under Dependabot's own name by the gate's unit
+tests alone, as nobody can open a pull request as Dependabot.
 
 N2, a move that makes the findings worse, is dropped (Martin, 17 November 2026): a fix does not normally make things
 worse, and the next daily scan picks up whatever a move brought, as it would any finding.

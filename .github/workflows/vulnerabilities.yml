@@ -151,7 +151,7 @@ jobs:
             policy/repositories.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -250,7 +250,7 @@ jobs:
           fi
       # kustomize and yq for the list, helm to render its charts, cosign to verify the SBOMs of ours, crane to read the
       # registries' tags and manifests: each at the version this repository's mise.lock holds.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -368,7 +368,7 @@ jobs:
             push | workflow_dispatch) [ -n "$DEFAULT_BRANCH" ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ] || exit 1 ;;
             *) exit 1 ;;
           esac
-      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         timeout-minutes: 10
         if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
         with:
@@ -450,7 +450,7 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: factory
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -553,7 +553,7 @@ jobs:
           else
             echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
           fi
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -649,7 +649,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # Node to run the script, and yq for the list and the lockfile: each at the version this repository's mise.lock holds.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
@@ -705,7 +705,7 @@ jobs:
             policy/repositories.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}

@@ -620,7 +620,7 @@ describe('a newer target for a move the line has open', () => {
     await pass(); // the issue again, then the planner, told the newest alone
     expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
     expect(steps.requests).toHaveLength(1);
-    expect(steps.requests[0]?.prompt).toContain('from 2.0.0 to 2.0.3');
+    expect(steps.requests[0]?.prompt).toContain('from `2.0.0` to `2.0.3`');
     const recorded = await types(workItem);
     expect(recorded.lastIndexOf('issue.opened')).toBeLessThan(recorded.indexOf('spec.written'));
   });

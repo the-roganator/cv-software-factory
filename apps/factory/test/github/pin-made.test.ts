@@ -20,7 +20,7 @@ import { carriedBy, PASS_MS, PIN_LABEL, type PinScope, pinWatch } from '../../sr
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { client, quiet, type Sent } from './fake.ts';
-import { day, digest, FakeRepo, FILES, move, NONE, writes } from './pins-harness.ts';
+import { day, digest, FakeRepo, FILES, move, NONE, day as today, writes } from './pins-harness.ts';
 
 const LOCK = [
   "lockfileVersion: '9.0'",
@@ -356,6 +356,85 @@ describe('the moves the scan made with the pin step', () => {
       move: 2,
       reason: expect.stringContaining('TRUST_DOWNGRADE'),
     });
+  });
+
+  it('keeps one issue for a routine major pnpm refused, day after day, naming the move by its mark and no package', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const reason = 'pnpm refused example-b@3.0.0: High-risk trust downgrade (possible package takeover)';
+    /** The routine major, at a place in the day's list, and what the scan made of its group: nothing, and why. */
+    const day = (index: number, run: number, others: ReadMove[] = []): Moves => {
+      const major: ReadMove = {
+        ...npm(index, 'example-b', '2.0.0', '3.0.0', 8),
+        mark: 'markb0000000',
+        major: true,
+        clears: NONE,
+        deadline: undefined,
+      };
+      const group = lockGroup({
+        major: true,
+        routine: true,
+        moves: [],
+        refused: [{ move: index, reason }],
+        changed: [],
+        steps: [],
+      });
+      const read = today(scanned, [...others, major], run);
+      return {
+        ...read,
+        made: { version: 1, repository: read.repository, run: String(run), commit: scanned, groups: [group] },
+      };
+    };
+    let moves = day(1, 42_000_000_101);
+    const w = harness(repo, () => moves);
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(repo.issues).toHaveLength(1);
+    const [issue] = repo.issues;
+    expect(issue?.title).toMatch(/^Move a package in .*pnpm-lock\.yaml \(markb0000000\) to a newer release$/);
+    expect(issue?.labels).toEqual([PIN_LABEL]);
+    expect(issue?.body).toContain('<!-- factory: pin-issue lockfile-markb0000000 -->');
+    expect(issue?.body).toContain('The scan’s pin step could not make it on the commit it read: pnpm’s guards');
+    expect(issue?.body).toContain('**A routine update** A newer release, with no advisory behind it and no deadline.');
+    // What pnpm said names the package: it is the worker's log's, and never the public issue's.
+    expect(issue?.body).not.toMatch(/example-b|3\.0\.0|trust downgrade|its alerts/);
+    expect(w.lines.find((line) => line.reason)).toMatchObject({ level: 40, move: 1, mark: 'markb0000000', reason });
+
+    // The next day's scan: another run, the move at another place in its list, the release refused still.
+    const first = { number: issue?.number, body: issue?.body, title: issue?.title };
+    moves = day(2, 42_000_000_202, [k3d(1, 'k3d-tools')]);
+    await w.pass();
+    // And a worker started again that day.
+    await harness(repo, () => moves).pass();
+    expect(repo.issues).toHaveLength(1);
+    expect(repo.issues[0]).toMatchObject({ number: first.number, title: first.title, state: 'open' });
+    expect(repo.issues[0]?.body).toContain('<!-- factory: pin-issue lockfile-markb0000000 -->');
+    expect(repo.issues[0]?.body).toContain('runs/42000000202');
+    expect(repo.issues[0]?.comments).toEqual([]);
+    // Once pnpm takes the release and the scan makes the move, its pull request opens and the issue closes.
+    const read = today(scanned, [{ ...(day(1, 1).moves[0] as ReadMove) }], 42_000_000_303);
+    const UPDATED = LOCK.replace('example-b@2.0.0', 'example-b@3.0.0');
+    moves = {
+      ...read,
+      made: {
+        version: 1,
+        repository: read.repository,
+        run: '42000000303',
+        commit: scanned,
+        groups: [
+          lockGroup({
+            major: true,
+            routine: true,
+            moves: [1],
+            changed: [{ path: 'pnpm-lock.yaml', text: UPDATED }],
+            steps: [{ move: 1, ecosystem: 'npm', name: 'example-b', before: ['2.0.0'], after: ['3.0.0'] }],
+          }),
+        ],
+      },
+    };
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([pinBranchFor(['pnpm-lock.yaml'], true, true)]);
+    expect(repo.issues[0]?.state).toBe('closed');
   });
 
   it('waits when a file the step wrote has changed on main, or when the scan made none', async () => {

@@ -220,6 +220,30 @@ const bound = (repository: string, run: string) => Buffer.from(`scan pins ${MADE
 
 export const sealMade = (made: Made, key: Buffer): Buffer => sealJson(made, key, bound(made.repository, made.run));
 
+/** The most a refusal's reason holds. */
+export const MOST_REASON = 4000;
+
+/**
+ * Whether a text is a refusal's reason, as the file holds one: a line of the step's words, with no control character
+ * (so no second line), and no longer than the most. The one rule for the scan's pins job, which seals a reason, and
+ * for whoever opens what it sealed.
+ */
+export const isReason = (value: unknown): boolean => isText(value, MOST_REASON);
+
+/**
+ * A refusal's reason from whatever the step said, as the file may hold it: the words as they are where they are a
+ * reason, and otherwise their first line that says anything, its control characters taken out, cut to the most. So
+ * nothing the step can say keeps the day's other moves from being sealed, or read.
+ */
+export function reasonOf(words: string): string {
+  if (isReason(words)) return words;
+  const line = words
+    .split(/[\r\n]+/)
+    .map((each) => each.replace(/\p{Cc}/gu, ' ').trim())
+    .find(Boolean);
+  return (line ?? 'the pin step refused it, and said nothing of why').slice(0, MOST_REASON);
+}
+
 const isText = (value: unknown, most = 4096): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= most && !/\p{Cc}/u.test(value);
 const isPlace = (value: unknown) => Number.isInteger(value) && (value as number) >= 1;
@@ -252,7 +276,7 @@ function problemOf(made: unknown, repository: string, run: string): string | und
     if (typeof g.major !== 'boolean') return `do not say whether ${at} is named major`;
     if (g.routine !== undefined && typeof g.routine !== 'boolean') return `do not say whether ${at} is routine`;
     if (!Array.isArray(g.moves) || !g.moves.every(isPlace)) return `give ${at} no moves`;
-    if (!Array.isArray(g.refused) || !g.refused.every((r) => isPlace(r?.move) && isText(r?.reason, 8192)))
+    if (!Array.isArray(g.refused) || !g.refused.every((r) => isPlace(r?.move) && isReason(r?.reason)))
       return `give ${at} a refusal that is not one`;
     if (
       !Array.isArray(g.changed) ||

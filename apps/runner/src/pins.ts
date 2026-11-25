@@ -88,6 +88,72 @@ export interface Move {
   routine?: boolean | undefined;
 }
 
+/** A terminal's colour codes: an escape, a bracket, numbers and a letter. */
+const COLOURS = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, 'g');
+
+/** The most of a tool's own reason a refusal keeps. */
+const MOST_REASON = 300;
+
+/**
+ * Why pnpm or mise failed, in its own words and one line: the last cause its report gives, as it would read unwrapped.
+ * A command's failure is its whole report, behind the command line that ran it: pnpm draws its causes as a tree and
+ * wraps each at about 76 columns, in the middle of a hyphenated word too (`High-`, `risk`). Here the command line and
+ * the advice after the causes (`help:`) are left out, the tree's marks taken off, each cause's lines joined again, and
+ * what only says that resolving failed (`Failed to resolve dependency:`) dropped from before the reason. With no
+ * report to read, the failure's first line stands, without its command.
+ */
+export function toolReason(error: unknown): string {
+  const failed = error as { stderr?: unknown; stdout?: unknown; message?: unknown } | null;
+  const said = [failed?.stderr, failed?.stdout].map((each) => (typeof each === 'string' ? each : '')).join('\n');
+  const message = typeof failed?.message === 'string' ? failed.message : String(error);
+  const report = said.trim()
+    ? said
+    : message
+        .split('\n')
+        .slice(/^Command failed/.test(message) ? 1 : 0)
+        .join('\n');
+  const causes: string[] = [];
+  let open = false;
+  // A terminal's colours are no part of what it said.
+  for (const raw of report.replace(COLOURS, '').split('\n')) {
+    if (/^\s*help:/.test(raw)) break;
+    const starts = /^\s*(?:[├╰]─▶|×|Error:)/.test(raw);
+    // The tree's own marks, and anything else that is no letter of the report: a control character among them.
+    const text = raw
+      .replace(/^\s*(?:[├╰]─▶|[│×]|Error:)?\s*/, '')
+      .replace(/[\p{Cc}─-╿▶×]/gu, ' ')
+      .trim();
+    if (!text) {
+      open = false;
+      continue;
+    }
+    const last = causes.at(-1);
+    if (starts || !open || last === undefined) causes.push(text);
+    // A line wrapped at a hyphen is one word again; any other wrap was at a space.
+    else causes[causes.length - 1] = last.endsWith('-') ? `${last}${text}` : `${last} ${text}`;
+    open = true;
+  }
+  const cause = causes.findLast((each) => !/^(?:updating dependencies|ERR_PNPM_\w+)$/.test(each)) ?? causes.at(-1);
+  const reason = (cause ?? message.split('\n')[0] ?? '')
+    .replace(/^(?:Failed to resolve dependency(?: tree)?:\s*)+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const plain = /^Command failed/.test(reason) || !reason ? 'it failed, and said nothing of why' : reason;
+  return plain.length > MOST_REASON ? `${plain.slice(0, MOST_REASON - 1)}…` : plain;
+}
+
+/**
+ * A refusal of pnpm's or mise's, as the step says any refusal: one line of plain words with the tool's own reason,
+ * and never the command line. The step's own refusals pass as they are.
+ */
+function toolRefused(tool: string, what: string, error: unknown): Error {
+  if (error instanceof PinsRefused || error instanceof PinsHeld) return error;
+  // The reason names what was asked for where the tool does (`for "lefthook@2.2.2"`): said once, before it.
+  const name = escaped(what.replace(/(?!^)@[^@]*$/, ''));
+  const reason = toolReason(error).replace(new RegExp(` for "?${name}(?:@[^"\\s]+)?"?`), '');
+  return new PinsRefused(`${tool} refused ${what}: ${reason}`);
+}
+
 /** The move needs a file only Martin may change: the work item waits for him, told the file and why. */
 export class PinsHeld extends Error {
   override name = 'PinsHeld';
@@ -383,7 +449,12 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   // Every project of a workspace, when the checkout is one, so a nested project's copy moves too.
   const workspace = /^packages:/m.test(await readFile(join(dir, 'pnpm-workspace.yaml'), 'utf8').catch(() => ''));
   const what = move.routine ? `${move.name}@${move.to}` : move.name;
-  await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), what, '--depth', 'Infinity']);
+  // pnpm's own guards (a release younger than its age, a weaker provenance, a version it cannot record) refuse here.
+  await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), what, '--depth', 'Infinity']).catch(
+    (error: unknown) => {
+      throw toolRefused('pnpm', what, error);
+    },
+  );
   const after = await readFile(lockPath, 'utf8');
   if (move.routine) {
     // The manifests' copy alone is the move's: exactly the target, and a parent's copy where its range puts it.
@@ -743,7 +814,16 @@ export async function moveLibrary(dir: string, image: string, tag: string, pnpm:
     'update',
     ...(workspace ? ['--recursive'] : []),
     ...[...named].sort().map((n) => `${n}@${release}`),
-  ]);
+  ]).catch((error: unknown) => {
+    throw toolRefused(
+      'pnpm',
+      [...named]
+        .sort()
+        .map((n) => `${n}@${release}`)
+        .join(' and '),
+      error,
+    );
+  });
   const left = copies(await readFile(lockPath, 'utf8')).filter(({ v }) => v !== release);
   if (left.length)
     throw new PinsRefused(
@@ -809,7 +889,9 @@ export async function moveTool(
       );
   }
   await writeFile(path, lock.replace(entry[0], entry[0].replace(`"${move.from}"`, `"${move.to}"`)));
-  await mise(dir, ['lock', move.name]);
+  await mise(dir, ['lock', move.name]).catch((error: unknown) => {
+    throw toolRefused('mise', `${move.name}@${move.to}`, error);
+  });
 }
 
 async function text(get: Get, url: string): Promise<string> {

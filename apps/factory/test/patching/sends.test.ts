@@ -306,6 +306,25 @@ describe("the sense's sends", () => {
     expect(scan?.kind === 'scan' ? scan.findings.map((f) => f.advisory) : []).not.toContain('not an advisory id');
   });
 
+  it('names an advisory once a package, however many pins it was found at: its worst rating, every fixed version', () => {
+    // One advisory in one package, found in the lockfile and again in the image built from it.
+    const atImage = { ...found(1, 'HIGH', 'version 1.2.4', '1.2.4, 2.0.1'), file: 'Dockerfile', line: 14 };
+    // The same advisory in another package is another finding.
+    const other = { ...found(1, 'LOW'), package: 'right-pad' };
+    const many = Array.from({ length: 7 }, (_, i) => found(i + 2, 'HIGH'));
+    const twice = { ...lockfile, findings: [found(1, 'MEDIUM'), atImage, other, ...many, ...many] };
+    const { sends, skipped } = sendsOf(read([twice]), '2026-11-11T04:59:00Z');
+    expect(skipped).toEqual([]);
+    const scan = sends[0]?.signal.evidence?.[0];
+    const findings = scan?.kind === 'scan' ? scan.findings : [];
+    expect(findings.filter((f) => f.advisory === 'CVE-2026-1001' && f.package === 'left-pad')).toEqual([
+      { advisory: 'CVE-2026-1001', package: 'left-pad', severity: { scanner: 'high' }, fixed: '1.2.4, 2.0.1' },
+    ]);
+    // Counted once each before the cap of eight: eight in left-pad are listed, and right-pad's is the rest.
+    expect(findings.map((f) => f.advisory)).toEqual(Array.from({ length: 8 }, (_, i) => `CVE-2026-${1001 + i}`));
+    expect(scan).toMatchObject({ rest: { critical: 0, high: 0, medium: 0, low: 1, unknown: 0 } });
+  });
+
   it('sends a package at two versions under one advisory, which the scan finds from both, as one word', () => {
     const both: ReadMove = {
       ...lockfile,

@@ -124,6 +124,12 @@ export interface EffectsContext extends StepContext {
   log: Pick<Logger, 'warn'>;
 }
 
+/** What every agent's step is given: what the work item asks, and what the senses saw of it. */
+export interface StepInput {
+  asked: Asked;
+  signals: readonly Signal[];
+}
+
 export interface AgentDefinition<Input, Result> {
   agent: LineAgent;
   /**
@@ -189,7 +195,7 @@ export interface Started {
 }
 
 /** An agent's definition, made into one the line can run, keeping its own types for those who use it directly. */
-export function defineAgent<Input, Result>(
+export function defineAgent<Input extends StepInput, Result>(
   definition: AgentDefinition<Input, Result>,
 ): AgentDefinition<Input, Result> & Agent {
   const { agent } = definition;
@@ -210,11 +216,57 @@ export function defineAgent<Input, Result>(
                 : `The ${agent}'s result does not fit its schema (${problems.join('; ')})`,
             );
           }
+          // A move's agents say no more than its issue: an advisory the issue does not name stays out of their words.
+          const undisclosed = movesOnly(input) ? undisclosedIn(parsed.data, advisoriesNamed(input.signals)) : [];
+          if (undisclosed.length) {
+            throw new StepFailed(
+              `The ${agent}'s result names ${undisclosed.slice(0, 3).join(', ')}, which the ticket's issue does not: name no advisory the issue does not list`,
+            );
+          }
           return definition.apply(parsed.data, handback, input, effects);
         },
       };
     },
   };
+}
+
+/** Whether a step's work item is a dependency's move, which triage fingerprints by its name and ecosystem. */
+const movesOnly = ({ asked }: StepInput) => asked.kind === 'ticket' && 'ecosystem' in asked.ticket.fingerprint;
+
+/**
+ * The advisories a move's issue names: each finding the newest dependency signal's scan lists, as the issue is written
+ * from that signal (`moveIssue`) and kept to it before any agent runs. A routine update's names none.
+ */
+export const advisoriesNamed = (signals: readonly Signal[]): string[] =>
+  signals
+    .findLast((signal) => signal.sense === 'dependency')
+    ?.evidence?.flatMap((each) => (each.kind === 'scan' ? each.findings.map((finding) => finding.advisory) : [])) ?? [];
+
+/**
+ * A word shaped as an advisory's id, as the scan's findings name them: a CVE's, a GitHub advisory's, or a
+ * distribution's or a database's own, a prefix in capitals before a number of four digits or more and one part after
+ * it (`DSA-5123-1`, `RHSA-2026:1234`, `RUSTSEC-2026-0001`, `TEMP-0000000-ABCDEF`).
+ */
+const ADVISORY_ID =
+  /(?<![\w-])(?:GHSA(?:-[0-9a-z]{4}){3}|[A-Z][A-Z0-9]+(?:-[A-Z]+)*-\d{4,}[-:][0-9A-Za-z]+(?:-[0-9A-Za-z]+)*)(?![\w-])/gi;
+
+/**
+ * The advisories a text names that its work item's issue does not: each word shaped as an advisory's id (a CVE's, a
+ * GHSA's, a distribution's own) that is none of `named`, once, as written. The issue is where a move's advisories are
+ * disclosed, and lists eight at most: an agent's words reach GitHub and the public views, so they name no advisory
+ * the issue has not. Case does not make an id another.
+ */
+export function undisclosedAdvisories(text: string, named: readonly string[]): string[] {
+  const disclosed = new Set(named.map((id) => id.toUpperCase()));
+  const found = [...text.matchAll(ADVISORY_ID)].map(([id]) => id).filter((id) => !disclosed.has(id.toUpperCase()));
+  return found.filter((id, i) => found.findIndex((other) => other.toUpperCase() === id.toUpperCase()) === i);
+}
+
+/** The advisories an agent's result names, in any of its words, that the issue does not (`undisclosedAdvisories`). */
+function undisclosedIn(result: unknown, named: readonly string[]): string[] {
+  if (typeof result === 'string') return undisclosedAdvisories(result, named);
+  if (result === null || typeof result !== 'object') return [];
+  return [...new Set(Object.values(result).flatMap((value) => undisclosedIn(value, named)))];
 }
 
 /**
@@ -483,6 +535,30 @@ export function scopedNamesInCode(markdown: string): string {
   }
   return coded + markdown.slice(at);
 }
+
+/** Refuses Markdown that mentions someone outside code, naming each mention it found for the next attempt. */
+export function refuseMentions(markdown: string, ctx: z.RefinementCtx, path: PropertyKey[] = []): void {
+  const named = [...new Set(mentionsIn(markdown))];
+  if (!named.length) return;
+  const message = `no @mention outside code: ${named.slice(0, 3).join(', ')} would notify someone from the App’s account`;
+  ctx.addIssue({ code: 'custom', path, message });
+}
+
+/**
+ * Words of an agent's that the line publishes on GitHub from the App's account as Markdown: a spec's outcome, criteria
+ * and rollout in a pull request's description, a review's note and comments, a declined suggestion's reply. Held to
+ * the describer's rule in the result's schema, where a refusal is the step's failure and the next attempt is told
+ * why, and where the event keeps the words as GitHub has them: a scoped package's name is put in code
+ * (`scopedNamesInCode`), counted in the most the words may be, and any mention left is refused (`refuseMentions`).
+ */
+export const publicWords = (max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .transform(scopedNamesInCode)
+    .pipe(z.string().max(max))
+    .superRefine((text, ctx) => refuseMentions(text, ctx));
 
 /** A pull request's title of one of these Conventional Commit types, of 80 characters at most, closing no issue. */
 const titleOf = (types: string, message: string) =>

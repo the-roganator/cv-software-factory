@@ -1,20 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  advisoriesNamed,
   boundsOn,
   closesAnIssue,
   commitTitle,
+  defineAgent,
+  type EffectsContext,
   holdDraft,
   mentions,
   mentionsIn,
   problemOf,
+  publicWords,
   routineUpdate,
+  type StepContext,
+  StepFailed,
   scopedNamesInCode,
   stepFrom,
   titleFor,
+  undisclosedAdvisories,
   updateTitle,
 } from '../../src/line/agents/agent.ts';
-import type { Asked } from '../../src/line/agents/evidence.ts';
+import type { Asked, Signal } from '../../src/line/agents/evidence.ts';
 import { AGENTS } from '../../src/line/agents/index.ts';
 
 describe('a fix’s title', () => {
@@ -235,6 +242,125 @@ describe('what a published text may not do from the App’s account', () => {
       '@someone',
     ]);
     expect(mentionsIn('<div>@someone</div>')).toEqual(['@someone']);
+  });
+});
+
+describe('an agent’s words the line publishes on GitHub', () => {
+  it('have a scoped package’s name in code, counted in the most they may be, and mention nobody', () => {
+    expect(publicWords(300).parse('  Moves @grpc/proto-loader, which `@grpc/grpc-js` needs. ')).toBe(
+      'Moves `@grpc/proto-loader`, which `@grpc/grpc-js` needs.',
+    );
+    const refused = publicWords(300).safeParse('Ask @mrogan about @grpc/proto-loader.');
+    expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
+      'no @mention outside code: @mrogan would notify someone from the App’s account',
+    ]);
+    // The code marks the line adds count: the events keep the words as GitHub has them, within the same bound.
+    const full = `${'a'.repeat(300 - '@grpc/grpc-js'.length - 1)} @grpc/grpc-js`;
+    expect(full).toHaveLength(300);
+    expect(publicWords(300).safeParse(full).success).toBe(false);
+    expect(publicWords(302).safeParse(full).success).toBe(true);
+    expect(publicWords(300).safeParse('   ').success).toBe(false);
+  });
+});
+
+describe('an agent’s words about a move', () => {
+  const scan = (advisories: string[]): Signal => ({
+    sense: 'dependency',
+    check: 'vulnerabilities',
+    version: 'c'.repeat(40),
+    symptom: 'vulnerable-dependency',
+    evidence: [
+      {
+        kind: 'scan',
+        findings: advisories.map((advisory) => ({ advisory, package: 'invented-pkg', severity: { scanner: 'high' } })),
+        rest: { critical: 0, high: 3, medium: 0, low: 0, unknown: 0 },
+      },
+    ],
+  });
+  const move: Asked = {
+    kind: 'ticket',
+    ticket: {
+      title: 'Move invented-pkg, in npm',
+      category: 'security',
+      severity: 'broken',
+      fingerprint: { name: 'invented-pkg', ecosystem: 'npm' },
+      traces: [],
+    },
+  };
+
+  it('name no advisory the issue does not: each id-shaped word the issue lacks is found, once, as written', () => {
+    const named = ['GHSA-0000-0000-0001', 'CVE-2099-0001'];
+    expect(undisclosedAdvisories('Clears GHSA-0000-0000-0001 and cve-2099-0001.', named)).toEqual([]);
+    expect(
+      undisclosedAdvisories(
+        'Clears CVE-2099-0001, and CVE-2099-0002 (ghsa-0000-0000-0002) too; `CVE-2099-0002` again.',
+        named,
+      ),
+    ).toEqual(['CVE-2099-0002', 'ghsa-0000-0000-0002']);
+    // A distribution's or a database's own id, as the scan gives one for an image's package.
+    expect(
+      undisclosedAdvisories('DSA-5123-1, DLA-3456-2, RHSA-2026:1234, RUSTSEC-2026-0001 and TEMP-0000000-ABCDEF.', []),
+    ).toEqual(['DSA-5123-1', 'DLA-3456-2', 'RHSA-2026:1234', 'RUSTSEC-2026-0001', 'TEMP-0000000-ABCDEF']);
+    // Words with a hyphen and a number that are no advisory's id.
+    expect(
+      undisclosedAdvisories('SHA-256, UTF-8, ISO-8601, RFC-9110, node-24.11.1, 2026-11-25 and factory/1234-move.', []),
+    ).toEqual([]);
+  });
+
+  it('are held to the advisories the newest dependency signal’s scan lists, as the issue is written from it', () => {
+    expect(advisoriesNamed([scan(['CVE-2099-0001']), scan(['CVE-2099-0002', 'CVE-2099-0003'])])).toEqual([
+      'CVE-2099-0002',
+      'CVE-2099-0003',
+    ]);
+    const { evidence: _, ...routine } = scan([]);
+    expect(advisoriesNamed([{ ...routine, symptom: 'outdated-dependency' }])).toEqual([]);
+    expect(advisoriesNamed([])).toEqual([]);
+  });
+
+  it('fail the step when its result names an advisory the issue does not, in any of its words, and only for a move', async () => {
+    const applied: unknown[] = [];
+    const agent = defineAgent<{ asked: Asked; signals: Signal[] }, { note: string; findings: { comment: string }[] }>({
+      agent: 'reviewer',
+      maxTurns: 1,
+      deadlineSeconds: 1,
+      input: async ({ ticket, signals }) => ({
+        asked: { kind: 'ticket', ticket: await ticket() },
+        signals: await signals(),
+      }),
+      prompt: () => 'Review it.',
+      schema: () => z.object({ note: z.string(), findings: z.array(z.object({ comment: z.string() })) }),
+      apply: async (result) => {
+        applied.push(result);
+        return [];
+      },
+    });
+    const context = (asked: Asked) =>
+      ({
+        ticket: async () => (asked.kind === 'ticket' ? asked.ticket : undefined),
+        signals: async () => [scan(['CVE-2099-0001'])],
+      }) as unknown as StepContext;
+    const finish = async (asked: Asked, result: unknown) =>
+      (await agent.start(context(asked))).finish({ result } as never, {} as EffectsContext);
+
+    const within = { note: 'Clears CVE-2099-0001.', findings: [{ comment: 'Nothing more.' }] };
+    await finish(move, within);
+    expect(applied).toEqual([within]);
+
+    const beyond = { note: 'Clears CVE-2099-0001.', findings: [{ comment: 'CVE-2099-0002 is left.' }] };
+    const refused = await finish(move, beyond).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(StepFailed);
+    expect((refused as Error).message).toBe(
+      "The reviewer's result names CVE-2099-0002, which the ticket's issue does not: name no advisory the issue does not list",
+    );
+    expect(applied).toEqual([within]);
+
+    // A defect's ticket discloses nothing of a move: its agents' words are not held to an issue's advisories.
+    const defect: Asked = {
+      kind: 'ticket',
+      ticket: { ...move.ticket, fingerprint: { class: 'http-5xx', route: '/search' } } as never,
+    };
+    await finish(defect, beyond);
+    expect(applied).toEqual([within, beyond]);
   });
 });
 

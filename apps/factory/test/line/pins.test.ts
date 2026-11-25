@@ -2,7 +2,7 @@ import type { PayloadOf } from '@software-factory/events';
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import type { Moves } from '../../src/github/scanning.ts';
-import { commitTitle } from '../../src/line/agents/agent.ts';
+import { commitTitle, mentionsIn } from '../../src/line/agents/agent.ts';
 import { MOVED_UNCHANGED, MOVED_UNTESTED } from '../../src/line/agents/coder.ts';
 import {
   CODED,
@@ -301,12 +301,21 @@ describe('a dependency’s move on the line', () => {
     expect(title).toBe('fix(deps): move @grpc/grpc-js to 1.14.7');
     expect(commitTitle.safeParse(title).success).toBe(true);
     expect(note).toContain(
-      'from 1.14.4 to 1.14.7, the newest release its range admits at or above 1.14.5, in package.json, pnpm-lock.yaml.',
+      'from `1.14.4` to `1.14.7`, the newest release its range admits at or above `1.14.5`, in package.json, pnpm-lock.yaml.',
     );
     expect(note).not.toMatch(/CVE|GHSA/);
     expect(await payloads(workItem, 'pull-request.pushed')).toEqual([
       expect.objectContaining({ title: 'fix(deps): move @grpc/grpc-js to 1.14.7', testsFirst: false }),
     ]);
+    // The draft holds the planner's words, which name the package: in code, so GitHub mentions no team.
+    const opened = github.acts.find((a) => a.action === 'openPullRequest')?.args as { body: string };
+    expect(opened.body.split('\n')[0]).toMatch(/^The factory’s fix for ticket #\d+\./);
+    expect(opened.body).toContain('**Outcome.** `@grpc/grpc-js` resolves to 1.14.5');
+    expect(opened.body).toContain('then each check passes with `@grpc/grpc-js` moved.');
+    expect(mentionsIn(opened.body)).toEqual([]);
+    expect((await payloads(workItem, 'spec.written'))[0]).toMatchObject({
+      outcome: '`@grpc/grpc-js` resolves to 1.14.5, so the scans no longer report its findings.',
+    });
     const [pushed] = await database.as.line<{ actor: string }[]>`
       select actor from events where work_item = ${workItem} and type = 'pull-request.pushed'`;
     expect(pushed?.actor).toBe('factory');
@@ -332,6 +341,10 @@ describe('a dependency’s move on the line', () => {
     expect(await payloads(workItem, 'pull-request.pushed')).toEqual([
       expect.objectContaining({ title: 'chore(deps): move @grpc/grpc-js to 1.14.7' }),
     ]);
+    // Its draft claims no fix either: no advisory asked for the move.
+    const opened = github.acts.find((a) => a.action === 'openPullRequest')?.args as { body: string };
+    expect(opened.body.split('\n')[0]).toMatch(/^The factory’s routine update for ticket #\d+\.( Refers to #\d+\.)?$/);
+    expect(opened.body).not.toContain('fix for ticket');
     expect((await failures(workItem))?.failures ?? 0).toBe(0);
     expect(await payloads(workItem, 'hold.started')).toEqual([]);
   });
@@ -441,7 +454,7 @@ describe('a dependency’s move on the line', () => {
     expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
     const { failures } = await import('./harness.ts');
     expect((await failures(workItem))?.failure).toBe(
-      'The pin step’s patch resolves @grpc/grpc-js to 1.14.4, below the move’s 1.14.5',
+      'The pin step’s patch resolves @grpc/grpc-js to `1.14.4`, below the move’s `1.14.5`',
     );
   });
 });

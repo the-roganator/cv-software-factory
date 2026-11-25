@@ -223,6 +223,58 @@ describe('an improvement’s spec', () => {
   });
 });
 
+describe('a spec’s words the pull request’s description carries', () => {
+  const planned = (spec: object) => plannerResult(PROTECTED, SOURCES).safeParse({ verdict: 'spec', spec });
+  const criterion = SPEC.criteria[0] as (typeof SPEC.criteria)[number];
+
+  it('name a scoped package in code, in the outcome, each criterion and the rollout, and nowhere else', () => {
+    const read = planned({
+      ...SPEC,
+      outcome: 'Prices load through @invented/money.',
+      criteria: [
+        { ...criterion, given: 'a price from @invented/money', expect: 'it reads £35.00 with `@invented/money`' },
+      ],
+      rollout: 'Ships as it is, with @invented/money moved.',
+    });
+    expect(read.data).toMatchObject({
+      spec: {
+        outcome: 'Prices load through `@invented/money`.',
+        criteria: [
+          {
+            given: 'a price from `@invented/money`',
+            expect: 'it reads £35.00 with `@invented/money`',
+            quote: 'new error pattern',
+          },
+        ],
+        rollout: 'Ships as it is, with `@invented/money` moved.',
+      },
+    });
+    // Within the event's own bound, the code marks counted: what the line records is what GitHub has.
+    const full = `${'a'.repeat(200 - '@invented/money'.length - 1)} @invented/money`;
+    expect(planned({ ...SPEC, outcome: full }).success).toBe(false);
+  });
+
+  it('mention nobody: a spec that names someone is refused, saying where and whom', () => {
+    const refused = planned({
+      ...SPEC,
+      outcome: 'A price shows two digits of pence, as @mrogan asked.',
+      criteria: [{ ...criterion, when: 'it is written in pounds for @someone' }],
+    });
+    expect(refused.error?.issues.map(({ path, message }) => ({ path, message }))).toEqual([
+      {
+        path: ['spec', 'outcome'],
+        message: 'no @mention outside code: @mrogan would notify someone from the App’s account',
+      },
+      {
+        path: ['spec', 'criteria', 0, 'when'],
+        message: 'no @mention outside code: @someone would notify someone from the App’s account',
+      },
+    ]);
+    expect(planned({ ...SPEC, rollout: 'Ships as it is; tell @mrogan.' }).success).toBe(false);
+    expect(planned({ ...SPEC, rollout: 'Ships as it is; `@mrogan` is only a name in code.' }).success).toBe(true);
+  });
+});
+
 describe('what shows a criterion', () => {
   const shown = (move: boolean, ...shownBy: ('test' | 'gates' | undefined)[]) =>
     plannerResult(PROTECTED, SOURCES, undefined, true, undefined, move).safeParse({
@@ -1467,6 +1519,34 @@ describe('the words each criterion quotes', () => {
       verdict: 'spec',
       spec: { ...SPEC, criteria: [{ ...criterion, from, quote }] },
     });
+
+  it('finds a quote of a move’s versions, which its signal tells in code, with the code marks or without', () => {
+    const move: PlannerInput = {
+      ...INPUT,
+      signals: [
+        {
+          sense: 'dependency',
+          check: 'vulnerabilities',
+          version: 'd487739',
+          symptom: 'outdated-dependency',
+          move: {
+            repository: 'the-roganator/cv-worlds-worst-website',
+            name: 'invented-twice',
+            ecosystem: 'npm',
+            from: '5.7.1,7.5.1',
+            to: '5.7.2,7.5.2',
+            pins: [{ file: 'pnpm-lock.yaml', line: 120 }],
+          },
+        },
+      ],
+    };
+    const sources = sourcesOf(move);
+    expect(sources.signals[0]).toContain('from `5.7.1` and `7.5.1` to `5.7.2` and `7.5.2` or later, on');
+    expect(fits('signal 1', 'invented-twice (npm)', sources).success).toBe(true);
+    expect(fits('signal 1', 'from `5.7.1` and `7.5.1` to `5.7.2` and `7.5.2` or later', sources).success).toBe(true);
+    expect(fits('signal 1', 'from 5.7.1 and 7.5.1 to 5.7.2 and 7.5.2 or later', sources).success).toBe(true);
+    expect(fits('signal 1', 'from 5.7.1 and 7.5.1 to 5.7.3', sources).success).toBe(false);
+  });
 
   it('quotes the words, as the planner was told them, in what the criterion is from', () => {
     expect(fits('signal 1', 'new error pattern').success).toBe(true);

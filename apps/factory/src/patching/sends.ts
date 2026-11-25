@@ -118,9 +118,29 @@ export function moveOf(repository: string, read: ReadMove): Move | string {
 }
 
 /**
- * The scan's evidence of a move: its findings worst first, at most eight, and the rest, the move leaves among them. A
- * finding whose fixed versions do not fit the signal's shape is sent without them (`unfixed`), never dropped for them;
- * one that does not fit even so is counted with the rest (`misfits`).
+ * Each advisory in each package once, however many pins the scan found it at (a lockfile's and an image's are two
+ * findings of one advisory): at its worst rating, with every version that fixes it.
+ */
+function oncePerAdvisory(findings: MoveFinding[]): MoveFinding[] {
+  const once = new Map<string, MoveFinding>();
+  for (const finding of findings) {
+    const key = JSON.stringify([finding.advisory, finding.package]);
+    const same = once.get(key);
+    if (!same) {
+      once.set(key, finding);
+      continue;
+    }
+    const worse = ORDER.indexOf(RATING[finding.severity]) < ORDER.indexOf(RATING[same.severity]) ? finding : same;
+    const fixed = [same.fixed, finding.fixed].filter(Boolean).join(', ');
+    once.set(key, { ...same, severity: worse.severity, fixed: fixed || undefined });
+  }
+  return [...once.values()];
+}
+
+/**
+ * The scan's evidence of a move: its findings, each advisory once a package (`oncePerAdvisory`), worst first, at most
+ * eight, and the rest, the move leaves among them. A finding whose fixed versions do not fit the signal's shape is sent
+ * without them (`unfixed`), never dropped for them; one that does not fit even so is counted with the rest (`misfits`).
  */
 function scanOf(
   reads: ReadMove[],
@@ -130,9 +150,9 @@ function scanOf(
   const findings: Scan['findings'] = [];
   let misfits = 0;
   let unfixed = 0;
-  const sorted = reads
-    .flatMap((read) => read.findings)
-    .sort((a, b) => ORDER.indexOf(RATING[a.severity]) - ORDER.indexOf(RATING[b.severity]));
+  const sorted = oncePerAdvisory(reads.flatMap((read) => read.findings)).sort(
+    (a, b) => ORDER.indexOf(RATING[a.severity]) - ORDER.indexOf(RATING[b.severity]),
+  );
   for (const finding of sorted) {
     let made = findingOf(finding);
     if (made.fixed && !fits(made)) {

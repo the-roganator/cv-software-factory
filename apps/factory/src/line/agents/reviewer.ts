@@ -47,7 +47,7 @@
 import { cutTo, MAX_FINDINGS, PATH_CHARS, type PayloadOf } from '@software-factory/events';
 import { z } from 'zod';
 import { type Answer, LIMITS, suggestionsGoBack, type WorkItemState } from '../machine.ts';
-import { type PinnedMove, targetWords } from '../moves.ts';
+import { type PinnedMove, targetWords, versionsWords } from '../moves.ts';
 import {
   answerThreads,
   cites,
@@ -57,7 +57,7 @@ import {
   suggestionsLeft,
   threadAnswers,
 } from '../review.ts';
-import { askedOf, defineAgent, FLAG_NAMES_FILE, heAnswered, need, words } from './agent.ts';
+import { askedOf, defineAgent, FLAG_NAMES_FILE, heAnswered, need, publicWords, words } from './agent.ts';
 import { contradictedList, flagLine, side } from './coder.ts';
 import { type Asked, askedLines, askedName, askedTitle, numbered, reported, type Signal } from './evidence.ts';
 
@@ -118,8 +118,11 @@ const finding = z.strictObject({
    * answering this one later answers that one's thread too.
    */
   holds: z.number().int().min(1).max(MAX_FINDINGS).optional(),
-  /** What is wrong and what would put it right. Each finding reaches the events whole, so it is short. */
-  comment: words(300),
+  /**
+   * What is wrong and what would put it right. Each finding reaches the events whole, so it is short, and the pull
+   * request as its comment (`publicWords`).
+   */
+  comment: publicWords(300),
 });
 
 const VERDICTS = ['approved', 'changes-requested', 'escalated'] as const;
@@ -133,8 +136,8 @@ export function reviewerResult(criteria = 12, earlier = 0) {
   return z
     .strictObject({
       verdict: z.enum(VERDICTS),
-      /** The review's summary, which the events, the console and the pull request carry. */
-      note: words(300),
+      /** The review's summary, which the events, the console and the pull request carry (`publicWords`). */
+      note: publicWords(300),
       findings: z.array(finding).max(MAX_FINDINGS),
       /**
        * In a later review, the numbers of the findings of the review before that the change now answers: one it blocked
@@ -268,13 +271,13 @@ export function movedLines(move: ReviewerInput['move']): string[] {
       ? 'Node’s version in mise.toml and mise.lock, and each FROM of a Node image'
       : `each FROM of ${move.name}`;
   return [
-    `This change is a dependency’s move: ${move.name} (${move.ecosystem}), from ${move.from} to ${targetWords(move)}. The line’s pin step writes its pins before the coder, in the change: ${files}. Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone, and never ask for a pin to be moved by hand.`,
+    `This change is a dependency’s move: ${move.name} (${move.ecosystem}), from ${versionsWords(move.from)} to ${targetWords(move)}. The line’s pin step writes its pins before the coder, in the change: ${files}. Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone, and never ask for a pin to be moved by hand.`,
     ...(npm
       ? [
-          `The pin step takes the newest release of ${move.name} its range admits, past the app’s release age, at or above ${move.to}: a version above ${move.to} is the move as it should be, not a finding. A title or note that names the version written is right.`,
+          `The pin step takes the newest release of ${move.name} its range admits, past the app’s release age, at or above ${versionsWords(move.to)}: a version above ${versionsWords(move.to)} is the move as it should be, not a finding. A title or note that names the version written is right.`,
         ]
       : []),
-    `Escalate, as only Martin can settle it: ${npm ? `${move.name} resolved below ${move.to}; ` : ''}another package moved that ${move.name}’s new version does not require; or a file changed that is neither in the scope nor one of the pin step’s.`,
+    `Escalate, as only Martin can settle it: ${npm ? `${move.name} resolved below ${versionsWords(move.to)}; ` : ''}another package moved that ${move.name}’s new version does not require; or a file changed that is neither in the scope nor one of the pin step’s.`,
   ];
 }
 

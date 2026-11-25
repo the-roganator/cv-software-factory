@@ -252,6 +252,14 @@ describe('a dependency’s ticket, as an agent is told it', () => {
     expect(ticketLines(ticket)[0]).toBe(
       'It is the move of @invented/glob-walker, in npm, to whatever version fixes it. Category security, severity degraded.',
     );
+    // A routine update fixes nothing, and is not said to.
+    const behind = { sense: 'dependency' as const, check: 'vulnerabilities', version: 'd487739' };
+    expect(ticketLines(ticket, [{ ...behind, move, symptom: 'outdated-dependency' }])[0]).toBe(
+      'It is the move of @invented/glob-walker, in npm, to a newer release: a routine update, which no advisory asked for. Category security, severity degraded.',
+    );
+    expect(ticketLines(ticket, [{ ...behind, move, symptom: 'vulnerable-dependency' }])[0]).toContain(
+      'to whatever version fixes it.',
+    );
     const signal: Signal = {
       sense: 'dependency',
       check: 'vulnerabilities',
@@ -275,7 +283,7 @@ describe('a dependency’s ticket, as an agent is told it', () => {
       ],
     };
     expect(seen(signal)).toEqual([
-      '- The dependency sense\'s check "vulnerabilities" on @invented/glob-walker (npm) in the-roganator/cv-worlds-worst-website, from 3.0.1 to 3.0.2 or later, on pnpm-lock.yaml:120 in version d487739, vulnerable-dependency',
+      '- The dependency sense\'s check "vulnerabilities" on @invented/glob-walker (npm) in the-roganator/cv-worlds-worst-website, from `3.0.1` to `3.0.2` or later, on pnpm-lock.yaml:120 in version d487739, vulnerable-dependency',
       "  - the scan's CVE-2099-0001 in @invented/glob-walker: medium, high by its publisher; fixed in 3.0.2, due 2026-11-18T06:00:00.000Z",
       '  -   and more findings: 2 low',
     ]);

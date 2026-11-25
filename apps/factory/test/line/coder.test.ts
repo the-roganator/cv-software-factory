@@ -172,6 +172,16 @@ describe('the coder', () => {
     expect(coder.prompt(fresh)).toContain('Read AGENTS.md first');
   });
 
+  it('names a scoped package in code in a declined suggestion’s reason, which answers its thread, and mentions nobody', () => {
+    const taste = { ...unmetFinding, blocking: false };
+    const schema = coder.schema({ ...input, round: 2, suggestions: [taste] });
+    const declining = (reason: string) => schema.safeParse({ ...CODED, declined: [{ suggestion: 1, reason }] });
+    expect(declining('The test is @testing-library/dom’s own way.').data).toMatchObject({
+      declined: [{ suggestion: 1, reason: 'The test is `@testing-library/dom`’s own way.' }],
+    });
+    expect(declining('As @mrogan asked.').success).toBe(false);
+  });
+
   it('names the files outside its scope it needs, each with why, instead of changing them, and never a protected one', () => {
     const needs = [{ path: 'test/flags-preview.test.ts', reason: 'It assumes / asks no flag; every page now does.' }];
     const fits = (result: object) => coder.schema(input).safeParse(result).success;
@@ -733,13 +743,13 @@ describe('the coder on a dependency’s move', () => {
 
   it('is told the line’s move under it, as a floor, and how to say it adds nothing', () => {
     const prompt = coder.prompt({ ...moving, move });
-    expect(prompt).toContain('The line moved vitest (npm) from 5.0.5 to 5.1.0 or later before your step');
+    expect(prompt).toContain('The line moved vitest (npm) from `5.0.5` to `5.1.0` or later before your step');
     expect(prompt).toContain('write exactly {"moved": true} instead');
   });
 
   it('is told both again in a step the fence sent back that carries its session', () => {
     const prompt = coder.prompt(coderInputAfterRefusal({ ...moving, move }, FENCED, 's'));
-    expect(prompt).toContain('The line moved vitest (npm) from 5.0.5 to 5.1.0 or later before your step');
+    expect(prompt).toContain('The line moved vitest (npm) from `5.0.5` to `5.1.0` or later before your step');
     expect(prompt).toContain('write exactly {"moved": true} instead');
   });
 });

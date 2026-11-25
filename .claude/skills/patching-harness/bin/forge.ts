@@ -6,7 +6,7 @@
  * admission). `./copies.sh reset` deletes every branch but main and baseline, so this runs again after each reset.
  *
  *     node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>]
- *                   [--as unsigned|other-identity] [--by app|martin]
+ *                   [--as unsigned|other-identity]
  *
  *   N3a  backward: the pin watch's branch and title for the postgres move, pinning an older real tag at its digest now
  *   N3b  a digest not served: the move's right tag, with an invented digest
@@ -32,12 +32,15 @@
  * Reads go through `gh` as Martin, and the registry through crane. Writes go through GitHub's API as the scratch App
  * alone (the-roganator-scratch-factory), with an installation token minted here for the one copy forged in, from the
  * Keychain's scratch-factory-github-app-key, kept in memory, never printed or written. Commits are made by
- * `createCommitOnBranch`, as the worker makes its own, so GitHub signs them as the App's. `--by martin` writes as
- * Martin's gh login instead (a plain branch of a person's), to the same copy alone.
+ * `createCommitOnBranch`, as the worker makes its own, so GitHub signs them as the App's.
  *
- * N8 cannot be forged as Dependabot: nobody can write as it. As the App or as Martin, the gate holds the forgery if it
- * passes that change for Dependabot alone or for its content; which of the two held it is in the gate's words, not in
- * the fact that it held. What the gate does with the same change under Dependabot's own name is its unit tests'.
+ * A workflow file is not the App's to write: it has no `workflows` permission, and GitHub refuses its commit. N7 is
+ * that refusal: the forge pushes as the App and prints what GitHub said (`refused`), with no pull request. N8's branch
+ * is pushed as Martin's gh login, the only one beside Dependabot that can put a workflow change on a branch of the
+ * copy, and its pull request is opened by the App, never by Martin, whose own the gate passes by rule. The gate holds
+ * such a pull request because Dependabot did not open it, before it reads which commit the calls moved to: what it
+ * does with each of N8's three changes under Dependabot's own name is its unit tests'
+ * (scripts/review-routing.test.ts, "an exact pin of the factory's workflows").
  */
 // biome-ignore-all lint/suspicious/noExplicitAny: it reads GitHub's and the registry's JSON as each gives it, untyped
 import { execFileSync } from 'node:child_process';
@@ -104,18 +107,13 @@ const tagsOf = (repository: string) => sh('crane', ['ls', repository]).split('\n
 const b64url = (data: string | Buffer) => Buffer.from(data).toString('base64url');
 let token: string | undefined;
 /**
- * Who writes: the scratch App, or Martin's gh login (`--by martin`, and whenever the forgery writes a workflow file and
- * the App has no permission for those; the forgery's output says who wrote it, `by`).
+ * Who makes the branch and its commit: the scratch App, or, for N8, Martin's gh login, since the App may not write a
+ * workflow file. The pull request is always opened by the App: the gate passes one Martin opens by rule.
  */
-let BY: 'app' | 'martin' = 'app';
-/** Whether the forgery writes a workflow file (N7, N8), which takes a permission of its own. */
-let WORKFLOWS = false;
+let PUSH: 'app' | 'martin' = 'app';
+const martinToken = () => sh('gh', ['auth', 'token']).trim();
 async function appToken(): Promise<string> {
   if (token) return token;
-  if (BY === 'martin') {
-    token = sh('gh', ['auth', 'token']).trim();
-    return token;
-  }
   const pem = Buffer.from(sh('security', ['find-generic-password', '-s', KEYCHAIN, '-w']).trim(), 'base64').toString();
   const now = Math.floor(Date.now() / 1000);
   const unsigned = `${b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: APP_ID }))}`;
@@ -125,26 +123,22 @@ async function appToken(): Promise<string> {
     throw new Error(`the Keychain's key is ${app.slug}'s, not the scratch App's`);
   const installation = await github('GET', `/repos/${REPO}/installation`, undefined, jwt);
   // A token for the copy forged in alone: nothing it is handed can reach another repository.
-  const mint = (permissions: Record<string, string>) =>
-    github(
-      'POST',
-      `/app/installations/${installation.id}/access_tokens`,
-      { repositories: [REPO.split('/')[1]], permissions },
-      jwt,
-    );
-  try {
-    token = (await mint({ contents: 'write', pull_requests: 'write', ...(WORKFLOWS ? { workflows: 'write' } : {}) }))
-      .token as string;
-  } catch (error) {
-    // GitHub mints no token with a permission the App was not given: a workflow file is then Martin's login's to write.
-    if (!WORKFLOWS) throw error;
-    BY = 'martin';
-    token = sh('gh', ['auth', 'token']).trim();
-  }
+  const minted = await github(
+    'POST',
+    `/app/installations/${installation.id}/access_tokens`,
+    { repositories: [REPO.split('/')[1]], permissions: { contents: 'write', pull_requests: 'write' } },
+    jwt,
+  );
+  token = minted.token as string;
   return token;
 }
-/** A call to GitHub's API: with a JWT for the App's own calls, else as the App's installation in the copy. */
-async function github(method: string, path: string, body?: unknown, jwt?: string): Promise<any> {
+/** GitHub's refusal of the commit a forgery pushes, in GitHub's own words. */
+class Refused extends Error {}
+/**
+ * A call to GitHub's API: with a JWT for the App's own calls, with Martin's token where the forgery's branch is his to
+ * push (`bearer`), else as the App's installation in the copy.
+ */
+async function github(method: string, path: string, body?: unknown, jwt?: string, bearer?: string): Promise<any> {
   if (!jwt) {
     const at = /^\/repos\/([^/]+\/[^/]+)\//.exec(path)?.[1];
     if (path !== '/graphql') repoOk(at ?? '');
@@ -153,7 +147,7 @@ async function github(method: string, path: string, body?: unknown, jwt?: string
     method,
     headers: {
       accept: 'application/vnd.github+json',
-      authorization: `Bearer ${jwt ?? (await appToken())}`,
+      authorization: `Bearer ${jwt ?? bearer ?? (await appToken())}`,
       'x-github-api-version': '2022-11-28',
       'user-agent': 'patching-harness-forge',
     },
@@ -658,9 +652,10 @@ async function make(forgery: Forgery, head: string) {
   } catch {
     exists = false;
   }
-  if (exists) await github('PATCH', `/repos/${REPO}/git/refs/${ref}`, { sha: head, force: true });
-  else await github('POST', `/repos/${REPO}/git/refs`, { ref: `refs/${ref}`, sha: head });
-  const made = await github('POST', '/graphql', {
+  const pusher = PUSH === 'martin' ? martinToken() : undefined;
+  if (exists) await github('PATCH', `/repos/${REPO}/git/refs/${ref}`, { sha: head, force: true }, undefined, pusher);
+  else await github('POST', `/repos/${REPO}/git/refs`, { ref: `refs/${ref}`, sha: head }, undefined, pusher);
+  const commitOn = {
     query: 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }',
     variables: {
       input: {
@@ -676,8 +671,21 @@ async function make(forgery: Forgery, head: string) {
         },
       },
     },
-  });
-  if (made.errors) throw new Error(`createCommitOnBranch: ${JSON.stringify(made.errors).slice(0, 300)}`);
+  };
+  // GitHub's answer to the commit is the forgery's first judge: its refusal is kept in its own words.
+  let made: any;
+  try {
+    made = await github('POST', '/graphql', commitOn, undefined, pusher);
+  } catch (error) {
+    throw new Refused(String((error as Error).message));
+  }
+  if (made.errors)
+    throw new Refused(
+      made.errors
+        .map((e: any) => String(e.message ?? JSON.stringify(e)))
+        .join('; ')
+        .slice(0, 600),
+    );
   const commit = made.data.createCommitOnBranch.commit.oid as string;
   const body = `Forged by the patching harness for test ${forgery.test} (.claude/skills/patching-harness/TESTS.md): ${forgery.forged.what}. It must not merge.`;
   // GitHub keeps one open pull request for a head into a base: one already open from the branch is the one forged.
@@ -686,7 +694,7 @@ async function make(forgery: Forgery, head: string) {
   let number: number;
   let reused = false;
   if (open[0]) {
-    if (BY === 'app' && open[0].user?.login !== APP_BOT)
+    if (open[0].user?.login !== APP_BOT)
       throw new Error(`#${open[0].number} from ${branch} is ${open[0].user?.login}'s, not the App's`);
     number = open[0].number;
     reused = true;
@@ -708,22 +716,21 @@ async function main() {
   };
   const branchOver = opt('--branch');
   const as = (opt('--as') ?? 'unsigned') as 'unsigned' | 'other-identity';
-  const by = opt('--by') ?? 'app';
   if (
     !['N3a', 'N3b', 'N4', 'N5', 'N7', 'N8a', 'N8b', 'N8c', 'X1a', 'X1b'].includes(test ?? '') ||
-    !['unsigned', 'other-identity'].includes(as) ||
-    !['app', 'martin'].includes(by)
+    !['unsigned', 'other-identity'].includes(as)
   ) {
     console.error(
-      'usage: node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity] [--by app|martin]',
+      'usage: node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity]',
     );
     process.exit(2);
   }
-  BY = by as 'app' | 'martin';
   const x1 = test === 'X1a' || test === 'X1b';
   const n8 = test === 'N8a' || test === 'N8b' || test === 'N8c';
   if (x1 || n8) REPO = APP;
-  WORKFLOWS = n8 || test === 'N7';
+  // N8's branch is Martin's to push, and the App's to open a pull request from; N7's push is the App's own, which
+  // GitHub must refuse.
+  PUSH = n8 ? 'martin' : 'app';
   repoOk(REPO);
   if (branchOver !== undefined && (!/^[\w./-]+$/.test(branchOver) || ['main', 'baseline'].includes(branchOver)))
     throw new Error(`--branch ${branchOver} is not a branch the forge may write`);
@@ -755,10 +762,27 @@ async function main() {
     console.log(JSON.stringify({ ...out, dryRun: true, ...(at ? { at } : {}) }, null, 2));
     return;
   }
-  const made = await make(forgery, head);
+  let made: Awaited<ReturnType<typeof make>>;
+  try {
+    made = await make(forgery, head);
+  } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    // No commit and no pull request: what GitHub said is the forgery's whole outcome.
+    console.log(
+      JSON.stringify({ ...out, pushedBy: PUSH, refused: error.message, at: new Date().toISOString() }, null, 2),
+    );
+    return;
+  }
   console.log(
     JSON.stringify(
-      { ...out, by: BY, number: made.number, head: made.head, reused: made.reused, at: new Date().toISOString() },
+      {
+        ...out,
+        pushedBy: PUSH,
+        number: made.number,
+        head: made.head,
+        reused: made.reused,
+        at: new Date().toISOString(),
+      },
       null,
       2,
     ),

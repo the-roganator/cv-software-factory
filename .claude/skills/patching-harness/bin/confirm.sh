@@ -243,12 +243,12 @@ level guarded show
 fi
 
 # The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.
-# N8's three ride beside test 20, Dependabot's pull request, which the line has no part in.
+# N8a rides beside test 20, Dependabot's pull request, which the line has no part in.
 if want apps && [ -n "$based" ]; then
 for test in ${APP_TESTS:-8a 10 11 12 13 16 20 N1}; do  # APP_TESTS='16 20' runs some of them
   echo "##### app $test $(date -u +%H:%MZ)"
   with=(); [ "$test" = 13 ] && with=(--with X1a,X1b)
-  [ "$test" = 20 ] && with=(--with N8a,N8b,N8c)
+  [ "$test" = 20 ] && with=(--with N8a)
   harness 12 app "$test" ${with[@]+"${with[@]}"} --limit "${LIMIT:-60}"
 done
 fi

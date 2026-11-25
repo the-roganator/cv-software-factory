@@ -151,12 +151,14 @@ export function certainFail(o: {
   spent?: string[];
   /** The scan's moves the test stands on, for a pin's pull request. */
   moves?: Pick<ListedMove, 'name' | 'to'>[];
+  /** For a move the worker makes: its word that it cannot read the scan's moves (`unreadMoves`), when it says so. */
+  unread?: string | undefined;
 }): string | undefined {
   const merged = o.pulls.find((p) => p.state === 'merged');
   if (o.mustHold) return merged ? `#${merged.number} merged, and must not` : undefined;
   if (o.pulls.length > 1) return `${o.pulls.length} pull requests, not one`;
   const [pull] = o.pulls;
-  if (!pull) return undefined;
+  if (!pull) return o.unread ? `no pull request, and the worker cannot read the scan: ${o.unread}` : undefined;
   const tag = `#${pull.number}`;
   if (pull.state === 'closed') return `${tag} closed unmerged`;
   if (pull.state === 'merged') {
@@ -170,6 +172,31 @@ export function certainFail(o: {
   if (pull.red.length && !pull.pending.length && o.spent?.includes(pull.head))
     return `${tag} red (${pull.red.join(', ')}) at a head the App writes no more`;
   return undefined;
+}
+
+// ── The worker's word that it cannot read the scan ──────────────────────────────────────────────────────────────────
+
+/** How the GitHub worker begins its error when a scan's artifact does not read (apps/factory/src/github/scanning.ts). */
+export const UNREAD_MOVES = /The scan's moves in \S+ cannot be read: [^"\\]*/;
+/**
+ * The worker's word, from its log, that it cannot read the scan's moves: the line quoted, once it has said so on three
+ * passes and within the last three minutes, so one answer GitHub dropped is not taken for it. A scan it cannot read
+ * stays unread until another scan, and no pull request of the worker's opens from it.
+ */
+export function unreadMoves(log: string, now: number): string | undefined {
+  const said: { at: number; words: string }[] = [];
+  for (const line of log.split('\n')) {
+    const words = UNREAD_MOVES.exec(line)?.[0];
+    if (!words) continue;
+    let at = Number.NaN;
+    try {
+      at = Number(new Date(JSON.parse(line).time));
+    } catch {}
+    said.push({ at, words });
+  }
+  const last = said.at(-1);
+  if (said.length < 3 || !last || !(now - last.at < 3 * 60_000)) return undefined;
+  return last.words.trim().slice(0, 300);
 }
 
 // ── How long "nothing after" is ─────────────────────────────────────────────────────────────────────────────────────

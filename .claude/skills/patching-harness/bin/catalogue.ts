@@ -75,6 +75,8 @@ export interface Test {
   removes?: { file: string; lines: string[] };
   /** For a test that ends out of tries: how long a run watches at least, from the scan, to see nothing comes after. */
   watchMin?: number;
+  /** A forgery GitHub must refuse at the push: what its refusal must say. With it, the refusal is the pass. */
+  refusedPush?: RegExp;
   /** A forgery's: the gate's words must say this, so it was held for what it forged and not for another reason. */
   heldFor?: RegExp;
   /** The rule the gate must pass its pull request by (X2: `move`, never `major`). */
@@ -118,6 +120,12 @@ const LOCKFILE = 'a package in `deploy/overlays/local/factory-image/kustomizatio
 const APP_DEV_LOCKFILE = 'a package in `pnpm-lock.yaml`';
 /** The factory's lockfile move of a development dependency, which its image does not install (X2's ejs). */
 const FACTORY_DEV_LOCKFILE = 'a package in `pnpm-lock.yaml`';
+/**
+ * Why two of N8's three are not run: nobody can open a pull request as Dependabot, and the gate holds anyone else's for
+ * that before it reads the commit the calls moved to, so a live forgery of each would show the one hold N8a shows.
+ */
+const N8_UNIT =
+  "the gate holds any but Dependabot's for its opener, as N8a shows; what it does with this change under Dependabot's name is its unit tests' (scripts/review-routing.test.ts)";
 export const TESTS: Test[] = [
   {
     id: '1',
@@ -338,18 +346,19 @@ export const TESTS: Test[] = [
     deployed: { kind: 'none' },
   },
   {
-    // lefthook, a development dependency staged at 1.13.6, the last release of its first major
-    // (staged/factory/18-…), with 2.x out since October 2025 and no advisory: the lockfile's routine update across a
-    // major, on a branch of its own, which writes the manifest's range too.
+    // The console's WebAuthn browser library, a development dependency staged at 13.3.0, the last release of its
+    // major (staged/factory/18-…), with 14.0.0 out since 2 September 2026, no advisory, and provenance on both, so
+    // pnpm takes the move: the lockfile's routine update across a major, on a branch of its own, which writes the
+    // manifest's range too. Vite builds the library into the console, whose deploy follows the merge unjudged.
     id: '18',
-    title: 'a routine update across a major (lefthook)',
+    title: 'a routine update across a major (@simplewebauthn/browser)',
     repo: FACTORY,
     campaign: 'factory',
     moves: [FACTORY_DEV_LOCKFILE],
     routine: true,
     major: true,
     pr: { by: 'lockfile' },
-    removes: { file: 'package.json', lines: ['    "lefthook": "^1.13.6"'] },
+    removes: { file: 'apps/console/package.json', lines: ['    "@simplewebauthn/browser": "^13.3.0"'] },
     deployed: { kind: 'none' },
   },
   {
@@ -402,24 +411,29 @@ export const TESTS: Test[] = [
     deployed: { kind: 'none' },
   },
   {
-    // The pin watch's title and label on a branch of the App's that moves an image a workflow names.
+    // The pin watch's title and label on a commit that moves a third-party action's pin in a workflow, pushed as the
+    // scratch App: GitHub refuses it, as the App has no `workflows` permission, and that refusal is the fence. Had
+    // the push landed, the gate must hold its pull request.
     id: 'N7',
-    title: 'forged: a workflow pin moved, claiming a move',
+    title: 'forged: a workflow pin moved by the App, which GitHub refuses',
     repo: FACTORY,
     campaign: 'factory',
     moves: [],
     pr: { by: 'forged', forge: 'N7' },
+    refusedPush: /workflows?[`'" ]+permission|without `?workflows`?/i,
     deployed: { kind: 'none' },
     mustNot: true,
   },
   {
-    // Test 20's change as Dependabot writes it, with one third-party action's line moved too.
+    // Test 20's change with one third-party action's line moved too, on a branch Martin's login pushed and a pull
+    // request the scratch App opened: held because Dependabot did not open it, which the gate asks first.
     id: 'N8a',
     title: "forged: the factory's workflows and a third-party action's line",
     repo: APP,
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'N8a' },
+    heldFor: /Dependabot did not open it/,
     deployed: { kind: 'none' },
     mustNot: true,
   },
@@ -431,8 +445,10 @@ export const TESTS: Test[] = [
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'N8b' },
+    heldFor: /Dependabot did not open it/,
     deployed: { kind: 'none' },
     mustNot: true,
+    notRun: N8_UNIT,
   },
   {
     // The same six lines, at a commit of the factory copy's main before the one pinned.
@@ -442,8 +458,10 @@ export const TESTS: Test[] = [
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'N8c' },
+    heldFor: /Dependabot did not open it/,
     deployed: { kind: 'none' },
     mustNot: true,
+    notRun: N8_UNIT,
   },
   // The recovery tests, W1 to W4 (the names N1 to N5 are the refusals').
   {

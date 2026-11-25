@@ -34,6 +34,7 @@ import {
   routineBranch,
   saysNotPulled,
   settleMs,
+  unreadMoves,
   workflowPins,
 } from './decide.ts';
 import { BIN, WORK as CLONES, RUNS, SKILL } from './paths.ts';
@@ -412,7 +413,7 @@ interface State {
   /** `errorAt`: when each error line was logged (ISO; '' where the line gave no time), so a move answers only for those since its pull request opened. */
   clean?: { errors: string[]; unhealthy: string[]; restarted: string[]; errorAt?: string[] };
   /** The forgeries forge.ts made for this run: each test's pull request and the commit that must be held. */
-  forged?: Record<string, { number: number; head: string }>;
+  forged?: Record<string, { number?: number; head?: string; refused?: string }>;
   seen: Record<string, Seen>;
   done?: boolean;
 }
@@ -1113,11 +1114,18 @@ function observe(state: State, tests: Test[], final = false) {
  * the run restarted it: `level` (a rule the autonomy level does not queue), `verdict` (a rule no level queues, or no
  * verdict yet), `checks`, `failed` and the rest (deploy-queue.ts's `QueueWait`). It says each once a head.
  */
-function workerWaits(state: State): Map<string, string> {
-  const waits = new Map<string, string>();
+/** The GitHub worker's log since the run restarted it (or since the reset). */
+function workerLog(state: State): string {
   const since = state.kickedAt ?? state.resetAt;
-  if (!since) return waits;
-  const text = kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${since}`], 300_000);
+  if (!since) return '';
+  try {
+    return kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${since}`], 300_000);
+  } catch {
+    return '';
+  }
+}
+function workerWaits(text: string): Map<string, string> {
+  const waits = new Map<string, string>();
   for (const line of text.split('\n')) {
     if (!line.includes('pull request waits to be queued')) continue;
     try {
@@ -1141,6 +1149,8 @@ function workerWaits(state: State): Map<string, string> {
  */
 function decidedHeld(state: State, test: Test, waits: Map<string, string>): boolean {
   const pulls = state.seen[test.id]?.pulls ?? [];
+  // A forgery GitHub refused at the push has no pull request, and nothing left to wait for.
+  if (state.forged?.[test.id]?.refused) return verdict(state, test).pass;
   if (!pulls.length || !verdict(state, test).pass) return false;
   return pulls.every((p) => {
     if (p.mergedAt || p.queuedBy || p.pending.length || p.gatePending) return false;
@@ -1384,10 +1394,16 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
       // A forgery passes only when the gate itself held the forged commit: a queue that never took it proves nothing.
       const made = state.forged?.[test.id];
       const pull = seen.pulls[0];
+      // A forgery of a workflow file is the App's push, which GitHub itself refuses for want of the permission: the
+      // refusal, in GitHub's words, is the pass. Had the push landed, the gate's hold is judged below as any other's.
+      if (made?.refused)
+        return test.refusedPush?.test(made.refused)
+          ? { pass: true, why: `GitHub refused the App's push of a workflow file: ${made.refused}`.slice(0, 420) }
+          : fail(`the forge's push was refused, but not as this test expects: ${made.refused}`.slice(0, 420));
       if (!made || !pull) return fail('not forged');
       if (pull.mergedAt) return fail(`#${pull.number} merged at ${clock(state, pull.mergedAt)}, and must not`);
       if (pull.head !== made.head)
-        return fail(`#${pull.number} is no longer at the forged commit ${made.head.slice(0, 7)}`);
+        return fail(`#${pull.number} is no longer at the forged commit ${(made.head ?? '').slice(0, 7)}`);
       if (pull.pending.includes('review')) return fail(`#${pull.number} not judged yet`);
       if (pull.rule !== 'held') return fail(`#${pull.number}: the gate passed the forgery as ${pull.rule}`);
       // Held for the reason the forgery is about, not another (a read that failed, a tag alone): X1's "not a move".
@@ -1713,8 +1729,16 @@ function run(state: State) {
         timeout: 300_000,
       });
       const made = JSON.parse(out.slice(out.indexOf('{')));
-      state.forged = { ...state.forged, [test.id]: { number: made.number, head: made.head } };
-      say(state, `forged ${test.id}: #${made.number} at ${String(made.head).slice(0, 7)} (${made.forged?.what ?? ''})`);
+      state.forged = {
+        ...state.forged,
+        [test.id]: made.refused ? { refused: String(made.refused) } : { number: made.number, head: made.head },
+      };
+      say(
+        state,
+        made.refused
+          ? `forging ${test.id}: GitHub refused the push: ${String(made.refused).slice(0, 200)}`
+          : `forged ${test.id}: #${made.number} at ${String(made.head).slice(0, 7)} (${made.forged?.what ?? ''})`,
+      );
     } catch (error) {
       say(state, `forging ${test.id} failed: ${String((error as any)?.stderr || error).slice(0, 300)}`);
     }
@@ -1951,19 +1975,25 @@ function run(state: State) {
     // deployed ends then, not at a longer limit set for the slow ones.
     const hour = Date.now() >= Date.parse(state.scan1.createdAt) + 60 * 60_000;
     const mustHold = (t: Test) => t.mustNot || (t.major && !state.flags.includes('--lights-out'));
-    const waits = tests.some((t) => mustHold(t) && t.pr.by !== 'forged') ? workerWaits(state) : new Map();
+    // The worker's log, for its word on why a head waits, and on a scan it cannot read.
+    const byWorker = (t: Test) => t.repo === FACTORY && (t.pr.by === 'pin' || t.pr.by === 'lockfile');
+    const log = tests.some((t) => byWorker(t) || (mustHold(t) && t.pr.by !== 'forged')) ? workerLog(state) : '';
+    const waits = workerWaits(log);
+    const unread = unreadMoves(log, Date.now());
     const holds = (t: Test) =>
       Boolean(mustHold(t)) && ((hour && verdict(state, t).pass) || decidedHeld(state, t, waits));
     // A failure nothing left can undo ends that test's wait too: its verdict is read after the watch, as every one is.
     for (const t of tests) {
       const seen = state.seen[t.id];
-      if (!seen || seen.certain || t.checksRun?.spent || t.issue || t.unread) continue;
+      if (!seen || seen.certain || t.checksRun?.spent || t.unread) continue;
       const tl = seen.timeline;
       seen.certain = certainFail({
         mustHold: Boolean(mustHold(t)),
-        pulls: seen.pulls,
+        // One that ends as an issue has no pull request to judge: only the worker's own word can end it.
+        pulls: t.issue ? [] : seen.pulls,
         spent: [...(tl?.spentRuns ?? []), ...(tl?.spentQueue ?? [])].map((c) => c.head),
         moves: t.pr.by === 'pin' ? seen.moves : [],
+        unread: byWorker(t) ? unread : undefined,
       });
       if (seen.certain) say(state, `${t.id} has failed, whatever comes: ${seen.certain}`);
     }

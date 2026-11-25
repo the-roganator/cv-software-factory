@@ -174,6 +174,56 @@ export function certainFail(o: {
   return undefined;
 }
 
+// ── The scan that confirms a run ────────────────────────────────────────────────────────────────────────────────────
+
+export interface ScanRun {
+  id: number;
+  event: string;
+  /** `completed`, or anything else while it is queued or running. */
+  status: string;
+  conclusion?: string | null;
+  headSha: string;
+  createdAt: string;
+}
+/**
+ * Which scan of main confirms a run's merges, from the workflow's runs: the newest finished one on a commit that holds
+ * every merge (`holds`), which may have left a `moves.json`; with none, the newest still queued or running on such a
+ * commit, to wait for; with neither, one is dispatched. A run GitHub cancelled is never taken: the scan's job keeps one
+ * pending run, so a push of main while one waits replaces it, and the one that replaced it is on a later commit and
+ * confirms as well. Nor is one already found to have left no `moves.json` (`spent`), nor a pull request's proving run.
+ */
+export function pickScan(
+  runs: readonly ScanRun[],
+  holds: (headSha: string) => boolean,
+  spent: ReadonlySet<number> = new Set(),
+): { use: ScanRun } | { wait: ScanRun } | { dispatch: true } {
+  const fit = runs
+    .filter((run) => run.event !== 'pull_request' && !spent.has(run.id))
+    .filter((run) => !(run.status === 'completed' && ['cancelled', 'skipped'].includes(run.conclusion ?? '')))
+    .filter((run) => holds(run.headSha))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : b.id - a.id));
+  const finished = fit.find((run) => run.status === 'completed');
+  if (finished) return { use: finished };
+  const running = fit[0];
+  return running ? { wait: running } : { dispatch: true };
+}
+
+// ── A batch's line in batch.env ─────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `PIN_WATCH_ONLY` as a line a shell reads back whole (`copies.sh` sources batch.env): the names in single quotes, as
+ * they hold spaces, backticks and colons, with any single quote written `'\''`.
+ */
+export const pinWatchLine = (names: readonly string[]) => `PIN_WATCH_ONLY='${names.join(',').replace(/'/g, `'\\''`)}'`;
+/**
+ * batch.env's text with a setting's line put in place of any it has (`line` undefined takes the setting out), the
+ * other lines kept: an empty file gains the line too.
+ */
+export function withSetting(text: string, key: string, line: string | undefined): string {
+  const kept = text.split('\n').filter((l) => l !== '' && !l.startsWith(`${key}=`));
+  return [...kept, ...(line === undefined ? [] : [line])].map((l) => `${l}\n`).join('');
+}
+
 // ── The worker's word that it cannot read the scan ──────────────────────────────────────────────────────────────────
 
 /** How the GitHub worker begins its error when a scan's artifact does not read (apps/factory/src/github/scanning.ts). */

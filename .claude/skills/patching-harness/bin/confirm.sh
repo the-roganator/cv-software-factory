@@ -56,10 +56,14 @@ trap red_off EXIT
 # A batch: the moves the scratch pin watch takes, in batch.env. No baseline is built for it: the harness's own reset of
 # the factory copy writes them where the worker reads them as it starts (copies.sh's pin_watch).
 batch() { # <tests>
-  local line
-  line="$(cd "$H" && mise exec -- node harness.ts only "$1" | grep '^PIN_WATCH_ONLY')" || { broke "batch $1"; return 1; }
-  LINE="$line" perl -0pi -e 's/^PIN_WATCH_ONLY=.*\n//mg; $_ .= "$ENV{LINE}\n"' "$BATCH"
-  echo "the pin watch takes: ${line#PIN_WATCH_ONLY=}"
+  # Written by the harness, which reads the line back as copies.sh will before it says so.
+  (cd "$H" && mise exec -- node harness.ts batch "$1") || { broke "batch $1"; return 1; }
+}
+# A baseline's STAGED_EXTRA in batch.env: the folder named, or with no name, none. Written whole, as a filter that
+# reads no line of an empty file appends none to it.
+extra() { # [<name>]
+  { grep -v '^STAGED_EXTRA=' "$BATCH" || true; if [ -n "${1:-}" ]; then echo "STAGED_EXTRA=$1"; fi; } >"$BATCH.new" &&
+    mv "$BATCH.new" "$BATCH"
 }
 # A baseline, with batch.env's STAGED_EXTRA: built, checked, reset and pinned, then root Synced and Healthy.
 baseline() { # <log>
@@ -122,7 +126,7 @@ based=yes
 if want A || want B || want C || want D || want apps || want W; then
   if [ -z "${KEEP_BASELINE:-}" ]; then
     echo "##### the baseline $(date -u +%H:%MZ)"
-    perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
+    extra
     baseline "$LOGS/confirm-baseline.log" || based=
   fi
 fi
@@ -287,9 +291,9 @@ level guarded
 # harness refuses any other test on this one).
 if [ "${X2:-yes}" != no ]; then
   echo "##### X2: a major that clears a Trivy Critical, Guarded $(date -u +%H:%MZ)"
-  perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg; $_ .= "STAGED_EXTRA=x2\n"' "$BATCH"
+  extra x2
   batch X2 && baseline "$LOGS/confirm-x2.log" && campaign --only X2 --no-forge
-  perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
+  extra
   watches
 fi
 fi
@@ -299,10 +303,10 @@ fi
 if want X4; then
 echo "##### X4: a half-made Node move, finished by the line $(date -u +%H:%MZ)"
 level guarded
-perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg; $_ .= "STAGED_EXTRA=x4\n"' "$BATCH"
+extra x4
 batch W1a,W1b && SKIP_CHECK=1 baseline "$LOGS/confirm-x4.log" &&
   harness 12 app X4 --limit "${LIMIT:-60}"
-perl -0pi -e 's/^STAGED_EXTRA=.*\n//mg' "$BATCH"
+extra
 fi
 echo "##### summary $(date -u +%H:%MZ)"
 (cd "$H" && set -o pipefail && mise exec -- node harness.ts summary | cut -c1-170) || broke "the summary"

@@ -81,7 +81,8 @@ Accepted by Martin on 25 November 2026.
 | W5 | The store restarting under the log watcher's send | no worker logs an error, and the report arrives once |
 
 21's target moves on because the run lifts an exception the baseline stages: the first scan names the release that
-fixes every advisory but the excepted one, and the next the release that fixes that too. 22 is Dependabot's pull request for Postgres's image beside
+fixes every advisory but the excepted one, and the next the release that fixes that too. 23's issue gives whichever reason holds that day: weaker provenance
+for 2.2.2, or a release younger than the minimum age for a day after a later one is published. 22 is Dependabot's pull request for Postgres's image beside
 test 1, and the one left alone its pull request for Playwright on a base from before the baseline, some two hundred
 files `main` never has every line of. Dependabot may close its own pull request before the worker's pass does, or move
 to another line than the App did: the run then says which and gives no verdict, as that shows nothing of the worker.

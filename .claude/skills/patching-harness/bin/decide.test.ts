@@ -20,6 +20,7 @@ import {
   lockfileKey,
   moveFits,
   newerFault,
+  type PodFacts,
   type PullFacts,
   pickScan,
   pinsFault,
@@ -27,13 +28,16 @@ import {
   printOf,
   probeQuery,
   queuedFault,
+  REFUSAL_KINDS,
   restartVerdict,
+  rolloutProgressing,
   routineBranch,
   routineMajorBranch,
   type ScanRun,
   saysNotPulled,
   settleMs,
   staleTarget,
+  startingPods,
   stillListed,
   type TicketFacts,
   targetOf,
@@ -589,6 +593,48 @@ describe("the pull requests of Dependabot's a run needs open as it starts", () =
   });
 });
 
+describe('a pod still starting, before the cluster is judged clean', () => {
+  const probes: PodFacts = {
+    name: 'factory/probes-5f4cfb7d7d-mqvr5',
+    phase: 'Running',
+    ready: false,
+    restarts: 0,
+    waiting: [],
+    deployment: 'factory/probes',
+  };
+  const rolling = ['factory/probes'];
+
+  it("is waited for while its Deployment's rollout is in flight and it has shown no fault", () => {
+    expect(startingPods([probes], rolling)).toEqual([probes.name]);
+    expect(startingPods([{ ...probes, phase: 'Pending', waiting: ['ContainerCreating'] }], rolling)).toHaveLength(1);
+  });
+
+  it('is not waited for once ready, or when no rollout of its Deployment is in flight', () => {
+    expect(startingPods([{ ...probes, ready: true }], rolling)).toEqual([]);
+    expect(startingPods([probes], [])).toEqual([]);
+    expect(startingPods([probes], ['factory/line'])).toEqual([]);
+    expect(startingPods([{ ...probes, deployment: undefined }], rolling)).toEqual([]);
+  });
+
+  it('is judged at once after a restart, in a back-off, or failed', () => {
+    expect(startingPods([{ ...probes, restarts: 1 }], rolling)).toEqual([]);
+    expect(startingPods([{ ...probes, waiting: ['CrashLoopBackOff'] }], rolling)).toEqual([]);
+    expect(startingPods([{ ...probes, phase: 'Pending', waiting: ['ImagePullBackOff'] }], rolling)).toEqual([]);
+    expect(startingPods([{ ...probes, phase: 'Failed' }], rolling)).toEqual([]);
+  });
+
+  it("reads a rollout in flight from the Deployment's Progressing condition", () => {
+    const progressing = (reason: string, status = 'True') => [
+      { type: 'Available', status: 'True', reason: 'MinimumReplicasAvailable' },
+      { type: 'Progressing', status, reason },
+    ];
+    expect(rolloutProgressing(progressing('ReplicaSetUpdated'))).toBe(true);
+    expect(rolloutProgressing(progressing('NewReplicaSetAvailable'))).toBe(false);
+    expect(rolloutProgressing(progressing('ProgressDeadlineExceeded', 'False'))).toBe(false);
+    expect(rolloutProgressing([])).toBe(false);
+  });
+});
+
 describe('an issue that must say why', () => {
   const app = 'scratch[bot]';
   const wants = { names: ['lefthook', '2.2.2'], says: [/weaker provenance/], never: [/log says which/] };
@@ -610,6 +656,30 @@ describe('an issue that must say why', () => {
     expect(issueFault([issue('`lefthook` `2.2.2` was refused')], app, wants).fault).toContain('does not say');
     const body = '`lefthook` `2.2.2`: a weaker provenance, or an install script. The worker’s log says which.';
     expect(issueFault([issue(body)], app, wants)).toEqual({ number: 891, fault: 'issue #891 says log says which' });
+  });
+
+  it("gives the kind of the worker's reason, whichever of them the issue has", () => {
+    const refused = { names: ['lefthook'], says: [/`\d+\.\d+\.\d+`/], never: [/log says which/], kinds: REFUSAL_KINDS };
+    const young =
+      'The pin step could not make `lefthook` `2.2.2`: the release is younger than the minimum age this repository gives a release.';
+    expect(issueFault([issue(young)], app, refused)).toEqual({ number: 891, kind: 'young' });
+    const provenance = '`lefthook` `2.2.2`: published with weaker provenance than the release before it.';
+    expect(issueFault([issue(provenance)], app, refused)).toEqual({ number: 891, kind: 'provenance' });
+    for (const [kind, words] of [
+      ['script', 'the release has an install script this repository does not allow'],
+      ['override', 'it goes with an override for that copy'],
+      ['lock', 'mise could not lock the release'],
+    ])
+      expect(issueFault([issue(`\`lefthook\` \`2.2.3\`: ${words}.`)], app, refused).kind).toBe(kind);
+  });
+
+  it('fails the catch-all, which gives no reason, and an issue that names no release in code', () => {
+    const refused = { names: ['lefthook'], says: [/`\d+\.\d+\.\d+`/], never: [/log says which/], kinds: REFUSAL_KINDS };
+    const other =
+      'The pin step could not make `lefthook` `2.2.2` on the commit it read. The watch makes it once a scan can.';
+    expect(issueFault([issue(other)], app, refused).fault).toContain('gives none of the reasons');
+    const unnamed = '`lefthook`: the release is younger than the minimum age.';
+    expect(issueFault([issue(unnamed)], app, refused).fault).toContain('does not say');
   });
 
   it("knows the pin watch's title for a move, to a target or off a line no longer built", () => {

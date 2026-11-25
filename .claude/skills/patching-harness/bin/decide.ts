@@ -456,12 +456,28 @@ export interface IssueFacts {
   title: string;
   body: string;
 }
-/** What an issue must show: words in code (a package, a version), words it says, and words it never does. */
+/**
+ * What an issue must show: words in code (a package), words it says, words it never does, and, where it must give one
+ * of several reasons, each by its kind (`kinds`): the issue gives the first whose words it has.
+ */
 export interface IssueWants {
   names: string[];
   says: RegExp[];
   never?: RegExp[];
+  kinds?: Record<string, RegExp>;
 }
+/**
+ * Why the pin step refused a move, as the worker's issue says each kind (apps/factory/src/github/pins.ts's `REFUSED`),
+ * but its catch-all, which says no reason: a release too young, one with weaker provenance, an install script not
+ * allowed, a copy only an override would move, a release mise could not lock.
+ */
+export const REFUSAL_KINDS: Record<string, RegExp> = {
+  young: /younger than the minimum age/,
+  provenance: /weaker provenance/,
+  script: /an install script/,
+  override: /an override/,
+  lock: /mise could not lock/,
+};
 /**
  * The App's issue that names every one of `names` in code, and why it falls short of what it must say, if it does.
  * With no such issue, the fault says so.
@@ -470,7 +486,7 @@ export function issueFault(
   issues: readonly IssueFacts[],
   app: string,
   wants: IssueWants,
-): { number?: number; fault?: string } {
+): { number?: number; kind?: string; fault?: string } {
   const named = wants.names.map((name) => `\`${name}\``).join(' and ');
   const issue = issues.find((i) => i.author === app && wants.names.every((name) => i.body.includes(`\`${name}\``)));
   if (!issue) return { fault: `no issue of the App's names ${named}` };
@@ -483,11 +499,55 @@ export function issueFault(
   const has = (wants.never ?? []).filter((words) => words.test(issue.body));
   if (has.length)
     return { number: issue.number, fault: `issue #${issue.number} says ${has.map((w) => w.source).join(', ')}` };
-  return { number: issue.number };
+  if (!wants.kinds) return { number: issue.number };
+  const kind = Object.entries(wants.kinds).find(([, words]) => words.test(issue.body))?.[0];
+  return kind
+    ? { number: issue.number, kind }
+    : {
+        number: issue.number,
+        fault: `issue #${issue.number} gives none of the reasons it may (${Object.keys(wants.kinds).join(', ')})`,
+      };
 }
 /** Whether an issue's title is the pin watch's for a move of this name: to a target, or off a line no longer built. */
 export const issueOfMove = (title: string, name: string) =>
   title.startsWith(`Move ${name} to `) || title.startsWith(`Move ${name} off `);
+
+// ── A pod still starting, before the cluster is judged clean ────────────────────────────────────────────────────────
+
+export interface PodFacts {
+  /** `<namespace>/<name>`. */
+  name: string;
+  phase: string;
+  ready: boolean;
+  restarts: number;
+  /** Why each of its containers that waits does, as the kubelet says it (`ContainerCreating`, `CrashLoopBackOff`). */
+  waiting: string[];
+  /** The Deployment its ReplicaSet is of, `<namespace>/<name>`, when it has one. */
+  deployment?: string | undefined;
+}
+/** A container's waiting that is a start, and no fault: its image is being pulled or its sandbox made. */
+const STARTING = new Set(['ContainerCreating', 'PodInitializing']);
+/**
+ * The pods a run waits for before it takes its one look at the cluster: those of a rollout still in flight, which are
+ * starting and have shown no fault. A deploy that merged as the watch ended rolls every Deployment of the image, and a
+ * pod with a long pull, or one Ready only after its first pass, is Running and not Ready for minutes. Such a pod is
+ * waited for while its Deployment's rollout is progressing (`progressing`), it has not restarted, and none of its
+ * containers waits for anything but its start. Any other pod is judged at once, and one waited for is judged as it
+ * stands when the wait is over: the look itself is no weaker.
+ */
+export function startingPods(pods: readonly PodFacts[], progressing: readonly string[]): string[] {
+  return pods
+    .filter((pod) => ['Pending', 'Running'].includes(pod.phase) && !pod.ready)
+    .filter((pod) => pod.restarts === 0 && pod.waiting.every((why) => STARTING.has(why)))
+    .filter((pod) => pod.deployment !== undefined && progressing.includes(pod.deployment))
+    .map((pod) => pod.name);
+}
+/**
+ * Whether a Deployment's rollout is in flight, from its `Progressing` condition: true and not yet for a new ReplicaSet
+ * that is available. One past its progress deadline is not: its condition is false.
+ */
+export const rolloutProgressing = (conditions: readonly { type: string; status: string; reason?: string }[]) =>
+  conditions.some((c) => c.type === 'Progressing' && c.status === 'True' && c.reason !== 'NewReplicaSetAvailable');
 
 // ── Dependabot's pull request for a pin the App moved ───────────────────────────────────────────────────────────────
 

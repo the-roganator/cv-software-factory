@@ -77,7 +77,8 @@ export interface Test {
   keeps?: { file: string; lines: string[] };
   /**
    * A move the pin step refused, which waits as an issue of the App's beside the pull request that merges without it:
-   * what the issue names in code (its package, the release refused), what it says, and what it never does.
+   * what the issue names in code (its package), what it says (a release in code), and what it never does. It must give
+   * one of the worker's reasons for a refusal, whichever holds that day (decide.ts's `REFUSAL_KINDS`), never none.
    */
   refused?: { names: string[]; says: RegExp[]; never: RegExp[] };
   /** For a test that ends out of tries: how long a run watches at least, from the scan, to see nothing comes after. */
@@ -467,6 +468,8 @@ export const TESTS: Test[] = [
     deployed: { kind: 'none' },
   },
   {
+    // Why pnpm refuses it changes with the registry: weaker provenance for 2.2.2 alone, and a release too young for a
+    // day after each later one (2.2.3 came out on 25 November 2026). The issue must give whichever reason holds.
     // lefthook, 2.2.1 on every baseline with 2.2.2 out, which was published without the provenance its earlier
     // releases had: pnpm refuses it, the pin step leaves it out, and the day's other routine lockfile updates ride
     // without it in the pull request test 15 stands on too.
@@ -478,7 +481,7 @@ export const TESTS: Test[] = [
     routine: true,
     pr: { by: 'lockfile' },
     keeps: { file: 'pnpm-lock.yaml', lines: ['  lefthook@2.2.1:'] },
-    refused: { names: ['lefthook', '2.2.2'], says: [/weaker provenance/], never: [/log says which/] },
+    refused: { names: ['lefthook'], says: [/`\d+\.\d+\.\d+`/], never: [/log says which/] },
     deployed: { kind: 'none' },
   },
   {

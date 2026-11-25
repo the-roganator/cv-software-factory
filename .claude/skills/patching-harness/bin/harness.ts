@@ -50,10 +50,13 @@ import {
   printOf,
   probeQuery,
   queuedFault,
+  REFUSAL_KINDS,
   restartVerdict,
+  rolloutProgressing,
   routineBranch,
   saysNotPulled,
   settleMs,
+  startingPods,
   stillListed,
   type TicketFacts,
   ticketFault,
@@ -482,8 +485,11 @@ interface Seen {
   heldAt?: { head: string; at: string };
   /** For a test with `keeps`: each line, as `removed` reads it; 'moved' is the fault. */
   kept?: string[];
-  /** For a test with `refused`: the App's issue for the move the pin step refused, and what it lacks. */
-  refusal?: { number?: number; fault?: string };
+  /**
+   * For a test with `refused`: the App's issue for the move the pin step refused, the kind of reason it gives, what it
+   * lacks, and its text as read, which a reset deletes with the issue.
+   */
+  refusal?: { number?: number; kind?: string; fault?: string; body?: string };
   /** For a test with `says`: whether each issue found is the App's and says it. */
   issueSays?: boolean;
   /** For a test with `duplicate`: Dependabot's pull request, and those of its that main lacks the lines of. */
@@ -943,7 +949,15 @@ function removedOf(repo: string, number: number, file: string, lines: string[]):
 
 interface Cluster {
   apps: Map<string, { sync: string; health: string; revision?: string; charts: Map<string, string> }>;
-  pods: { name: string; ready: boolean; phase: string; images: string[]; restarts: number }[];
+  pods: {
+    name: string;
+    ready: boolean;
+    phase: string;
+    images: string[];
+    restarts: number;
+    waiting: string[];
+    deployment?: string | undefined;
+  }[];
 }
 function cluster(): Cluster {
   const apps = new Map<string, { sync: string; health: string; revision?: string; charts: Map<string, string> }>();
@@ -969,6 +983,11 @@ function cluster(): Cluster {
         ...statuses.map((s: any) => s.imageID),
       ],
       restarts: statuses.reduce((sum: number, s: any) => sum + (s.restartCount ?? 0), 0),
+      waiting: statuses.flatMap((s: any) => (s.state?.waiting?.reason ? [s.state.waiting.reason as string] : [])),
+      // A Deployment's pod is its ReplicaSet's, named `<deployment>-<hash>`.
+      deployment: (pod.metadata.ownerReferences ?? [])
+        .filter((owner: any) => owner.kind === 'ReplicaSet')
+        .map((owner: any) => `${pod.metadata.namespace}/${String(owner.name).replace(/-[^-]+$/, '')}`)[0],
     };
   });
   return { apps, pods };
@@ -1312,12 +1331,18 @@ function observe(state: State, tests: Test[], final = false) {
     if (one && (test.checksRun || test.queueRuns || stuck)) seen.timeline = timelineOf(test.repo, one.number);
     if (one && test.removes) seen.removed = removedOf(test.repo, one.number, test.removes.file, test.removes.lines);
     if (one && test.keeps) seen.kept = removedOf(test.repo, one.number, test.keeps.file, test.keeps.lines);
-    if (test.refused)
-      seen.refusal = issueFault(
-        issues().map((i) => ({ number: i.number, author: i.user?.login ?? '', title: i.title, body: i.body ?? '' })),
-        APP_BOT,
-        test.refused,
-      );
+    if (test.refused) {
+      const all = issues().map((i) => ({
+        number: i.number,
+        author: i.user?.login ?? '',
+        title: i.title,
+        body: i.body ?? '',
+      }));
+      const read = issueFault(all, APP_BOT, { ...test.refused, kinds: REFUSAL_KINDS });
+      const body = all.find((i) => i.number === read.number)?.body;
+      // One read before stays read: the issue is closed once the move is made, and deleted at the next reset.
+      if (read.number !== undefined || !seen.refusal?.number) seen.refusal = { ...read, ...(body ? { body } : {}) };
+    }
     if (test.duplicate) {
       const leaves = test.duplicate.leaves;
       // The newest of its pull requests: an open one, or the one this run saw closed.
@@ -1409,6 +1434,32 @@ function decidedHeld(state: State, test: Test, waits: Map<string, string>): bool
 }
 
 const podRestarts = () => Object.fromEntries(cluster().pods.map((pod) => [pod.name, pod.restarts]));
+/**
+ * Before the one look at the cluster: the rollouts in flight are given five minutes to settle (decide.ts's
+ * `startingPods`). A deploy that merged as the watch ended is still starting its pods a minute later; a pod that is
+ * not Ready when the wait is over is unhealthy in the look that follows, as any is.
+ */
+function settle(state: State) {
+  const until = Date.now() + 5 * 60_000;
+  let said = '';
+  for (;;) {
+    const progressing = JSON.parse(kubectl(['get', 'deployments', '-A', '-o', 'json']))
+      .items.filter((d: any) => rolloutProgressing(d.status?.conditions ?? []))
+      .map((d: any) => `${d.metadata.namespace}/${d.metadata.name}`);
+    const starting = startingPods(cluster().pods, progressing);
+    if (!starting.length) {
+      if (said) say(state, 'the rollouts in flight have settled');
+      return;
+    }
+    if (Date.now() >= until) {
+      say(state, `still starting after five minutes, and judged as they stand: ${starting.join(', ')}`);
+      return;
+    }
+    if (said !== starting.join(', ')) say(state, `waiting for pods of a rollout in flight: ${starting.join(', ')}`);
+    said = starting.join(', ');
+    sleep(10_000);
+  }
+}
 function clean(state: State): NonNullable<State['clean']> {
   const since = state.scan1?.createdAt ?? state.resetAt ?? new Date().toISOString();
   const now = cluster();
@@ -1599,7 +1650,9 @@ function recoveryWords(state: State, test: Test, seen: Seen): string {
       ? `#${state.then.workItem} closed ${state.then.closed.outcome}, issue #${state.then.issue?.number} completed`
       : '',
     test.removes ? `both copies moved` : '',
-    test.refused && seen.refusal?.number ? `issue #${seen.refusal.number} says why the refused one waits` : '',
+    test.refused && seen.refusal?.number
+      ? `issue #${seen.refusal.number} says why the refused one waits (${seen.refusal.kind})`
+      : '',
     test.newer && state.later?.issue
       ? `it and issue #${state.later.issue} took ${test.newer.later} in place of ${test.newer.first}`
       : '',
@@ -2501,6 +2554,7 @@ function run(state: State) {
   thenNow();
   observe(state, tests, true);
   laterNow(true);
+  settle(state);
   state.clean = clean(state);
   state.done = true;
   save(state);

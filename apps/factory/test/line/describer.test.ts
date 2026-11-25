@@ -168,6 +168,18 @@ describe('the describer of a dependency’s move', () => {
     );
   });
 
+  it('is told what the line’s own section holds: the gates’ counts, or, of a routine update, that it is one', () => {
+    expect(describer.prompt(moved)).toContain(
+      'each pin before and after, and what the scan gates counted on `main` and on the change, from their own notices, and the Dependabot pull request it replaces',
+    );
+    const behind = moved.signals.map((signal) => ({ ...signal, symptom: 'outdated-dependency' as const }));
+    const routine = describer.prompt({ ...moved, signals: behind });
+    expect(routine).toContain(
+      'each pin before and after, that it is a routine update, and the Dependabot pull request it replaces',
+    );
+    expect(routine).not.toContain('what the scan gates counted');
+  });
+
   it('is refused a summary that leaves the package out of any part of it, saying which and why', () => {
     const schema = describer.schema(moved);
     expect(schema.safeParse(result({})).success).toBe(true);

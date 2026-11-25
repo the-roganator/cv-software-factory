@@ -82,6 +82,7 @@ import {
   replacesLine,
   targetWords,
   UnreadMove,
+  versionsWords,
   writtenVersion,
 } from '../moves.ts';
 import { answerThreads, cites, type Finding, lineage, threadAnswers } from '../review.ts';
@@ -97,6 +98,7 @@ import {
   holdDraft,
   need,
   oneLine,
+  publicWords,
   routineUpdate,
   StepFailed,
   StepStale,
@@ -177,9 +179,12 @@ const pressed = (input: CoderInput) =>
 /** The most a coder may say of why it changed nothing: it is the hold's reason, after the line's own words. */
 export const UNCHANGED_MAX = 200;
 
-/** The suggestions the coder declines, each by its number as it was given them, with its reason. */
+/**
+ * The suggestions the coder declines, each by its number as it was given them, with its reason, which answers the
+ * suggestion's thread on the pull request (`publicWords`).
+ */
 const declined = z
-  .array(z.strictObject({ suggestion: z.number().int().min(1).max(MAX_FINDINGS), reason: words(300) }))
+  .array(z.strictObject({ suggestion: z.number().int().min(1).max(MAX_FINDINGS), reason: publicWords(300) }))
   .max(MAX_FINDINGS);
 
 /** The files outside the scope the coder needs to change and may not, each with why. */
@@ -616,7 +621,7 @@ const LOCKFILE =
 const movedLines = ({ move }: CoderInput) =>
   move
     ? [
-        `The line moved ${move.name} (${move.ecosystem}) from ${move.from} to ${targetWords(move)} before your step, in a commit of its own under the checkout: build on it, and never move it back or further.`,
+        `The line moved ${move.name} (${move.ecosystem}) from ${versionsWords(move.from)} to ${targetWords(move)} before your step, in a commit of its own under the checkout: build on it, and never move it back or further.`,
       ]
     : [];
 
@@ -890,7 +895,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
                 workItem,
                 issue,
                 spec,
-                state.request !== undefined,
+                state.request !== undefined ? 'improvement' : routineUpdate(input.signals) ? 'update' : 'fix',
                 await replacedFor(context, state.ticket),
               ),
               contradicts,
@@ -1024,19 +1029,21 @@ export const refersTo = (issue: number | null) => (issue ? `Refers to #${issue}.
 
 /**
  * A fix's pull request until the describer writes its description: the ticket's issue and the spec the fix is held
- * to. It stays a draft until then, so nobody reviews it before the gates and the reviewer have.
+ * to. It stays a draft until then, so nobody reviews it before the gates and the reviewer have. A routine update's
+ * claims no fix: no advisory asked for it.
  */
-function pullRequestBody(
+export function pullRequestBody(
   workItem: string,
   issue: number | null,
   spec: PayloadOf<'spec.written'>,
-  improvement: boolean,
+  kind: 'fix' | 'update' | 'improvement',
   replaces?: number,
 ): string {
+  const improvement = kind === 'improvement';
   return [
     improvement
       ? `The factory’s improvement #${workItem}, behind the flag \`${spec.flag ?? 'its-flag'}\`, off until Martin turns it on. ${refersTo(issue)}`.trim()
-      : `The factory’s fix for ticket #${workItem}. ${refersTo(issue)}`.trim(),
+      : `The factory’s ${kind === 'update' ? 'routine update' : 'fix'} for ticket #${workItem}. ${refersTo(issue)}`.trim(),
     '',
     `**Outcome.** ${spec.outcome}`,
     ...(improvement && spec.pages ? ['', `**Pages.** ${spec.pages.map((page) => `\`${page}\``).join(', ')}`] : []),

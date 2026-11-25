@@ -44,8 +44,8 @@ import {
   defineAgent,
   type EffectsContext,
   failedAttemptLines,
-  mentionsIn,
   need,
+  refuseMentions,
   routineUpdate,
   scopedNamesInCode,
   titleFor,
@@ -95,12 +95,7 @@ export const describerResultFor = (title: z.ZodType<string>, moved?: string) =>
       // A scoped package's name outside code would mention a team: the line puts it in code itself (`agent.ts`).
       .transform(scopedNamesInCode)
       .refine((body) => !closesAnIssue(body), 'no closing keyword before an issue: the issue closes once verified')
-      .superRefine((body, ctx) => {
-        const named = [...new Set(mentionsIn(body))];
-        if (!named.length) return;
-        const message = `no @mention outside code: ${named.slice(0, 3).join(', ')} would notify someone from the App’s account`;
-        ctx.addIssue({ code: 'custom', message });
-      })
+      .superRefine((body, ctx) => refuseMentions(body, ctx))
       .refine(
         (body) => !/factory\s*:\s*contradicts/i.test(body),
         'no factory:contradicts marker: the line writes the section that names the tests the spec contradicts',
@@ -222,7 +217,7 @@ const FIX_WRITING = [
 /** What the describer is told of a move's description, whose figures the line writes itself. */
 const moveWriting = (moved: string | undefined, routine = false) => [
   '',
-  'This change is a dependency’s move. The line adds a section of its own after your description: the spec, each pin before and after, and what the scan gates counted on `main` and on the change, from their own notices, and the Dependabot pull request it replaces, if there is one. So write no version, pin, digest, advisory or count of findings in the description or the summary: say what moves and why in words, naming the package or image that moves as the move’s signal names it, which the ticket’s issue, opened before the plan, made public, and what, if anything, the coder had to change beyond the pins.',
+  `This change is a dependency’s move. The line adds a section of its own after your description: the spec, each pin before and after, ${routine ? 'that it is a routine update' : 'and what the scan gates counted on `main` and on the change, from their own notices'}, and the Dependabot pull request it replaces, if there is one. So write no version, pin, digest, advisory or count of findings in the description or the summary: say what moves and why in words, naming the package or image that moves as the move’s signal names it, which the ticket’s issue, opened before the plan, made public, and what, if anything, the coder had to change beyond the pins.`,
   ...(moved
     ? [
         `The summary’s \`title\`, \`description\` and \`story\` each name ${moved}, exactly so: the line refuses a summary of a move that leaves the package out of any of them. Still no version, advisory or count in any of them.`,
@@ -310,17 +305,18 @@ export const describer = defineAgent<DescriberInput, DescriberResult>({
 
 /**
  * The factory's section of a move's description: the spec, each pin before and after from the pull request's diff,
- * what the scan gates counted at its head, and the Dependabot pull request it replaces.
+ * what the scan gates counted at its head, or that it is a routine update, and the Dependabot pull request it replaces.
  */
 async function moveSectionFor(
   context: EffectsContext,
   pr: { head: { sha: string }; base: { ref: string } },
   spec: PayloadOf<'spec.written'>,
 ): Promise<string> {
-  const move = (await context.signals()).findLast((signal) => signal.sense === 'dependency')?.move;
+  const signals = await context.signals();
+  const move = signals.findLast((signal) => signal.sense === 'dependency')?.move;
   if (!move) return '';
   const compared = await context.read('comparison', { base: pr.base.ref, head: pr.head.sha });
   const pins = pinChanges(compared.files, move, LOCKFILE_NAMES);
   const counts = await context.scanCounts(pr.head.sha);
-  return moveSection(spec, pins, counts, await replacedFor(context, context.state.ticket));
+  return moveSection(spec, pins, counts, await replacedFor(context, context.state.ticket), routineUpdate(signals));
 }

@@ -22,6 +22,7 @@ import {
   replacedPull,
   targetWords,
   UnreadMove,
+  versionsWords,
   writtenVersion,
 } from '../../src/line/moves.ts';
 import {
@@ -201,7 +202,7 @@ describe('a move that needs no coder', () => {
     // Below the floor, or nothing the line can read: it never titles a guess.
     expect(() => writtenVersion(GRPC, grpcPins('1.14.4'))).toThrow(UnreadMove);
     expect(() => writtenVersion(GRPC, grpcPins('1.14.4'))).toThrow(
-      /resolves @grpc\/grpc-js to 1\.14\.4, below the move’s 1\.14\.5/,
+      /resolves @grpc\/grpc-js to `1\.14\.4`, below the move’s `1\.14\.5`/,
     );
     expect(() =>
       writtenVersion(
@@ -215,7 +216,7 @@ describe('a move that needs no coder', () => {
       `diff --git a/mise.toml b/mise.toml\n--- a/mise.toml\n+++ b/mise.toml\n@@ -1 +1 @@\n-node = "24.11.0"\n+node = "${to}"\n`;
     expect(writtenVersion(node, mise('24.11.1'))).toBe('24.11.1');
     // One the patch does not add is not one it wrote.
-    expect(() => writtenVersion(node, mise('24.11.2'))).toThrow('The pin step’s patch does not write node 24.11.1');
+    expect(() => writtenVersion(node, mise('24.11.2'))).toThrow('The pin step’s patch does not write node `24.11.1`');
   });
 
   it('leaves out an importer the move left as it was, shown only as context', () => {
@@ -275,17 +276,17 @@ describe('a move that needs no coder', () => {
   });
 
   it('says a package’s target as a floor, and Node’s or an image’s as it is, before the pins exist', () => {
-    expect(targetWords({ ecosystem: 'npm', to: '1.14.5' })).toBe('1.14.5 or later');
-    expect(targetWords({ ecosystem: 'node', to: '24.11.1' })).toBe('24.11.1');
+    expect(targetWords({ ecosystem: 'npm', to: '1.14.5' })).toBe('`1.14.5` or later');
+    expect(targetWords({ ecosystem: 'node', to: '24.11.1' })).toBe('`24.11.1`');
   });
 
   it('is noted by the line with what moved, to the version written against its floor, and no advisory', () => {
     const pins = grpcPins('1.14.7');
     expect(moveNote(GRPC, '1.14.7', pins, false)).toBe(
-      'The pin step moved @grpc/grpc-js (npm) from 1.14.4 to 1.14.7, the newest release its range admits at or above 1.14.5, in package.json, pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
+      'The pin step moved @grpc/grpc-js (npm) from `1.14.4` to `1.14.7`, the newest release its range admits at or above `1.14.5`, in package.json, pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
     );
     expect(moveNote(GRPC, '1.14.5', pins, true)).toBe(
-      'The pin step moved @grpc/grpc-js (npm) from 1.14.4 to 1.14.5 in package.json, pnpm-lock.yaml. The coder found nothing more the criteria need of it: the move is the whole change.',
+      'The pin step moved @grpc/grpc-js (npm) from `1.14.4` to `1.14.5` in package.json, pnpm-lock.yaml. The coder found nothing more the criteria need of it: the move is the whole change.',
     );
   });
 });
@@ -305,7 +306,7 @@ describe('a move’s newest target', () => {
     await pass();
     await pass();
     const [planned, coded] = steps.requests;
-    expect(planned?.prompt).toContain('from 2.0.0 to 2.0.3');
+    expect(planned?.prompt).toContain('from `2.0.0` to `2.0.3`');
     expect(planned?.prompt).not.toContain('to 2.0.1');
     expect(planned?.prompt).toContain('GHSA-0000-0000-0002');
     expect(coded).toMatchObject({ agent: 'coder', move: { ...MOVE, to: '2.0.3' } });
@@ -708,6 +709,51 @@ describe('what the line says of a move', () => {
     expect(section).not.toMatch(/\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #\d/i);
   });
 
+  it('says the gates’ counts of no routine update, which no advisory asked for: it says why it moves', () => {
+    const pins = [{ file: 'pnpm-lock.yaml', before: 'invented-pkg@2.0.0:', after: 'invented-pkg@2.0.1:' }];
+    const counted = { critical: 0, high: 0, medium: 0, low: 1, unknown: 0 };
+    const counts = [{ check: 'gates / lockfile scan', findings: { before: counted, after: counted } }];
+    const section = moveSection(SPEC, pins, counts, undefined, true);
+    expect(section).toContain(
+      '**Why it moves.** A routine update: the scan lists a newer release, with no advisory behind it.',
+    );
+    expect(section).not.toContain('What the scans counted');
+    expect(section).not.toContain('gates / lockfile scan');
+    expect(section).toContain('| `pnpm-lock.yaml` | `invented-pkg@2.0.0:` | `invented-pkg@2.0.1:` |');
+    // A move a finding asked for keeps its counts.
+    expect(moveSection(SPEC, pins, counts, undefined)).toContain('**What the scans counted**');
+  });
+
+  it('says a package locked at two versions as each of them, in code, wherever a person reads the move', () => {
+    expect(versionsWords('5.7.2')).toBe('`5.7.2`');
+    expect(versionsWords('5.7.2,7.5.2')).toBe('`5.7.2` and `7.5.2`');
+    expect(versionsWords('4.0.1,5.7.2,7.5.2')).toBe('`4.0.1`, `5.7.2` and `7.5.2`');
+    const twice = { ecosystem: 'npm' as const, name: 'invented-twice', from: '5.7.1,7.5.1', to: '5.7.2,7.5.2' };
+    expect(targetWords(twice)).toBe('`5.7.2` and `7.5.2` or later');
+    const sent = { ...signal('5.7.2,7.5.2'), move: { repository: REPO, ...twice, pins: PINS } };
+    expect(moveIssue('7', TICKET, TICKET, sent).body).toContain(
+      'the move of `invented-twice`, in npm, from `5.7.1` and `7.5.1` to `5.7.2` and `7.5.2` or later, in',
+    );
+    const pins = [
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml',
+      '--- a/pnpm-lock.yaml',
+      '+++ b/pnpm-lock.yaml',
+      '@@ -1,2 +1,2 @@',
+      ' packages:',
+      '-  invented-twice@5.7.1:',
+      '+  invented-twice@5.7.3:',
+      '',
+    ].join('\n');
+    expect(moveNote(twice, '5.7.3', pins, false)).toContain(
+      'from `5.7.1` and `7.5.1` to `5.7.3`, the newest release its range admits at or above `5.7.2` and `7.5.2`, in pnpm-lock.yaml.',
+    );
+    expect(() => writtenVersion(twice, pins.replace('5.7.3', '5.7.0'))).toThrow(
+      'resolves invented-twice to `5.7.0`, below the move’s `5.7.2` and `7.5.2`',
+    );
+    // The versions as data stay one word: what `issue.opened` records is the move's own.
+    expect(disclosedMove(twice, sent)).toMatchObject({ from: '5.7.1,7.5.1', to: '5.7.2,7.5.2' });
+  });
+
   it('builds the issue from fixed fields alone', () => {
     const { body } = moveIssue('7', TICKET, TICKET, signal('2.0.1'));
     expect(body).toContain('- Pinned at: `pnpm-lock.yaml:41`');
@@ -764,7 +810,8 @@ describe('what the line says of a move', () => {
 });
 
 describe('a move’s description', () => {
-  it('is the describer’s words, then the factory’s section from the diff and the gates’ counts, then the issue', async () => {
+  /** The description the line publishes for the move its newest signal names, and the commits its counts were asked of. */
+  async function published(sent: PayloadOf<'signal.received'>): Promise<{ body: string; counted: string[] }> {
     const acts: { action: string; args: Record<string, unknown> }[] = [];
     const reads: Record<string, unknown> = {
       pullRequest: { draft: false, nodeId: 'PR_1', head: { sha: 'f'.repeat(40) }, base: { ref: 'main' } },
@@ -786,7 +833,7 @@ describe('a move’s description', () => {
       workItem: '7',
       issue: 12,
       state: { ticket: TICKET },
-      signals: async () => [signal('2.0.1')],
+      signals: async () => [sent],
       read: async (read: string) => reads[read],
       scanCounts: async (commit: string) => {
         counted.push(commit);
@@ -818,7 +865,7 @@ describe('a move’s description', () => {
       {
         workItem: '7',
         asked: { kind: 'ticket', ticket: TICKET },
-        signals: [signal('2.0.1')],
+        signals: [sent],
         spec: SPEC,
         pullRequest: 3,
         title: 'x',
@@ -829,13 +876,26 @@ describe('a move’s description', () => {
       } as never,
       context as never,
     );
-    const body = acts.find((a) => a.action === 'updatePullRequest')?.args.body as string;
+    return { body: acts.find((a) => a.action === 'updatePullRequest')?.args.body as string, counted };
+  }
+
+  it('is the describer’s words, then the factory’s section from the diff and the gates’ counts, then the issue', async () => {
+    const { body, counted } = await published(signal('2.0.1'));
     expect(body.startsWith('The move of a package the shop builds with')).toBe(true);
     expect(body).toContain('## The move');
     expect(body).toContain('| `pnpm-lock.yaml` | `invented-pkg@2.0.0:` | `invented-pkg@2.0.1:` |');
     expect(body).toContain('before 0 critical, 1 high');
     expect(body.endsWith('Refers to #12.')).toBe(true);
     expect(counted).toEqual(['f'.repeat(40)]);
+  });
+
+  it('says of a routine update why it moves, in place of counts no advisory gave it', async () => {
+    const { evidence: _, ...bare } = signal('2.0.1');
+    const { body } = await published({ ...bare, symptom: 'outdated-dependency' });
+    expect(body).toContain('| `pnpm-lock.yaml` | `invented-pkg@2.0.0:` | `invented-pkg@2.0.1:` |');
+    expect(body).toContain('**Why it moves.** A routine update');
+    expect(body).not.toContain('What the scans counted');
+    expect(body).not.toContain('before 0 critical');
   });
 });
 

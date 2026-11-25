@@ -83,7 +83,8 @@ The intake (`factory intake`) answers `POST /v1/alerts`:
   - the series behind it, as a metric picture;
   - the app's version;
   - the route, as the app's log names it;
-- **a resolved alert** writes nothing.
+- **a resolved alert** writes nothing;
+- **an alert that failed** for a reason that may pass is answered 503, and Alertmanager sends it again. Patching Prometheus, Loki or Postgres restarts it: an alert that could not reach the telemetry it reads, while that has been away under two minutes, or the store, under one, is a warning in the intake's log, and the alert sent again that reaches both says how long each was away. Away for longer, and any other failure, is an error.
 
 ## Security events
 
@@ -178,7 +179,7 @@ Martin hears of a move, never of a finding: a finding with no fix is nothing he 
 | Kind | When |
 | --- | --- |
 | `move-fix` | a move first clears a High or a Critical: the scan found a fix |
-| `move-waits` | a move a finding asks for first waits on him: only his cluster's own command applies it, or no pull request of the App's can write it; or the sense found something running that no scan read, or a pin `main` holds that the cluster does not run yet, a routine update's too, known by what runs and where, not by its pod, so a rollout is not a new one. It is a card in Needs you. A major the autonomy level holds is none: its pull request's description says it waits |
+| `move-waits` | a move a finding asks for first waits on him: only his cluster's own command applies it, or no pull request of the App's can write it; or the sense found something running that no scan read, or a pin `main` holds that the cluster does not run yet, a routine update's too, known by what runs and where, not by its pod, so a rollout is not a new one. It is a card in Needs you. A major the autonomy level holds is none: its pull request's description says it waits. Nor is a line no longer built: its issue in its repository says so |
 | `move-due-soon` | a move in the sense's last day comes within a day of its deadline. One first seen within a day of it, or past it, is told by `move-fix` alone, which names its deadline in Patching |
 | `move-overdue` | a move in the sense's last day passes its deadline |
 | `app-fix-merged` | the line queues and merges (its own role's `pull-request.merged`) a work item's pull request for a vulnerable dependency of the app (its `work-item.opened` carries `dependency.security`) that no merge hold waited on him for: one he approved after a hold is his. At Guarded the review gate's `move` rule allows it: a pull request that is exactly the scan's moves, and no `major` |

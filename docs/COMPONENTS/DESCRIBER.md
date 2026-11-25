@@ -28,7 +28,7 @@ Read with Zod:
 The squash commit takes the description as its message, so the schema refuses:
 
 - a closing keyword before an issue, which would close the ticket's issue on merge rather than once the fix is verified, or an improvement's, which stays open while Martin turns its flag on;
-- an @mention outside code, naming each it found. A scoped package's name, such as `@grpc/grpc-js`, is how GitHub mentions a team, and a move names its packages: before the rule reads the description, the line puts each such name outside code in inline code itself, so only a user's `@name` is refused;
+- an @mention outside code, naming each it found. A scoped package's name, such as `@grpc/grpc-js`, is how GitHub mentions a team, and a move names its packages: before the rule reads the description, the line puts each such name outside code in inline code itself, so only a user's `@name` is refused, as for every agent's words the line publishes ([steps](ORCHESTRATOR.md#steps));
 - a `factory:contradicts` marker, since the line writes the section test integrity reads;
 - a folded section that would not render, read line by line (`line/agents/folds.ts`): GitHub shows the Markdown in a `<details>` as text unless a blank line ends the HTML before it.
 
@@ -36,7 +36,7 @@ A refused result runs the step again, told why.
 
 A description names among its risks each test the spec contradicts, with what the change did to it and which criterion asked for that. It writes no section for them: the line adds the one [test integrity](TEST-INTEGRITY.md#tests-the-spec-contradicts) reads.
 
-A dependency's move's description is the factory's: after the describer's words, which name no version, pin, digest, advisory or count, and which for a routine update say what moved, never that anything was fixed, under a title of type `chore` with the scope `deps`, the line adds a section of its own (`moveSection` in `line/moves.ts`): the spec, each pin before and after from the pull request's diff (in the move's files and the lockfiles, the lines that name the move or its versions), what each scan gate counted on `main` and on the change, by severity, as `gate.finished` recorded it from the gate's own notice, the Dependabot pull request it replaces, and that the app names no runtime-critical package, so no proof of one ran. No model retypes a figure.
+A dependency's move's description is the factory's: after the describer's words, which name no version, pin, digest, advisory or count, and which for a routine update say what moved, never that anything was fixed, under a title of type `chore` with the scope `deps`, the line adds a section of its own (`moveSection` in `line/moves.ts`): the spec, each pin before and after from the pull request's diff (in the move's files and the lockfiles, the lines that name the move or its versions), what each scan gate counted on `main` and on the change, by severity, as `gate.finished` recorded it from the gate's own notice, or, for a routine update, that the scan lists a newer release with no advisory behind it, in place of counts of nothing cleared, the Dependabot pull request it replaces, and that the app names no runtime-critical package, so no proof of one ran. No model retypes a figure.
 
 An improvement's description says what Martin asked for, what the change adds behind which flag and on which pages, which test shows each criterion and on which side of the flag, and that it ships off: nobody sees it until Martin turns the flag on. Its pull request waits for his merge in every autonomy mode.
 

@@ -118,7 +118,7 @@ How long a work item may stay at a stage before the line counts as stuck there (
 | `gates` | 1 hour | The app's checks on the pull request |
 | `review` | 2 hours | The reviewer's step and then the describer's, 30 minutes each, and one of them again |
 | `release` | 1 hour | A canary's steps take minutes |
-| `verify` | 25 hours | Verify holds for Martin after 24 hours of a sense not telling |
+| `verify` | 25 hours | Verify holds for Martin after 24 hours of a sense not telling. A routine update that waits for a scan with a whole routine listing holds only after 48 ([Verify](RELEASE-AND-VERIFY.md#verify)), so from 25 hours until its hold it is past this limit, and counts as stuck |
 | `waiting`, `held` | none | Waits on other work, or on Martin |
 
 | Series | Says |

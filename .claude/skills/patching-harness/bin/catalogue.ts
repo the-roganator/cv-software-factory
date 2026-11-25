@@ -427,14 +427,15 @@ export const TESTS: Test[] = [
   },
   {
     // Test 20's change with one third-party action's line moved too, on a branch Martin's login pushed and a pull
-    // request the scratch App opened: held because Dependabot did not open it, which the gate asks first.
+    // request the scratch App opened: held as the App's own change to a code-owned path, which the gate judges before
+    // it would ask who opened an exact pin of the factory's workflows.
     id: 'N8a',
     title: "forged: the factory's workflows and a third-party action's line",
     repo: APP,
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'N8a' },
-    heldFor: /Dependabot did not open it/,
+    heldFor: /Held for its risk tags \(code-owned\)|Dependabot did not open it/,
     deployed: { kind: 'none' },
     mustNot: true,
   },
@@ -446,7 +447,7 @@ export const TESTS: Test[] = [
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'N8b' },
-    heldFor: /Dependabot did not open it/,
+    heldFor: /Held for its risk tags \(code-owned\)|Dependabot did not open it/,
     deployed: { kind: 'none' },
     mustNot: true,
     notRun: N8_UNIT,
@@ -459,7 +460,7 @@ export const TESTS: Test[] = [
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'N8c' },
-    heldFor: /Dependabot did not open it/,
+    heldFor: /Held for its risk tags \(code-owned\)|Dependabot did not open it/,
     deployed: { kind: 'none' },
     mustNot: true,
     notRun: N8_UNIT,

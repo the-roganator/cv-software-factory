@@ -100,6 +100,7 @@ import {
   failedAttemptLines,
   heAnswered,
   holdDraft,
+  mentions,
   plainWords as plain,
   refuseMentions,
   StepFailed,
@@ -398,6 +399,11 @@ const specWithin = (
     (spec) => scopedInCode(noneContradicted(spec)),
     PAYLOADS['spec.written'].superRefine((spec, ctx) => {
       for (const { path, text } of published(spec)) refuseMentions(text, ctx, path);
+      // A criterion is published on one line, where a code mark one part leaves open closes at the next part's.
+      spec.criteria.forEach((c, i) => {
+        if ([c.given, c.when, c.expect].some(mentions)) return;
+        refuseMentions(`Given ${c.given}, when ${c.when}, then ${c.expect}.`, ctx, ['criteria', i]);
+      });
       if (improvement) improvementProblems(spec, improvement, ctx);
       if (shipped) repeatsShipped(spec, shipped, ctx);
       spec.scope.forEach((entry, i) => {

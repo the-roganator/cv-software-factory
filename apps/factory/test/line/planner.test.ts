@@ -271,6 +271,17 @@ describe('a spec’s words the pull request’s description carries', () => {
       },
     ]);
     expect(planned({ ...SPEC, rollout: 'Ships as it is; tell @mrogan.' }).success).toBe(false);
+    // Parts that each pass alone, and make a mention on the one line a criterion is published on.
+    const composed = planned({
+      ...SPEC,
+      criteria: [{ ...criterion, given: 'a price in the `cart', expect: '`@mrogan` reads £35.00' }],
+    });
+    expect(composed.error?.issues.map(({ path, message }) => ({ path, message }))).toEqual([
+      {
+        path: ['spec', 'criteria', 0],
+        message: 'no @mention outside code: @mrogan would notify someone from the App’s account',
+      },
+    ]);
     expect(planned({ ...SPEC, rollout: 'Ships as it is; `@mrogan` is only a name in code.' }).success).toBe(true);
   });
 });

@@ -26,7 +26,7 @@ type Review = Pick<ReviewerResult, 'verdict' | 'note'> & { findings: Finding[] }
 export type Finding = PayloadOf<'review.submitted'>['findings'][number];
 
 /** What a finding cites, as a reader sees it: "rule 4 · criterion 2", or "the ticket". */
-export const cites = (f: Pick<Finding, 'rule' | 'criterion' | 'ticket'>) =>
+export const cites = (f: Pick<Shown, 'rule' | 'criterion' | 'ticket'>) =>
   [f.ticket && 'the ticket', f.rule && `rule ${f.rule}`, f.criterion && `criterion ${f.criterion}`]
     .filter(Boolean)
     .join(' · ');
@@ -59,7 +59,13 @@ export interface ReviewInGitHub {
   check: CheckRunReport;
 }
 
-const mark = (f: Finding) => `**${f.blocking ? 'Blocking' : 'Suggestion'}**${cites(f) ? ` · ${cites(f)}` : ''}`;
+/** A finding as a reader is shown it, whether its `ticket` is the events' `true` or a result's yes or no. */
+type Shown = Omit<Finding, 'ticket'> & { ticket?: boolean | undefined };
+
+const mark = (f: Shown) => `**${f.blocking ? 'Blocking' : 'Suggestion'}**${cites(f) ? ` · ${cites(f)}` : ''}`;
+
+/** A finding as the review's body and the check run's summary list it: one line, after its place and its mark. */
+export const listed = (f: Shown) => `- \`${f.path}:${f.line}\`: ${mark(f)}: ${f.comment}`;
 
 /** A finding as its comment on the pull request reads, which is how its thread is found again. */
 export const commentOf = (f: Finding): ReviewComment => ({
@@ -225,7 +231,6 @@ export function reviewInGitHub(
   const anchored = review.findings.filter((f) => shown.get(f.path)?.has(f.line));
   const elsewhere = review.findings.filter((f) => !anchored.includes(f));
   const blocking = review.findings.filter((f) => f.blocking).length;
-  const listed = (f: Finding) => `- \`${f.path}:${f.line}\`: ${mark(f)}: ${f.comment}`;
   const body = [
     review.note,
     ...(elsewhere.length ? ['', 'Not on a line the diff shows:', '', ...elsewhere.map(listed)] : []),

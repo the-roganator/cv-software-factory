@@ -8,7 +8,7 @@
  *
  * - `move-fix`: a move first clears a High or a Critical, which a fix the scan found has given it;
  * - `move-waits`: a move a finding asks for first waits on him: its lane is his cluster's own command or an issue, or
- *   it is a row the sense made of what the cluster runs (a k3s the cluster has not moved to, a routine update's too);
+ *   it has none, its line no longer built, or it is a row the sense made of what the cluster runs (a k3s the cluster has not moved to, a routine update's too);
  * - `move-due-soon`: a move still in the sense's last day comes within a day of its deadline. One first seen within a
  *   day of it, or past it, is told by `move-fix` alone, which says it is due; one that passes its deadline unjudged
  *   before (the line was down) is counted here as it is counted overdue, so a line that reads the store again counts
@@ -41,8 +41,11 @@ type Move = Day['repositories'][number]['moves'][number];
 
 const DAY = 24 * 3_600_000;
 
-/** The lanes only Martin moves: his cluster's own command, and what no pull request of the App's can write. */
-const HIS: readonly Move['lane'][] = ['cluster', 'issue'];
+/**
+ * The lanes only Martin moves: his cluster's own command, what no pull request of the App's can write, and a line no
+ * longer built (`none`), which no release will fix where it is: each waits for him, as an issue in its repository.
+ */
+const HIS: readonly Move['lane'][] = ['cluster', 'issue', 'none'];
 
 /**
  * Whether a day's move is a routine update, as moves.ts's `isRoutine` says of the scan's own: it clears nothing and has

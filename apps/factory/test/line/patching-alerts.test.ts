@@ -185,6 +185,19 @@ describe('the moves Martin hears of, on the sense’s day', () => {
     expect(tally.kinds['move-fix']).toBeGreaterThan(0);
   });
 
+  it('tells him a line no longer built waits for him, whatever it clears: no release will fix it where it is', () => {
+    const tally = emptyPatchingTally();
+    const unbuilt = moved({ ...DAY, rows: [] }, (m) =>
+      m.name === 'k3s'
+        ? {}
+        : { clears: { critical: 0, high: 0, medium: 2, low: 0, unknown: 0 }, lane: 'none', deadline: undefined },
+    );
+    addDay(tally, unbuilt, READ);
+    // k3s, his cluster's, and every other move of the day, each on a line no longer built.
+    expect(tally.kinds['move-waits']).toBe(unbuilt.repositories.flatMap((r) => r.moves).length);
+    expect(tally.kinds['move-waits']).toBeGreaterThan(1);
+  });
+
   it('has a move’s first High or Critical counted the day it gets one, not before', () => {
     const tally = emptyPatchingTally();
     addDay(

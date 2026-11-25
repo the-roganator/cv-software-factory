@@ -960,35 +960,35 @@ describe('Verify by the scan', () => {
   it('waits for a scan whose routine listing is whole: one that made none, or could not read a pin, shows no update made', async () => {
     // The move is gone from each of these days, and none of them proves it: the next scan may.
     const none = scans(recorded(true));
-    // Each waits for the next scan, from when this one finished.
-    const since = new Date(run.updatedAt);
+    // Each waits for the next scan, by the longer limit.
+    const listing = true;
     expect(await look(routine, released, options({ scans: none }))).toEqual({
       kind: 'wait',
-      since,
+      listing,
       why: 'the scan of ccccccc listed no routine updates at all, so it cannot show this one made (https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/42000000001)',
     });
     const counted = whole(recorded(true));
     delete counted.file?.totals.routineUnread;
     expect(await look(routine, released, options({ scans: scans(counted) }))).toMatchObject({
       kind: 'wait',
-      since,
+      listing,
       why: expect.stringContaining('listed no routine updates at all'),
     });
     expect(await look(routine, released, options({ scans: scans(whole(recorded(true), 1)) }))).toEqual({
       kind: 'wait',
-      since,
+      listing,
       why: 'the scan of ccccccc could not read 1 pin for its routine updates, so a move it does not list may be one it could not read (https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/42000000001)',
     });
     expect(await look(routine, released, options({ scans: scans(whole(recorded(true), 3)) }))).toMatchObject({
       kind: 'wait',
-      since,
+      listing,
       why: expect.stringContaining('could not read 3 pins'),
     });
-    // Every other wait is limited from the release: a scan that does not carry it, or did not read its image.
+    // Every other wait keeps the shorter limit: a scan that does not carry the release, or did not read its image.
     const other = { ...released, version: 'd'.repeat(40) };
-    expect(await look(routine, other, options({ scans: none }))).not.toHaveProperty('since');
+    expect(await look(routine, other, options({ scans: none }))).not.toHaveProperty('listing');
     const unread = { ...released, digest: `sha256:${'9'.repeat(64)}` };
-    expect(await look(routine, unread, options({ scans: none }))).not.toHaveProperty('since');
+    expect(await look(routine, unread, options({ scans: none }))).not.toHaveProperty('listing');
     // A fix is shown by its findings, which every scan reads or fails: no routine listing is asked of it.
     expect(await look(move, released, options({ scans: none }))).toMatchObject({
       verification: { outcome: 'cleared' },

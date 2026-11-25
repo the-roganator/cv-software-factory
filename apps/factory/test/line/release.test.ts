@@ -1415,7 +1415,7 @@ describe('Verify on the line', () => {
     });
   });
 
-  it('waits a day from a scan whose routine listing was not whole, not from the release, for the next scan', async () => {
+  it('waits two days from the release for a scan whose routine listing is whole, so the next day’s has its turn', async () => {
     const repository = 'the-roganator/cv-worlds-worst-website';
     const grpc = { name: '@grpc/grpc-js', ecosystem: 'npm' as const, from: '1.14.4', to: '1.14.5' };
     const workItem = await nextWorkItem(database.as.triage);
@@ -1488,15 +1488,12 @@ describe('Verify on the line', () => {
     await pass(it);
     expect(await stage(workItem)).toBe('verify');
     expect(await payloads(workItem, 'hold.started')).toEqual([]);
-    // The next scan's is not whole either: the day is from that one.
-    now += 21 * HOUR;
+    // The next day's scan is not whole either, and starts no clock of its own.
+    now += 22 * HOUR;
     scanned();
     await pass(it);
-    now += 23 * HOUR;
-    await pass(it);
     expect(await payloads(workItem, 'hold.started')).toEqual([]);
-    // No scan in a day after it: Martin is asked, told which scan and why.
-    const last = github.moves?.run.updatedAt;
+    // Two days after the release: Martin is asked, told why.
     now += HOUR;
     await pass(it);
     expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
@@ -1504,7 +1501,7 @@ describe('Verify on the line', () => {
       kind: 'held',
       cause: 'verify',
       reason: expect.stringContaining(
-        `Verify could not tell in 24 hours after its last scan, of ${last}: the scan of ${commitOf(CANARY).slice(0, 7)} listed no routine updates at all`,
+        `No scan made a whole routine listing in 48 hours after the release: the scan of ${commitOf(CANARY).slice(0, 7)} listed no routine updates at all`,
       ),
     });
   });

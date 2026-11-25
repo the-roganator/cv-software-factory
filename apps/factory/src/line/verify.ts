@@ -114,13 +114,13 @@ type Measure = PayloadOf<'canary.stepped'>['analysis']['measures'][number];
 
 /**
  * What a look found: the verification, a hold for Martin when no sense can tell, or a reason to look again later.
- * A wait is limited from the release, but one for the next scan (`since`, when the scan that could not show the move
- * made finished): its limit is from that scan, so the scan after it is always waited for.
+ * A wait for a scan whose routine listing is whole says so (`listing`): its limit is the policy's longer one
+ * (`listingWaitHours`), and every other wait's is `waitHours`.
  */
 export type Look =
   | { kind: 'finished'; verification: PayloadOf<'verification.finished'> }
   | { kind: 'hold'; reason: string }
-  | { kind: 'wait'; why: string; since?: Date };
+  | { kind: 'wait'; why: string; listing?: true };
 
 /** The probes worker, as Verify uses it: a ticket's check run again against the stable Service. */
 export interface ProbesPort {
@@ -275,9 +275,9 @@ function countedBefore(scan: SignalScan): Required<ScanCounts> {
  * same scan, waited for the same way, no longer listing the move: no move of the signal's name and ecosystem from a
  * version the signal moved from (`stillListed`), with the journeys passed. Still listed there, it persists. Only a
  * whole routine listing shows a move gone: a scan that made none (`totals.routine` or `routineUnread` absent), or
- * could not read some pin for it (`routineUnread` above none), is waited past for the next scan: the wait says when
- * that scan finished (`since`), and the line holds for Martin, told why, once the policy's wait has passed from then
- * with no later scan, so the scan of the day after always has its turn. A
+ * could not read some pin for it (`routineUnread` above none), is waited past for the next scan: the wait says so
+ * (`listing`), and the line holds for Martin, told why, only once the policy's longer wait has passed from the release
+ * (`listingWaitHours`), so the scan of the day after has its turn. A
  * vulnerable dependency's signal that lists no finding with a fix has nothing for the scan to show closed, and holds
  * for Martin.
  */
@@ -326,14 +326,11 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
   if (routine) {
     // A routine update is shown made by the scan's routine listing no longer having it, which only a whole listing
     // shows: a scan that made none, or could not read some pin for it, lists no move of a pin it did not read.
-    // The next scan may be whole, and is a day off at most: the wait is limited from this scan, not the release.
-    const finished = new Date(read.run.updatedAt);
-    const since = Number.isNaN(finished.getTime()) ? {} : { since: finished };
     const { totals } = read.file;
     if (totals.routine === undefined || totals.routineUnread === undefined) {
       return {
         kind: 'wait',
-        ...since,
+        listing: true,
         why: `the scan of ${of} listed no routine updates at all, so it cannot show this one made (${read.run.url})`,
       };
     }
@@ -341,7 +338,7 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
       const pins = `${totals.routineUnread} ${totals.routineUnread === 1 ? 'pin' : 'pins'}`;
       return {
         kind: 'wait',
-        ...since,
+        listing: true,
         why: `the scan of ${of} could not read ${pins} for its routine updates, so a move it does not list may be one it could not read (${read.run.url})`,
       };
     }

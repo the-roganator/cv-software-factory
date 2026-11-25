@@ -1465,13 +1465,16 @@ export class Line {
     switch (found.kind) {
       case 'wait': {
         const hours = this.#o.verifyWaitMs / 3_600_000;
-        if (now.getTime() - target.at.getTime() < this.#o.verifyWaitMs) {
+        // A wait for the next scan is limited from the scan that could not tell, where that is after the release.
+        const scan = found.since && found.since > target.at ? found.since : undefined;
+        if (now.getTime() - (scan ?? target.at).getTime() < this.#o.verifyWaitMs) {
           this.#lookAgainAt.set(workItem, now.getTime() + this.#o.verifyEveryMs);
           this.#o.log.info({ workItem, version: target.version, why: found.why }, 'Verify cannot tell yet');
           return;
         }
         // A sense that still cannot tell long after the release may never: Martin judges, told why.
-        const reason = cutTo(`Verify could not tell in ${hours} hours after the release: ${found.why}`, 300);
+        const after = scan ? `its last scan, of ${scan.toISOString()}` : 'the release';
+        const reason = cutTo(`Verify could not tell in ${hours} hours after ${after}: ${found.why}`, 300);
         await this.#append(workItem, [
           {
             ...holdDraft('factory', { stage: 'verify', kind: 'held', cause: 'verify', reason }),

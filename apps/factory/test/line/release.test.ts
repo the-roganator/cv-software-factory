@@ -9,6 +9,7 @@ import type { z } from 'zod';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { setTake, startLine } from '../../../../packages/store/test/line.ts';
 import { Prometheus } from '../../src/clients/prometheus.ts';
+import type { Moves } from '../../src/github/scanning.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { Line, type LineOptions } from '../../src/line/worker.ts';
 import { IndexedArtifacts, type Picture, PictureIndex, type Shot } from '../../src/pictures/index.ts';
@@ -1411,6 +1412,100 @@ describe('Verify on the line', () => {
       kind: 'held',
       cause: 'verify',
       reason: expect.stringContaining('Verify could not tell in 24 hours after the release'),
+    });
+  });
+
+  it('waits a day from a scan whose routine listing was not whole, not from the release, for the next scan', async () => {
+    const repository = 'the-roganator/cv-worlds-worst-website';
+    const grpc = { name: '@grpc/grpc-js', ecosystem: 'npm' as const, from: '1.14.4', to: '1.14.5' };
+    const workItem = await nextWorkItem(database.as.triage);
+    await events.append([
+      event(
+        workItem,
+        'work-item.opened',
+        {
+          kind: 'dependency-update',
+          title: 'Move @grpc/grpc-js',
+          sample: false,
+          category: 'security',
+          dependency: { ...grpc, security: false },
+        },
+        'triage',
+      ),
+      event(
+        workItem,
+        'ticket.opened',
+        {
+          title: 'Move @grpc/grpc-js, in npm',
+          category: 'security',
+          severity: 'cosmetic',
+          fingerprint: { name: grpc.name, ecosystem: grpc.ecosystem },
+          traces: [],
+        },
+        'triage',
+      ),
+      event(
+        workItem,
+        'signal.received',
+        {
+          sense: 'dependency',
+          check: 'the vulnerability scan',
+          version: commitOf(STABLE),
+          symptom: 'outdated-dependency',
+          move: { repository, ...grpc, pins: [{ file: 'pnpm-lock.yaml', line: 3 }] },
+        },
+        'triage',
+      ),
+      event(workItem, 'pull-request.merged', { number: 30, commit: FIX_3, by: 'martin' }, 'martin'),
+    ]);
+    await database.owner`insert into line (work_item, stage, issue) values (${workItem}, 'release', 29)`;
+    await promote(workItem);
+    const { line: it, github } = line({ release: null, verify: {}, verifyEveryMs: 5 * 60_000 });
+    /** A scan of the release that read its image and made no routine listing, finished now. */
+    const scanned = () => {
+      github.moves = {
+        repository,
+        run: {
+          id: 42,
+          event: 'schedule',
+          conclusion: 'success',
+          headSha: commitOf(CANARY),
+          updatedAt: new Date(now).toISOString(),
+          url: 'https://github.test/runs/42',
+        },
+        file: { scanned: [{ digests: [digestOf(CANARY)] }], totals: {} } as unknown as Moves['file'],
+        moves: [],
+      };
+    };
+    const HOUR = 60 * 60_000;
+    // The daily scan comes 23 hours after the release, and its listing is not whole.
+    now += 23 * HOUR;
+    scanned();
+    await pass(it);
+    await pass(it);
+    // A day after the release, the next scan is still to come: the work item waits for it.
+    now += 2 * HOUR;
+    await pass(it);
+    expect(await stage(workItem)).toBe('verify');
+    expect(await payloads(workItem, 'hold.started')).toEqual([]);
+    // The next scan's is not whole either: the day is from that one.
+    now += 21 * HOUR;
+    scanned();
+    await pass(it);
+    now += 23 * HOUR;
+    await pass(it);
+    expect(await payloads(workItem, 'hold.started')).toEqual([]);
+    // No scan in a day after it: Martin is asked, told which scan and why.
+    const last = github.moves?.run.updatedAt;
+    now += HOUR;
+    await pass(it);
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
+      stage: 'verify',
+      kind: 'held',
+      cause: 'verify',
+      reason: expect.stringContaining(
+        `Verify could not tell in 24 hours after its last scan, of ${last}: the scan of ${commitOf(CANARY).slice(0, 7)} listed no routine updates at all`,
+      ),
     });
   });
 

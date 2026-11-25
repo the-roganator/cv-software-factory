@@ -80,7 +80,8 @@ export interface Release {
     everyMinutes: number;
     /**
      * How long after the promotion a sense may go on not telling (too little traffic, a check it can no longer see, a
-     * backend that does not answer) before the work item holds for Martin, with the last reason.
+     * backend that does not answer) before the work item holds for Martin, with the last reason. A routine update
+     * that waits for a scan whose routine listing is whole is given as long after the last scan that was not.
      */
     waitHours: number;
   };

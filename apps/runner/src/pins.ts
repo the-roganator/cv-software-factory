@@ -750,6 +750,9 @@ export async function moveNode(
  * An image that runs Node brings its Node with it, where `mise.toml` pins one release for every image of Node: when the
  * image at `to` runs another, Node moves to it first (`moveNode`), and the image is pinned at `to`. A Node behind the
  * one pinned is refused: a move goes forward.
+ *
+ * A checkout with no `FROM` of the image at `from` and one at `to`, its tag and its digest, has the move already, and
+ * nothing is written. One with a `FROM` at neither is refused.
  */
 export async function moveImage(
   dir: string,
@@ -774,16 +777,20 @@ export async function moveImage(
       throw new PinsRefused(`${move.name}@${toDigest} runs Node ${runs}, behind the ${pinned} mise.toml pins.`);
     await moveNode(dir, { ecosystem: 'node', name: 'node', from: pinned, to: runs }, get, now, move.name, digest);
   }
+  let there = false;
   const moved = await moveFroms(
     dir,
     // The digest the registry was just asked for, and agreed was the move's: never a second answer.
-    (image, tag, pinned) =>
-      image === move.name && (move.from.includes('@') ? `${tag}@${pinned}` : tag) === move.from
+    (image, tag, pinned) => {
+      if (image !== move.name) return undefined;
+      if (tag === toTag && pinned === toDigest) there = true;
+      return (move.from.includes('@') ? `${tag}@${pinned}` : tag) === move.from
         ? { tag: toTag, digest: toDigest }
-        : undefined,
+        : undefined;
+    },
     digest,
   );
-  if (!moved) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
+  if (!moved && !there) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
 }
 
 /**

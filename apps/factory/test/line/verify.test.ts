@@ -960,24 +960,35 @@ describe('Verify by the scan', () => {
   it('waits for a scan whose routine listing is whole: one that made none, or could not read a pin, shows no update made', async () => {
     // The move is gone from each of these days, and none of them proves it: the next scan may.
     const none = scans(recorded(true));
+    // Each waits for the next scan, from when this one finished.
+    const since = new Date(run.updatedAt);
     expect(await look(routine, released, options({ scans: none }))).toEqual({
       kind: 'wait',
+      since,
       why: 'the scan of ccccccc listed no routine updates at all, so it cannot show this one made (https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/42000000001)',
     });
     const counted = whole(recorded(true));
     delete counted.file?.totals.routineUnread;
     expect(await look(routine, released, options({ scans: scans(counted) }))).toMatchObject({
       kind: 'wait',
+      since,
       why: expect.stringContaining('listed no routine updates at all'),
     });
     expect(await look(routine, released, options({ scans: scans(whole(recorded(true), 1)) }))).toEqual({
       kind: 'wait',
+      since,
       why: 'the scan of ccccccc could not read 1 pin for its routine updates, so a move it does not list may be one it could not read (https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/42000000001)',
     });
     expect(await look(routine, released, options({ scans: scans(whole(recorded(true), 3)) }))).toMatchObject({
       kind: 'wait',
+      since,
       why: expect.stringContaining('could not read 3 pins'),
     });
+    // Every other wait is limited from the release: a scan that does not carry it, or did not read its image.
+    const other = { ...released, version: 'd'.repeat(40) };
+    expect(await look(routine, other, options({ scans: none }))).not.toHaveProperty('since');
+    const unread = { ...released, digest: `sha256:${'9'.repeat(64)}` };
+    expect(await look(routine, unread, options({ scans: none }))).not.toHaveProperty('since');
     // A fix is shown by its findings, which every scan reads or fails: no routine listing is asked of it.
     expect(await look(move, released, options({ scans: none }))).toMatchObject({
       verification: { outcome: 'cleared' },
@@ -1169,6 +1180,11 @@ describe('what cleared a work item, on its issue', () => {
     expect(closingPullComment(looked, '1028').split('\n')[0]).toBe(
       `Closed unmerged: the defect this fixes is gone from production. ${whatClearedOnLook(looked)}.`,
     );
+    // A move's look is the scan's, no sense's: a routine update fixes no defect, and its words name none.
+    const { sense: _, ...moved } = { ...looked, check: 'the vulnerability scan' };
+    expect(closingPullComment(moved, '1028').split('\n')[0]).toBe(
+      `Closed unmerged: production no longer needs the change this makes. ${whatClearedOnLook(moved)}.`,
+    );
   });
 
   it('credits the fixes released since the signal was last seen, with their pull requests, for a ticket at take', () => {
@@ -1224,11 +1240,14 @@ describe('what cleared a work item, on its issue', () => {
       reason: 'The day’s scan found the move again',
       dryRun: false,
     };
-    const first = reopeningComment(reopened, '1001').split('\n')[0];
-    expect(first).toBe(
-      'It came back after its fix was verified: the dependency saw “the vulnerability scan” again on the move of `node`, in docker, in version bbbbbbb.',
+    // A routine update's too, which no finding asked for: neither line speaks of a fix.
+    expect(reopeningComment(reopened, '1001')).toBe(
+      [
+        'It came back after its move was verified: the dependency sense saw “the vulnerability scan” again on the move of `node`, in docker, in version bbbbbbb.',
+        '',
+        'The factory’s work item #1001 is open again, and goes back to Plan for the move now listed.',
+      ].join('\n'),
     );
-    expect(first).not.toContain('undefined');
   });
 
   it('says a dry run’s fix never shipped, when the line reopens a ticket the dry run verified', () => {

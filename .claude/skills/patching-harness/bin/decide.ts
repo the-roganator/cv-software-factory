@@ -391,17 +391,41 @@ export function queuedFault(pulls: readonly Pick<HoldFacts, 'number' | 'queuedBy
   return queued ? `#${queued.number} was added to the merge queue by ${queued.queuedBy}, and must never be` : undefined;
 }
 
+/** One of Dependabot's open pull requests, as a run reads it before it starts. */
+export interface DependabotOpen {
+  number: number;
+  title: string;
+  /** When its head commit was made. */
+  headAt: string;
+  /** Whether it conflicts with `main`; undefined while GitHub has not worked it out. */
+  conflicting: boolean | undefined;
+}
+
 /**
- * The pull requests of Dependabot's a run's tests need open as it starts, and do not have: each as its test and the
- * title it must match. A test judged on such a pull request proves nothing without it.
+ * The pull requests of Dependabot's a run's tests need as it starts, and do not have: each as its test and the title
+ * it must match. One counts once it is open, its head was made since `main` was last put at the baseline
+ * (`baselineAt`) and it does not conflict with `main`: one a reset opened again stands on a `main` from before the
+ * baseline until Dependabot has made it again. A test judged on such a pull request proves nothing without it.
  */
 export function dependabotMissing(
   needs: readonly { test: string; title: RegExp }[],
-  open: readonly string[],
+  open: readonly DependabotOpen[],
+  baselineAt: string,
 ): string[] {
-  return needs
-    .filter((need) => !open.some((title) => need.title.test(title)))
-    .map((need) => `test ${need.test} needs Dependabot's pull request titled ${need.title.source} open, and none is`);
+  return needs.flatMap((need) => {
+    const titled = open.filter((pull) => need.title.test(pull.title));
+    const since = (pull: DependabotOpen) => Date.parse(pull.headAt) > Date.parse(baselineAt);
+    if (titled.some((pull) => since(pull) && pull.conflicting === false)) return [];
+    const needs = `test ${need.test} needs Dependabot's pull request titled ${need.title.source}`;
+    const [first] = titled;
+    if (!first) return [`${needs} open, and none is`];
+    if (!since(first)) return [`${needs} made again on the baseline, and #${first.number}'s head is from before it`];
+    return [
+      first.conflicting
+        ? `${needs} without a conflict, and #${first.number} conflicts with main`
+        : `${needs} without a conflict, and GitHub has not said whether #${first.number} has one`,
+    ];
+  });
 }
 
 // ── An issue that must say why ──────────────────────────────────────────────────────────────────────────────────────

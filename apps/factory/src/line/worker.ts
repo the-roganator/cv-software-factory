@@ -222,7 +222,7 @@ import {
   zeroCounts,
 } from './metrics.ts';
 import { stepCalls, workItemSpend } from './model-calls.ts';
-import { disclosedMove, type GateCounts, moveIssue, movesAlone } from './moves.ts';
+import { disclosedMove, type GateCounts, moveIssue, movesAlone, versionsWords } from './moves.ts';
 import { type Own, pagesFor } from './pictures.ts';
 import { type Pending, Queue, type QueueItem, type Takes, takesOf } from './queue.ts';
 import { type Carried, carried, Releases, type ReleaseWatchOptions } from './release.ts';
@@ -2262,9 +2262,12 @@ export class Line {
     pull?: number,
   ): Promise<void> {
     const { workItem } = item;
-    const reason = cutTo(`Main already has its move, at ${commit.slice(0, 7)}: ${move.name} at ${move.to}`, 200);
+    const reason = cutTo(
+      `Main already has its move, at ${commit.slice(0, 7)}: ${move.name} at ${versionsWords(move.to)}`,
+      200,
+    );
     const comment = [
-      `Main already has this move, at ${commit.slice(0, 7)}: \`${move.name}\` at \`${move.to}\`. Another change made it.`,
+      `Main already has this move, at ${commit.slice(0, 7)}: \`${move.name}\` at ${versionsWords(move.to)}. Another change made it.`,
       '',
       `The factory’s work item #${workItem} is closed with no change of its own.`,
     ].join('\n');
@@ -2381,8 +2384,9 @@ export class Line {
    * The push of a move's pull request built afresh: the step's commit, made on main as the step started from it, where
    * the pull request's branch has the rounds before. The commit is made off to the side, so the branch goes from its
    * older head straight to the new one: set back to main first, it would be level with its base, and GitHub closes a
-   * pull request with nothing in it. The pull request then takes the commit's title, which names the newer target; the
-   * describer writes its description again once the new head has passed its gates and review. Done again whole after
+   * pull request with nothing in it. The pull request then takes the commit's title, which names the newer target; its
+   * description the coder's push has made a draft's again (`agents/coder.ts`), and the describer writes it once the
+   * new head has passed its gates and review. Done again whole after
    * a failure part way: the branch off to the side starts again from main each time.
    */
   async #pushAfresh(

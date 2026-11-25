@@ -217,7 +217,7 @@ export function defineAgent<Input extends StepInput, Result>(
             );
           }
           // A move's agents say no more than its issue: an advisory the issue does not name stays out of their words.
-          const undisclosed = movesOnly(input) ? undisclosedIn(parsed.data, advisoriesNamed(input.signals)) : [];
+          const undisclosed = movesOnly(input) ? undisclosedIn(parsed.data, advisoriesNamed(context.state)) : [];
           if (undisclosed.length) {
             throw new StepFailed(
               `The ${agent}'s result names ${undisclosed.slice(0, 3).join(', ')}, which the ticket's issue does not: name no advisory the issue does not list`,
@@ -234,13 +234,15 @@ export function defineAgent<Input extends StepInput, Result>(
 const movesOnly = ({ asked }: StepInput) => asked.kind === 'ticket' && 'ecosystem' in asked.ticket.fingerprint;
 
 /**
- * The advisories a move's issue names: each finding the newest dependency signal's scan lists, as the issue is written
- * from that signal (`moveIssue`) and kept to it before any agent runs. A routine update's names none.
+ * The advisories a move's issue names: each finding `issue.opened` last recorded of it, as the line records the issue
+ * each time it writes it (`WorkItemState.issueNames`), so a scan the issue has not been written for names nothing
+ * yet. A routine update's names none. Where no issue is recorded (a dry run's, which GitHub never had, and a work
+ * item's from before the line recorded them) they are those of the newest dependency signal's scan
+ * (`WorkItemState.scanned`), which such an issue is written from: a dry run's words reach no GitHub, and are held to
+ * what its issue would name there.
  */
-export const advisoriesNamed = (signals: readonly Signal[]): string[] =>
-  signals
-    .findLast((signal) => signal.sense === 'dependency')
-    ?.evidence?.flatMap((each) => (each.kind === 'scan' ? each.findings.map((finding) => finding.advisory) : [])) ?? [];
+export const advisoriesNamed = ({ issueNames, scanned }: Pick<WorkItemState, 'issueNames' | 'scanned'>): string[] =>
+  (issueNames ?? scanned)?.findings?.map((finding) => finding.advisory) ?? [];
 
 /**
  * A word shaped as an advisory's id, as the scan's findings name them: a CVE's, a GitHub advisory's, or a

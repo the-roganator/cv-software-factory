@@ -17,8 +17,8 @@
 #   ./copies.sh store-restore  the scratch store back to that point, its migrations run, its workers restarted
 #   ./copies.sh forget-closed  make the watches forget the pull requests a reset closed (reset does this itself)
 #   ./copies.sh dependabot   close the copies' Dependabot pull requests the real ones closed, or no test needs
-#   ./copies.sh reopen-dependabot  ask Dependabot again for each one the tests need that is not open (the harness
-#                            calls it before a run whose test needs one)
+#   ./copies.sh reopen-dependabot  open again each one of Dependabot's the tests need that is closed, and ask Dependabot
+#                            to make it again on main (the harness calls it before a run whose test needs one)
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
 #   ./copies.sh summon-dependabot  have Dependabot look at the app copy now (test 20; the harness calls it)
 #   ./copies.sh move-on-main <file> <image> <tag> <tag@digest>  an image's move put on the app copy's main, as another
@@ -497,8 +497,10 @@ pin_images() {
 # regex over the lowercased title, in baseline.env): each runs the copy's CI on the organisation's shared runners at
 # every reset, and closing one makes only the copy's Dependabot skip that version.
 # One the tests need that is closed (by an earlier reset, or by the worker once main had its versions, test 22) is
-# asked for again: `@dependabot reopen` on the newest closed one of each alternative of the regex (split at `|`) that
-# no open one matches. Dependabot opens it again on the baseline within minutes, or says why it will not.
+# opened again: the newest closed one of each alternative of the regex (split at `|`) that no open one matches.
+# Dependabot answers no `@dependabot reopen` on a closed pull request, so the harness reopens it itself, which GitHub
+# allows while its branch exists, and then asks Dependabot to make it again (`@dependabot recreate`): the branch it
+# reopens stands on a main from before the baseline, and conflicts until Dependabot has built it on main as it is.
 dependabot_keep() { # <copy>: the regex of the pull requests its tests need
   if [[ $1 == "$APP_COPY" ]]; then printf %s "$DEPENDABOT_KEEP_APP"; else printf %s "$DEPENDABOT_KEEP_FACTORY"; fi
 }
@@ -529,8 +531,12 @@ dependabot_reopen() { # <copy>
     grep -qE -- "$one" <<<"$open" && continue
     n=$(awk -F'\t' -v re="$one" '$2 ~ re { print $1; exit }' <<<"$closed")
     if [[ -n $n ]]; then
-      gh pr comment "$n" -R "$copy" -b "@dependabot reopen" >/dev/null
-      echo "  asked Dependabot to reopen #$n: a test needs it ($one)"
+      if gh pr reopen "$n" -R "$copy" >/dev/null; then
+        gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
+        echo "  reopened Dependabot's #$n and asked Dependabot to recreate it on main: a test needs it ($one)"
+      else
+        echo "  Dependabot's #$n cannot be reopened: the test that needs it ($one) has none" >&2
+      fi
     else
       echo "  no pull request of Dependabot's matches $one, open or closed: the test that needs it has none" >&2
     fi

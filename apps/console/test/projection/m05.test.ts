@@ -198,6 +198,40 @@ describe('a fix whose branch was brought up to date while the reviewer had it', 
   });
 });
 
+describe('a fix held at the gates whose check is run again to green on the same commit', () => {
+  const updated = 'd'.repeat(40);
+  const held = (cause: 'gates' | 'failures') =>
+    work('1')
+      .open()
+      .add(0, 'pull-request.pushed', 'coder', {
+        number: 7,
+        title: 'fix(products): load them all',
+        branch: 'factory/1-products',
+        attempt: 1,
+        testsFirst: true,
+        files: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+        whole: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+      })
+      .add(1, 'gates.started', 'actions', payloads.gatesStarted)
+      .add(3, 'gates.finished', 'actions', payloads.gatesFailed)
+      .add(4, 'hold.started', 'factory', { stage: 'gates', kind: 'held', cause, reason: 'Held for Martin' });
+
+  it('stops waiting for Martin once the gates pass on the head it was held at, as the line does', () => {
+    expect(foldItem(held('gates').events)).toMatchObject({ outcome: 'held', hold: { cause: 'gates' } });
+    const passed = held('gates').add(6, 'gates.finished', 'actions', payloads.gatesPassed);
+    expect(foldItem(passed.events)).toMatchObject({ stage: 'gates', hold: undefined, outcome: 'in-progress' });
+  });
+
+  it('still waits for him when they pass on another head, or under a hold of another cause', () => {
+    const elsewhere = held('gates')
+      .add(5, 'gates.started', 'actions', { ...payloads.gatesStarted, commit: updated })
+      .add(7, 'gates.finished', 'actions', { ...payloads.gatesPassed, commit: updated });
+    expect(foldItem(elsewhere.events)?.hold).toMatchObject({ cause: 'gates' });
+    const other = held('failures').add(6, 'gates.finished', 'actions', payloads.gatesPassed);
+    expect(foldItem(other.events)?.hold).toMatchObject({ cause: 'failures' });
+  });
+});
+
 describe('a fix whose gates fail on a branch brought up to date while it waited for the merge', () => {
   const updated = 'd'.repeat(40);
   const story = work('1')

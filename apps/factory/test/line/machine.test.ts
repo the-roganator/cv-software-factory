@@ -139,6 +139,40 @@ describe('what the line does next', () => {
     expect(decide(events, facts)).toMatchObject({ stage: 'held', next: { do: 'hold', hold: { stage: 'gates' } } });
   });
 
+  it('ends a hold of the gates’ when they pass on the head it holds, and only then', () => {
+    let events = [ticket, spec, pushed(), started(), finished('failed')];
+    for (let round = 1; round <= LIMITS.gateReturns; round++) {
+      events = [...events, returned('gates'), pushed(round + 1), started(), finished('failed')];
+    }
+    const gatesHold = held('gates', 'gates');
+    const waiting = [...events, gatesHold];
+    expect(decide(waiting, facts)).toEqual({ stage: 'held', next: { do: 'wait', for: 'martin' } });
+    // A check run again to green on that head: the hold ends with nobody's answer, and the change goes to review.
+    const passed = [...waiting, finished('passed')];
+    expect(fold(passed).hold).toBeUndefined();
+    expect(fold(passed).answer).toBeUndefined();
+    expect(decide(passed, facts)).toEqual({
+      stage: 'review',
+      next: { do: 'step', agent: 'reviewer', round: LIMITS.gateReturns + 1 },
+    });
+    // A pass on another head, as when main is merged into the branch, leaves the hold to Martin.
+    const elsewhere = [...waiting, started(OTHER), finished('passed', OTHER)];
+    expect(fold(elsewhere).hold).toMatchObject({ cause: 'gates' });
+    expect(decide(elsewhere, facts).next).toEqual({ do: 'wait', for: 'martin' });
+    // So does a round that fails there again.
+    expect(decide([...waiting, finished('failed')], facts).next).toEqual({ do: 'wait', for: 'martin' });
+    // A hold of another cause on that head stands, whatever its gates say since.
+    for (const cause of ['failures', 'spend', 'review'] as const) {
+      const other = [...events, held(cause, 'gates'), finished('passed')];
+      expect(fold(other).hold, cause).toMatchObject({ cause });
+      expect(decide(other, facts).next, cause).toEqual({ do: 'wait', for: 'martin' });
+    }
+    // A hold of the gates' for a coder that changed nothing ends the same way, and with it the return it answered.
+    const unchanged = [ticket, spec, pushed(), started(), finished('failed'), returned('gates'), gatesHold];
+    expect(decide(unchanged, facts).next).toEqual({ do: 'wait', for: 'martin' });
+    expect(decide([...unchanged, finished('passed')], facts).next).toEqual({ do: 'step', agent: 'reviewer', round: 2 });
+  });
+
   it('sends blocking findings back to the coder, reviews its second round, and holds what still blocks', () => {
     const passed = (attempt: number) => [pushed(attempt), started(), finished('passed')];
     // Round 1: the review blocks, and the work goes back to Build.

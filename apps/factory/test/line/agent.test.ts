@@ -307,14 +307,30 @@ describe('an agent’s words about a move', () => {
     ).toEqual([]);
   });
 
-  it('are held to the advisories the newest dependency signal’s scan lists, as the issue is written from it', () => {
-    expect(advisoriesNamed([scan(['CVE-2099-0001']), scan(['CVE-2099-0002', 'CVE-2099-0003'])])).toEqual([
+  const names = (advisories: string[]) => ({
+    name: 'invented-pkg',
+    ecosystem: 'npm' as const,
+    findings: advisories.map((advisory) => ({
+      advisory,
+      package: 'invented-pkg',
+      severity: { scanner: 'high' as const },
+    })),
+  });
+
+  it('are held to the advisories the issue was last recorded as naming, whatever a newer scan lists', () => {
+    expect(
+      advisoriesNamed({ issueNames: names(['CVE-2099-0001']), scanned: names(['CVE-2099-0002', 'CVE-2099-0003']) }),
+    ).toEqual(['CVE-2099-0001']);
+    // A routine update's issue names none, and neither does a move's that lists no finding.
+    expect(
+      advisoriesNamed({ issueNames: { name: 'invented-pkg', ecosystem: 'npm' }, scanned: names(['CVE-2099-0002']) }),
+    ).toEqual([]);
+    // No issue recorded, as in a dry run: what the newest scan lists, which its issue is written from.
+    expect(advisoriesNamed({ issueNames: undefined, scanned: names(['CVE-2099-0002', 'CVE-2099-0003']) })).toEqual([
       'CVE-2099-0002',
       'CVE-2099-0003',
     ]);
-    const { evidence: _, ...routine } = scan([]);
-    expect(advisoriesNamed([{ ...routine, symptom: 'outdated-dependency' }])).toEqual([]);
-    expect(advisoriesNamed([])).toEqual([]);
+    expect(advisoriesNamed({ issueNames: undefined, scanned: undefined })).toEqual([]);
   });
 
   it('fail the step when its result names an advisory the issue does not, in any of its words, and only for a move', async () => {
@@ -337,7 +353,9 @@ describe('an agent’s words about a move', () => {
     const context = (asked: Asked) =>
       ({
         ticket: async () => (asked.kind === 'ticket' ? asked.ticket : undefined),
-        signals: async () => [scan(['CVE-2099-0001'])],
+        // The newest scan lists a second advisory, which the issue has not been written for.
+        signals: async () => [scan(['CVE-2099-0001', 'CVE-2099-0002'])],
+        state: { issueNames: names(['CVE-2099-0001']), scanned: names(['CVE-2099-0001', 'CVE-2099-0002']) },
       }) as unknown as StepContext;
     const finish = async (asked: Asked, result: unknown) =>
       (await agent.start(context(asked))).finish({ result } as never, {} as EffectsContext);

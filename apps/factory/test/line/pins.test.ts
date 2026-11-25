@@ -29,7 +29,7 @@ const PINS =
 const LOCKFILE = PINS.replaceAll('vitest', 'pino');
 
 /** A dependency's work item and its ticket, as triage opens them for a move. */
-async function moveTicket(): Promise<string> {
+async function moveTicket(move: typeof MOVE = MOVE): Promise<string> {
   const workItem = await nextWorkItem(database.as.triage);
   await events.append([
     event(
@@ -40,7 +40,7 @@ async function moveTicket(): Promise<string> {
         title: 'Move vitest',
         sample: false,
         category: 'dependency',
-        dependency: { ...MOVE, security: false },
+        dependency: { ...move, security: false },
       },
       'triage',
     ),
@@ -351,9 +351,11 @@ describe('a dependency’s move on the line', () => {
 
   it('closes a move main already has as done, not failed, with no coder, and its issue as completed', async () => {
     // The second of two moves that overlap, once the first merged: Node's move brought the runtime image's.
-    for (const [opened, spec] of [
-      [grpcTicket, gatesOnly],
-      [moveTicket, planner],
+    // The last is a package locked at two versions, whose move names both in one word.
+    for (const [opened, spec, versions] of [
+      [grpcTicket, gatesOnly, '`1.14.5`'],
+      [moveTicket, planner, '`5.1.0`'],
+      [() => moveTicket({ ...MOVE, from: '5.0.5,6.0.2', to: '5.1.0,6.1.0' }), planner, '`5.1.0` and `6.1.0`'],
     ] as const) {
       const workItem = await opened();
       const { pass, github } = line({ planner: spec, coder: () => ({ kind: 'pinned', pins: '' }) });
@@ -366,8 +368,10 @@ describe('a dependency’s move on the line', () => {
       const [closed] = await payloads(workItem, 'work-item.closed');
       expect(closed).toEqual({
         outcome: 'no-change',
-        reason: expect.stringMatching(/^Main already has its move, at /),
+        reason: expect.stringMatching(/^Main already has its move, at [0-9a-f]{7}: /),
       });
+      // Each version is in code, once, in the reason and in the comment alike.
+      expect((closed as { reason: string }).reason.endsWith(` at ${versions}`)).toBe(true);
       const closing = github.acts.filter((a) => a.action === 'closeIssue');
       expect(closing).toEqual([
         {
@@ -378,6 +382,9 @@ describe('a dependency’s move on the line', () => {
           }),
         },
       ]);
+      expect((closing[0]?.args as { comment?: string } | undefined)?.comment).toContain(
+        ` at ${versions}. Another change made it.`,
+      );
       await pass();
       expect(await stage(workItem)).toBe('ended');
       github.acts.length = 0;

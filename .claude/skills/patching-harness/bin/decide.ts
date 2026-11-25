@@ -405,16 +405,18 @@ export interface DependabotOpen {
  * The pull requests of Dependabot's a run's tests need as it starts, and do not have: each as its test and the title
  * it must match. One counts once it is open, its head was made since `main` was last put at the baseline
  * (`baselineAt`) and it does not conflict with `main`: one a reset opened again stands on a `main` from before the
- * baseline until Dependabot has made it again. A test judged on such a pull request proves nothing without it.
+ * baseline until Dependabot has made it again. A test judged on such a pull request proves nothing without it. One
+ * needed as it is (`asIs`: a pull request the worker must leave alone, on whatever base it has) counts once it is open.
  */
 export function dependabotMissing(
-  needs: readonly { test: string; title: RegExp }[],
+  needs: readonly { test: string; title: RegExp; asIs?: boolean }[],
   open: readonly DependabotOpen[],
   baselineAt: string,
 ): string[] {
   return needs.flatMap((need) => {
     const titled = open.filter((pull) => need.title.test(pull.title));
     const since = (pull: DependabotOpen) => Date.parse(pull.headAt) > Date.parse(baselineAt);
+    if (need.asIs && titled.length) return [];
     if (titled.some((pull) => since(pull) && pull.conflicting === false)) return [];
     const needs = `test ${need.test} needs Dependabot's pull request titled ${need.title.source}`;
     const [first] = titled;
@@ -487,13 +489,17 @@ export interface DuplicateFacts {
  * Dependabot's pull request for a pin the App's move also makes (test 22): open when that move merged, then closed by
  * the App, with a comment that begins as the worker's does and names the merge, by its pull request or its commit.
  * Dependabot closes its own once it sees `main` has the version, and may get there first: that is no fault of the
- * worker's, and no proof of it either, so the line says which happened and does not pass.
+ * worker's, and no proof of it either, so the line says which happened and does not pass. Nor is there a verdict when
+ * Dependabot's pull request writes a line the App's move did not (`lines`: what each diff adds): `main` never has what
+ * it moves, the worker rightly leaves it, and the line quotes both. Closed by the App all the same, it fails.
  */
 export function duplicateVerdict(o: {
   pull: DuplicateFacts | undefined;
   app: string;
   /** The App's move that put the versions on `main`, once it has merged. */
   merge: { number: number; commit: string; at: string } | undefined;
+  /** The lines Dependabot's diff adds (`theirs`) and those the App's merged move added (`ours`), once both are read. */
+  lines?: { theirs: string[]; ours: string[] } | undefined;
 }): { pass: boolean; why: string } {
   const fail = (why: string) => ({ pass: false, why });
   const { pull, merge } = o;
@@ -506,6 +512,12 @@ export function duplicateVerdict(o: {
   if (!merge) return fail(`${tag} is ${pull.state}; the App's move has not merged`);
   if (pull.openedAt > merge.at || (pull.closedAt && pull.closedAt < merge.at))
     return fail(`${tag} was not open when #${merge.number} merged: nothing for the worker to close (the set-up's)`);
+  const other = o.lines?.theirs.find((line) => !o.lines?.ours.includes(line));
+  if (other !== undefined) {
+    const both = `it moves to \`${other}\`, and #${merge.number} moved to \`${o.lines?.ours.join('`, `') ?? ''}\``;
+    if (pull.closedBy === o.app) return fail(`${tag} closed by the App, though main lacks its line: ${both}`);
+    return fail(`no verdict: ${tag} is not a duplicate of #${merge.number}, so the worker rightly leaves it: ${both}`);
+  }
   if (pull.state === 'open') return fail(`${tag} still open after #${merge.number} merged`);
   if (pull.closedBy !== o.app)
     return fail(
@@ -519,12 +531,18 @@ export function duplicateVerdict(o: {
     );
   return { pass: true, why: `${tag} closed by the App once #${merge.number} merged, its comment naming the merge` };
 }
-/** Why a pull request of Dependabot's that `main` does not have the versions of was not left alone, if it was not. */
+/**
+ * Why a pull request of Dependabot's that `main` does not have every line of was not left alone, if it was not: it
+ * must still be open. Closed by the App is the worker's fault; closed by anyone else shows nothing of the worker.
+ */
 export function leftAloneFault(pulls: readonly DuplicateFacts[], app: string): string | undefined {
   if (!pulls.length)
-    return "no pull request of Dependabot's that main lacks the versions of, to be left alone (the set-up's)";
-  const closed = pulls.find((p) => p.state !== 'open' && p.closedBy === app);
-  return closed ? `Dependabot's #${closed.number}, whose versions main lacks, was closed by the App` : undefined;
+    return "no pull request of Dependabot's that main lacks the lines of, to be left alone (the set-up's)";
+  const closed = pulls.find((p) => p.state !== 'open');
+  if (!closed) return undefined;
+  return closed.closedBy === app
+    ? `Dependabot's #${closed.number}, whose lines main lacks, was closed by the App`
+    : `no verdict: Dependabot's #${closed.number}, whose lines main lacks, was closed by ${closed.closedBy ?? 'nobody known'}, not left open`;
 }
 
 // ── A ticket that must close with no change of its own ──────────────────────────────────────────────────────────────

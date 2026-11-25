@@ -6,7 +6,8 @@
  * Its only acts: `./copies.sh reset`, dispatching `vulnerabilities.yml` on a copy's main, restarting the scratch
  * cluster's GitHub worker and dependency sense so their passes come now and not on the hour, asking Argo CD to look at
  * git now once a watched pull request has merged (a refresh, which hastens its poll and changes nothing in the
- * cluster), `./copies.sh summon-dependabot` for the test of Dependabot's own pull request (20), and, for an app test,
+ * cluster), `./copies.sh summon-dependabot` for the tests of Dependabot's own pull requests (20, and 22 on the
+ * factory copy, between its reset and the worker's start), and, for an app test,
  * telling the line which ticket it takes (W3 turns it to a second ticket and back). Three tests stage what they stand
  * on as the run goes: W3b puts its image's move on the app copy's main before the line takes the ticket
  * (`./copies.sh move-on-main`), 21 lifts the factory copy's exception once the pull request is open
@@ -81,9 +82,14 @@ const WORK = join(CLONES, 'factory');
 // ── The only doors out ──────────────────────────────────────────────────────────────────────────────────────────────
 
 const COPIES_ONLY = new Set([FACTORY, APP]);
-function sh(cmd: string, args: string[], opts: { cwd?: string; timeout?: number } = {}): string {
+function sh(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; timeout?: number; env?: Record<string, string> } = {},
+): string {
   return execFileSync(cmd, args, {
     cwd: opts.cwd,
+    env: { ...process.env, ...opts.env },
     timeout: opts.timeout ?? 120_000,
     encoding: 'utf8',
     maxBuffer: 512 * 1024 * 1024,
@@ -223,7 +229,7 @@ function preflight(state: State, appJustReset: boolean) {
   // would pass or fail on nothing, or on a branch from before the baseline. Test 20's is summoned later, by the run.
   const kept = TESTS.filter((t) => inRun(state, t)).flatMap((t) => [
     ...(t.pr.by === 'dependabot' && !t.summons ? [{ test: t.id, title: t.pr.title }] : []),
-    ...(t.duplicate ? [{ test: t.id, title: t.duplicate.leaves }] : []),
+    ...(t.duplicate ? [{ test: t.id, title: t.duplicate.leaves, asIs: true }] : []),
     ...(t.beside ? [{ test: t.id, title: t.beside }] : []),
   ]);
   if (kept.length) {
@@ -253,7 +259,10 @@ function preflight(state: State, appJustReset: boolean) {
         state,
         `pre-flight: ${missing.join('; ')}: opening again what is closed, asking Dependabot to recreate it, and waiting five minutes`,
       );
-      sh(join(BIN, 'copies.sh'), ['reopen-dependabot'], { cwd: BIN, timeout: 5 * 60_000 });
+      sh(join(BIN, 'copies.sh'), ['reopen-dependabot', repo === APP ? 'app' : 'factory'], {
+        cwd: BIN,
+        timeout: 5 * 60_000,
+      });
       for (let i = 0; i < 15 && missing.length; i++) {
         sleep(20_000);
         missing = lacking();
@@ -460,8 +469,10 @@ interface Seen {
   refusal?: { number?: number; fault?: string };
   /** For a test with `says`: whether each issue found is the App's and says it. */
   issueSays?: boolean;
-  /** For a test with `duplicate`: Dependabot's pull request, and those of its that main lacks the versions of. */
+  /** For a test with `duplicate`: Dependabot's pull request, and those of its that main lacks the lines of. */
   duplicate?: DuplicateFacts | undefined;
+  /** For a test with `duplicate`: the lines Dependabot's diff adds and those the App's merged move added. */
+  duplicateLines?: { theirs: string[]; ours: string[] };
   leftAlone?: DuplicateFacts[];
 }
 interface State {
@@ -537,7 +548,7 @@ interface State {
   reset?: { startedAt: string; before: string; after: string } | undefined;
   scan1?: Scan | undefined;
   kickedAt?: string;
-  /** When the run summoned Dependabot (test 20). */
+  /** When the run summoned Dependabot (test 20; test 22, at its reset). */
   summonedAt?: string;
   /** The scratch GitHub worker's poll, in seconds, as its Deployment sets it (60 when it sets none). */
   workerPollS?: number;
@@ -1291,6 +1302,18 @@ function observe(state: State, tests: Test[], final = false) {
       const newest = [...mine].sort((a, b) => b.number - a.number);
       const own = newest.find((p) => p.state === 'open') ?? newest[0];
       seen.duplicate = own ? duplicateOf(test.repo, own) : undefined;
+      // What each diff adds, read once the App's move has merged: the same lines, or main never has Dependabot's.
+      const merged = state.seen[test.duplicate.of]?.pulls.find((p) => p.mergedAt);
+      const added = (n: number) =>
+        api<any[]>(test.repo, `pulls/${n}/files?per_page=100`).flatMap((f) =>
+          String(f.patch ?? '')
+            .split('\n')
+            .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+            .map((line) => line.slice(1).trim())
+            .filter(Boolean),
+        );
+      if (own && merged && !seen.duplicateLines)
+        seen.duplicateLines = { theirs: added(own.number), ours: added(merged.number) };
       seen.leftAlone = listed
         .filter((p) => p.user.login === 'dependabot[bot]' && leaves.test(p.title))
         .filter((p) => p.state === 'open' || p.closed_at >= since)
@@ -1621,12 +1644,13 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
       pull: seen?.duplicate,
       app: APP_BOT,
       merge: of && { number: of.number, commit: of.mergeCommit ?? '', at: of.mergedAt ?? '' },
+      lines: seen?.duplicateLines,
     });
-    if (!closed.pass) return closed;
+    if (!closed.pass) return { pass: false, why: closed.why.slice(0, 520) };
     const left = leftAloneFault(seen?.leftAlone ?? [], APP_BOT);
     if (left) return fail(`${closed.why}; but ${left}`.slice(0, 420));
     const others = (seen?.leftAlone ?? []).map((p) => `#${p.number} ${p.state}`).join(', ');
-    return { pass: true, why: `${closed.why}; ${others}, whose versions main lacks, left alone` };
+    return { pass: true, why: `${closed.why}; ${others}, whose lines main lacks, left alone` };
   }
   if (test.made) {
     if (!state.scan1?.moves) return fail('the scan left no moves');
@@ -1948,7 +1972,22 @@ function run(state: State) {
     say(state, `reset: ./copies.sh ${reset.join(' ')}`);
     const startedAt = new Date().toISOString();
     const before = mainOf(repo);
-    const out = sh(join(BIN, 'copies.sh'), reset, { cwd: BIN, timeout: 30 * 60_000 });
+    // A run with a test of Dependabot's fresh pull request (22) summons Dependabot on the factory copy as the last of
+    // its reset, with the worker still stopped: one commit on main past the baseline, whose push is then the reset's
+    // own. The scan of that push is the one the run stands on and its clock starts at, as below; the baseline's own
+    // push's scan, a minute older and of the same pins, may be replaced by it. The worker starts on the main it leaves.
+    const summons = state.campaign === 'factory' && tests.some((t) => t.duplicate);
+    let out = sh(join(BIN, 'copies.sh'), reset, {
+      cwd: BIN,
+      timeout: 30 * 60_000,
+      env: summons ? { KEEP_WORKER_DOWN: '1' } : {},
+    });
+    if (summons) {
+      out += sh(join(BIN, 'copies.sh'), ['summon-dependabot', 'factory'], { cwd: BIN, timeout: 10 * 60_000 });
+      out += sh(join(BIN, 'copies.sh'), ['worker', '1'], { cwd: BIN, timeout: 10 * 60_000 });
+      state.summonedAt = new Date().toISOString();
+      say(state, 'summoned Dependabot on the factory copy, then started the worker');
+    }
     writeFileSync(join(dirOf(state.id), 'reset.log'), out);
     state.resetAt = new Date().toISOString();
     state.reset = { startedAt, before, after: mainOf(repo) };
@@ -2715,7 +2754,7 @@ if (command === 'factory' || command === 'app') {
   if (apps.length) console.error(`not the pin watch's: ${apps.join(', ')} (an app test runs alone already)`);
   if (dependabots.length)
     console.error(
-      `not the pin watch's: ${dependabots.join(', ')} (Dependabot's pull request, which DEPENDABOT_KEEP_FACTORY keeps)`,
+      `not the pin watch's: ${dependabots.join(', ')} (Dependabot's own pull request, which the run summons Dependabot for)`,
     );
   if (!names.length) throw new Error('only: none of those tests stands on a move of the pin watch');
   console.log(pinWatchLine(names));

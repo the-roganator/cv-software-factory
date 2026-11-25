@@ -129,8 +129,10 @@ export interface Test {
    */
   beside?: RegExp;
   /**
-   * Its pull request is Dependabot's for a pin the App's move makes too: the worker closes it once the move of test
-   * `of` has merged, and leaves open every one of Dependabot's titled as `leaves`, whose versions main does not have.
+   * Its pull request is Dependabot's for a pin the App's move makes too, opened afresh for the run, which summons
+   * Dependabot on the factory copy after its reset (`./copies.sh summon-dependabot factory`): the worker closes it
+   * once the move of test `of` has merged, and leaves open every one of Dependabot's titled as `leaves`, which
+   * `main` does not have every line of.
    */
   duplicate?: { of: string; leaves: RegExp };
   /**
@@ -449,16 +451,17 @@ export const TESTS: Test[] = [
     deployed: { kind: 'app-deploy' },
   },
   {
-    // Dependabot's pull request for the group `playwright` (the image and the library, test 6's pins), kept open
-    // across resets (baseline.env's DEPENDABOT_KEEP_FACTORY), beside its pull request for the actions group, which
-    // moves workflow pins the App never writes.
+    // Dependabot's pull request for Postgres's image, one line of the StatefulSet, which is test 1's pin: Dependabot
+    // opens it afresh within minutes of being summoned, whatever a reset closed. Beside it, its pull request for the
+    // group `playwright`, kept as it is on a base from before every baseline (baseline.env's
+    // DEPENDABOT_AS_IS_FACTORY): some two hundred files, so `main` never has every line of it, whatever test 6 moves.
     id: '22',
     title: "Dependabot's pull request for a pin the App moved",
     repo: FACTORY,
     campaign: 'factory',
     moves: [],
-    pr: { by: 'dependabot', title: /"playwright" group/i },
-    duplicate: { of: '6', leaves: /bump the actions group/i },
+    pr: { by: 'dependabot', title: /bump postgres in \/deploy\/base\/postgres/i },
+    duplicate: { of: '1', leaves: /"playwright" group/i },
     deployed: { kind: 'none' },
   },
   {

@@ -542,6 +542,10 @@ describe("the pull requests of Dependabot's a run needs open as it starts", () =
   it('lacks none when each has an open one of its title, made since the baseline and without a conflict', () => {
     expect(dependabotMissing(needs, [pull(4, node), pull(7, syft)], BASELINE)).toEqual([]);
     expect(dependabotMissing([], [], BASELINE)).toEqual([]);
+    // One needed as it is counts on any base, conflicting or not, so long as it is open.
+    const asIs = [{ test: '22', title: /anchore\/syft/i, asIs: true }];
+    expect(dependabotMissing(asIs, [pull(7, syft, '2026-11-15T08:00:00Z', true)], BASELINE)).toEqual([]);
+    expect(dependabotMissing(asIs, [], BASELINE)[0]).toContain('none is');
   });
 
   it('names each test whose pull request is not open', () => {
@@ -653,11 +657,32 @@ describe("Dependabot's pull request for a pin the App moved", () => {
     expect(duplicateVerdict({ pull: late, app, merge }).why).toContain('was not open');
   });
 
-  it('leaves alone one whose versions main lacks', () => {
-    const other = { ...pull, number: 761, state: 'open', closedAt: undefined, closedBy: undefined, comments: [] };
+  it("passes when both diffs add the same line, and gives no verdict when Dependabot's adds another", () => {
+    const ours = ['image: postgres:18.7-alpine3.24@sha256:0115'];
+    expect(duplicateVerdict({ pull, app, merge, lines: { theirs: ours, ours } }).pass).toBe(true);
+    const theirs = ['image: postgres:18.8-alpine3.24@sha256:9999'];
+    const open = { ...pull, state: 'open', closedAt: undefined, closedBy: undefined, comments: [] };
+    const left = duplicateVerdict({ pull: open, app, merge, lines: { theirs, ours } });
+    expect(left.pass).toBe(false);
+    expect(left.why).toContain('no verdict');
+    expect(left.why).toContain('`image: postgres:18.8-alpine3.24@sha256:9999`');
+    expect(left.why).toContain('`image: postgres:18.7-alpine3.24@sha256:0115`');
+  });
+
+  it('fails when the App closed one whose line main lacks', () => {
+    const lines = { theirs: ['image: postgres:18.8'], ours: ['image: postgres:18.7'] };
+    const closed = duplicateVerdict({ pull, app, merge, lines });
+    expect(closed.pass).toBe(false);
+    expect(closed.why).toContain('though main lacks its line');
+  });
+
+  it('leaves alone one whose lines main lacks: it is still open', () => {
+    const other = { ...pull, number: 3, state: 'open', closedAt: undefined, closedBy: undefined, comments: [] };
     expect(leftAloneFault([other], app)).toBeUndefined();
-    expect(leftAloneFault([{ ...other, state: 'closed', closedBy: 'dependabot[bot]' }], app)).toBeUndefined();
-    expect(leftAloneFault([{ ...other, state: 'closed', closedBy: app }], app)).toContain('#761');
+    expect(leftAloneFault([{ ...other, state: 'closed', closedBy: 'dependabot[bot]' }], app)).toContain('no verdict');
+    expect(leftAloneFault([{ ...other, state: 'closed', closedBy: app }], app)).toBe(
+      "Dependabot's #3, whose lines main lacks, was closed by the App",
+    );
     expect(leftAloneFault([], app)).toContain("set-up's");
   });
 });

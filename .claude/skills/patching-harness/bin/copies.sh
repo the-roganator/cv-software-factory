@@ -17,8 +17,9 @@
 #   ./copies.sh store-restore  the scratch store back to that point, its migrations run, its workers restarted
 #   ./copies.sh forget-closed  make the watches forget the pull requests a reset closed (reset does this itself)
 #   ./copies.sh dependabot   close the copies' Dependabot pull requests the real ones closed, or no test needs
-#   ./copies.sh reopen-dependabot  open again each one of Dependabot's the tests need that is closed, and ask Dependabot
-#                            to make it again on main (the harness calls it before a run whose test needs one)
+#   ./copies.sh reopen-dependabot [factory|app]  open again each one of Dependabot's the tests need that is closed, and
+#                            ask Dependabot to make it again on main (the harness calls it before a run whose test
+#                            needs one)
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
 #   ./copies.sh summon-dependabot [factory|app]  have Dependabot look at a copy now, the app's by default (test 20;
 #                            the harness calls it)
@@ -504,17 +505,24 @@ pin_images() {
 # reopens stands on a main from before the baseline, and conflicts until Dependabot has built it on main as it is.
 # Then, once for the copy, if one it reopened conflicts or its head is older than main's last move to the baseline,
 # Dependabot is summoned to look at the copy (summon_dependabot), whose run rebuilds its own open pull requests.
+# One kept as it is (DEPENDABOT_AS_IS_FACTORY, Playwright's, which test 22's worker must leave alone) is reopened and no
+# more: Dependabot is not asked to make it again, which it does not answer on that one, and it is no reason to summon.
+dependabot_as_is() { # <copy>: the regex of those kept on whatever base they have
+  if [[ $1 == "$APP_COPY" ]]; then printf %s '^$'; else printf %s "${DEPENDABOT_AS_IS_FACTORY:-^$}"; fi
+}
 dependabot_keep() { # <copy>: the regex of the pull requests its tests need
   if [[ $1 == "$APP_COPY" ]]; then printf %s "$DEPENDABOT_KEEP_APP"; else printf %s "$DEPENDABOT_KEEP_FACTORY"; fi
 }
 dependabot_only_needed() { # <copy>
-  local copy=$1 keep; keep=$(dependabot_keep "$1")
+  local copy=$1 keep as_is; keep=$(dependabot_keep "$1"); as_is=$(dependabot_as_is "$1")
   gh pr list -R "$copy" --author app/dependabot --state open --limit 200 --json number,title \
     --jq '.[] | "\(.number)\t\(.title | ascii_downcase)"' |
     while IFS=$'\t' read -r n title; do
       if ! grep -qE -- "$keep" <<<"$title"; then
         gh pr close "$n" -R "$copy" -c "Closed for the patching tests: the copy keeps only the Dependabot pull requests they need." >/dev/null
         echo "  closed Dependabot's #$n ($title): no test needs it"
+      elif grep -qE -- "$as_is" <<<"$title"; then
+        echo "  kept Dependabot's #$n ($title) as it is"
       else
         # Made again on the baseline just pushed, so its checks are the baseline's, not a run from before the reset.
         gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
@@ -534,8 +542,8 @@ baseline_pushed_at() { # <copy>
   printf %s "$at"
 }
 dependabot_reopen() { # <copy>
-  local copy=$1 keep; keep=$(dependabot_keep "$1")
-  local open closed one n reopened=() since oid head mergeable behind=
+  local copy=$1 keep as_is; keep=$(dependabot_keep "$1"); as_is=$(dependabot_as_is "$1")
+  local open closed one n title reopened=() since oid head mergeable behind=
   open=$(gh pr list -R "$copy" --author app/dependabot --state open --limit 200 --json title --jq '.[].title | ascii_downcase')
   closed=$(gh pr list -R "$copy" --author app/dependabot --state closed --limit 200 --json number,title,mergedAt \
     --jq '.[] | select(.mergedAt == null) | "\(.number)\t\(.title | ascii_downcase)"')
@@ -543,7 +551,14 @@ dependabot_reopen() { # <copy>
     [[ -n $one && $one != '^$' ]] || continue
     grep -qE -- "$one" <<<"$open" && continue
     n=$(awk -F'\t' -v re="$one" '$2 ~ re { print $1; exit }' <<<"$closed")
-    if [[ -n $n ]]; then
+    title=$(awk -F'\t' -v re="$one" '$2 ~ re { print $2; exit }' <<<"$closed")
+    if [[ -n $n ]] && grep -qE -- "$as_is" <<<"$title"; then
+      if gh pr reopen "$n" -R "$copy" >/dev/null; then
+        echo "  reopened Dependabot's #$n, kept as it is: a test needs it open ($one)"
+      else
+        echo "  Dependabot's #$n cannot be reopened: the test that needs it ($one) has none" >&2
+      fi
+    elif [[ -n $n ]]; then
       if gh pr reopen "$n" -R "$copy" >/dev/null; then
         gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
         reopened+=("$n")
@@ -879,7 +894,13 @@ case "${1:-}" in
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
   summon-dependabot) summon_dependabot "${2:-app}" ;;
-  reopen-dependabot) dependabot_reopen "$FACTORY_COPY"; dependabot_reopen "$APP_COPY" ;;
+  reopen-dependabot)
+    case "${2:-}" in
+      factory) dependabot_reopen "$FACTORY_COPY" ;;
+      app) dependabot_reopen "$APP_COPY" ;;
+      '') dependabot_reopen "$FACTORY_COPY"; dependabot_reopen "$APP_COPY" ;;
+      *) die "reopen-dependabot takes factory or app, not $2" ;;
+    esac ;;
   move-on-main) shift; move_on_main "$@" ;;
   lift-exception) shift; lift_exception "$@" ;;
   *) sed -n '2,38p' "$0"; exit 2 ;;

@@ -155,9 +155,11 @@ fi
 if want A && [ -n "$based" ]; then
 # With them the Makefile's pin (17), the workflow's pin that stays an issue (N6) and its forgery (N7). Test 19, the image no registry serves, is on the baseline, so every factory batch's scan has it and
 # each batch judges it.
-echo "##### A: 1,2,3,5,14a,17,N6,19 and the forgeries, Guarded $(date -u +%H:%MZ)"
+# Beside test 1, at no time of its own: Dependabot's pull request for Postgres, which the run summons Dependabot for
+# and the worker closes once 1's move has merged (22).
+echo "##### A: 1,2,3,5,14a,17,N6,19,22 and the forgeries, Guarded $(date -u +%H:%MZ)"
 level guarded
-batch 1,2,3,5,14a,17,N6 && campaign --only 1,2,3,5,14a,17,N6,19,N3a,N3b,N4,N5,N7
+batch 1,2,3,5,14a,17,N6 && campaign --only 1,2,3,5,14a,17,N6,19,22,N3a,N3b,N4,N5,N7
 watches
 why
 fi
@@ -165,10 +167,9 @@ fi
 if want B && [ -n "$based" ]; then
 # The lockfile's routine updates are here beside its findings' moves: 15 merges and deploys with the day's others, and
 # 18, the one across a major, is held beside 4a and 4b.
-# Beside them, at no time of their own: Dependabot's pull request for Playwright, which the worker closes once 6's
-# move has merged (22), and the routine update pnpm refuses, an issue beside 15's pull request (23).
-echo "##### B: 4a,4b,6,7a,7b,9,14b,15,18,19,22,23, Guarded $(date -u +%H:%MZ)"
-batch 4a,4b,6,7a,7b,9,14b,15,18,22,23 && campaign --only 4a,4b,6,7a,7b,9,14b,15,18,19,22,23 --no-forge
+# Beside them, at no time of its own: the routine update pnpm refuses, an issue beside 15's pull request (23).
+echo "##### B: 4a,4b,6,7a,7b,9,14b,15,18,19,23, Guarded $(date -u +%H:%MZ)"
+batch 4a,4b,6,7a,7b,9,14b,15,18,23 && campaign --only 4a,4b,6,7a,7b,9,14b,15,18,19,23 --no-forge
 watches
 why
 fi

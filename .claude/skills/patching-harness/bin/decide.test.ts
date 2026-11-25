@@ -529,17 +529,42 @@ describe("the pull requests of Dependabot's a run needs open as it starts", () =
     { test: '12', title: /anchore\/syft/i },
   ];
 
-  it('lacks none when each has an open one of its title', () => {
-    const open = ['chore(deps): bump node from 24.22.0 to 24.22.3', 'chore(deps): Bump anchore/syft from v1.54.0'];
-    expect(dependabotMissing(needs, open)).toEqual([]);
-    expect(dependabotMissing([], [])).toEqual([]);
+  const BASELINE = '2026-11-25T10:00:00Z';
+  const pull = (number: number, title: string, headAt = '2026-11-25T10:04:00Z', conflicting?: boolean) => ({
+    number,
+    title,
+    headAt,
+    conflicting: conflicting ?? false,
+  });
+  const node = 'chore(deps): bump node from 24.22.0 to 24.22.3';
+  const syft = 'chore(deps): Bump anchore/syft from v1.54.0';
+
+  it('lacks none when each has an open one of its title, made since the baseline and without a conflict', () => {
+    expect(dependabotMissing(needs, [pull(4, node), pull(7, syft)], BASELINE)).toEqual([]);
+    expect(dependabotMissing([], [], BASELINE)).toEqual([]);
   });
 
   it('names each test whose pull request is not open', () => {
-    const missing = dependabotMissing(needs, ['chore(deps): bump node from 24.22.0 to 24.22.3']);
+    const missing = dependabotMissing(needs, [pull(4, node)], BASELINE);
     expect(missing).toHaveLength(1);
     expect(missing[0]).toContain('test 12');
-    expect(dependabotMissing(needs, [])).toHaveLength(2);
+    expect(missing[0]).toContain('open, and none is');
+    expect(dependabotMissing(needs, [], BASELINE)).toHaveLength(2);
+  });
+
+  it('lacks one opened again whose branch Dependabot has not made again on the baseline, or that conflicts', () => {
+    // Reopened: its head is the one it was closed with, from before the baseline.
+    const stale = dependabotMissing(needs, [pull(4, node), pull(7, syft, '2026-11-24T08:00:00Z')], BASELINE);
+    expect(stale).toEqual([expect.stringContaining("test 12 needs Dependabot's pull request")]);
+    expect(stale[0]).toContain("#7's head is from before it");
+    const conflicting = dependabotMissing(needs, [pull(4, node), pull(7, syft, undefined, true)], BASELINE);
+    expect(conflicting[0]).toContain('#7 conflicts with main');
+    // GitHub works a conflict out after a push: until it has, the pull request is not yet the one the test needs.
+    const unknown = [pull(4, node), { ...pull(7, syft), conflicting: undefined }];
+    expect(dependabotMissing(needs, unknown, BASELINE)[0]).toContain('has not said whether #7 has one');
+    // One of the title that is ready is enough, whatever another of it is.
+    const two = [pull(4, node), pull(7, syft, '2026-11-24T08:00:00Z'), pull(9, syft)];
+    expect(dependabotMissing(needs, two, BASELINE)).toEqual([]);
   });
 });
 

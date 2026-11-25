@@ -668,7 +668,11 @@ describe('a newer target for a move the line has open', () => {
     const head = github.pulls.get(12)?.head.sha;
     expect(head).not.toBe(first);
     expect(github.acts.filter((a) => a.action !== 'updateIssue')).toEqual([
-      { action: 'updatePullRequest', args: { number: 12, contradicts: [] } },
+      // The description is a draft's again as the push is made: the spec, and nothing of the older head.
+      {
+        action: 'updatePullRequest',
+        args: { number: 12, body: expect.stringMatching(/^The factory’s fix for ticket #\d+\./), contradicts: [] },
+      },
       { action: 'setBranch', args: { branch: aside, sha: MAIN, force: true } },
       {
         action: 'applyPatch',
@@ -703,6 +707,7 @@ describe('a newer target for a move the line has open', () => {
     const { pass, steps, github } = line({ ...AGENTS, planner: alone, coder: pinStep, describer });
     await pass(); // the issue, and the planner
     await pass(); // the pin step
+    const opened = github.bodies.get(12);
     github.pass(12);
     await pass(); // the gates, and the reviewer
     await pass(); // the describer, and the wait for the merge
@@ -711,9 +716,13 @@ describe('a newer target for a move the line has open', () => {
     expect(before.filter((t) => t === 'review.submitted')).toHaveLength(1);
     expect(github.pulls.get(12)?.draft).toBe(false);
     const older = github.pulls.get(12)?.head.sha;
+    expect(github.bodies.get(12)).toContain('Moves invented-pkg past its advisory.');
     await newer(workItem);
     await pass(); // the issue again, Build afresh
     expect(github.pulls.get(12)?.draft).toBe(true);
+    // Its description is the draft's a first push writes, at the push: no word of the older head's is left in it.
+    expect(github.bodies.get(12)).toBe(opened);
+    expect(github.bodies.get(12)).toContain('_A draft until its gates and review have passed');
     expect(github.acts.filter((a) => a.action === 'enqueuePullRequest')).toEqual([]);
     github.pass(12);
     await pass();
@@ -751,6 +760,11 @@ describe('a newer target for a move the line has open', () => {
     expect(again).not.toHaveProperty('pinsOnly');
     expect(again?.resume).toBeUndefined();
     expect(again?.prompt).toContain(TARGET_MOVED);
+    // The checkout is main with the move made afresh, and the coder is told so: nothing it pushed before is in it.
+    expect(again?.prompt).toContain(
+      'The checkout is main, with the line’s move made on it afresh: nothing of the rounds before is in it.',
+    );
+    expect(again?.prompt).not.toContain('The checkout is the pull request’s head');
     const applied = github.acts.filter((a) => a.action === 'applyPatch');
     expect(applied).toEqual([
       {

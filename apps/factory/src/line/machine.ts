@@ -516,6 +516,8 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
   const state = initial();
   // Martin's answers so far, which `accepted` names its own among.
   let answers = 0;
+  // The head whose gates a hold of the gates' was started for: the one their round had last finished on.
+  let gatesHeldAt: string | undefined;
   for (const event of events) {
     // Anything that moves the work item on is past the answer that moved it.
     if (MOVES_ON.has(event.type)) state.answer = undefined;
@@ -611,6 +613,13 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
           // first run. A round recorded with the merge comes before it, and the merge carries the work item on to
           // Release whatever the round said.
           if (!state.gatesPassed) endMergeWait(state);
+          // Gates that pass on the head a hold of theirs was started for end it, a check run again there: nothing is
+          // left for Martin to answer, and the change goes on to review as any other. A pass on another head, or under
+          // a hold of another cause, leaves the hold to him.
+          if (state.gatesPassed && state.hold?.cause === 'gates' && event.payload.commit === gatesHeldAt) {
+            state.hold = undefined;
+            forgetLook(state);
+          }
         }
         break;
       case 'review.submitted':
@@ -663,6 +672,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         // ended, holds nothing.
         if (event.payload.cause === 'canary' && !inFlight(state, event.payload.release)) break;
         state.hold = event.payload;
+        if (event.payload.cause === 'gates') gatesHeldAt = state.gates?.commit;
         forgetLook(state);
         break;
       case 'wait.started':

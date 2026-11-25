@@ -650,7 +650,11 @@ function again(input: CoderInput): string[] {
                 ),
               ]
             : []),
-          'The checkout is the pull request’s head, with the change you pushed before in it.',
+          // A round the pin step writes the move for starts from main, as a first round does: before any push, or
+          // on a pull request built afresh for a newer target, whose head is not under it.
+          input.move
+            ? 'The checkout is main, with the line’s move made on it afresh: nothing of the rounds before is in it.'
+            : 'The checkout is the pull request’s head, with the change you pushed before in it.',
         ]
       : [];
   // A round for suggestions alone that may decline them all is asked for one result or the other, never both at once.
@@ -861,11 +865,22 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     const branch = state.pullRequest?.branch ?? branchFor(workItem, named);
     const message = cutTo(`${title}\n\n${note}`, 9_000);
     const contradicts = spec.contradicts ?? [];
+    // A draft's description, until the describer writes it: a first round's, and a pull request's built afresh for a
+    // newer target, which would else go on describing the older head until the new one is written up.
+    const draftBody = async () =>
+      pullRequestBody(
+        workItem,
+        issue,
+        spec,
+        state.request !== undefined ? 'improvement' : routineUpdate(input.signals) ? 'update' : 'fix',
+        await replacedFor(context, state.ticket),
+      );
     const head = await context.once('push', async (again) => {
       // The tests the spec in force contradicts go into the description before the commit, since a gate's run reads
       // the description as it starts: the push starts it. A first round's pull request opens with them, below.
       if (state.pullRequest) {
-        await context.act('updatePullRequest', { number: state.pullRequest.number, contradicts });
+        const afresh = state.behind ? { body: await draftBody() } : {};
+        await context.act('updatePullRequest', { number: state.pullRequest.number, ...afresh, contradicts });
       }
       // A first round starts the branch at the commit; so does a push that was begun and may have been made, so
       // the patch is never applied on top of itself.
@@ -891,13 +906,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
               head: branch,
               base: 'main',
               title,
-              body: pullRequestBody(
-                workItem,
-                issue,
-                spec,
-                state.request !== undefined ? 'improvement' : routineUpdate(input.signals) ? 'update' : 'fix',
-                await replacedFor(context, state.ticket),
-              ),
+              body: await draftBody(),
               contradicts,
               draft: true,
             })

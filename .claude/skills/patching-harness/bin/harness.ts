@@ -217,9 +217,10 @@ function preflight(state: State, appJustReset: boolean) {
         `${busy}: \`node harness.ts batch none\`, then ./copies.sh reset factory, and wait for root to be Synced and Healthy`,
       );
   }
-  // The pull requests of Dependabot's the run's tests are judged on or beside, open: a reset keeps them and asks for
-  // one that is closed again, so here the run asks once more and waits five minutes at most. Without one its test
-  // would pass or fail on nothing. Test 20's is summoned later, by the run itself.
+  // The pull requests of Dependabot's the run's tests are judged on or beside, open, made since main was last put at
+  // the baseline and without a conflict: a reset keeps them, opens one that is closed again and asks Dependabot to make
+  // each again, so here the run opens once more what is closed and waits five minutes at most. Without one its test
+  // would pass or fail on nothing, or on a branch from before the baseline. Test 20's is summoned later, by the run.
   const kept = TESTS.filter((t) => inRun(state, t)).flatMap((t) => [
     ...(t.pr.by === 'dependabot' && !t.summons ? [{ test: t.id, title: t.pr.title }] : []),
     ...(t.duplicate ? [{ test: t.id, title: t.duplicate.leaves }] : []),
@@ -227,23 +228,40 @@ function preflight(state: State, appJustReset: boolean) {
   ]);
   if (kept.length) {
     const repo = state.campaign === 'app' ? APP : FACTORY;
+    const baselineAt = baselinePushedAt(repo);
     const lacking = () =>
       dependabotMissing(
         kept,
         api<any[]>(repo, 'pulls?state=open&per_page=100')
-          .filter((p) => p.user.login === 'dependabot[bot]')
-          .map((p) => p.title as string),
+          .filter((p) => p.user.login === 'dependabot[bot]' && kept.some((need) => need.title.test(p.title)))
+          .map((p) => {
+            // The list says nothing of a conflict: the pull request's own read does, once GitHub has worked it out.
+            const { mergeable } = api<{ mergeable: boolean | null }>(repo, `pulls/${p.number}`);
+            const head = api<any>(repo, `commits/${p.head.sha}`);
+            return {
+              number: p.number as number,
+              title: p.title as string,
+              headAt: head.commit.committer.date as string,
+              conflicting: mergeable === null ? undefined : !mergeable,
+            };
+          }),
+        baselineAt,
       );
     let missing = lacking();
     if (missing.length) {
-      say(state, `pre-flight: ${missing.join('; ')}: asking Dependabot to open it again, and waiting five minutes`);
+      say(
+        state,
+        `pre-flight: ${missing.join('; ')}: opening again what is closed, asking Dependabot to recreate it, and waiting five minutes`,
+      );
       sh(join(BIN, 'copies.sh'), ['reopen-dependabot'], { cwd: BIN, timeout: 5 * 60_000 });
       for (let i = 0; i < 15 && missing.length; i++) {
         sleep(20_000);
         missing = lacking();
       }
     }
-    wrong.push(...missing.map((why) => `${why}, five minutes after it was asked for again (\`@dependabot reopen\`)`));
+    wrong.push(
+      ...missing.map((why) => `${why}, five minutes after it was opened again and Dependabot asked to recreate it`),
+    );
   }
   // The store at the baseline's newest migration: a restore's dump predates some, and the GitHub worker reads the
   // level through one (0054), queueing nothing without it.
@@ -578,6 +596,23 @@ function latestScan(repo: string, since?: string, event?: string): Scan | undefi
   );
 }
 /** `main`'s commit now: the sha alone, as the commit's own page lists its files, hundreds for a baseline. */
+/**
+ * When a copy's `main` was last put at its baseline: the newest move of `main` to the baseline's commit, as GitHub's
+ * activity has it, which a reset's push is; where the activity no longer reaches it, when the baseline's commit was
+ * made, which is before any push of it.
+ */
+function baselinePushedAt(repo: string): string {
+  repoOk(repo);
+  const baseline = JSON.parse(sh('gh', ['api', `repos/${repo}/commits/baseline`])) as {
+    sha: string;
+    commit: { committer: { date: string } };
+  };
+  const moves = JSON.parse(sh('gh', ['api', `repos/${repo}/activity?ref=refs/heads/main&per_page=100`])) as {
+    after: string;
+    timestamp: string;
+  }[];
+  return moves.find((move) => move.after === baseline.sha)?.timestamp ?? baseline.commit.committer.date;
+}
 function mainOf(repo: string): string {
   repoOk(repo);
   return sh('gh', ['api', `repos/${repo}/commits/main`, '--jq', '.sha']).trim();

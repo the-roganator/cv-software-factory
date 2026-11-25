@@ -15,6 +15,7 @@ import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import type { Reads } from '../../src/github/reads.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker, GitHubWorkerError } from '../../src/github/worker-client.ts';
+import { openHolds } from '../../src/line/holds.ts';
 import { commentOf } from '../../src/line/review.ts';
 import { lineSettings } from '../../src/line/settings.ts';
 import { APP_REPOSITORY, type LineOptions, signalId } from '../../src/line/worker.ts';
@@ -824,6 +825,30 @@ describe('the line', () => {
     expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', round: 3, resume: 'session-1' });
     expect(steps.requests.at(-1)?.prompt).toContain('Martin sent it back: Fix the total as well');
     expect((await payloads(workItem, 'pull-request.pushed')).map((p) => p.attempt)).toEqual([1, 3]);
+  });
+
+  it('ends a hold of the gates’ by itself when the check is run again to green on the head it holds', async () => {
+    const workItem = await ticket();
+    const coder: Agent = (request) =>
+      request.round === 2
+        ? handback({ unchanged: 'The journeys fail on a page this change leaves alone.' })
+        : handback(CODED, PATCH);
+    const { pass, steps, github } = line({ ...AGENTS, coder });
+    await pass();
+    await pass();
+    github.pass(12, 'failure');
+    await pass(); // the gates fail, the work goes back, and the coder's second round changes nothing
+    expect(await stage(workItem)).toBe('held');
+    expect((await payloads(workItem, 'hold.started')).map((hold) => hold.cause)).toEqual(['gates']);
+    // The check is run again on the same head, and passes there: nobody answers the hold.
+    github.pass(12);
+    await pass(); // the pass is recorded, and the change goes on to review, as any other
+    expect((await payloads(workItem, 'gates.finished')).map((round) => round.conclusion)).toEqual(['failed', 'passed']);
+    expect(steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder', 'coder', 'reviewer']);
+    expect(await stage(workItem)).not.toBe('held');
+    expect(await openHolds(database.as.line)).toEqual([]);
+    expect(await payloads(workItem, 'hold.answered')).toEqual([]);
+    expect(await payloads(workItem, 'work.returned')).toHaveLength(1);
   });
 
   it('holds a first round that finds nothing to fix as the spec’s question, and has the planner write it again', async () => {

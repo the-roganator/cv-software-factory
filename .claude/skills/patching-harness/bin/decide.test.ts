@@ -39,6 +39,7 @@ import {
   targetOf,
   ticketFault,
   unreadMoves,
+  withoutDependabot,
   withSetting,
   workflowPins,
 } from './decide.ts';
@@ -546,6 +547,22 @@ describe("the pull requests of Dependabot's a run needs open as it starts", () =
     const asIs = [{ test: '22', title: /anchore\/syft/i, asIs: true }];
     expect(dependabotMissing(asIs, [pull(7, syft, '2026-11-15T08:00:00Z', true)], BASELINE)).toEqual([]);
     expect(dependabotMissing(asIs, [], BASELINE)[0]).toContain('none is');
+    // One Dependabot opened itself counts at any age, unless it conflicts or GitHub has not said.
+    const anyAge = [{ test: '22', title: /anchore\/syft/i, anyAge: true }];
+    expect(dependabotMissing(anyAge, [pull(7, syft, '2026-11-15T08:00:00Z', false)], BASELINE)).toEqual([]);
+    expect(dependabotMissing(anyAge, [pull(7, syft, '2026-11-15T08:00:00Z', true)], BASELINE)[0]).toContain(
+      'conflicts with main',
+    );
+    expect(dependabotMissing(anyAge, [], BASELINE)[0]).toContain('none is');
+  });
+
+  it('drops a test that lacks one while others are left to judge, and stops the run when none is', () => {
+    const missing = [{ test: '22', why: 'test 22 needs one' }];
+    expect(withoutDependabot(missing, ['1', '2', '22'])).toEqual({ dropped: { '22': 'test 22 needs one' }, stop: [] });
+    expect(withoutDependabot(missing, ['22'])).toEqual({ dropped: {}, stop: ['test 22 needs one'] });
+    expect(withoutDependabot([], ['1', '22'])).toEqual({ dropped: {}, stop: [] });
+    const two = [...missing, { test: '22', why: 'and another' }];
+    expect(withoutDependabot(two, ['1', '22']).dropped['22']).toBe('test 22 needs one; and another');
   });
 
   it('names each test whose pull request is not open', () => {

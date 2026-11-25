@@ -129,8 +129,9 @@ export interface Test {
    */
   beside?: RegExp;
   /**
-   * Its pull request is Dependabot's for a pin the App's move makes too, opened afresh for the run, which summons
-   * Dependabot on the factory copy after its reset (`./copies.sh summon-dependabot factory`): the worker closes it
+   * Its pull request is Dependabot's for a pin the App's move makes too; with none open the run summons Dependabot
+   * on the factory copy after its reset (`./copies.sh summon-dependabot factory`), and without one the test is
+   * dropped from the run, with no verdict. The worker closes it
    * once the move of test `of` has merged, and leaves open every one of Dependabot's titled as `leaves`, which
    * `main` does not have every line of.
    */
@@ -451,8 +452,9 @@ export const TESTS: Test[] = [
     deployed: { kind: 'app-deploy' },
   },
   {
-    // Dependabot's pull request for Postgres's image, one line of the StatefulSet, which is test 1's pin: Dependabot
-    // opens it afresh within minutes of being summoned, whatever a reset closed. Beside it, its pull request for the
+    // Dependabot's pull request for Postgres's image, one line of the StatefulSet, which is test 1's pin: kept open
+    // across resets (baseline.env's DEPENDABOT_KEEP_FACTORY), at whatever age, and asked for by a summon only when
+    // none is open, which Dependabot does not always answer. Beside it, its pull request for the
     // group `playwright`, kept as it is on a base from before every baseline (baseline.env's
     // DEPENDABOT_AS_IS_FACTORY): some two hundred files, so `main` never has every line of it, whatever test 6 moves.
     id: '22',

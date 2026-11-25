@@ -407,15 +407,17 @@ export interface DependabotOpen {
  * (`baselineAt`) and it does not conflict with `main`: one a reset opened again stands on a `main` from before the
  * baseline until Dependabot has made it again. A test judged on such a pull request proves nothing without it. One
  * needed as it is (`asIs`: a pull request the worker must leave alone, on whatever base it has) counts once it is open.
+ * One Dependabot opened itself and no reset closes (`anyAge`: a patch of one line against `main`) counts at any age,
+ * so long as it does not conflict.
  */
 export function dependabotMissing(
-  needs: readonly { test: string; title: RegExp; asIs?: boolean }[],
+  needs: readonly { test: string; title: RegExp; asIs?: boolean; anyAge?: boolean }[],
   open: readonly DependabotOpen[],
   baselineAt: string,
 ): string[] {
   return needs.flatMap((need) => {
     const titled = open.filter((pull) => need.title.test(pull.title));
-    const since = (pull: DependabotOpen) => Date.parse(pull.headAt) > Date.parse(baselineAt);
+    const since = (pull: DependabotOpen) => need.anyAge || Date.parse(pull.headAt) > Date.parse(baselineAt);
     if (need.asIs && titled.length) return [];
     if (titled.some((pull) => since(pull) && pull.conflicting === false)) return [];
     const needs = `test ${need.test} needs Dependabot's pull request titled ${need.title.source}`;
@@ -428,6 +430,22 @@ export function dependabotMissing(
         : `${needs} without a conflict, and GitHub has not said whether #${first.number} has one`,
     ];
   });
+}
+
+/**
+ * What a run does about tests whose pull request of Dependabot's could not be had: each is dropped from the run, with
+ * no verdict, while a test of the run is left to judge; when none would be, the run stops, as there is nothing to run.
+ * One test's missing set-up never costs the others their verdicts.
+ */
+export function withoutDependabot(
+  missing: readonly { test: string; why: string }[],
+  run: readonly string[],
+): { dropped: Record<string, string>; stop: string[] } {
+  const lacking = new Set(missing.map((m) => m.test));
+  if (run.every((id) => lacking.has(id))) return { dropped: {}, stop: missing.map((m) => m.why) };
+  const dropped: Record<string, string> = {};
+  for (const m of missing) dropped[m.test] = dropped[m.test] ? `${dropped[m.test]}; ${m.why}` : m.why;
+  return { dropped, stop: [] };
 }
 
 // ── An issue that must say why ──────────────────────────────────────────────────────────────────────────────────────

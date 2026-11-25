@@ -58,6 +58,7 @@ import {
   type TicketFacts,
   ticketFault,
   unreadMoves,
+  withoutDependabot,
   withSetting,
   workflowPins,
 } from './decide.ts';
@@ -223,54 +224,70 @@ function preflight(state: State, appJustReset: boolean) {
         `${busy}: \`node harness.ts batch none\`, then ./copies.sh reset factory, and wait for root to be Synced and Healthy`,
       );
   }
-  // The pull requests of Dependabot's the run's tests are judged on or beside, open, made since main was last put at
-  // the baseline and without a conflict: a reset keeps them, opens one that is closed again and asks Dependabot to make
-  // each again, so here the run opens once more what is closed and waits five minutes at most. Without one its test
-  // would pass or fail on nothing, or on a branch from before the baseline. Test 20's is summoned later, by the run.
+  // The pull requests of Dependabot's the run's tests are judged on or beside, open and without a conflict, and, for
+  // one a reset opened again by hand, made since main was last put at the baseline: a reset keeps them, opens one that
+  // is closed again and asks Dependabot to make it again, so here the run opens once more what is closed and waits,
+  // five minutes, or ten for one only a summon brings (22's, which the reset summoned for when none was open).
+  // Without one its test would pass or fail on nothing: it is dropped from the run with no verdict, and the run stops
+  // only when no test is left (decide.ts's `withoutDependabot`). Test 20's is summoned later, by the run.
   const kept = TESTS.filter((t) => inRun(state, t)).flatMap((t) => [
-    ...(t.pr.by === 'dependabot' && !t.summons ? [{ test: t.id, title: t.pr.title }] : []),
+    ...(t.pr.by === 'dependabot' && !t.summons
+      ? [{ test: t.id, title: t.pr.title, anyAge: Boolean(t.duplicate) }]
+      : []),
     ...(t.duplicate ? [{ test: t.id, title: t.duplicate.leaves, asIs: true }] : []),
     ...(t.beside ? [{ test: t.id, title: t.beside }] : []),
   ]);
   if (kept.length) {
     const repo = state.campaign === 'app' ? APP : FACTORY;
     const baselineAt = baselinePushedAt(repo);
-    const lacking = () =>
-      dependabotMissing(
-        kept,
-        api<any[]>(repo, 'pulls?state=open&per_page=100')
-          .filter((p) => p.user.login === 'dependabot[bot]' && kept.some((need) => need.title.test(p.title)))
-          .map((p) => {
-            // The list says nothing of a conflict: the pull request's own read does, once GitHub has worked it out.
-            const { mergeable } = api<{ mergeable: boolean | null }>(repo, `pulls/${p.number}`);
-            const head = api<any>(repo, `commits/${p.head.sha}`);
-            return {
-              number: p.number as number,
-              title: p.title as string,
-              headAt: head.commit.committer.date as string,
-              conflicting: mergeable === null ? undefined : !mergeable,
-            };
-          }),
-        baselineAt,
+    const lacking = () => {
+      const open = api<any[]>(repo, 'pulls?state=open&per_page=100')
+        .filter((p) => p.user.login === 'dependabot[bot]' && kept.some((need) => need.title.test(p.title)))
+        .map((p) => {
+          // The list says nothing of a conflict: the pull request's own read does, once GitHub has worked it out.
+          const { mergeable } = api<{ mergeable: boolean | null }>(repo, `pulls/${p.number}`);
+          const head = api<any>(repo, `commits/${p.head.sha}`);
+          return {
+            number: p.number as number,
+            title: p.title as string,
+            headAt: head.commit.committer.date as string,
+            conflicting: mergeable === null ? undefined : !mergeable,
+          };
+        });
+      return kept.flatMap((need) =>
+        dependabotMissing([need], open, baselineAt).map((why) => ({ test: need.test, why, summoned: need.anyAge })),
       );
+    };
     let missing = lacking();
     if (missing.length) {
+      const minutes = missing.some((m) => m.summoned) ? 10 : 5;
       say(
         state,
-        `pre-flight: ${missing.join('; ')}: opening again what is closed, asking Dependabot to recreate it, and waiting five minutes`,
+        `pre-flight: ${missing.map((m) => m.why).join('; ')}: opening again what is closed, asking Dependabot to recreate it, and waiting ${minutes} minutes`,
       );
       sh(join(BIN, 'copies.sh'), ['reopen-dependabot', repo === APP ? 'app' : 'factory'], {
         cwd: BIN,
         timeout: 5 * 60_000,
       });
-      for (let i = 0; i < 15 && missing.length; i++) {
+      for (let i = 0; i < minutes * 3 && missing.length; i++) {
         sleep(20_000);
         missing = lacking();
       }
+      missing = missing.map((m) => ({ ...m, why: `${m.why}, ${minutes} minutes after Dependabot was asked for it` }));
     }
-    wrong.push(
-      ...missing.map((why) => `${why}, five minutes after it was opened again and Dependabot asked to recreate it`),
+    const without = withoutDependabot(
+      missing,
+      TESTS.filter((t) => inRun(state, t)).map((t) => t.id),
     );
+    wrong.push(...without.stop);
+    for (const [id, why] of Object.entries(without.dropped)) {
+      state.dropped = { ...state.dropped, [id]: why };
+      say(
+        state,
+        `pre-flight, no verdict for ${id}, which is dropped from this run: ${why}. The run's other tests go on`,
+      );
+    }
+    save(state);
   }
   // The store at the baseline's newest migration: a restore's dump predates some, and the GitHub worker reads the
   // level through one (0054), queueing nothing without it.
@@ -562,6 +579,11 @@ interface State {
   /** The forgeries forge.ts made for this run: each test's pull request and the commit that must be held. */
   forged?: Record<string, { number?: number; head?: string; refused?: string }>;
   seen: Record<string, Seen>;
+  /**
+   * Tests dropped at the pre-flight, each with why: its pull request of Dependabot's could not be had. The run goes
+   * on without them, and each reads "pre-flight, no verdict".
+   */
+  dropped?: Record<string, string>;
   done?: boolean;
 }
 
@@ -1636,6 +1658,8 @@ function unreadVerdict(state: State, test: Test): { pass: boolean; why: string }
 function verdict(state: State, test: Test): { pass: boolean; why: string } {
   const seen = state.seen[test.id];
   const fail = (why: string) => ({ pass: false, why });
+  const dropped = state.dropped?.[test.id];
+  if (dropped) return fail(`pre-flight, no verdict: ${dropped}`.slice(0, 520));
   if (test.restart)
     return state.restart ? restartVerdict(state.restart) : fail('the store was not restarted under a report');
   if (test.duplicate) {
@@ -1844,7 +1868,8 @@ function report(state: State) {
   );
   for (const test of TESTS.filter((t) => inRun(state, t))) {
     const { pass, why } = verdict(state, test);
-    console.log(`${test.id.padEnd(3)} ${pass ? 'PASS    ' : 'FAIL    '} ${test.title.padEnd(46)} ${why}`);
+    const mark = state.dropped?.[test.id] ? 'NOT RUN ' : pass ? 'PASS    ' : 'FAIL    ';
+    console.log(`${test.id.padEnd(3)} ${mark} ${test.title.padEnd(46)} ${why}`);
   }
   if (state.line?.events.length) console.log(`\nthe work item's events: ${state.line.events.join(' ')}`);
   if (state.line?.dequeued?.length)
@@ -1901,7 +1926,8 @@ function summary() {
     else if (!run) console.log(`${id} NOT RUN  ${title} no finished run yet`);
     else {
       const { pass, why } = verdict(run, test);
-      console.log(`${id} ${pass ? 'PASS    ' : 'FAIL    '} ${title} ${why}  [${run.id}]`);
+      const mark = run.dropped?.[test.id] ? 'NOT RUN ' : pass ? 'PASS    ' : 'FAIL    ';
+      console.log(`${id} ${mark} ${title} ${why}  [${run.id}]`);
     }
   }
 }
@@ -1909,7 +1935,8 @@ function summary() {
 // ── The campaign ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 function run(state: State) {
-  const tests = TESTS.filter((t) => inRun(state, t));
+  // The run's tests; one the pre-flight drops (its pull request of Dependabot's could not be had) is taken out there.
+  const tests = TESTS.filter((t) => inRun(state, t) && !state.dropped?.[t.id]);
   const only = state.test ? tests.find((t) => t.id === state.test) : undefined;
   if (state.campaign === 'app' && !only) throw new Error(`no app test ${state.test}`);
   const repo = state.campaign === 'app' ? APP : FACTORY;
@@ -1972,21 +1999,29 @@ function run(state: State) {
     say(state, `reset: ./copies.sh ${reset.join(' ')}`);
     const startedAt = new Date().toISOString();
     const before = mainOf(repo);
-    // A run with a test of Dependabot's fresh pull request (22) summons Dependabot on the factory copy as the last of
-    // its reset, with the worker still stopped: one commit on main past the baseline, whose push is then the reset's
+    // A run with a test of Dependabot's own pull request for a pin the App moves (22) resets with the worker stopped,
+    // and looks for that pull request, which a reset keeps. Only with none open does it summon Dependabot on the
+    // factory copy, as the last of its reset: one commit on main past the baseline, whose push is then the reset's
     // own. The scan of that push is the one the run stands on and its clock starts at, as below; the baseline's own
     // push's scan, a minute older and of the same pins, may be replaced by it. The worker starts on the main it leaves.
-    const summons = state.campaign === 'factory' && tests.some((t) => t.duplicate);
+    const duplicate = state.campaign === 'factory' ? tests.find((t) => t.duplicate) : undefined;
     let out = sh(join(BIN, 'copies.sh'), reset, {
       cwd: BIN,
       timeout: 30 * 60_000,
-      env: summons ? { KEEP_WORKER_DOWN: '1' } : {},
+      env: duplicate ? { KEEP_WORKER_DOWN: '1' } : {},
     });
-    if (summons) {
-      out += sh(join(BIN, 'copies.sh'), ['summon-dependabot', 'factory'], { cwd: BIN, timeout: 10 * 60_000 });
+    if (duplicate) {
+      const title = duplicate.pr.by === 'dependabot' ? duplicate.pr.title : /$^/;
+      const open = api<any[]>(repo, 'pulls?state=open&per_page=100').filter(
+        (p) => p.user.login === 'dependabot[bot]' && title.test(p.title),
+      );
+      if (open.length) say(state, `Dependabot's #${open[0].number} is open for test ${duplicate.id}: no summon`);
+      else {
+        out += sh(join(BIN, 'copies.sh'), ['summon-dependabot', 'factory'], { cwd: BIN, timeout: 10 * 60_000 });
+        state.summonedAt = new Date().toISOString();
+        say(state, `no pull request of Dependabot's is open for test ${duplicate.id}: summoned it on the factory copy`);
+      }
       out += sh(join(BIN, 'copies.sh'), ['worker', '1'], { cwd: BIN, timeout: 10 * 60_000 });
-      state.summonedAt = new Date().toISOString();
-      say(state, 'summoned Dependabot on the factory copy, then started the worker');
     }
     writeFileSync(join(dirOf(state.id), 'reset.log'), out);
     state.resetAt = new Date().toISOString();
@@ -1995,6 +2030,10 @@ function run(state: State) {
     save(state);
   }
   if (!state.scan1) preflight(state, appJustReset);
+  for (const id of Object.keys(state.dropped ?? {})) {
+    const at = tests.findIndex((t) => t.id === id);
+    if (at >= 0) tests.splice(at, 1);
+  }
   if (!state.scan1 && state.resetAt && !has('--no-reset') && !has('--no-scan')) {
     // The push of the reset's commit started a scan of its own, and the worker opens its pull requests from it: the
     // run stands on that one, and its clock starts there. Its commit and its time are the reset's own, recorded as it

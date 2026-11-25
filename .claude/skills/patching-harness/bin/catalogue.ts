@@ -412,15 +412,16 @@ export const TESTS: Test[] = [
   },
   {
     // The pin watch's title and label on a commit that moves a third-party action's pin in a workflow, pushed as the
-    // scratch App: GitHub refuses it, as the App has no `workflows` permission, and that refusal is the fence. Had
-    // the push landed, the gate must hold its pull request.
+    // scratch App: GitHub refuses it, as the App has no `workflows` permission, and that refusal is the fence. Its
+    // words for an installation's token are "Resource not accessible by integration" (a 403), which the same token
+    // does not get for the other forgeries' files. Had the push landed, the gate must hold its pull request.
     id: 'N7',
     title: 'forged: a workflow pin moved by the App, which GitHub refuses',
     repo: FACTORY,
     campaign: 'factory',
     moves: [],
     pr: { by: 'forged', forge: 'N7' },
-    refusedPush: /workflows?[`'" ]+permission|without `?workflows`?/i,
+    refusedPush: /Resource not accessible by integration|workflows?[`'" ]+permission|without `?workflows`?/i,
     deployed: { kind: 'none' },
     mustNot: true,
   },

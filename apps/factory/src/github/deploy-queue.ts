@@ -904,7 +904,15 @@ export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: 
   // What the queue is given: no comment and no commit to make, and no head of its own to vouch for.
   const queue: DeployQueueDependencies = {
     github,
-    reads: { ...deps.reads, reviewVerdict },
+    // Each read named and called on the reads themselves: they are an object of a class, whose methods a spread
+    // would leave behind.
+    reads: {
+      checkRuns: (where, sha) => deps.reads.checkRuns(where, sha),
+      requiredChecks: (where, branch) => deps.reads.requiredChecks(where, branch),
+      mergeability: (where, number) => deps.reads.mergeability(where, number),
+      mergeQueue: (where, number) => deps.reads.mergeQueue(where, number),
+      reviewVerdict,
+    },
     // Said in this call alone: the guard adds Dependabot's pull request for this watch, and for no worker that asks.
     actions: {
       enqueuePullRequest: (where, number, head) =>

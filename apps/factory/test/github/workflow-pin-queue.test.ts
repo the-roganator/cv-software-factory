@@ -144,7 +144,7 @@ function harness(
       return o.enqueue ? o.enqueue(number, head) : { position: 1, state: 'QUEUED' };
     },
   };
-  const reads: WorkflowPinQueueDependencies['reads'] = {
+  const answers: WorkflowPinQueueDependencies['reads'] = {
     checkRuns: async () => (o.runs ?? green)(),
     requiredChecks: async () => REQUIRED,
     mergeability: async (_repo, number) => {
@@ -154,6 +154,23 @@ function harness(
     },
     mergeQueue: async () => (o.queued ?? (() => queue()))(),
   };
+  // The reads as the worker has them: an object of a class, whose methods are its prototype's and not its own.
+  type Reads = WorkflowPinQueueDependencies['reads'];
+  class ClassReads implements Reads {
+    checkRuns(...given: Parameters<Reads['checkRuns']>) {
+      return answers.checkRuns(...given);
+    }
+    requiredChecks(...given: Parameters<Reads['requiredChecks']>) {
+      return answers.requiredChecks(...given);
+    }
+    mergeability(...given: Parameters<Reads['mergeability']>) {
+      return answers.mergeability(...given);
+    }
+    mergeQueue(...given: Parameters<Reads['mergeQueue']>) {
+      return answers.mergeQueue(...given);
+    }
+  }
+  const reads = new ClassReads();
   const read = o.level ?? level();
   const pass = workflowPinQueueWatch(
     {

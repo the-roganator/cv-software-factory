@@ -390,7 +390,8 @@ in_copy() {
   local dir="$WORK/factory"
   grep -qx "CLUSTER := $SCRATCH_CLUSTER" "$dir/Makefile" || die "work/factory's Makefile does not name $SCRATCH_CLUSTER: build again"
   grep -qx "  name: $SCRATCH_CLUSTER" "$dir/deploy/k3d/cluster.yaml" || die "work/factory's cluster.yaml does not name $SCRATCH_CLUSTER"
-  if grep -rqE -- "$REAL_CONTEXT([^-]|$)" "$dir/Makefile" "$dir/scripts" "$dir/.claude"; then
+  # But in the copy's own cluster.pl, whose rule for the name is the one line that must spell it.
+  if grep -rqE --exclude=cluster.pl -- "$REAL_CONTEXT([^-]|$)" "$dir/Makefile" "$dir/scripts" "$dir/.claude"; then
     die "work/factory still names $REAL_CONTEXT"
   fi
   (cd "$dir" && env -u GITHUB_APP_PRIVATE_KEY -u PUSHOVER_APP_TOKEN -u PUSHOVER_USER_KEY -u PRIVATE_DIR -u KUBECONFIG \

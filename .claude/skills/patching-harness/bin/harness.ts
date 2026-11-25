@@ -12,7 +12,8 @@
  * on as the run goes: W3b puts its image's move on the app copy's main before the line takes the ticket
  * (`./copies.sh move-on-main`), 21 lifts the factory copy's exception once the pull request is open
  * (`./copies.sh lift-exception`) and scans the app copy again, and W5 leaves a report through the app's widget and
- * deletes the store's pod. It never approves, queues, re-runs a check, answers a hold or sets a variable (a test's
+ * deletes the store's pod. An app run with 24 tells the pin watch that test's move by name (the ConfigMap
+ * `scratch-pin-watch`), as the worker opens an issue only for a move it was told. It never approves, queues, re-runs a check, answers a hold or sets a variable (a test's
  * `variables` are read, and confirm.sh sets them). Everything else is a read.
  *
  *     node harness.ts factory [--only 1,2,N4] [--limit 60] [--lights-out] [--no-reset] [--no-scan] [--no-kick] [--no-forge] [--once]
@@ -46,6 +47,7 @@ import {
   newerFault,
   pickScan,
   pinsFault,
+  pinWatchLacks,
   pinWatchLine,
   printOf,
   probeQuery,
@@ -159,6 +161,36 @@ function pinWatchNames(tests: Test[]): string[] {
   ];
 }
 
+/**
+ * For an app run with a test that ends as an issue of the worker's (24): the pin watch is told that test's move by
+ * name and nothing else, in the ConfigMap the worker reads as it starts, which the run's restart of the worker then
+ * gives it. An issue rolls nothing, so the factory copy stays at rest; its own scan lists no move of that name. The
+ * next reset writes the ConfigMap from batch.env again.
+ */
+function issueWatch(state: State, tests: Test[]) {
+  const names = [...new Set(tests.filter((t) => t.campaign === 'app' && t.issue).flatMap((t) => t.moves))];
+  if (state.campaign !== 'app' || !names.length) return;
+  const only = names.join(',');
+  try {
+    kubectl([
+      '-n',
+      'factory',
+      'patch',
+      'configmap',
+      'scratch-pin-watch',
+      '--type',
+      'merge',
+      '-p',
+      JSON.stringify({ data: { only } }),
+    ]);
+  } catch {
+    try {
+      kubectl(['-n', 'factory', 'create', 'configmap', 'scratch-pin-watch', `--from-literal=only=${only}`]);
+    } catch {}
+  }
+  say(state, `told the pin watch to take ${only} alone, for the worker's issue: it reads it as the run restarts it`);
+}
+
 function preflight(state: State, appJustReset: boolean) {
   const wrong: string[] = [];
   // The moves the scratch GitHub worker takes, which a reset writes to the ConfigMap `scratch-pin-watch` from
@@ -169,8 +201,7 @@ function preflight(state: State, appJustReset: boolean) {
     try {
       told = kubectl(['-n', 'factory', 'get', 'configmap', 'scratch-pin-watch', '-o', 'jsonpath={.data.only}']).trim();
     } catch {}
-    const names = told.split(',').map((name) => name.trim());
-    const missing = needed.filter((name) => told !== '*' && !names.includes(name));
+    const missing = pinWatchLacks(told, needed);
     if (!told)
       wrong.push(
         `the pin watch is told no move: \`node harness.ts batch ${state.only.join(',')}\`, then ./copies.sh reset factory`,
@@ -185,6 +216,29 @@ function preflight(state: State, appJustReset: boolean) {
         `pre-flight: the pin watch takes every move (*), not these tests' alone (${needed.join(', ')}): every pull request of the day opens and may merge beside them. \`node harness.ts batch ${state.only.join(',')}\` names them in batch.env`,
       );
     else say(state, `pre-flight: the pin watch takes ${told}`);
+  }
+  // An app run's test that ends as an issue of the worker's (24): the worker's pass over the app's repository follows
+  // the same setting, so the pin watch must take its move by name, which the run wrote before this (`issueWatch`).
+  // Told otherwise, the test is dropped with no verdict beside another, and alone it stops the run.
+  const issued = TESTS.filter((t) => inRun(state, t) && t.campaign === 'app' && t.issue);
+  if (issued.length) {
+    let told = '';
+    try {
+      told = kubectl(['-n', 'factory', 'get', 'configmap', 'scratch-pin-watch', '-o', 'jsonpath={.data.only}']).trim();
+    } catch {}
+    const alone = TESTS.filter((t) => inRun(state, t)).length === issued.length;
+    for (const test of issued) {
+      const lacks = pinWatchLacks(told, test.moves);
+      if (!lacks.length) continue;
+      const why = `the pin watch is told ${told || 'no move'}, not ${lacks.join(', ')}, so the worker opens no issue for it`;
+      if (alone) wrong.push(`test ${test.id}: ${why}`);
+      else {
+        state.dropped = { ...state.dropped, [test.id]: why };
+        say(state, `pre-flight, no verdict for ${test.id}, which is dropped from this run: ${why}`);
+      }
+    }
+    if (!wrong.length && issued.some((t) => !state.dropped?.[t.id]))
+      say(state, `pre-flight: the pin watch takes ${told}`);
   }
   // A test's own set-up beyond the shared baseline (`staged/<side>-<name>/`, a Test's `staged`): on the baseline exactly
   // when one of the run's tests asks for it, as it changes what the others do. Read from what `build` committed.
@@ -2082,6 +2136,7 @@ function run(state: State) {
     appJustReset = reset.includes('app');
     save(state);
   }
+  if (!state.scan1) issueWatch(state, tests);
   if (!state.scan1) preflight(state, appJustReset);
   for (const id of Object.keys(state.dropped ?? {})) {
     const at = tests.findIndex((t) => t.id === id);

@@ -24,6 +24,7 @@ import {
   type PullFacts,
   pickScan,
   pinsFault,
+  pinWatchLacks,
   pinWatchLine,
   printOf,
   probeQuery,
@@ -590,6 +591,22 @@ describe("the pull requests of Dependabot's a run needs open as it starts", () =
     // One of the title that is ready is enough, whatever another of it is.
     const two = [pull(4, node), pull(7, syft, '2026-11-24T08:00:00Z'), pull(9, syft)];
     expect(dependabotMissing(needs, two, BASELINE)).toEqual([]);
+  });
+});
+
+describe('the moves the pin watch was not told to take', () => {
+  const base = 'mcr.microsoft.com/devcontainers/base';
+
+  it('lacks none when it takes every move, or each by name', () => {
+    expect(pinWatchLacks('*', [base, 'postgres'])).toEqual([]);
+    expect(pinWatchLacks(`postgres, ${base}`, [base, 'postgres'])).toEqual([]);
+    expect(pinWatchLacks('', [])).toEqual([]);
+  });
+
+  it('lacks every one when told nothing, and each one not named', () => {
+    expect(pinWatchLacks('', [base])).toEqual([base]);
+    expect(pinWatchLacks('postgres', [base, 'postgres'])).toEqual([base]);
+    expect(pinWatchLacks('postgres-exporter', ['postgres'])).toEqual(['postgres']);
   });
 });
 

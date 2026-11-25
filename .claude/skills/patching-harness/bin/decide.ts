@@ -238,6 +238,16 @@ export function withSetting(text: string, key: string, line: string | undefined)
   return [...kept, ...(line === undefined ? [] : [line])].map((l) => `${l}\n`).join('');
 }
 
+/**
+ * The moves a run's tests stand on that the pin watch was not told to take: none when it takes every move (`*`), every
+ * one when it was told nothing. `told` is `PIN_WATCH_ONLY` as the worker reads it, names comma-separated.
+ */
+export function pinWatchLacks(told: string, needed: readonly string[]): string[] {
+  if (told.trim() === '*') return [];
+  const names = told.split(',').map((name) => name.trim());
+  return needed.filter((name) => !names.includes(name));
+}
+
 // ── The worker's word that it cannot read the scan ──────────────────────────────────────────────────────────────────
 
 /** How the GitHub worker begins its error when a scan's artifact does not read (apps/factory/src/github/scanning.ts). */

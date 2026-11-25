@@ -8,67 +8,80 @@ import type { Logger } from 'pino';
  */
 export const STORE_AWAY_MS = 60_000;
 
-/** What a worker's passes are called in its log. */
-export interface PassWords {
-  /** A pass that could not reach what it depends on, while it has been away less than its time: a warning. */
+/** What a worker's passes at one dependency are called in its log, while it is away and once it is back. */
+export interface AwayWords {
+  /** A pass that could not reach it, while it has been away less than its time: a warning. */
   away: string;
   /** A pass that could not reach it once it has been away for longer: an error. */
   stillAway: string;
-  /** A pass that failed in any other way: an error. */
-  failed: string;
   /** The pass that reached it again, after so many seconds: an info line. */
   back(seconds: number): string;
 }
 
-/** What a worker's passes depend on, when it is not the store: how its absence fails a pass, and for how long. */
+/** What a worker's passes are called in its log. */
+export interface PassWords extends AwayWords {
+  /** A pass that failed in any other way: an error. */
+  failed: string;
+}
+
+/** What a worker's passes depend on, when it is not the store alone: how its absence fails a pass, and for how long. */
 export interface Dependency {
   /** Whether a pass failed with this error because the dependency is away for now, rather than for a fault. */
   away(error: unknown): boolean;
   /** How long it may be away before a pass that cannot reach it is a fault. */
   awayMs: number;
+  /** What a pass is called while this one is away, where the worker's words are of another. */
+  words?: AwayWords;
 }
 
 /** The store: away while `storeAway` says so, for up to `STORE_AWAY_MS`. */
-const STORE: Dependency = { away: storeAway, awayMs: STORE_AWAY_MS };
+export const STORE: Dependency = { away: storeAway, awayMs: STORE_AWAY_MS };
 
 /**
- * Says how each pass of a worker at what it depends on ended, the store unless it is told another: a pass that could
- * not reach it, while it has been away less than its time, as a warning, and the pass that reaches it again with how
- * long it was away; any other failure, and every one once it has been away for longer, as an error. The worker must
- * go on making passes while it is away, as only a pass that reaches it ends the absence.
+ * Says how each pass of a worker at what it depends on ended, the store unless it is told otherwise: a pass that could
+ * not reach a dependency, while that one has been away less than its time, as a warning, and the pass that reaches
+ * everything again with how long each was away; any other failure, and every one once the dependency has been away
+ * for longer, as an error. Of several dependencies, a failure is the first's whose `away` knows it, and each one's
+ * absence is timed from the first pass it failed. The worker must go on making passes while one is away, as only a
+ * pass that fails nowhere ends an absence.
  */
 export class PassLog {
-  /** When the first pass of the absence failed, while it lasts. */
-  #awaySince: number | null = null;
+  /** When the first pass of each dependency's absence failed, while it lasts. */
+  readonly #awaySince = new Map<Dependency, number>();
   readonly #log: Logger;
   readonly #now: () => Date;
   readonly #words: PassWords;
-  readonly #on: Dependency;
+  readonly #on: readonly Dependency[];
 
-  constructor(log: Logger, now: () => Date, words: PassWords, on: Dependency = STORE) {
+  constructor(log: Logger, now: () => Date, words: PassWords, on: Dependency | readonly Dependency[] = STORE) {
     this.#log = log;
     this.#now = now;
     this.#words = words;
-    this.#on = on;
+    this.#on = [on].flat();
   }
 
   passed(): void {
-    if (this.#awaySince === null) return;
-    const seconds = Math.round((this.#now().getTime() - this.#awaySince) / 1000);
-    this.#awaySince = null;
-    this.#log.info({ awaySeconds: seconds }, this.#words.back(seconds));
+    const now = this.#now().getTime();
+    for (const [dependency, since] of this.#awaySince) {
+      const seconds = Math.round((now - since) / 1000);
+      this.#log.info({ awaySeconds: seconds }, (dependency.words ?? this.#words).back(seconds));
+    }
+    this.#awaySince.clear();
   }
 
   /** A pass failed, with `error`; `about` is what the worker's line says of the pass besides. */
   failed(error: unknown, about: Record<string, unknown> = {}): void {
-    if (!this.#on.away(error)) {
+    const dependency = this.#on.find((one) => one.away(error));
+    if (!dependency) {
       this.#log.error({ ...about, err: error }, this.#words.failed);
       return;
     }
+    const words = dependency.words ?? this.#words;
     const now = this.#now().getTime();
-    this.#awaySince ??= now;
-    const away = now - this.#awaySince;
-    if (away < this.#on.awayMs) this.#log.warn({ ...about, err: error, awayMs: away }, this.#words.away);
-    else this.#log.error({ ...about, err: error, awayMs: away }, this.#words.stillAway);
+    const since = this.#awaySince.get(dependency) ?? now;
+    this.#awaySince.set(dependency, since);
+    const away = now - since;
+    if (away < dependency.awayMs) this.#log.warn({ ...about, err: error, awayMs: away }, words.away);
+    else this.#log.error({ ...about, err: error, awayMs: away }, words.stillAway);
   }
 }

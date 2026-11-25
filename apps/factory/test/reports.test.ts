@@ -7,6 +7,7 @@ import type { LogRecord } from '../src/clients/loki.ts';
 import { Loki } from '../src/clients/loki.ts';
 import { Prometheus } from '../src/clients/prometheus.ts';
 import { Tempo } from '../src/clients/tempo.ts';
+import { checkTurns, turn } from '../src/commands/logs.ts';
 import { reportSignalId, signalForReport } from '../src/logs/reports.ts';
 import { Watcher } from '../src/logs/watcher.ts';
 import { printing } from '../src/outbox.ts';
@@ -177,6 +178,33 @@ describe('the log watcher and reports', () => {
     const retried: InboxSignal[] = [];
     const again = watching(reports, async (signal) => void retried.push(signal));
     expect(await again.watcher.checkReports(NOW)).toBe(2);
+  });
+
+  it('rides out a store that restarts as a report is sent: a warning, and the report in the inbox once', async () => {
+    // The inbox as the store keeps it: the first signal of an id, and no other. Its second send is cut off after the
+    // store took the signal, the worst a restart does.
+    const inbox = new Map<string | undefined, InboxSignal>();
+    let sends = 0;
+    const { watcher, logged } = watching(reports, async (signal, id) => {
+      if (!inbox.has(id)) inbox.set(id, signal);
+      sends += 1;
+      if (sends === 2) throw Object.assign(new Error(`write CONNECTION_CLOSED ${TEXT}`), { code: 'CONNECTION_CLOSED' });
+    });
+    const lines: { level: number; msg: string }[] = [];
+    const log = pino({ level: 'trace' }, { write: (line: string) => void lines.push(JSON.parse(line)) });
+    const turns = checkTurns(log, () => NOW, 'reports');
+
+    await turn(turns, () => watcher.checkReports(NOW));
+    await turn(turns, () => watcher.checkReports(NOW));
+    await turn(turns, () => watcher.checkReports(NOW));
+
+    expect(lines.map(({ level, msg }) => [pino.levels.labels[level], msg])).toEqual([
+      ['warn', 'a check could not reach the store, as for a restart: its next turn tries again'],
+      ['info', 'the check reached the store again, after 0 s'],
+    ]);
+    expect(sends).toBe(3);
+    expect([...inbox.values()].map((signal) => signal.report?.page)).toEqual(['/products/teapot-lid', '/about']);
+    expect(JSON.stringify(lines) + logged.join('')).not.toContain('ZEBRA');
   });
 
   it('shows a dry run’s report as its length', async () => {

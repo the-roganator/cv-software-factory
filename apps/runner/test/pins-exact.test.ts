@@ -13,7 +13,9 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { listenLocal } from '@software-factory/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { isReason, type Made, openMade, reasonOf, sealMade } from '../../factory/src/github/made.ts';
 import { madeRefusal } from '../../factory/src/github/pin-guard.ts';
+import { newKey, readKey } from '../../factory/src/vulnerabilities/state.ts';
 import {
   importedVersions,
   lockedVersions,
@@ -39,6 +41,8 @@ const RELEASES: Record<string, Record<string, { needs?: Record<string, string>; 
     '1.0.1': { days: 5 },
     // Younger, inside `^1.0.0`: past pnpm's day, and not past the scan's wait.
     '1.0.2': { days: 2 },
+    // Out this morning: younger than pnpm's own release age, which refuses it.
+    '1.0.3': { days: 0.2 },
     '2.0.0': { days: 10 },
     '2.0.1': { days: 2 },
   },
@@ -253,6 +257,65 @@ describe('a routine update of a package, made by pnpm itself', { timeout: 120_00
     expect(error.message).toBe(
       'demo-pkg stays at 1.0.0: demo-holder@1.0.0 admit no 1.0.1, so it needs an override in pnpm-workspace.yaml',
     );
+  });
+
+  it('says each refusal in one line of plain words, pnpm’s own reason in it, which the scan seals and the worker opens', async () => {
+    const refusal = async (files: Record<string, string>, move: Move, tool: Pnpm = pnpm()) => {
+      const dir = await checkout(files);
+      // What a refused move wrote, if anything, is undone by whoever ran the step (scripts/derive.ts).
+      const error = await movePackage(dir, move, tool).catch((e) => e);
+      expect(error, JSON.stringify(move)).toBeInstanceOf(PinsRefused);
+      return (error as Error).message;
+    };
+    const reasons = [
+      // pnpm's own guard: a release younger than its release age, asked for by its version.
+      await refusal(SHOP, update('1.0.3')),
+      // The step's own: a package no manifest names, and a copy past the target.
+      await refusal({ 'package.json': manifest('shop', { 'demo-parent': '^1.0.0' }) }, update('1.0.1')),
+      await refusal(SHOP, update('1.0.1'), async (dir, args) => {
+        await pnpm()(
+          dir,
+          args.map((arg) => (arg === 'demo-pkg@1.0.1' ? 'demo-pkg@1.0.2' : arg)),
+        );
+      }),
+      // pnpm's answer to a version for a package no manifest names, had the step asked it.
+      await refusal(SHOP, update('1.0.1'), async (dir) => {
+        await realPnpm(`cache-${++caches}`)(dir, ['update', 'demo-parent@1.0.0', 'demo-absent@1.0.0']);
+      }),
+    ];
+    expect(reasons[0]).toMatch(/^pnpm refused demo-pkg@1\.0\.3: /);
+    expect(reasons[1]).toMatch(/^No manifest names demo-pkg/);
+    expect(reasons[2]).toBe(
+      'demo-pkg resolves to 1.0.2, past 1.0.1: a routine update moves to the release the scan listed, and no further.',
+    );
+    expect(reasons[3]).toMatch(/^pnpm refused demo-pkg@1\.0\.1: /);
+    for (const reason of reasons) {
+      // One line, no command line, none of the marks pnpm draws its report with.
+      expect(reason, reason).not.toMatch(/[\n\r│├╰─▶×]|Command failed|--config|--depth/);
+      expect(reason.length, reason).toBeLessThanOrEqual(400);
+      expect(isReason(reason), reason).toBe(true);
+      expect(reasonOf(reason)).toBe(reason);
+    }
+    // Sealed as the scan's pins job seals them, and opened as the worker and the review gate open them.
+    const key = readKey(newKey());
+    const made: Made = {
+      version: 1,
+      repository: 'the-roganator/cv-software-factory',
+      run: '7',
+      commit: 'a'.repeat(40),
+      groups: [
+        {
+          files: ['pnpm-lock.yaml'],
+          major: false,
+          routine: true,
+          moves: [],
+          refused: reasons.map((reason, i) => ({ move: i + 1, reason: reasonOf(reason) })),
+          changed: [],
+          steps: [],
+        },
+      ],
+    };
+    expect(openMade(sealMade(made, key), key, made.repository, '7')).toEqual(made);
   });
 
   it('refuses a routine update of a package no manifest names, before pnpm runs: pnpm holds only a direct one to a version', async () => {

@@ -29,6 +29,7 @@ import {
   type MadeStep,
   madeByLine,
   madeByStep,
+  reasonOf,
   sealMade,
   stepOf,
 } from '../apps/factory/src/github/made.ts';
@@ -50,10 +51,8 @@ const PULL_LANES = new Set(['worker', 'cluster']);
 const stepMakes = (move: ReadMove, app: boolean) =>
   app ? move.lane === 'line' && madeByLine(move) : PULL_LANES.has(move.lane) && madeByStep(move);
 
-/** The most of the step's words kept for one refusal. */
-const MOST_WORDS = 4000;
-
-const words = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, MOST_WORDS);
+/** The step's words for a refusal, as the file may hold a reason (github/made.ts's `reasonOf`), whatever it threw. */
+const words = (error: unknown) => reasonOf(error instanceof Error ? error.message : String(error));
 
 /** The moves to make, by group, in the order of `moves.json`. */
 export function groupsOf(moves: readonly ReadMove[], repository: string): Map<string, ReadMove[]> {
@@ -114,7 +113,7 @@ export async function makeGroup(
     const lock = before('mise.lock');
     for (const move of moves) {
       const step = stepOf(move, lock || undefined);
-      if (typeof step === 'string') refused.push({ move: move.index, reason: step });
+      if (typeof step === 'string') refused.push({ move: move.index, reason: reasonOf(step) });
       else steps.push({ index: move.index, step });
     }
     const lockBefore = new Map([['pnpm-lock.yaml', before('pnpm-lock.yaml')]]);

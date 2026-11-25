@@ -73,6 +73,13 @@ export interface Test {
   then?: { dependency: string; closes: 'no-change'; reason: RegExp };
   /** Lines the pull request's diff of a file must take out: each copy of a package it moves. */
   removes?: { file: string; lines: string[] };
+  /** Lines the pull request's diff of a file must leave as they are: a copy of a package it may not move. */
+  keeps?: { file: string; lines: string[] };
+  /**
+   * A move the pin step refused, which waits as an issue of the App's beside the pull request that merges without it:
+   * what the issue names in code (its package, the release refused), what it says, and what it never does.
+   */
+  refused?: { names: string[]; says: RegExp[]; never: RegExp[] };
   /** For a test that ends out of tries: how long a run watches at least, from the scan, to see nothing comes after. */
   watchMin?: number;
   /** A forgery GitHub must refuse at the push: what its refusal must say. With it, the refusal is the pass. */
@@ -97,6 +104,9 @@ export interface Test {
   routine?: boolean;
   /** A move that is Martin's to make: it ends as an issue, with no pull request of the App's, at every level. */
   issue?: boolean;
+  /** For one that ends as an issue: the scan's lane for it (`issue` unless said), and what the issue's body must say. */
+  lane?: string;
+  says?: RegExp;
   /** A move that is the App's to write: an issue opened for it fails the test. */
   noIssue?: boolean;
   /** Who must add its pull request to the merge queue: the scratch App (the worker). */
@@ -113,6 +123,25 @@ export interface Test {
   unread?: { image: string; file: string; alerts?: boolean };
   /** Its pull request is Dependabot's own, which the run summons (`./copies.sh summon-dependabot`). */
   summons?: boolean;
+  /**
+   * Its pull request is Dependabot's for a pin the App's move makes too: the worker closes it once the move of test
+   * `of` has merged, and leaves open every one of Dependabot's titled as `leaves`, whose versions main does not have.
+   */
+  duplicate?: { of: string; leaves: RegExp };
+  /**
+   * Its move is put on main before the line takes its ticket (`./copies.sh move-on-main`), as another change would
+   * have made it: the ticket must close with this outcome and reason, with no pull request, no hold and no failed
+   * step, and its issue as completed.
+   */
+  made?: { closes: 'no-change'; reason: RegExp };
+  /**
+   * Its target moves on once its pull request is open: the first scan names `first` for `package`, as the factory
+   * copy's main excepts the advisory only the later release fixes (staged/factory-<staged>/); the run lifts the
+   * exception (`./copies.sh lift-exception`) and scans again, and the same pull request and issue must take `later`.
+   */
+  newer?: { package: string; first: string; later: string };
+  /** The store restarted under a report left through the app's widget: no scan, no reset, a step of its own. */
+  restart?: boolean;
 }
 
 const LOCKFILE = 'a package in `deploy/overlays/local/factory-image/kustomization.yaml` and `pnpm-lock.yaml`';
@@ -399,6 +428,63 @@ export const TESTS: Test[] = [
     deployed: { kind: 'none' },
   },
   {
+    // follow-redirects, a development dependency staged at exactly 1.14.8 (staged/app-21/), so pnpm resolves exactly
+    // the scan's target. The factory copy excepts, for the app, the advisory only 1.16.0 fixes (staged/factory-21/),
+    // so the first scan names 1.15.6; with the exception lifted the next names 1.16.0.
+    id: '21',
+    title: 'app move whose target moves on (follow-redirects)',
+    repo: APP,
+    campaign: 'app',
+    moves: [],
+    pr: { by: 'line' },
+    dependency: 'follow-redirects',
+    newer: { package: 'follow-redirects', first: '1.15.6', later: '1.16.0' },
+    staged: '21',
+    deployed: { kind: 'app-deploy' },
+  },
+  {
+    // Dependabot's pull request for the group `playwright` (the image and the library, test 6's pins), kept open
+    // across resets (baseline.env's DEPENDABOT_KEEP_FACTORY), beside its pull request for the actions group, which
+    // moves workflow pins the App never writes.
+    id: '22',
+    title: "Dependabot's pull request for a pin the App moved",
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    pr: { by: 'dependabot', title: /"playwright" group/i },
+    duplicate: { of: '6', leaves: /bump the actions group/i },
+    deployed: { kind: 'none' },
+  },
+  {
+    // lefthook, 2.2.1 on every baseline with 2.2.2 out, which was published without the provenance its earlier
+    // releases had: pnpm refuses it, the pin step leaves it out, and the day's other routine lockfile updates ride
+    // without it in the pull request test 15 stands on too.
+    id: '23',
+    title: 'a routine update pnpm refuses (lefthook)',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [FACTORY_DEV_LOCKFILE],
+    routine: true,
+    pr: { by: 'lockfile' },
+    keeps: { file: 'pnpm-lock.yaml', lines: ['  lefthook@2.2.1:'] },
+    refused: { names: ['lefthook', '2.2.2'], says: [/weaker provenance/], never: [/log says which/] },
+    deployed: { kind: 'none' },
+  },
+  {
+    // The devcontainer's base image on a line its publisher no longer builds: the scan lists it with no lane, and the
+    // worker opens an issue for it in the app's repository.
+    id: '24',
+    title: "a move nobody can make (the devcontainer's base)",
+    repo: APP,
+    campaign: 'app',
+    moves: ['mcr.microsoft.com/devcontainers/base'],
+    issue: true,
+    lane: 'none',
+    says: /no longer built/,
+    pr: { by: 'pin' },
+    deployed: { kind: 'none' },
+  },
+  {
     // The Postgres exporter one release back, as a service of a workflow run only by hand
     // (staged/factory/16-a-workflow-pin.patch), with findings its next release clears.
     id: 'N6',
@@ -524,6 +610,18 @@ export const TESTS: Test[] = [
     deployed: { kind: 'app-deploy' },
   },
   {
+    // Syft's move, as test 12, its tag and digest put on main before the line takes the ticket.
+    id: 'W3b',
+    title: 'an image move main already has closes its ticket as done',
+    repo: APP,
+    campaign: 'app',
+    moves: ['ghcr.io/anchore/syft'],
+    pr: { by: 'line' },
+    dependency: 'ghcr.io/anchore/syft',
+    made: { closes: 'no-change', reason: /^Main already has its move/ },
+    deployed: { kind: 'none' },
+  },
+  {
     // semver at 5.7.1 and 7.5.1 under one advisory (staged/app/15-semver-two-versions.patch), as test 9 in the
     // factory: one move, one pull request that moves both copies.
     id: 'W4',
@@ -535,6 +633,18 @@ export const TESTS: Test[] = [
     dependency: 'semver',
     removes: { file: 'pnpm-lock.yaml', lines: ['  semver@5.7.1:', '  semver@7.5.1:'] },
     deployed: { kind: 'app-deploy' },
+  },
+  {
+    // A report through the app's widget, and the store's pod deleted at once: Argo CD puts it back, and the log
+    // watcher, which was about to leave the report in the inbox, must ride it out.
+    id: 'W5',
+    title: "the store restarting under the log watcher's send",
+    repo: APP,
+    campaign: 'app',
+    moves: [],
+    pr: { by: 'none' },
+    restart: true,
+    deployed: { kind: 'none' },
   },
   {
     id: 'N1',

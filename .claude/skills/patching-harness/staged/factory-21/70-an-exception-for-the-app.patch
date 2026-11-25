@@ -1,0 +1,33 @@
+# Test 21, a move whose target moves on: the app's follow-redirects (staged/app-21/) is excepted from the advisory only 1.16.0 fixes, under each id a scanner may give it, so the app's first scan names 1.15.6; the run takes these off the factory copy's main once the pull request is open, and the next scan names 1.16.0. In force until 20 February 2027: build a later baseline with a later date, at most 90 days off.
+diff --git a/policy/vulnerabilities.ts b/policy/vulnerabilities.ts
+index 0ed8caa0..77c9e336 100644
+--- a/policy/vulnerabilities.ts
++++ b/policy/vulnerabilities.ts
+@@ -37,7 +37,26 @@ export const MAX_DAYS = 90;
+ /** An advisory id the scan's results carry. */
+ export const ADVISORY = /^(CVE-\d{4}-\d{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})$/;
+ 
+-export const EXCEPTIONS: Exception[] = [];
++export const EXCEPTIONS: Exception[] = [
++  {
++    repository: 'the-roganator/cv-worlds-worst-website',
++    item: 'pnpm-lock.yaml',
++    advisory: 'CVE-2026-40895',
++    package: 'follow-redirects',
++    reason:
++      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.6 first, and lifts this for it to name 1.16.0.',
++    expires: '2027-02-20',
++  },
++  {
++    repository: 'the-roganator/cv-worlds-worst-website',
++    item: 'pnpm-lock.yaml',
++    advisory: 'GHSA-r4q5-vmmm-2653',
++    package: 'follow-redirects',
++    reason:
++      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.6 first, and lifts this for it to name 1.16.0.',
++    expires: '2027-02-20',
++  },
++];
+ 
+ /**
+  * A package or an image the scan lists no routine move for (apps/factory/src/vulnerabilities/routine.ts), and why: it

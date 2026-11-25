@@ -233,6 +233,19 @@ describe('a move that waits for the merge when its issue is written again', () =
     expect(foldItem(waiting().add(...issue(6, '2.0.3')).events)?.hold).toBeUndefined();
   });
 
+  it('stops waiting too when the record before named no target, as of an issue opened before any signal', () => {
+    const bare = waiting().events.map((event) =>
+      event.type === 'issue.opened'
+        ? { ...event, payload: { ...event.payload, move: { name: 'invented-pkg', ecosystem: 'npm' as const } } }
+        : event,
+    );
+    expect(foldItem(bare)?.hold).toMatchObject({ cause: 'merge' });
+    const [written] = work('1')
+      .add(...issue(6, '2.0.3'))
+      .events.slice(-1);
+    expect(foldItem([...bare, ...(written ? [written] : [])])?.hold).toBeUndefined();
+  });
+
   it('still waits when the issue is written again for the same target, or the hold is of another cause', () => {
     // Only its findings differ: the pull request's pins are the issue's still.
     expect(foldItem(waiting().add(...issue(6, '2.0.1')).events)?.hold).toMatchObject({ cause: 'merge' });

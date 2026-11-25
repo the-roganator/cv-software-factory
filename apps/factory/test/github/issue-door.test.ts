@@ -19,9 +19,11 @@ import { doorReads } from './door-reads.ts';
 import { calls, client, quiet, REPO, type Sent } from './fake.ts';
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-/** The App's own issue, and one Martin opened. */
+/** The App's own issue, one Martin opened, the App's own pull request, and an issue of the pin watch's. */
 const OURS = 41;
 const HIS = 121;
+const PULL = 12;
+const PINNED = 77;
 
 let close: (() => void) | undefined;
 afterEach(() => close?.());
@@ -30,7 +32,22 @@ async function serve() {
   const dir = await mkdtemp(join(tmpdir(), 'issue-door-'));
   const recorder = new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet });
   const sent: Sent[] = [];
-  const { github } = client([{ method: 'PATCH', path: /\/issues\/\d+$/, answer: () => ({ body: {} }) }], sent);
+  const { github } = client(
+    [
+      { method: 'PATCH', path: /\/issues\/\d+$/, answer: () => ({ body: {} }) },
+      {
+        method: 'GET',
+        path: /\/issues\/\d+$/,
+        answer: ({ path }) => ({
+          body: {
+            ...(path.endsWith(`/${PULL}`) ? { pull_request: {} } : {}),
+            labels: path.endsWith(`/${PINNED}`) ? [{ name: 'Pin' }] : [{ name: 'security' }],
+          },
+        }),
+      },
+    ],
+    sent,
+  );
   const guard = new IssueGuard({
     openedBy: async (_repo, number) => ({ by: number === HIS ? MARTIN : APP_USER, pullRequest: false }),
     recorder,
@@ -69,6 +86,32 @@ describe('writing an issue again over HTTP', () => {
       refusal: { repo: REPO, number: HIS, payload: { mechanism: 'github-guard', guardrails: [10] } },
     });
     expect(writes()).toEqual([]);
+  });
+
+  it.each([
+    ['a pull request, whose description has a way of its own', PULL, /is a pull request/],
+    ['an issue of the pin watch’s, by its label in any case', PINNED, /is the pin watch's issue/],
+  ])('answers %s 422, its refusal signed as the guard’s, and writes nothing', async (_what, number, message) => {
+    const { worker, writes } = await serve();
+    const failed = await worker.act('updateIssue', REPO, { number, body: 'b' }).catch((error: unknown) => error);
+    expect(failed).toMatchObject({ status: 422, kind: 'branch-refused', message: expect.stringMatching(message) });
+    expect(verifyRefusal(publicKey, (failed as GitHubWorkerError).refusal)).toMatchObject({
+      ok: true,
+      refusal: {
+        repo: REPO,
+        number,
+        payload: { mechanism: 'github-guard', action: `updateIssue #${number} in ${REPO}` },
+      },
+    });
+    expect(writes()).toEqual([]);
+  });
+
+  it('leaves the pin watch’s own writing of its issues as it was: asked of no door, it is held to the App’s alone', async () => {
+    const sent: Sent[] = [];
+    const { github } = client([{ method: 'PATCH', path: /\/issues\/\d+$/, answer: () => ({ body: {} }) }], sent);
+    const guard = new IssueGuard({ openedBy: async () => ({ by: APP_USER, pullRequest: false }) });
+    await new LiveActions(github, { guard }).updateIssue(REPO, PINNED, { title: 't', body: 'b' });
+    expect(calls(sent).map((s) => [s.method, s.body])).toEqual([['PATCH', { title: 't', body: 'b' }]]);
   });
 
   it('takes no title, no state and no empty description', async () => {

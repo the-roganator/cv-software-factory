@@ -34,12 +34,14 @@ import {
   database,
   event,
   events,
+  failures,
   handback,
   justOne,
   line,
   PATCH,
   payloads,
   SPEC,
+  stage,
   types,
   withLineStore,
 } from './harness.ts';
@@ -625,15 +627,46 @@ describe('a newer target for a move the line has open', () => {
     expect(recorded.lastIndexOf('issue.opened')).toBeLessThan(recorded.indexOf('spec.written'));
   });
 
-  it('goes on when the issue is gone, recording what it would name', async () => {
+  it('leaves an issue it cannot write as it was: nothing recorded, no agent may name the newer advisory, and it asks once', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
-    const { pass, steps, github } = line({ planner, coder: () => handback(CODED, PATCH) });
+    // A coder whose note names the newer scan's advisory, which the issue never came to list.
+    const naming = { ...CODED, note: `${CODED.note} It clears GHSA-0000-0000-0002.` };
+    const { pass, steps, github } = line({ planner, coder: () => handback(naming, PATCH) });
     await pass();
     await newer(workItem);
-    github.refusing.set('updateIssue', new GitHubWorkerError(404, 'not-found', 'No such issue'));
+    const gone = () => new GitHubWorkerError(404, 'not-found', 'No such issue');
+    github.refusing.set('updateIssue', gone());
     await pass();
-    expect((await payloads(workItem, 'issue.opened'))[1]?.move).toMatchObject({ to: '2.0.3' });
+    // The issue names what it named: the record is not written again, and the move goes on to the coder.
+    expect(await payloads(workItem, 'issue.opened')).toHaveLength(1);
     expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', move: { to: '2.0.3' } });
+    expect((await failures(workItem))?.failure).toMatch(/names GHSA-0000-0000-0002, which the ticket's issue does not/);
+    expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
+    // Not asked again on a later pass, until triage joins another signal.
+    await pass();
+    expect(github.acts.some((a) => a.action === 'updateIssue')).toBe(false);
+    await newer(workItem, '2.0.4', 'GHSA-0000-0000-0003');
+    await pass();
+    expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
+    expect((await payloads(workItem, 'issue.opened')).at(-1)?.move).toMatchObject({ to: '2.0.4' });
+  });
+
+  it('writes the issue again when only the counts of the rest differ, which its description prints', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, github } = line({ planner });
+    await pass();
+    const more = signal('2.0.1');
+    const [scan] = more.evidence ?? [];
+    if (scan?.kind !== 'scan') throw new Error('not a scan');
+    const rest = { ...scan.rest, high: 2 };
+    await events.append([event(workItem, 'signal.received', { ...more, evidence: [{ ...scan, rest }] }, 'triage')]);
+    await pass();
+    const written = github.acts.filter((a) => a.action === 'updateIssue');
+    expect(written).toHaveLength(1);
+    expect(written[0]?.args).toMatchObject({ body: expect.stringContaining('and more: 2 high, 1 low') });
+    // Written for it, the line writes nothing again.
+    await pass();
+    expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
   });
 
   it('runs the pin step again from main into the same pull request, whose branch goes straight to the new head', async () => {
@@ -816,24 +849,43 @@ describe('a newer target for a move the line has open', () => {
     });
   });
 
-  it('closes the pull request with the work item when main already has the newer target', async () => {
-    const workItem = await moveTicket(signal('2.0.1'));
-    let built = 0;
-    const { pass, github } = line({
-      planner: alone,
-      coder: (request) => (built++ ? { kind: 'pinned', pins: '' } : pinStep(request)),
-    });
-    await pass();
-    await pass();
-    await newer(workItem);
-    await pass();
-    expect(github.pulls.get(12)?.state).toBe('closed');
-    expect(github.acts.find((a) => a.action === 'closePullRequest')?.args).toMatchObject({
-      number: 12,
-      comment: expect.stringMatching(/^Main already has this move, at /),
-    });
-    expect((await payloads(workItem, 'work-item.closed'))[0]).toMatchObject({ outcome: 'no-change' });
-  });
+  it.each([
+    ['nothing fails', undefined],
+    ['GitHub fails once as the issue closes', 'closeIssue'],
+    ['GitHub fails once as the pull request closes', 'closePullRequest'],
+  ] as const)(
+    'closes the work item as done, and its pull request with it, when main already has the newer target and %s',
+    async (_what, fails) => {
+      const workItem = await moveTicket(signal('2.0.1'));
+      let built = 0;
+      const { pass, github } = line({
+        planner: alone,
+        coder: (request) => (built++ ? { kind: 'pinned', pins: '' } : pinStep(request)),
+      });
+      await pass();
+      await pass();
+      await newer(workItem);
+      if (fails) github.failing.set(fails, 1);
+      for (let passes = 0; passes < 4; passes++) await pass();
+      expect(await payloads(workItem, 'work-item.closed')).toEqual([
+        { outcome: 'no-change', reason: expect.stringMatching(/^Main already has its move, at /) },
+      ]);
+      expect(github.acts.filter((a) => a.action === 'closeIssue')).toEqual([
+        { action: 'closeIssue', args: expect.objectContaining({ number: 41, reason: 'completed' }) },
+      ]);
+      expect(github.pulls.get(12)?.state).toBe('closed');
+      expect(github.acts.filter((a) => a.action === 'closePullRequest')).toEqual([
+        {
+          action: 'closePullRequest',
+          args: {
+            number: 12,
+            comment: expect.stringMatching(/^Main already has its move, at .+ closed with no change/s),
+          },
+        },
+      ]);
+      expect(await stage(workItem)).toBe('ended');
+    },
+  );
 
   it('leaves a merged change’s newer signal to Verify: no issue written, nothing built', async () => {
     const workItem = await moveTicket(signal('2.0.1'));

@@ -341,7 +341,13 @@ export interface Actions {
   updateCheckRun(repo: string, id: number, report: Partial<CheckRunReport>): Promise<void>;
   openIssue(repo: string, issue: { title: string; body: string; labels?: string[] }): Promise<number>;
   /** Retitles or rewrites an issue the App opened. */
-  updateIssue(repo: string, number: number, change: { title?: string; body?: string }): Promise<void>;
+  updateIssue(
+    repo: string,
+    number: number,
+    change: { title?: string; body?: string },
+    /** What the door holds a worker's request to, given what GitHub says the number is: it throws to refuse it. */
+    asked?: (issue: { pullRequest: boolean; labels: string[] }) => void,
+  ): Promise<void>;
   /**
    * Closes an issue the App opened. With a comment, it first says why on the issue, and only while the issue is open and does not say
    * it already: closing one already closed, or trying again after a close that failed, says nothing again.
@@ -403,6 +409,11 @@ export function withChecksRun(message: string, run: number): string {
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
 /** An issue, as closing and reopening one read it. */
 const ISSUE = z.object({ state: z.string(), closed_at: z.string().nullable().default(null) });
+/** What the door asks of an issue a worker would write again: whether it is a pull request, and its labels. */
+const ASKED_ISSUE = z.object({
+  pull_request: z.unknown().optional(),
+  labels: z.array(z.union([z.string().transform((name) => ({ name })), z.object({ name: z.string() })])).default([]),
+});
 const NUMBER = z.number().int().positive();
 const ID = z.object({ id: NUMBER });
 
@@ -800,8 +811,17 @@ export class LiveActions implements Actions {
     return made.number;
   }
 
-  async updateIssue(repo: string, number: number, change: { title?: string; body?: string }): Promise<void> {
+  async updateIssue(
+    repo: string,
+    number: number,
+    change: { title?: string; body?: string },
+    asked?: (issue: { pullRequest: boolean; labels: string[] }) => void,
+  ): Promise<void> {
     await this.#guard.check(repo, number, 'updateIssue');
+    if (asked) {
+      const issue = await this.#github.read(repo, `/repos/${repo}/issues/${number}`, ASKED_ISSUE);
+      asked({ pullRequest: issue.pull_request !== undefined, labels: issue.labels.map((label) => label.name) });
+    }
     await this.#github.write(repo, 'PATCH', `/repos/${repo}/issues/${number}`, change);
   }
 

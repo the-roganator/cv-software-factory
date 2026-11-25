@@ -2536,42 +2536,37 @@ describe('a newer scan of a move the line has open', () => {
   const afresh = { do: 'return', from: 'review', to: 'build', reason: TARGET_MOVED } as const;
   const open = [move, scan('2.0.1'), names('2.0.1'), spec, pushed()];
 
-  it('writes the issue again before anything else, where the work item is, when the target or the findings differ', () => {
+  /** Triage has joined a signal since the one the row says the issue was written for. */
+  const since: Facts = { ...facts, scanSince: true };
+
+  it('writes the issue again before anything else, where the work item is, once triage has joined a signal since', () => {
     const current = [move, scan('2.0.1'), names('2.0.1')];
     expect(decide(current, facts).next).toEqual({ do: 'step', agent: 'planner', round: 1 });
-    expect(decide([...current, scan('2.0.3')], facts)).toEqual({ stage: 'plan', next: rewrite });
-    expect(decide([...current, scan('2.0.1', 'GHSA-0000-0000-0002')], facts)).toEqual({ stage: 'plan', next: rewrite });
-    expect(decide([...current, spec, scan('2.0.3')], facts)).toEqual({ stage: 'build', next: rewrite });
-    expect(decide([...open, scan('2.0.3')], facts)).toEqual({ stage: 'gates', next: rewrite });
+    expect(decide([...current, scan('2.0.3')], since)).toEqual({ stage: 'plan', next: rewrite });
+    expect(decide([...current, spec, scan('2.0.3')], since)).toEqual({ stage: 'build', next: rewrite });
+    expect(decide([...open, scan('2.0.3')], since)).toEqual({ stage: 'gates', next: rewrite });
     // Held for Martin too: the issue is current while it waits for him.
     const held: LineEvent = {
       type: 'hold.started',
       payload: { stage: 'gates', kind: 'held', cause: 'gates', reason: 'The gates failed: test' },
     };
-    expect(decide([...open, held, scan('2.0.3')], facts)).toEqual({ stage: 'held', next: rewrite });
-    // Written again, it names the newest, and the line goes on.
+    expect(decide([...open, held, scan('2.0.3')], since)).toEqual({ stage: 'held', next: rewrite });
+    // Written for the newest, or left as it could not be written: the row says so, and the line goes on.
     expect(decide([...current, scan('2.0.3'), names('2.0.3')], facts).next).toMatchObject({ agent: 'planner' });
-  });
-
-  it('writes nothing again for a signal that says what the issue names, whatever its deadline or its pins’ lines', () => {
-    const same = scan('2.0.1');
-    if (same.type !== 'signal.received' || !same.payload.move) throw new Error('not a move’s signal');
-    const shifted: LineEvent = {
-      ...same,
-      payload: { ...same.payload, move: { ...same.payload.move, pins: [{ file: 'pnpm-lock.yaml', line: 57 }] } },
-    };
-    expect(decide([move, scan('2.0.1'), names('2.0.1'), shifted], facts).next).toMatchObject({ agent: 'planner' });
+    expect(decide([...current, scan('2.0.3')], facts).next).toMatchObject({ agent: 'planner' });
   });
 
   it('leaves the issue to its opening or its record, a dry run’s alone, and a merged change’s to Verify', () => {
     // No issue yet: it opens from the newest signal.
     expect(decide([move, scan('2.0.1'), scan('2.0.3')], { ...facts, issue: null }).next).toEqual({ do: 'open-issue' });
     // An issue the row names and nothing records, as a dry run's: none is written again.
-    expect(issueBehind(fold([move, scan('2.0.1'), scan('2.0.3')]), DRY_RUN_NUMBERS_FROM)).toBe(false);
+    const dry = { issue: DRY_RUN_NUMBERS_FROM, scanSince: true };
+    expect(issueBehind(fold([move, scan('2.0.1'), scan('2.0.3')]), dry)).toBe(false);
     // Another issue than the one recorded: the row's is the one the line opens or records next.
-    expect(issueBehind(fold([move, scan('2.0.1'), names('2.0.1'), scan('2.0.3')]), 4)).toBe(false);
+    const other = { issue: 4, scanSince: true };
+    expect(issueBehind(fold([move, scan('2.0.1'), names('2.0.1'), scan('2.0.3')]), other)).toBe(false);
     const merged: LineEvent = { type: 'pull-request.merged', payload: { number: 12, commit: SHA, by: 'martin' } };
-    expect(decide([...open, merged, scan('2.0.3')], facts).next).toMatchObject({
+    expect(decide([...open, merged, scan('2.0.3')], since).next).toMatchObject({
       do: 'hold',
       hold: { cause: 'deploy' },
     });
@@ -2632,11 +2627,37 @@ describe('a newer scan of a move the line has open', () => {
     };
     const queued = [...open, started(), finished('passed'), review('approved'), summarised, enqueued];
     const moved = [...queued, scan('2.0.3'), names('2.0.3')];
-    expect(decide(moved, facts).next).not.toMatchObject({ do: 'return' });
+    // Nothing runs on the head the queue holds: no reviewer, though the older head's review is set aside.
+    expect(decide(moved, facts)).toEqual({ stage: 'review', next: { do: 'wait', for: 'queue' } });
+    // Merged at the older target, it goes on to Release, and Verify reads the newest signal.
+    const merged: LineEvent = { type: 'pull-request.merged', payload: { number: 12, commit: SHA, by: 'factory' } };
+    expect(decide([...moved, merged], since).next).toMatchObject({ do: 'hold', hold: { cause: 'deploy' } });
     const dequeued: LineEvent = {
       type: 'pull-request.dequeued',
       payload: { number: 12, commit: SHA, reason: 'dequeued', failed: [] },
     };
     expect(decide([...moved, dequeued], facts).next).toEqual(afresh);
+  });
+
+  it('reads a record that names no target as behind the first target written after it', () => {
+    const bare: LineEvent = {
+      type: 'issue.opened',
+      payload: { repository: REPO, number: 3, move: { name: 'invented-pkg', ecosystem: 'npm' } },
+    };
+    const moved = [move, bare, spec, pushed(), scan('2.0.3'), names('2.0.3')];
+    expect(fold(moved).behind).toBe(true);
+    expect(decide(moved, facts).next).toEqual(afresh);
+  });
+
+  it('closes the pull request left behind as a work item that closed with it open finishes', () => {
+    const closed: LineEvent = {
+      type: 'work-item.closed',
+      payload: { outcome: 'no-change', reason: 'Main already has its move, at aaaaaaa: invented-pkg at `2.0.3`' },
+    };
+    expect(decide([...open, scan('2.0.3'), names('2.0.3'), closed], facts).next).toEqual({
+      do: 'finish',
+      left: { pullRequest: 12, reason: 'Main already has its move, at aaaaaaa: invented-pkg at `2.0.3`' },
+    });
+    expect(decide([...open, closed], facts).next).toEqual({ do: 'finish' });
   });
 });

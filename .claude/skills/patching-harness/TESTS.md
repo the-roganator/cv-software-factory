@@ -67,6 +67,24 @@ which is the test's pass; were the push to land, the gate must hold its pull req
 (a pull request anyone but Dependabot opened), and its three changes under Dependabot's own name by the gate's unit
 tests alone, as nobody can open a pull request as Dependabot.
 
+## What else must hold
+
+Accepted by Martin on 25 November 2026.
+
+| # | Move | Must |
+|---|---|---|
+| 21 | App: a move whose target moves on after its pull request opened | the same pull request and issue take the new target; it merges and deploys, nobody touching it |
+| 22 | Factory: Dependabot's pull request for a pin the App moved | be closed by the worker, with a comment naming the merge, once `main` has every version it moves; one `main` has not is left alone |
+| 23 | Factory: a routine update pnpm refuses (lefthook 2.2.2) | be an issue that says why; the day's other routine updates merge without it |
+| 24 | App: a move nobody can make (the devcontainer's base) | be an issue in the app's repository, and no pull request |
+| W3b | App: an image move `main` already has | close its ticket as done, as W3 |
+| W5 | The store restarting under the log watcher's send | no worker logs an error, and the report arrives once |
+
+21's target moves on because the run lifts an exception the baseline stages: the first scan names the release that
+fixes every advisory but the excepted one, and the next the release that fixes that too. In 22, Dependabot may close its
+own pull request before the worker's pass does: the run then says so and gives no verdict, as that shows nothing of the
+worker.
+
 N2, a move that makes the findings worse, is dropped (Martin, 17 November 2026): a fix does not normally make things
 worse, and the next daily scan picks up whatever a move brought, as it would any finding.
 

@@ -19,6 +19,10 @@
 #   ./copies.sh dependabot   close the copies' Dependabot pull requests the real ones closed, or no test needs
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
 #   ./copies.sh summon-dependabot  have Dependabot look at the app copy now (test 20; the harness calls it)
+#   ./copies.sh move-on-main <file> <image> <tag> <tag@digest>  an image's move put on the app copy's main, as another
+#                            change would have made it (W3b; the harness calls it)
+#   ./copies.sh lift-exception <package>  the factory copy's exception for a package taken off its main (test 21; the
+#                            harness calls it)
 #   ./copies.sh down         delete the scratch cluster and its state
 #
 # The scratch cluster is the copies' alone: its own k3d name and kube context (k3d-software-factory-scratch), ports
@@ -165,8 +169,8 @@ commit() { # <dir> <message>
 }
 
 # A small run: the scratch pin watch takes only the moves batch.env names (PIN_WATCH_ONLY, the worker's own setting,
-# comma-separated names as moves.json gives them; unset or `*`, every move), so a reset opens a few pull requests and
-# not twenty. `node harness.ts only <tests>` prints the line for a set of tests. The value is no part of the baseline:
+# comma-separated names as moves.json gives them; unset or `*`, every move; set and empty, none, for the app's tests,
+# which the factory copy must sit still under), so a reset opens a few pull requests and not twenty. `node harness.ts only <tests>` prints the line for a set of tests. The value is no part of the baseline:
 # the copy's worker reads it from the ConfigMap `scratch-pin-watch` on the scratch cluster, which no commit holds and
 # Argo CD does not track, so one baseline serves every batch. `build` points the copy's manifest at it
 # (pin_watch_from_cluster), and `worker 1` writes it from batch.env before the worker starts (pin_watch). Without the
@@ -178,10 +182,10 @@ pin_watch_from_cluster() { # <dir>
 }
 
 pin_watch() {
-  local only=${PIN_WATCH_ONLY:-*}
+  local only=${PIN_WATCH_ONLY-*}
   kubectl --context "$SCRATCH_CONTEXT" -n factory create configmap scratch-pin-watch --from-literal=only="$only" \
     --dry-run=client -o yaml | kubectl --context "$SCRATCH_CONTEXT" apply -f - >/dev/null
-  echo "  the scratch pin watch takes: $only"
+  echo "  the scratch pin watch takes: ${only:-no move}"
 }
 
 build() {
@@ -490,9 +494,14 @@ pin_images() {
 # Every other open Dependabot pull request on a copy is closed too, but those the tests need (DEPENDABOT_KEEP_*, a
 # regex over the lowercased title, in baseline.env): each runs the copy's CI on the organisation's shared runners at
 # every reset, and closing one makes only the copy's Dependabot skip that version.
+# One the tests need that is closed (by an earlier reset, or by the worker once main had its versions, test 22) is
+# asked for again: `@dependabot reopen` on the newest closed one of each alternative of the regex (split at `|`) that
+# no open one matches. Dependabot opens it again on the baseline within minutes, or says why it will not.
+dependabot_keep() { # <copy>: the regex of the pull requests its tests need
+  if [[ $1 == "$APP_COPY" ]]; then printf %s "$DEPENDABOT_KEEP_APP"; else printf %s "$DEPENDABOT_KEEP_FACTORY"; fi
+}
 dependabot_only_needed() { # <copy>
-  local copy=$1 keep=$DEPENDABOT_KEEP_FACTORY
-  [[ $copy == "$APP_COPY" ]] && keep=$DEPENDABOT_KEEP_APP
+  local copy=$1 keep; keep=$(dependabot_keep "$1")
   gh pr list -R "$copy" --author app/dependabot --state open --limit 200 --json number,title \
     --jq '.[] | "\(.number)\t\(.title | ascii_downcase)"' |
     while IFS=$'\t' read -r n title; do
@@ -505,6 +514,21 @@ dependabot_only_needed() { # <copy>
         echo "  asked Dependabot to recreate #$n ($title) on the baseline"
       fi
     done
+  local open closed one n
+  open=$(gh pr list -R "$copy" --author app/dependabot --state open --limit 200 --json title --jq '.[].title | ascii_downcase')
+  closed=$(gh pr list -R "$copy" --author app/dependabot --state closed --limit 200 --json number,title,mergedAt \
+    --jq '.[] | select(.mergedAt == null) | "\(.number)\t\(.title | ascii_downcase)"')
+  while IFS= read -r one; do
+    [[ -n $one && $one != '^$' ]] || continue
+    grep -qE -- "$one" <<<"$open" && continue
+    n=$(awk -F'\t' -v re="$one" '$2 ~ re { print $1; exit }' <<<"$closed")
+    if [[ -n $n ]]; then
+      gh pr comment "$n" -R "$copy" -b "@dependabot reopen" >/dev/null
+      echo "  asked Dependabot to reopen #$n: a test needs it ($one)"
+    else
+      echo "  no pull request of Dependabot's matches $one, open or closed: the test that needs it has none" >&2
+    fi
+  done < <(tr '|' '\n' <<<"$keep")
 }
 
 # The App's pull requests a reset closed, changed so the watches forget them: the pin watch opens no pull request for a
@@ -525,12 +549,14 @@ forget_closed() { # <copy>
 }
 
 dependabot_like_real() { # <copy> <real>
-  local copy=$1 real=$2 closed
+  local copy=$1 real=$2 closed keep; keep=$(dependabot_keep "$1")
   closed=$(gh pr list -R "$real" --author app/dependabot --state closed --limit 500 --json title,mergedAt \
     --jq '.[] | select(.mergedAt == null) | .title | ascii_downcase')
   gh pr list -R "$copy" --author app/dependabot --state open --limit 200 --json number,title \
     --jq '.[] | "\(.number)\t\(.title | ascii_downcase)"' |
     while IFS=$'\t' read -r n title; do
+      # One a test needs stays, whatever the real repository did with its own of that title.
+      if grep -qE -- "$keep" <<<"$title"; then continue; fi
       if grep -qxF "$title" <<<"$closed"; then
         gh pr close "$n" -R "$copy" -c "Closed as $real closed it: the copy's Dependabot skips what the real one skips." >/dev/null
         echo "  closed Dependabot's #$n ($title), as $real did"
@@ -613,6 +639,48 @@ summon_dependabot() {
   ruleset "$copy" active
   [[ $pushed == 0 ]] || die "could not push the commit that summons Dependabot to $copy"
   say "summoned Dependabot on $copy at $(git -C "$dir" rev-parse --short HEAD)"
+}
+
+# One signed commit of Martin's on a copy's main, pushed with the ruleset off for the push alone, as a baseline is: the
+# clone is put at the copy's main first, <edit> changes it, and a change that leaves the tree as it was is refused.
+commit_on_main() { # <copy> <dir> <subject> <edit command…>
+  local copy=$1 dir=$2 subject=$3 pushed=0; shift 3
+  git -C "$dir" fetch -q "https://github.com/$copy" main
+  git -C "$dir" checkout -q -f --detach FETCH_HEAD
+  (cd "$dir" && "$@")
+  if git -C "$dir" diff --quiet; then die "$subject: nothing on $copy's main to change"; fi
+  git -C "$dir" add -A
+  git -C "$dir" -c commit.gpgsign=true commit -q -m "$subject" \
+    -m "Scratch copy for the patching tests: not the real repository." ||
+    die "the commit was not made (is a signing key set?): $subject"
+  ruleset "$copy" disabled
+  git -C "$dir" push -q "https://github.com/$copy" HEAD:refs/heads/main || pushed=1
+  ruleset "$copy" active
+  [[ $pushed == 0 ]] || die "could not push to $copy: $subject"
+  say "on $copy's main at $(git -C "$dir" rev-parse --short HEAD): $subject"
+}
+
+# W3b: an image's move put on the app copy's main before the line takes its ticket, as another change would have made
+# it: the pin's tag, and its digest if it has one, written to the scan's target in the file that pins it.
+move_on_main() { # <file> <image> <tag> <tag@digest>
+  local file=${1:?the file that pins it} image=${2:?the image} from=${3:?its tag} to=${4:?the target, tag@digest}
+  [[ $to =~ ^[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] || die "move-on-main: $to is not a tag and a digest"
+  # shellcheck disable=SC2016
+  IMAGE=$image FROM=$from TO=$to commit_on_main "$APP_COPY" "$WORK/app" "chore(scratch): move $image to ${to%%@*}" \
+    perl -pi -e 's{\Q$ENV{IMAGE}\E:\Q$ENV{FROM}\E(\@sha256:[0-9a-f]{64})?(?!\S)}{$ENV{IMAGE}:$ENV{TO}}' "$file"
+}
+
+# Test 21: the exception its baseline stages (staged/factory-21/) taken off the factory copy's main, so the app's next
+# scan, which takes its exceptions from there, names the further target. `[skip ci]` in the subject: a push that
+# changes policy/ would otherwise build the factory's images, and their deploy pin would roll the factory mid-test.
+lift_exception() { # <package>
+  local package=${1:?the package the exception names}
+  # shellcheck disable=SC2016
+  PACKAGE=$package commit_on_main "$FACTORY_COPY" "$WORK/factory" "chore(scratch): lift the exception for $package [skip ci]" \
+    perl -0pi -e 's/  \{\n(?:    [^\n]*\n)*?    package: \x27\Q$ENV{PACKAGE}\E\x27,\n(?:    [^\n]*\n)*?  \},\n//g' policy/vulnerabilities.ts
+  if grep -qF "package: '$package'" "$WORK/factory/policy/vulnerabilities.ts"; then
+    die "an exception for $package is still in the factory copy's policy"
+  fi
 }
 
 # reset [factory|app] [--store]: both copies unless one is named; --store also puts the scratch store back to its clean
@@ -767,5 +835,7 @@ case "${1:-}" in
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
   summon-dependabot) summon_dependabot ;;
-  *) sed -n '2,32p' "$0"; exit 2 ;;
+  move-on-main) shift; move_on_main "$@" ;;
+  lift-exception) shift; lift_exception "$@" ;;
+  *) sed -n '2,36p' "$0"; exit 2 ;;
 esac

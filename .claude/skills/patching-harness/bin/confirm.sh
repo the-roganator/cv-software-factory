@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # The confirming pass: every test on one code baseline, in batches of a few, with the two level checks.
 #   ./confirm.sh <a directory for its baseline logs>
-#   STEPS="C D" ./confirm.sh <dir> runs some of its steps (A B C D apps W; all by default).
+#   STEPS="C D" ./confirm.sh <dir> runs some of its steps (A B C D apps W; all by default; X, X4 and 21 by name).
 #   APP_TESTS="16 20" names the app tests the apps step runs, in that order (all eight by default).
 # It prints one section a step, and `harness.ts summary` at the end. One baseline (every staged set-up, no
 # STAGED_EXTRA) serves A, B, C, D, the apps and W: a batch differs only in the moves the pin watch takes, which the
-# harness's reset of the factory copy gives the scratch worker. X2 and X4 each build a baseline of their own. A batch's
-# PIN_WATCH_ONLY and STAGED_EXTRA are written to the state folder's batch.env (copies.sh), never to a tracked file.
+# harness's reset of the factory copy gives the scratch worker. X2, X4 and 21 each build a baseline of their own. A
+# batch's PIN_WATCH_ONLY and STAGED_EXTRA are written to the state folder's batch.env (copies.sh), never to a tracked
+# file. The app's tests run with the factory copy at rest: at its baseline, the pin watch taking no move (at_rest).
 H="$(cd "$(dirname "$0")" && pwd)"
 STATE="${PATCHING_HARNESS_STATE:-$(dirname "$(git -C "$H" rev-parse --path-format=absolute --git-common-dir)")/scratch/patching-harness}"
 BATCH="$STATE/batch.env"
@@ -79,15 +80,22 @@ baseline() { # <log>
       return 1
     }
   done
-  # The app's release of its baseline goes through the full canary, which no test judges, and one that takes the app
-  # back past an ordinary fix (a work item run between campaigns) is rightly aborted: the baseline is the tests'
-  # starting point, so while it is in flight or aborted it is promoted whole (a full promotion asked twice is one),
-  # and root is waited for until Synced and Healthy, the Rollout with it.
-  local state app_main synced phase
+  await_root baseline
+}
+# Root Synced and Healthy, waited for up to 30 minutes; with a commit named, on that commit, so a look that comes
+# before Argo CD has seen a push is not taken for the push's.
+# The app's release of its baseline goes through the full canary, which no test judges, and one that takes the app
+# back past an ordinary fix (a work item run between campaigns) is rightly aborted: the baseline is the tests'
+# starting point, so while it is in flight or aborted it is promoted whole (a full promotion asked twice is one),
+# and root is waited for until Synced and Healthy, the Rollout with it.
+await_root() { # <what waits for it> [<the factory copy's commit root must be on>]
+  local state app_main synced phase on
   app_main=$(gh api "repos/$APP_COPY/commits/main" -q .sha)
   for _ in $(seq 1 90); do
     state=$(k -n argocd get app root -o jsonpath='{.status.sync.status} {.status.health.status}')
-    [ "$state" = "Synced Healthy" ] && break
+    on=$(k -n argocd get app root -o jsonpath='{.status.sync.revision}')
+    [ "$state" = "Synced Healthy" ] && { [ -z "${2:-}" ] || [ "$on" = "$2" ]; } && break
+    [ "$state" = "Synced Healthy" ] && state="Synced Healthy at ${on:0:7}, not ${2:0:7}"
     # Argo CD looks at the copies' main every few minutes: asked to look now, it takes the baseline just pushed at
     # once. A refresh reads git and each resource's health again and changes nothing in the cluster.
     k -n argocd annotate application root website argocd.argoproj.io/refresh=normal --overwrite >/dev/null 2>&1 || true
@@ -100,9 +108,21 @@ baseline() { # <log>
   done
   echo "root: $state $(date -u +%H:%MZ)"
   if [ "$state" != "Synced Healthy" ]; then
-    broke "baseline: root is $state after 30 minutes, not Synced Healthy"
+    broke "$1: root is $state after 30 minutes, not Synced Healthy"
     return 1
   fi
+}
+# The factory copy at rest, for the app's tests: the pin watch told no move, the copy back at its baseline with
+# everything of the App's closed, and root Synced and Healthy on it. An app's test is judged clean on one look at every
+# pod, so nothing of the factory copy's may merge and roll the factory under it; the harness refuses an app run
+# otherwise. Nothing is done when the copy already rests (`harness.ts rests`), but the pin watch is told no move, which
+# each app run's own restart of the worker gives it.
+at_rest() { # <log>
+  batch none || return 1
+  if (cd "$H" && mise exec -- node harness.ts rests); then return 0; fi
+  echo "== the factory copy back to its baseline, the pin watch taking no move $(date -u +%H:%MZ)"
+  (cd "$H" && ./copies.sh reset factory) >>"$1" 2>&1 || { broke "the factory copy's reset (see $1)"; return 1; }
+  await_root "the factory copy at rest" "$(gh api "repos/$R/commits/main" -q .sha)"
 }
 campaign() { harness 22 factory "$@" --limit "${LIMIT:-60}"; }
 # What the watches said of their branches after the run's own restart of the worker.
@@ -144,8 +164,10 @@ fi
 if want B && [ -n "$based" ]; then
 # The lockfile's routine updates are here beside its findings' moves: 15 merges and deploys with the day's others, and
 # 18, the one across a major, is held beside 4a and 4b.
-echo "##### B: 4a,4b,6,7a,7b,9,14b,15,18,19, Guarded $(date -u +%H:%MZ)"
-batch 4a,4b,6,7a,7b,9,14b,15,18 && campaign --only 4a,4b,6,7a,7b,9,14b,15,18,19 --no-forge
+# Beside them, at no time of their own: Dependabot's pull request for Playwright, which the worker closes once 6's
+# move has merged (22), and the routine update pnpm refuses, an issue beside 15's pull request (23).
+echo "##### B: 4a,4b,6,7a,7b,9,14b,15,18,19,22,23, Guarded $(date -u +%H:%MZ)"
+batch 4a,4b,6,7a,7b,9,14b,15,18,22,23 && campaign --only 4a,4b,6,7a,7b,9,14b,15,18,19,22,23 --no-forge
 watches
 why
 fi
@@ -243,34 +265,40 @@ gh pr list -R "$R" --state all -L 12 --json number,title,state,createdAt,mergedA
   -q ".[]|select(.createdAt>\"$since\")|\"#\(.number) \(.state) merged=\(.mergedAt) \(.title)\""
 echo "queue: $(gh api graphql -f owner="${R%%/*}" -f name="${R#*/}" -f query='query($owner: String!, $name: String!) {repository(owner:$owner,name:$name){mergeQueue(branch:"main"){entries(first:20){nodes{pullRequest{number}}}}}}' -q '.data.repository.mergeQueue.entries.nodes|map(.pullRequest.number)|join(",")')"
 k -n factory logs deploy/github --since-time="$since" | grep -o '"why":"[^"]*"' | sort | uniq -c | sort -rn | head -6
+# D's move pull requests are still open, waiting for the level: at Guarded the worker would queue them all, and their
+# builds' deploy pin would roll the factory under the app's tests. So the copy rests before the level goes back.
+at_rest "$LOGS/confirm-d.log"
 level guarded show
 fi
 
 # The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.
-# N8a rides beside test 20, Dependabot's pull request, which the line has no part in.
-if want apps && [ -n "$based" ]; then
+# N8a rides beside test 20, Dependabot's pull request, which the line has no part in. 24, the move nobody can make, is
+# an issue of the worker's from the same scan, read beside 8a.
+if want apps && [ -n "$based" ] && at_rest "$LOGS/confirm-apps.log"; then
 for test in ${APP_TESTS:-8a 10 11 12 13 16 20 N1}; do  # APP_TESTS='16 20' runs some of them
   echo "##### app $test $(date -u +%H:%MZ)"
   with=(); [ "$test" = 13 ] && with=(--with X1a,X1b)
+  [ "$test" = 8a ] && with=(--with 24)
   [ "$test" = 20 ] && with=(--with N8a)
   harness 12 app "$test" ${with[@]+"${with[@]}"} --limit "${LIMIT:-60}"
 done
 fi
 
-# The recovery tests, W1 to W4, on the shared baseline, whose staged `15-…` patches have the check they turn red: the
-# app's three, then W1's campaign (prometheus and the otel-collector alone), which resets the factory copy itself.
-# Guarded.
+# The recovery tests, W1 to W5, on the shared baseline, whose staged `15-…` patches have the check they turn red: the
+# app's five with the factory copy at rest (W5, the store restarted under a report, resets nothing and scans nothing),
+# then W1's campaign (prometheus and the otel-collector alone), which resets the factory copy itself. Guarded.
 if want W && [ -n "$based" ]; then
-echo "##### W: W1 to W4 $(date -u +%H:%MZ)"
+echo "##### W: W1 to W5 $(date -u +%H:%MZ)"
 level guarded
-if batch W1a,W1b; then
-for test in ${W_APPS:-W2 W3 W4}; do  # W_APPS='W2 W4' W1=no runs some of them again
+if at_rest "$LOGS/confirm-w.log"; then
+for test in ${W_APPS:-W5 W2 W3 W3b W4}; do  # W_APPS='W2 W4' W1=no runs some of them again
   echo "##### app $test $(date -u +%H:%MZ)"
   red_on "$test"
   harness 12 app "$test" --limit "${LIMIT:-60}"
   red_off
 done
-if [ "${W1:-yes}" != no ]; then
+fi
+if [ "${W1:-yes}" != no ] && batch W1a,W1b; then
 echo "##### W1: a check red on purpose on two pin moves, Guarded $(date -u +%H:%MZ)"
 red_on W1a,W1b
 # W1b is watched to 100 minutes whatever the limit (its watchMin): three runs of a chart's checks, then nothing.
@@ -278,7 +306,6 @@ campaign --only W1a,W1b --no-forge
 red_off
 watches
 why
-fi
 fi
 fi
 
@@ -304,8 +331,19 @@ if want X4; then
 echo "##### X4: a half-made Node move, finished by the line $(date -u +%H:%MZ)"
 level guarded
 extra x4
-batch W1a,W1b && SKIP_CHECK=1 baseline "$LOGS/confirm-x4.log" &&
+batch none && SKIP_CHECK=1 baseline "$LOGS/confirm-x4.log" &&
   harness 12 app X4 --limit "${LIMIT:-60}"
+extra
+fi
+# 21: a baseline of its own, with staged/app-21/ (a package pinned exactly, behind two fixes) and staged/factory-21/
+# (the factory's exception, for the app, of the advisory only the later release fixes). The harness lifts the exception
+# once the line's pull request is open, and scans the app again. The line is taken out of batch.env after.
+if want 21; then
+echo "##### 21: a move whose target moves on after its pull request opened $(date -u +%H:%MZ)"
+level guarded
+extra 21
+batch none && baseline "$LOGS/confirm-21.log" &&
+  harness 14 app 21 --limit "${LIMIT:-60}"
 extra
 fi
 echo "##### summary $(date -u +%H:%MZ)"

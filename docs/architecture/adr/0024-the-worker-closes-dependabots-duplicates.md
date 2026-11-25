@@ -1,5 +1,7 @@
 # 0024: The GitHub worker closes Dependabot's pull request once `main` has every change it makes
 
+Martin decided it on 25 November 2026.
+
 ## Decision
 
 Dependabot proposes moves the factory makes itself: the pin watch in this repository, the line in the app (ADR 0022, ADR 0023). The GitHub worker closes a pull request of Dependabot's, with one comment, when `main` already has every change it makes (`apps/factory/src/github/duplicates.ts`), in either repository. It closes one only when all of these hold:

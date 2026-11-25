@@ -2,23 +2,24 @@
 # App, on a pull request's head and on the merge queue's commit for it (scripts/review-gate.ts). It passes, by the first
 # rule that holds (scripts/review-routing.ts): when Martin opened the pull request, or approved its head after the last
 # push; an exact pin of the factory's App's, every changed line a digest of an image build.yml signed on main, from a
-# commit that descends from the one it replaces, or of Dependabot's in a repository that calls these workflows, every
-# changed line a call of them, each moved from one commit to one later commit on this repository's main, each workflow
-# called declaring to its callers at the later commit what it declared at the earlier, or the bump is Martin's (it reads
-# what a workflow declares, not what it needs: ADR 0023); a move, in either repository and whoever opened it, exactly
-# the moves the scan of main asked for and nothing else (below), named `major` when one crosses a major and clears no
-# Critical; and, in the app's repository alone, the App's pull request with no risk tags, which the gate works out from
-# the diff and test integrity's run, or, while the caller's AUTONOMY variable is `lights-out`, one whose tags are not a
-# release, an improvement or a path CODEOWNERS on main gives Martin. Anything else is held for Martin. Its summary names
-# the rule and the tags in a block the line reads (policy/review-verdict.ts). This applies whatever the pull request's
-# base: a stacked one, into the branch below it, is held to main's required checks. A check on a commit is every open
-# pull request's whose head it is, so the head is judged on all of them, and passes only when each does, whichever pull
-# request asked. A pull request it finds open always gets a verdict. The queue's commit is judged on the pull request
-# its branch names, down to main: a queued stack has an entry for each pull request, with a branch of the ordinary name,
-# built on the entry below it, so the commit for one into another branch carries the changes below it, and is judged on
-# it and every pull request below it, each afresh at its own head, passing only when each does. A merge queue branch it
-# cannot read, or a stack it cannot follow down to main, fails the queue's commit, saying why. The ruleset requires the
-# check from the review App alone, so no workflow, this one's own job included, can stand in for it.
+# commit that descends from the one it replaces, or of Dependabot's in the app's repository, which calls these
+# workflows, every changed line a call of them, each moved from one commit to one later commit on this repository's
+# main, each workflow called declaring to its callers at the later commit what it declared at the earlier, or the bump
+# is Martin's (it reads what a workflow declares, not what it needs: ADR 0023); a move, in either repository and whoever
+# opened it, exactly the moves the scan of main asked for and nothing else (below), named `major` when one crosses a
+# major and clears no Critical; and, in the app's repository alone, the App's pull request with no risk tags, which the
+# gate works out from the diff and test integrity's run, or, while the caller's AUTONOMY variable is `lights-out`, one
+# whose tags are not a release, an improvement or a path CODEOWNERS on main gives Martin. Anything else is held for
+# Martin. Its summary names the rule and the tags in a block the line reads (policy/review-verdict.ts). This applies
+# whatever the pull request's base: a stacked one, into the branch below it, is held to main's required checks. A check
+# on a commit is every open pull request's whose head it is, so the head is judged on all of them, and passes only when
+# each does, whichever pull request asked. A pull request it finds open always gets a verdict. The queue's commit is
+# judged on the pull request its branch names, down to main: a queued stack has an entry for each pull request, with a
+# branch of the ordinary name, built on the entry below it, so the commit for one into another branch carries the
+# changes below it, and is judged on it and every pull request below it, each afresh at its own head, passing only when
+# each does. A merge queue branch it cannot read, or a stack it cannot follow down to main, fails the queue's commit,
+# saying why. The ruleset requires the check from the review App alone, so no workflow, this one's own job included, can
+# stand in for it.
 #
 # AUTONOMY is the caller's repository variable, `vars.AUTONOMY`: GitHub gives a called workflow its caller's variables,
 # and only an admin of that repository (Martin) can set one; neither the factory's App nor any worker's credential may

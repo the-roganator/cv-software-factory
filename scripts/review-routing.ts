@@ -968,7 +968,8 @@ export interface WorkflowPinChecks {
  * calls them at, and nothing else. Undefined for a change that touches no such call, which is not this rule's to
  * judge; for one that does, its pin, or why it is not an exact one, the first of these that fails:
  *
- * - it is in a repository that calls the factory's workflows, so not the factory's own, which calls none by commit;
+ * - it is in the app's repository, which calls the factory's workflows by commit: not the factory's own, which calls
+ *   none, and no other;
  * - GitHub's Dependabot opened it, from a branch of the repository itself, into `main`;
  * - GitHub lists every file it changes, each a workflow under `.github/workflows/`, modified, whose every changed line
  *   is one call of the factory's workflows (`uses: <the factory>/.github/workflows/<name>.yml@<commit> # main`) that
@@ -996,6 +997,9 @@ export async function workflowPin(
   const touches = files.some((file) => file.patch !== undefined && changedLines(file.patch).some(callsFactory));
   if (!touches) return undefined;
   if (repo === FACTORY_REPO) return { reason: 'the factory calls none of its own workflows by commit' };
+  // The exception is the app's alone (ADR 0023, guardrail 10): in any other repository that came to call these
+  // workflows, a bump of them is Martin's, as the worker's guards hold its enqueue to the app's too.
+  if (repo !== APP_REPO) return { reason: `it is in ${repo}, and only the app's bump of them passes as an exact pin` };
   if (pr.user?.id !== DEPENDABOT) return { reason: 'Dependabot did not open it' };
   if (!fromHere(pr)) return { reason: "it is from a fork's branch" };
   if (pr.base.ref !== 'main') return { reason: `it is into ${pr.base.ref}, not main` };
@@ -1144,7 +1148,7 @@ export function route(facts: Facts): Decision {
   // Dependabot's bump of the commit the factory's workflows are called at, and nothing else: an exact pin, whatever
   // its tags (`.github/` is Martin's by CODEOWNERS) and with no reading of test integrity, which is the App's rules'
   // alone to need. `workflowPin` holds every condition; who opened it and where are asked again here.
-  if (workflows && dependabotOpened(pr) && pr.base.ref === 'main' && repo !== FACTORY_REPO) {
+  if (workflows && dependabotOpened(pr) && pr.base.ref === 'main' && repo === APP_REPO) {
     if ('moved' in workflows) {
       const { from, to, files } = workflows.moved;
       const calls = files.length === 1 ? 'call' : `${files.length} calls`;

@@ -1037,7 +1037,7 @@ jobs:
       expect(await judged(files, { checks: reading })).toBeUndefined();
   });
 
-  it('refuses one anyone else opened, a fork’s, one into another branch, and any in the factory’s own repository', async () => {
+  it('refuses one anyone else opened, a fork’s, one into another branch, and any in a repository but the app’s', async () => {
     for (const author of [FACTORY_APP, MARTIN, 42, null])
       expect(await refused(bump(), { pr: dependabots({ user: author === null ? null : { id: author } }) })).toBe(
         'Dependabot did not open it',
@@ -1053,6 +1053,11 @@ jobs:
     const here = pr(DEPENDABOT, FACTORY_REPO);
     expect(await refused(bump(), { pr: here, repo: FACTORY_REPO })).toBe(
       'the factory calls none of its own workflows by commit',
+    );
+    // Any other repository that calls them: the exception is the app's alone.
+    const other = 'the-roganator/another-caller';
+    expect(await refused(bump(), { pr: pr(DEPENDABOT, other), repo: other })).toBe(
+      `it is in ${other}, and only the app's bump of them passes as an exact pin`,
     );
   });
 

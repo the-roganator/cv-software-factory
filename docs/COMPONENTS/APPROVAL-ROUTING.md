@@ -24,7 +24,7 @@ The rule, the first that holds:
 |---|---|
 | `martin-opened` | a pull request Martin opened from a branch here |
 | `martin-approved-head` | one whose head Martin's latest verdict approves: a push after his approval needs it again |
-| `exact-pin` | the factory's App's, every changed line a `digest:` under `deploy/`, each image signed by its repository's `build.yml` on `main` (cosign), from a commit `ahead` of the pin it replaces; or, in a repository that calls the factory's workflows, Dependabot's, every changed line a call of them, each moved from one commit to one later commit on the factory's `main` ([below](#an-exact-pin-of-the-factorys-workflows)) |
+| `exact-pin` | the factory's App's, every changed line a `digest:` under `deploy/`, each image signed by its repository's `build.yml` on `main` (cosign), from a commit `ahead` of the pin it replaces; or, in the app's repository, Dependabot's, every changed line a call of them, each moved from one commit to one later commit on the factory's `main` ([below](#an-exact-pin-of-the-factorys-workflows)) |
 | `move` | one from a branch here into `main`, in either repository and whoever opened it, that is exactly moves the daily scan of `main` asked for and nothing else, made by the gate and compared with what the merge makes ([below](#a-move)) |
 | `major` | the same, when one of the moves it carries crosses a major and clears no Critical by Trivy's own rating: a routine update across a major, which clears nothing, among them |
 | `low-risk` | the factory's App's, in the app's repository, with no tags and a successful test-integrity run by GitHub Actions at its head |
@@ -77,7 +77,7 @@ GH_TOKEN="$(gh auth token)" AUTONOMY= SCAN_STATE_KEY="$(kubectl --context k3d-so
 
 The app's repository calls the factory's workflows (its gates, the review gate, the scan) at a commit of the factory's `main`, and Dependabot proposes each later commit. `workflowPin` (`scripts/review-routing.ts`, [ADR 0023](../architecture/adr/0023-routine-updates-and-the-apps-workflow-pins.md)) passes such a pull request as `exact-pin`, whatever its tags and with no reading of test integrity, when all of these hold, and says the first that does not:
 
-- it is in a repository that calls the factory's workflows, so never this one, which calls none by commit;
+- it is in the app's repository, the one that calls the factory's workflows by commit: never this one, which calls none, and no other;
 - GitHub's Dependabot opened it, by its user id, from a branch of the repository itself, into `main`;
 - GitHub lists every file it changes, each a workflow under `.github/workflows/`, modified, whose every changed line is one call of the factory's workflows (`uses: <the factory>/.github/workflows/<name>.yml@<commit> # main`) that reads as the line it replaces but for the commit;
 - every call it moves goes from one commit to one commit, and no call at its head is left at another: a repository calls every workflow of the factory's at one commit. A line of a workflow at its head that names the factory's workflows and is no call of one at a commit, a comment's among them, holds every such bump, and the refusal names its file and line;

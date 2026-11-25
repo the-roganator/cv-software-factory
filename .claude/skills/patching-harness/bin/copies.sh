@@ -17,6 +17,8 @@
 #   ./copies.sh store-restore  the scratch store back to that point, its migrations run, its workers restarted
 #   ./copies.sh forget-closed  make the watches forget the pull requests a reset closed (reset does this itself)
 #   ./copies.sh dependabot   close the copies' Dependabot pull requests the real ones closed, or no test needs
+#   ./copies.sh reopen-dependabot  ask Dependabot again for each one the tests need that is not open (the harness
+#                            calls it before a run whose test needs one)
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
 #   ./copies.sh summon-dependabot  have Dependabot look at the app copy now (test 20; the harness calls it)
 #   ./copies.sh move-on-main <file> <image> <tag> <tag@digest>  an image's move put on the app copy's main, as another
@@ -514,6 +516,10 @@ dependabot_only_needed() { # <copy>
         echo "  asked Dependabot to recreate #$n ($title) on the baseline"
       fi
     done
+  dependabot_reopen "$copy"
+}
+dependabot_reopen() { # <copy>
+  local copy=$1 keep; keep=$(dependabot_keep "$1")
   local open closed one n
   open=$(gh pr list -R "$copy" --author app/dependabot --state open --limit 200 --json title --jq '.[].title | ascii_downcase')
   closed=$(gh pr list -R "$copy" --author app/dependabot --state closed --limit 200 --json number,title,mergedAt \
@@ -835,7 +841,8 @@ case "${1:-}" in
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
   summon-dependabot) summon_dependabot ;;
+  reopen-dependabot) dependabot_reopen "$FACTORY_COPY"; dependabot_reopen "$APP_COPY" ;;
   move-on-main) shift; move_on_main "$@" ;;
   lift-exception) shift; lift_exception "$@" ;;
-  *) sed -n '2,36p' "$0"; exit 2 ;;
+  *) sed -n '2,38p' "$0"; exit 2 ;;
 esac

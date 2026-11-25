@@ -7,6 +7,7 @@ import {
   branchFits,
   certainFail,
   type DuplicateFacts,
+  dependabotMissing,
   duplicateVerdict,
   factoryBusy,
   type HoldFacts,
@@ -25,6 +26,7 @@ import {
   pinWatchLine,
   printOf,
   probeQuery,
+  queuedFault,
   restartVerdict,
   routineBranch,
   routineMajorBranch,
@@ -504,6 +506,40 @@ describe('a hold, decided at one head and kept', () => {
     expect(holdBroken([{ ...major, rule: 'move' }], 'major')).toContain('is move, not major');
     expect(holdBroken([{ ...major, rule: 'held' }], 'major')).toContain('is held, not major');
     expect(holdBroken([{ ...major, rule: 'move' }])).toBeUndefined();
+  });
+});
+
+describe('a move that must not merge, and the merge queue', () => {
+  it('fails once it was queued, merged yet or not', () => {
+    expect(queuedFault([{ number: 18, queuedBy: 'scratch[bot]' }])).toBe(
+      '#18 was added to the merge queue by scratch[bot], and must never be',
+    );
+    expect(queuedFault([{ number: 17 }, { number: 18, queuedBy: 'mrogan' }])).toContain('#18');
+  });
+
+  it('has no fault while none was ever queued', () => {
+    expect(queuedFault([{ number: 18 }, { number: 19, queuedBy: undefined }])).toBeUndefined();
+    expect(queuedFault([])).toBeUndefined();
+  });
+});
+
+describe("the pull requests of Dependabot's a run needs open as it starts", () => {
+  const needs = [
+    { test: 'N1', title: /bump node from/i },
+    { test: '12', title: /anchore\/syft/i },
+  ];
+
+  it('lacks none when each has an open one of its title', () => {
+    const open = ['chore(deps): bump node from 24.22.0 to 24.22.3', 'chore(deps): Bump anchore/syft from v1.54.0'];
+    expect(dependabotMissing(needs, open)).toEqual([]);
+    expect(dependabotMissing([], [])).toEqual([]);
+  });
+
+  it('names each test whose pull request is not open', () => {
+    const missing = dependabotMissing(needs, ['chore(deps): bump node from 24.22.0 to 24.22.3']);
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toContain('test 12');
+    expect(dependabotMissing(needs, [])).toHaveLength(2);
   });
 });
 

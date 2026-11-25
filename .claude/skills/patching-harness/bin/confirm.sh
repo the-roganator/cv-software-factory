@@ -80,7 +80,8 @@ baseline() { # <log>
       return 1
     }
   done
-  await_root baseline
+  # On the commit pin-images pushed, so a look before Argo CD has seen that push is not taken for it.
+  await_root baseline "$(cat "$STATE/work/factory.sha")"
 }
 # Root Synced and Healthy, waited for up to 30 minutes; with a commit named, on that commit, so a look that comes
 # before Argo CD has seen a push is not taken for the push's.

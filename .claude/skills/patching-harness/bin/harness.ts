@@ -32,6 +32,7 @@ import {
   branchFits,
   certainFail,
   type DuplicateFacts,
+  dependabotMissing,
   duplicateVerdict,
   factoryBusy,
   holdBroken,
@@ -47,6 +48,7 @@ import {
   pinWatchLine,
   printOf,
   probeQuery,
+  queuedFault,
   restartVerdict,
   routineBranch,
   saysNotPulled,
@@ -214,6 +216,34 @@ function preflight(state: State, appJustReset: boolean) {
       wrong.push(
         `${busy}: \`node harness.ts batch none\`, then ./copies.sh reset factory, and wait for root to be Synced and Healthy`,
       );
+  }
+  // The pull requests of Dependabot's the run's tests are judged on or beside, open: a reset keeps them and asks for
+  // one that is closed again, so here the run asks once more and waits five minutes at most. Without one its test
+  // would pass or fail on nothing. Test 20's is summoned later, by the run itself.
+  const kept = TESTS.filter((t) => inRun(state, t)).flatMap((t) => [
+    ...(t.pr.by === 'dependabot' && !t.summons ? [{ test: t.id, title: t.pr.title }] : []),
+    ...(t.duplicate ? [{ test: t.id, title: t.duplicate.leaves }] : []),
+    ...(t.beside ? [{ test: t.id, title: t.beside }] : []),
+  ]);
+  if (kept.length) {
+    const repo = state.campaign === 'app' ? APP : FACTORY;
+    const lacking = () =>
+      dependabotMissing(
+        kept,
+        api<any[]>(repo, 'pulls?state=open&per_page=100')
+          .filter((p) => p.user.login === 'dependabot[bot]')
+          .map((p) => p.title as string),
+      );
+    let missing = lacking();
+    if (missing.length) {
+      say(state, `pre-flight: ${missing.join('; ')}: asking Dependabot to open it again, and waiting five minutes`);
+      sh(join(BIN, 'copies.sh'), ['reopen-dependabot'], { cwd: BIN, timeout: 5 * 60_000 });
+      for (let i = 0; i < 15 && missing.length; i++) {
+        sleep(20_000);
+        missing = lacking();
+      }
+    }
+    wrong.push(...missing.map((why) => `${why}, five minutes after it was asked for again (\`@dependabot reopen\`)`));
   }
   // The store at the baseline's newest migration: a restore's dump predates some, and the GitHub worker reads the
   // level through one (0054), queueing nothing without it.
@@ -1636,6 +1666,9 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
       test.major && seen.pulls.find((p) => p.state === 'open' && p.rule !== undefined && p.rule !== expected);
     if (misjudged)
       return fail(`#${misjudged.number}: the gate's rule is ${misjudged.rule}, not ${expected}: ${where(misjudged)}`);
+    // Queued is what a held move must never be: unmerged yet, it is no pass.
+    const queued = queuedFault(seen.pulls);
+    if (queued) return fail(queued);
     if (!seen.pulls.length) return { pass: true, why: 'no pull request opened' };
     const waiting = seen.pulls.filter((p) => p.state === 'open' && p.pending.length);
     if (waiting.length) return fail(`#${waiting[0]?.number} not settled: ${where(waiting[0] as Pull)}`);
@@ -2642,10 +2675,12 @@ if (command === 'factory' || command === 'app') {
   if (!ids.length || tests.length !== ids.length)
     throw new Error("only <tests>: comma-separated tests of the catalogue's");
   const names = pinWatchNames(tests);
-  const none = tests.filter((t) => t.campaign !== 'factory' || t.pr.by === 'dependabot').map((t) => t.id);
-  if (none.length)
+  const apps = tests.filter((t) => t.campaign !== 'factory').map((t) => t.id);
+  const dependabots = tests.filter((t) => t.campaign === 'factory' && t.pr.by === 'dependabot').map((t) => t.id);
+  if (apps.length) console.error(`not the pin watch's: ${apps.join(', ')} (an app test runs alone already)`);
+  if (dependabots.length)
     console.error(
-      `not the pin watch's: ${none.join(', ')} (an app test runs alone already; Dependabot's is kept by DEPENDABOT_KEEP_*)`,
+      `not the pin watch's: ${dependabots.join(', ')} (Dependabot's pull request, which DEPENDABOT_KEEP_FACTORY keeps)`,
     );
   if (!names.length) throw new Error('only: none of those tests stands on a move of the pin watch');
   console.log(pinWatchLine(names));

@@ -382,6 +382,28 @@ export function holdBroken(pulls: readonly HoldFacts[], rule?: string): string |
   return undefined;
 }
 
+/**
+ * Why a pull request that must not merge fails though it has not merged: it was added to the merge queue, which is the
+ * one thing a held move must never be, whether or not the queue has merged it yet.
+ */
+export function queuedFault(pulls: readonly Pick<HoldFacts, 'number' | 'queuedBy'>[]): string | undefined {
+  const queued = pulls.find((p) => p.queuedBy);
+  return queued ? `#${queued.number} was added to the merge queue by ${queued.queuedBy}, and must never be` : undefined;
+}
+
+/**
+ * The pull requests of Dependabot's a run's tests need open as it starts, and do not have: each as its test and the
+ * title it must match. A test judged on such a pull request proves nothing without it.
+ */
+export function dependabotMissing(
+  needs: readonly { test: string; title: RegExp }[],
+  open: readonly string[],
+): string[] {
+  return needs
+    .filter((need) => !open.some((title) => need.title.test(title)))
+    .map((need) => `test ${need.test} needs Dependabot's pull request titled ${need.title.source} open, and none is`);
+}
+
 // ── An issue that must say why ──────────────────────────────────────────────────────────────────────────────────────
 
 export interface IssueFacts {

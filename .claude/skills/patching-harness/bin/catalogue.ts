@@ -124,6 +124,11 @@ export interface Test {
   /** Its pull request is Dependabot's own, which the run summons (`./copies.sh summon-dependabot`). */
   summons?: boolean;
   /**
+   * A pull request of Dependabot's, by its title, that must be open beside the test's own move as the run starts
+   * (baseline.env keeps it): the move is proven with Dependabot's of the same pin there, as the real repository has it.
+   */
+  beside?: RegExp;
+  /**
    * Its pull request is Dependabot's for a pin the App's move makes too: the worker closes it once the move of test
    * `of` has merged, and leaves open every one of Dependabot's titled as `leaves`, whose versions main does not have.
    */
@@ -299,6 +304,7 @@ export const TESTS: Test[] = [
     moves: ['ghcr.io/anchore/syft'],
     pr: { by: 'line' },
     dependency: 'ghcr.io/anchore/syft',
+    beside: /anchore\/syft/i,
     deployed: { kind: 'app-deploy' },
   },
   {

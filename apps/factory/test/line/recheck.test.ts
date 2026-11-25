@@ -642,6 +642,26 @@ describe('an open ticket a release since already fixed', () => {
     ]);
   });
 
+  it('credits the fix by the signal of the sense that looks, whatever another sense joined to the ticket since', async () => {
+    const { line: it } = line(new FakeProbes(CLEARED));
+    const ticket = await ticketed('/products');
+    const fixer = await fixed();
+    // The log watcher's signal, joined after the release, on a version from before the one the probe saw it on.
+    const EARLIER = 'e'.repeat(40);
+    await events.append([
+      event(
+        ticket,
+        'signal.received',
+        { sense: 'logs', check: 'errors', route: '/products', version: EARLIER },
+        'logs',
+      ),
+    ]);
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([
+      { for: 'take', outcome: 'cleared', sense: 'probe', since: OLD, carried: [fixer] },
+    ]);
+  });
+
   it('goes on to Plan at once when the sense cannot tell, unsure', async () => {
     const probes = new FakeProbes({ outcome: 'unsure', version: NEW, runs: ['errored'] } as unknown as VerifyAnswer);
     const { line: it, github } = line(probes);

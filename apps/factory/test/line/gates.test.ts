@@ -3,7 +3,8 @@ import { validate } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
 import { countsNote } from '../../src/gates/counts.ts';
 import type { CheckRun, PullRequestState } from '../../src/github/reads.ts';
-import { APP_SLUG, asEvent, gateEvents, gateRecord, REVIEW_GATE_CHECK } from '../../src/line/gates.ts';
+import { APP_SLUG, asEvent, type Draft, gateEvents, gateRecord, REVIEW_GATE_CHECK } from '../../src/line/gates.ts';
+import { decide, type Facts, type LineEvent } from '../../src/line/machine.ts';
 
 const SHA = 'a'.repeat(40);
 const MERGED = 'c'.repeat(40);
@@ -180,6 +181,85 @@ describe('the gates, as events', () => {
     const drafts = gateEvents(pr(), runs, ['test'], nothing);
     expect(drafts.at(-1)).toMatchObject({ type: 'gates.finished', payload: { conclusion: 'passed', failed: [] } });
     expect(drafts[0]?.payload).toMatchObject({ checks: ['test'] });
+  });
+
+  it('record a check that failed and was run again on the same commit once it passes, and the round with it', () => {
+    const required = ['test', 'lint'];
+    const said: Draft[] = [];
+    const read = (runs: CheckRun[]) => {
+      const drafts = gateEvents(pr(), runs, required, gateRecord(said));
+      said.push(...drafts);
+      return drafts;
+    };
+    const first = [run(1, 'test', 'failure'), run(2, 'lint', 'success')];
+    expect(read(first).at(-1)).toMatchObject({ type: 'gates.finished', payload: { conclusion: 'failed' } });
+    expect(read(first)).toEqual([]);
+    // Run again, by a person or by GitHub: the round that failed stands while it runs.
+    expect(read([...first, run(3, 'test', null)])).toEqual([]);
+    const again = read([...first, run(3, 'test', 'success')]);
+    expect(again.map((d) => [d.type, (d.payload as { conclusion: string }).conclusion])).toEqual([
+      ['gate.finished', 'success'],
+      ['gates.finished', 'passed'],
+    ]);
+    expect(again.at(-1)).toMatchObject({
+      summary: 'All 2 required checks passed on PR #12',
+      payload: { commit: SHA, passed: 2, failed: [] },
+    });
+    for (const draft of again)
+      expect(validate(asEvent('1015', draft, '2026-11-25T09:00:00.000Z'))).toEqual({ ok: true });
+    // Said once: the same runs again say nothing, and nor does a run that fails as the one before it did.
+    expect(read([...first, run(3, 'test', 'success')])).toEqual([]);
+    const failing = gateRecord(said.slice(0, 4));
+    expect(gateEvents(pr(), [...first, run(3, 'test', 'failure')], required, failing)).toEqual([]);
+  });
+
+  it('send a change on to review when the check that sent it back is run again to green on the same commit', () => {
+    const facts: Facts = { issue: 3, failures: 0, failure: null };
+    const events: LineEvent[] = [
+      {
+        type: 'ticket.opened',
+        payload: {
+          title: 'Server errors on /search',
+          category: 'errors',
+          severity: 'broken',
+          fingerprint: { route: '/search', class: 'server-error' },
+          traces: [],
+        },
+      },
+      {
+        type: 'spec.written',
+        payload: {
+          outcome: 'Search answers every query.',
+          criteria: [
+            { given: 'a query', when: 'it is searched', expect: 'the page lists matches', from: 'the ticket' },
+          ],
+          scope: ['src/search.ts', 'test/'],
+          risks: [],
+          rollout: 'Ships as it is.',
+        },
+      },
+      {
+        type: 'pull-request.pushed',
+        payload: {
+          number: 12,
+          title: 'fix(search): escape the query',
+          branch: 'factory/1001-search',
+          attempt: 1,
+          testsFirst: true,
+          files: [{ path: 'src/search.ts', added: 1, removed: 1 }],
+          whole: [{ path: 'src/search.ts', added: 1, removed: 1 }],
+        },
+      },
+    ];
+    const read = (runs: CheckRun[]) =>
+      events.push(...(gateEvents(pr(), runs, ['test'], gateRecord(events)) as LineEvent[]));
+    read([run(1, 'test', 'failure')]);
+    expect(decide(events, facts).next).toMatchObject({ do: 'return', from: 'gates', to: 'build' });
+    events.push({ type: 'work.returned', payload: { from: 'gates', to: 'build', reason: 'The gates failed: test' } });
+    expect(decide(events, facts).next).toMatchObject({ do: 'step', agent: 'coder' });
+    // The branch does not move: the check is run again on the commit that failed, and passes there.
+    read([run(1, 'test', 'failure'), run(2, 'test', 'success')]);
+    expect(decide(events, facts).next).toMatchObject({ do: 'step', agent: 'reviewer' });
   });
 
   it('leave out the review gate’s check, required or not: it waits for Martin, who looks once the gates are done', () => {

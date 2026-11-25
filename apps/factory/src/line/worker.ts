@@ -1748,7 +1748,9 @@ export class Line {
   /**
    * What a look again at `promotion` credits: the work items, but this one, carried by every real release promoted
    * since the version the ticket's signal was last seen on became the stable one, up to and with that one, oldest
-   * first, each with the pull request it merged, and that version. It goes by the versions, not by when triage
+   * first, each with the pull request it merged, and that version. The signal is the sense's that looks, the ticket's
+   * first (`#firstSignal`): another sense's, joined to the ticket since, says nothing of what that one saw. It goes
+   * by the versions, not by when triage
    * recorded the signal, which may be late: after a promotion, on the version before it. A version the line never
    * saw promoted counts from the first release that replaced it, or, with none, from the first signal on it. Its own release, if it had one, carried its fix: not another's.
    */
@@ -1759,8 +1761,12 @@ export class Line {
     const { sql } = this.#o;
     const [seen] = await sql<{ version: string; from: string }[]>`
       with last as (
-        select payload->>'version' as version from events
-        where work_item = ${workItem} and type = 'signal.received' order by seq desc limit 1
+        select payload->>'version' as version, payload->>'sense' as sense from events
+        where work_item = ${workItem} and type = 'signal.received'
+          and payload->>'sense' = (
+            select payload->>'sense' from events
+            where work_item = ${workItem} and type = 'signal.received' order by seq limit 1)
+        order by seq desc limit 1
       )
       select last.version, coalesce(
         (select max(p.seq) from events p
@@ -1770,7 +1776,8 @@ export class Line {
          where p.type = 'release.promoted' and (p.payload->>'dryRun')::boolean is not true and p.seq <= ${promotion.seq}
            and (starts_with(p.payload->>'previous', last.version) or starts_with(last.version, p.payload->>'previous'))),
         (select min(e.seq) from events e
-         where e.work_item = ${workItem} and e.type = 'signal.received' and e.payload->>'version' = last.version)
+         where e.work_item = ${workItem} and e.type = 'signal.received' and e.payload->>'version' = last.version
+           and e.payload->>'sense' = last.sense)
       )::text as from
       from last`;
     const rows = await sql<{ work_item: string; pull_request: number | null }[]>`

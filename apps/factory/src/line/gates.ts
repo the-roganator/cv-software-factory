@@ -15,7 +15,9 @@
  * `gateEvents` is the decision, a pure function of what GitHub says and what the work item has already recorded, so
  * reading the same state again appends nothing. The gates are done when every check the ruleset requires has
  * finished on the commit, and every other check that started there, or at a merge, on the checks that have finished;
- * they pass when every required one that finished passed. The factory's own check runs (the reviewer's) are not
+ * they pass when every required one that finished passed. A check that failed and is run again on the same commit
+ * is recorded again once it no longer fails, and so is a round that failed there once it passes: the branch has not
+ * moved, and nothing else would say the failure is over. The factory's own check runs (the reviewer's) are not
  * gates, and are left out; nor is the review gate's (ADR 0014), which is Martin's say, not a gate a change can pass:
  * it waits for his approval, which comes after the gates.
  */
@@ -50,9 +52,10 @@ const gatesIn = (required: readonly string[]) => required.filter((name) => name 
 /** What a work item has recorded about its pull request's gates and merge. */
 export interface GateRecord {
   started: Set<string>;
-  /** `commit check` for each check recorded as finished. */
-  finished: Set<string>;
-  done: Set<string>;
+  /** `commit check` for each check recorded as finished, with the conclusion last recorded for it. */
+  finished: Map<string, PayloadOf<'gate.finished'>['conclusion'] | undefined>;
+  /** Each commit whose round was recorded as finished, with the conclusion last recorded for it. */
+  done: Map<string, PayloadOf<'gates.finished'>['conclusion'] | undefined>;
   merged: boolean;
   closed: boolean;
 }
@@ -60,16 +63,20 @@ export interface GateRecord {
 export function gateRecord(events: readonly { type: string; payload: unknown }[]): GateRecord {
   const record: GateRecord = {
     started: new Set(),
-    finished: new Set(),
-    done: new Set(),
+    finished: new Map(),
+    done: new Map(),
     merged: false,
     closed: false,
   };
   for (const { type, payload } of events) {
-    const p = payload as { commit?: string; check?: string };
+    const p = payload as { commit?: string; check?: string; conclusion?: string };
     if (type === 'gates.started') record.started.add(p.commit ?? '');
-    if (type === 'gate.finished') record.finished.add(`${p.commit} ${p.check}`);
-    if (type === 'gates.finished') record.done.add(p.commit ?? '');
+    if (type === 'gate.finished') {
+      record.finished.set(`${p.commit} ${p.check}`, p.conclusion as PayloadOf<'gate.finished'>['conclusion']);
+    }
+    if (type === 'gates.finished') {
+      record.done.set(p.commit ?? '', p.conclusion as PayloadOf<'gates.finished'>['conclusion']);
+    }
     if (type === 'pull-request.merged') record.merged = true;
     // Work sent back to Plan comes round again with a pull request of its own, which has not merged.
     if (type === 'work.returned' && (payload as { to?: string }).to === 'plan') record.merged = false;
@@ -203,8 +210,11 @@ function gateRun(
     });
   }
   for (const run of latest.values()) {
-    if (!finished(run) || record.finished.has(`${commit} ${cutAt(run.name, 80)}`)) continue;
+    if (!finished(run)) continue;
     const conclusion = outcome(run.conclusion);
+    // Recorded once, and once more when a check that failed was run again on the commit and no longer fails.
+    const key = `${commit} ${cutAt(run.name, 80)}`;
+    if (record.finished.has(key) && !(record.finished.get(key) === 'failure' && conclusion !== 'failure')) continue;
     const title = run.title?.trim();
     const summary = title === undefined ? undefined : cutTo(title, 200);
     const annotations = annotationsOf(run);
@@ -228,7 +238,9 @@ function gateRun(
   }
 
   const { waiting, judged, unfinished, failed, passed } = judge(latest, required, merged);
-  if (!waiting && !record.done.has(commit)) {
+  // A round is recorded once, and once more when it failed on the commit and its checks, run again there, pass.
+  const passedSinceFailing = record.done.get(commit) === 'failed' && !failed.length;
+  if (!waiting && (!record.done.has(commit) || passedSinceFailing)) {
     drafts.push({
       type: 'gates.finished',
       actor: 'actions',

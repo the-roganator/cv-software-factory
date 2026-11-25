@@ -10,7 +10,7 @@ import { DRY_RUN_CHECK_TITLE, DryRunReads } from '../../src/github/dry-run-reads
 import type { Reads } from '../../src/github/reads.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker } from '../../src/github/worker-client.ts';
-import { gateEvents, gateRecord } from '../../src/line/gates.ts';
+import { gateEvents, gateRecord, judge, latestRuns } from '../../src/line/gates.ts';
 import { quiet, REPO, SHA } from './fake.ts';
 
 const BRANCH = 'factory/1001-cart';
@@ -19,7 +19,7 @@ const TIMES = { checksAfterMs: 2 * MINUTE, mergeAfterMs: 20 * MINUTE };
 const REQUIRED = ['Unit tests', 'Journeys'];
 
 /** GitHub as it really is: the app's main, its ruleset, and one real pull request. */
-function live(asked: string[] = []): Reads {
+function live(asked: string[] = [], required: string[] = REQUIRED): Reads {
   const no = (what: string) => () => Promise.reject(new Error(`GitHub has no ${what}`));
   return {
     pullRequest: async (_repo, number) => {
@@ -42,7 +42,7 @@ function live(asked: string[] = []): Reads {
       asked.push(`checkRuns ${sha}`);
       return [];
     },
-    requiredChecks: async () => REQUIRED,
+    requiredChecks: async () => required,
     head: async (_repo, branch) => (branch === 'main' ? SHA : no(`branch ${branch}`)()),
     protectedPaths: async (_repo, ref) => {
       asked.push(`protectedPaths ${ref}`);
@@ -96,7 +96,7 @@ const SCAN_RUN = {
 };
 
 /** A dry run with a clock, and the app's one file as it is on main. */
-async function dryRun(asked: string[] = []) {
+async function dryRun(asked: string[] = [], required: string[] = REQUIRED) {
   let now = new Date('2026-10-06T22:00:00Z');
   const files: Record<string, string> = { 'src/cart.ts': 'const a = 1;\nconst b = 2;\nconst c = 3;\n' };
   const made = new DryRunActions(
@@ -105,7 +105,7 @@ async function dryRun(asked: string[] = []) {
     () => now,
     async (_repo, path, ref) => (ref === SHA ? (files[path] ?? null) : null),
   );
-  const reads = new DryRunReads(made, live(asked), TIMES, () => now);
+  const reads = new DryRunReads(made, live(asked, required), TIMES, () => now);
   // The coder's push, as the line makes it: the branch at main, its patch, and a draft pull request.
   await made.setBranch(REPO, BRANCH, SHA, { force: true });
   const commit = await made.applyPatch(REPO, {
@@ -174,6 +174,33 @@ describe('a dry run’s reads', () => {
     // And it said nothing was wrong.
     expect((await reads.checkRuns(REPO, commit)).some((run) => 'annotations' in run)).toBe(false);
     expect(drafts.some((d) => d.type === 'gate.finished' && 'annotations' in d.payload)).toBe(false);
+  });
+
+  it('pass the scans main requires as GitHub Actions’ own, which the line’s gates take from no other app', async () => {
+    const required = ['gates / tests', 'gates / image scan', 'gates / lockfile scan'];
+    const { reads, commit, number, later } = await dryRun([], required);
+    const read = async () => {
+      const pr = await reads.pullRequest(REPO, number);
+      const runs = await reads.checkRuns(REPO, pr.head.sha);
+      return { latest: latestRuns(runs), drafts: gateEvents(pr, runs, required, gateRecord([])) };
+    };
+    // Every one of them is a gate the line reads, the scans among them, and it waits while they run.
+    const running = await read();
+    expect([...running.latest.keys()]).toEqual(required);
+    expect(judge(running.latest, required)).toMatchObject({ waiting: true });
+    expect(running.drafts.map((d) => d.type)).toEqual(['gates.started']);
+
+    later(TIMES.checksAfterMs);
+    const { latest, drafts } = await read();
+    expect(judge(latest, required)).toMatchObject({ waiting: false, unfinished: [], failed: [], passed: 3 });
+    expect(drafts.at(-1)).toMatchObject({
+      type: 'gates.finished',
+      payload: { commit, conclusion: 'passed', passed: 3, failed: [] },
+    });
+    // A scan that never ran counted nothing, and its gate records no counts.
+    const scan = drafts.find((d) => d.type === 'gate.finished' && d.payload.check === 'gates / image scan');
+    expect(scan?.payload).toMatchObject({ conclusion: 'success', required: true, summary: DRY_RUN_CHECK_TITLE });
+    expect(scan?.payload).not.toHaveProperty('findings');
   });
 
   it('never merge it while it is a draft, and merge it as the App a while after it is readied', async () => {

@@ -20,7 +20,8 @@
 #   ./copies.sh reopen-dependabot  open again each one of Dependabot's the tests need that is closed, and ask Dependabot
 #                            to make it again on main (the harness calls it before a run whose test needs one)
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
-#   ./copies.sh summon-dependabot  have Dependabot look at the app copy now (test 20; the harness calls it)
+#   ./copies.sh summon-dependabot [factory|app]  have Dependabot look at a copy now, the app's by default (test 20;
+#                            the harness calls it)
 #   ./copies.sh move-on-main <file> <image> <tag> <tag@digest>  an image's move put on the app copy's main, as another
 #                            change would have made it (W3b; the harness calls it)
 #   ./copies.sh lift-exception <package>  the factory copy's exception for a package taken off its main (test 21; the
@@ -499,8 +500,10 @@ pin_images() {
 # One the tests need that is closed (by an earlier reset, or by the worker once main had its versions, test 22) is
 # opened again: the newest closed one of each alternative of the regex (split at `|`) that no open one matches.
 # Dependabot answers no `@dependabot reopen` on a closed pull request, so the harness reopens it itself, which GitHub
-# allows while its branch exists, and then asks Dependabot to make it again (`@dependabot recreate`): the branch it
+# allows while its branch exists, and asks Dependabot to make it again (`@dependabot recreate`): the branch it
 # reopens stands on a main from before the baseline, and conflicts until Dependabot has built it on main as it is.
+# Then, once for the copy, if one it reopened conflicts or its head is older than main's last move to the baseline,
+# Dependabot is summoned to look at the copy (summon_dependabot), whose run rebuilds its own open pull requests.
 dependabot_keep() { # <copy>: the regex of the pull requests its tests need
   if [[ $1 == "$APP_COPY" ]]; then printf %s "$DEPENDABOT_KEEP_APP"; else printf %s "$DEPENDABOT_KEEP_FACTORY"; fi
 }
@@ -520,9 +523,19 @@ dependabot_only_needed() { # <copy>
     done
   dependabot_reopen "$copy"
 }
+# When a copy's main was last put at its baseline, as GitHub's activity has it; where that no longer reaches it, when
+# the baseline's commit was made (harness.ts's `baselinePushedAt`).
+baseline_pushed_at() { # <copy>
+  local copy=$1 sha at
+  sha=$(gh api "repos/$copy/commits/baseline" --jq .sha)
+  at=$(gh api "repos/$copy/activity?ref=refs/heads/main&per_page=100" \
+    --jq "[.[] | select(.after == \"$sha\")][0].timestamp // empty")
+  [[ -n $at ]] || at=$(gh api "repos/$copy/commits/baseline" --jq .commit.committer.date)
+  printf %s "$at"
+}
 dependabot_reopen() { # <copy>
   local copy=$1 keep; keep=$(dependabot_keep "$1")
-  local open closed one n
+  local open closed one n reopened=() since oid head mergeable behind=
   open=$(gh pr list -R "$copy" --author app/dependabot --state open --limit 200 --json title --jq '.[].title | ascii_downcase')
   closed=$(gh pr list -R "$copy" --author app/dependabot --state closed --limit 200 --json number,title,mergedAt \
     --jq '.[] | select(.mergedAt == null) | "\(.number)\t\(.title | ascii_downcase)"')
@@ -533,6 +546,7 @@ dependabot_reopen() { # <copy>
     if [[ -n $n ]]; then
       if gh pr reopen "$n" -R "$copy" >/dev/null; then
         gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
+        reopened+=("$n")
         echo "  reopened Dependabot's #$n and asked Dependabot to recreate it on main: a test needs it ($one)"
       else
         echo "  Dependabot's #$n cannot be reopened: the test that needs it ($one) has none" >&2
@@ -541,6 +555,19 @@ dependabot_reopen() { # <copy>
       echo "  no pull request of Dependabot's matches $one, open or closed: the test that needs it has none" >&2
     fi
   done < <(tr '|' '\n' <<<"$keep")
+  [[ ${#reopened[@]} -gt 0 ]] || return 0
+  since=$(baseline_pushed_at "$copy")
+  for n in "${reopened[@]}"; do
+    oid=$(gh pr view "$n" -R "$copy" --json headRefOid --jq .headRefOid)
+    mergeable=$(gh pr view "$n" -R "$copy" --json mergeable --jq .mergeable)
+    head=$(gh api "repos/$copy/commits/$oid" --jq .commit.committer.date)
+    # Both are GitHub's UTC times to the second, which sort as text.
+    if [[ $mergeable == CONFLICTING || $head < $since ]]; then behind=$n; fi
+  done
+  if [[ -n $behind ]]; then
+    echo "  #$behind conflicts with main or is from before the baseline: summoning Dependabot to rebuild it"
+    if [[ $copy == "$APP_COPY" ]]; then summon_dependabot app; else summon_dependabot factory; fi
+  fi
 }
 
 # The App's pull requests a reset closed, changed so the watches forget them: the pin watch opens no pull request for a
@@ -636,8 +663,13 @@ reset_one() { # <copy> <dir>
 # rewrites a last comment line of that file: Martin's, made by git under his signing configuration, as the copy's
 # ruleset wants verified signatures and the contents API's commits are not his; pushed with the ruleset off for the
 # push alone, as a baseline is. Its run is the Actions run "github_actions in /. - Update #…", within the minute.
-summon_dependabot() {
-  local dir="$WORK/app" copy=$APP_COPY file=.github/dependabot.yml pushed=0
+# On the factory copy the same, from the factory's clone, for a pull request of Dependabot's opened again
+# (dependabot_reopen). The copy's main is then one commit past its baseline.
+summon_dependabot() { # [factory|app]
+  local side=${1:-app}
+  [[ $side == factory || $side == app ]] || die "summon-dependabot takes factory or app, not $side"
+  local dir="$WORK/$side" copy=$APP_COPY file=.github/dependabot.yml pushed=0
+  [[ $side == app ]] || copy=$FACTORY_COPY
   git -C "$dir" fetch -q "https://github.com/$copy" main
   git -C "$dir" checkout -q -f --detach FETCH_HEAD
   perl -ni -e 'print unless /^# Dependabot was last asked to look on /' "$dir/$file"
@@ -846,7 +878,7 @@ case "${1:-}" in
   forget-closed) forget_closed "$FACTORY_COPY"; forget_closed "$APP_COPY" ;;
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
-  summon-dependabot) summon_dependabot ;;
+  summon-dependabot) summon_dependabot "${2:-app}" ;;
   reopen-dependabot) dependabot_reopen "$FACTORY_COPY"; dependabot_reopen "$APP_COPY" ;;
   move-on-main) shift; move_on_main "$@" ;;
   lift-exception) shift; lift_exception "$@" ;;

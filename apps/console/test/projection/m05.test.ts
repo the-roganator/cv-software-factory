@@ -198,6 +198,51 @@ describe('a fix whose branch was brought up to date while the reviewer had it', 
   });
 });
 
+describe('a move that waits for the merge when its issue is written again', () => {
+  const issue = (minute: number, to: string) =>
+    [
+      minute,
+      'issue.opened',
+      'factory',
+      {
+        repository: 'the-roganator/cv-worlds-worst-website',
+        number: 40,
+        move: { name: 'invented-pkg', ecosystem: 'npm', from: '2.0.0', to },
+      },
+    ] as const;
+  const waiting = () =>
+    work('1')
+      .open()
+      .add(...issue(0, '2.0.1'))
+      .add(1, 'pull-request.pushed', 'factory', {
+        number: 7,
+        title: 'fix(deps): move invented-pkg to 2.0.1',
+        branch: 'factory/1-move-invented-pkg',
+        attempt: 1,
+        testsFirst: false,
+        files: [{ path: 'pnpm-lock.yaml', added: 1, removed: 1 }],
+        whole: [{ path: 'pnpm-lock.yaml', added: 1, removed: 1 }],
+      })
+      .add(2, 'gates.started', 'actions', payloads.gatesStarted)
+      .add(3, 'gates.finished', 'actions', payloads.gatesPassed)
+      .add(4, 'review.submitted', 'reviewer', { pullRequest: 7, verdict: 'approved', note: 'Fine', findings: [] })
+      .add(5, 'hold.started', 'factory', { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits' });
+
+  it('stops waiting for the merge once the issue names another target, as the line does', () => {
+    expect(foldItem(waiting().events)?.hold).toMatchObject({ cause: 'merge' });
+    expect(foldItem(waiting().add(...issue(6, '2.0.3')).events)?.hold).toBeUndefined();
+  });
+
+  it('still waits when the issue is written again for the same target, or the hold is of another cause', () => {
+    // Only its findings differ: the pull request's pins are the issue's still.
+    expect(foldItem(waiting().add(...issue(6, '2.0.1')).events)?.hold).toMatchObject({ cause: 'merge' });
+    const escalated = waiting()
+      .add(6, 'hold.started', 'factory', { stage: 'review', kind: 'held', cause: 'review', reason: 'Escalated' })
+      .add(...issue(7, '2.0.3'));
+    expect(foldItem(escalated.events)?.hold).toMatchObject({ cause: 'review' });
+  });
+});
+
 describe('a fix held at the gates whose check is run again to green on the same commit', () => {
   const updated = 'd'.repeat(40);
   const held = (cause: 'gates' | 'failures') =>

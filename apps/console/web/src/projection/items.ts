@@ -447,6 +447,8 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
   let merged = false;
   // The move's name as its issue disclosed it, which the events after it are read with.
   let disclosed: string | undefined;
+  // The target its issue last named, as the line's `fold` keeps it.
+  let issueTo: string | undefined;
   for (const event of events) {
     // A look of a canary's background analysis lands every minute and changes nothing of the work item's: its time is
     // not the work item's latest.
@@ -587,6 +589,19 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
       case 'issue.opened': {
         const { repository, number, move } = event.payload;
         state.issue = { repository, number };
+        // Written again for another target while a pull request is open: the wait for the merge was the older
+        // target's, and ends as the line reads it, while Build starts afresh on the pull request.
+        if (
+          state.pullRequest !== undefined &&
+          !merged &&
+          issueTo !== undefined &&
+          move?.to !== undefined &&
+          move.to !== issueTo &&
+          state.hold?.cause === 'merge'
+        ) {
+          state.hold = undefined;
+        }
+        issueTo = move?.to;
         if (!move) break;
         if (state.dependency) {
           const { from = state.dependency.from, to = state.dependency.to } = move;

@@ -22,10 +22,10 @@ A workflow's pin stays Martin's at every level, Lights-out included: in this rep
 
 - **Dependabot writes the change.** Its pull request in the app moves the commit, and the App writes nothing.
 - **The gate judges it** as `exact-pin` (`workflowPin`, `scripts/review-routing.ts`): Dependabot opened it, by id, from a branch of the app's repository into `main`; every changed line is a call of the factory's workflows, each moved from one commit to one commit; the new commit is ahead of the old and on the factory's `main`; and each called workflow declares the same `workflow_call` inputs, secrets and outputs at both commits. A bump that changes what a caller gives is Martin's, who moves the pin and the caller together.
-- **The GitHub worker queues it** (`workflowPinQueueWatch`, `github/deploy-queue.ts`), at Guarded and Lights-out with auto-merge on, by `ENQUEUES`, once its required checks are green. The enqueue is the one thing the factory does to a pull request it did not open, and only the worker's own watch may ask for it, in the app's repository alone: the guards refuse the same enqueue to every request over the worker's door, and in any other repository.
+- **The GitHub worker queues it** (`workflowPinQueueWatch`, `github/deploy-queue.ts`), at Guarded and Lights-out with auto-merge on, by `ENQUEUES`, once its required checks are green. The enqueue is all the factory does to this pull request, which it did not open, and only the worker's own watch may ask for it, in the app's repository alone: the guards refuse the same enqueue to every request over the worker's door, and in any other repository.
 - **The App has no `workflows` permission, and needs none.** GitHub's queue merges a pull request that changes a workflow when an App without that permission added it.
 
-Guardrail 10 says so, as its one stated exception (`policy/guardrails.ts`, spec section 6). A third-party action's pin, in either repository, still waits for Martin.
+Guardrail 10 says so, as one of its two stated exceptions (`policy/guardrails.ts`, spec section 6); the other is the close of Dependabot's duplicate ([ADR 0024](0024-the-worker-closes-dependabots-duplicates.md)). A third-party action's pin, in either repository, still waits for Martin.
 
 ## Why
 
@@ -41,14 +41,14 @@ Guardrail 10 says so, as its one stated exception (`policy/guardrails.ts`, spec 
 
 ## Consequences
 
-- Dependabot's pull request for a pin the scan lists closes itself once `main` has moved. `.github/dependabot.yml` keeps its settings: it alone proposes what the scan does not list, the actions the workflows use among them, and those wait for Martin.
+- Dependabot's pull request for a pin the scan lists is closed once `main` has moved, by Dependabot or by the worker (ADR 0024). `.github/dependabot.yml` keeps its settings: it alone proposes what the scan does not list, the actions the workflows use among them, and those wait for Martin.
 - A routine update can bring in a release that is itself bad, as a fix can (ADR 0022). What stands against it is the wait, pnpm's guards and mise's release age, the required checks on the head and in the queue, admission (ADR 0010), and in the app the canary's analysis and rollback.
 - A routine update across a major waits for Martin at Guarded, with nothing in Needs you and no alert: its pull request's description says so.
 - An image's tag and a chart's version wait from the day the state first saw them, so a run with no state (a proving run, a repository's first, a state lost) lists neither, and losing the state starts those waits again.
 - A routine update in the app is proved only by a scan whose routine listing was whole. One that made no listing, or could not read some pin for it, proves nothing: Verify waits for the next, and holds for Martin at its bound.
 - **The gate that judges a bump is the gate at the old pin.** `review.yml` runs as the app's `main` calls it, so the bump that brings a change to the gate is judged by the gate before that change.
 - **The declaration check reads what a workflow declares, not what it needs.** A workflow that comes to need something it does not declare is passed: a trigger the caller must list, a permission the caller's job must grant, a variable or an environment of the caller's repository, a required check's name its ruleset must hold.
-- The worker writes nothing to Dependabot's branch and says nothing on its pull request. A required check that failed on the head, and a head the queue took out three times, wait for Martin or for Dependabot's next rebase, and only the worker's log says so.
+- The watch writes nothing to Dependabot's branch and says nothing on its pull request. A required check that failed on the head, and a head the queue took out three times, wait for Martin or for Dependabot's next rebase, and only the worker's log says so.
 - The app's `.github/dependabot.yml` keeps the factory's workflows in a group of their own, with no cooldown: a commit of the factory's `main` has waited where it was made, and a pull request that also moves a third-party action is no exact pin.
 - This decision amends ADR 0014, whose `exact-pin` has a second check; ADR 0017, whose worker queues one pull request that is not the App's; ADR 0021, whose state keeps the routine updates' days and what carries an image's findings; and ADR 0022, whose lanes give the Makefile's pin of Argo CD's chart to the worker.
 - `AGENTS.md`'s rule on who merges names Dependabot's workflow pins in the app beside the worker's other two.

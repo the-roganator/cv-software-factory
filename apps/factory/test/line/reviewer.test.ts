@@ -133,6 +133,20 @@ describe('the reviewer', () => {
     // A team's name is a scoped package's to the line: in code it notifies nobody.
     expect(commented.data?.findings[0]?.comment).toBe('Ask `@the-roganator/owners` first.');
     expect(schema.safeParse({ ...read, findings: [{ ...unmet, comment: 'cc @mrogan' }] }).success).toBe(false);
+    // A comment that is code alone, a fence's info string, and a mention after the line's own words on its line.
+    const fenced = schema.safeParse({ ...read, findings: [{ ...unmet, comment: '``` @mrogan must see this' }] });
+    expect(fenced.error?.issues).toEqual([
+      expect.objectContaining({
+        path: ['findings', 0, 'comment'],
+        message: 'no @mention outside code: @mrogan would notify someone from the App’s account',
+      }),
+    ]);
+    // A path has no code mark, which would close the code the line writes it in.
+    const pathed = schema.safeParse({ ...read, findings: [{ ...unmet, path: 'a` @mrogan `b' }] });
+    expect(pathed.error?.issues[0]).toMatchObject({
+      path: ['findings', 0, 'path'],
+      message: 'a plain path in the repository',
+    });
   });
 
   it('hands back a verdict that agrees with its findings, each short, cited and anchored', () => {

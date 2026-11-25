@@ -223,7 +223,12 @@ export function defineAgent<Input extends StepInput, Result>(
               `The ${agent}'s result names ${undisclosed.slice(0, 3).join(', ')}, which the ticket's issue does not: name no advisory the issue does not list`,
             );
           }
-          return definition.apply(parsed.data, handback, input, effects);
+          // Whatever the result has the line say on GitHub is read as it is sent, whole (`unmentioning`).
+          const act: EffectsContext['act'] = (action, args) => {
+            unmentioningAll(action, args);
+            return effects.act(action, args);
+          };
+          return definition.apply(parsed.data, handback, input, { ...effects, act });
         },
       };
     },
@@ -244,24 +249,56 @@ const movesOnly = ({ asked }: StepInput) => asked.kind === 'ticket' && 'ecosyste
 export const advisoriesNamed = ({ issueNames, scanned }: Pick<WorkItemState, 'issueNames' | 'scanned'>): string[] =>
   (issueNames ?? scanned)?.findings?.map((finding) => finding.advisory) ?? [];
 
+/** One group of a GitHub advisory's id, and what may stand between the parts of an id respelt. */
+const GROUP = '[0-9A-Z]{4}';
+const BETWEEN = String.raw`[-_\s]`;
+
+/** A CVE's id, its parts joined by hyphens or respelt with spaces, underscores or nothing between them. */
+const CVE_ID = new RegExp(String.raw`(?<![A-Z0-9])CVE${BETWEEN}*\d{4}${BETWEEN}*\d{4,}(?!\d)`, 'g');
+/** A GitHub advisory's id, respelt the same ways. */
+const GHSA_ID = new RegExp(
+  `(?<![A-Z0-9])GHSA${BETWEEN}+${GROUP}${BETWEEN}+${GROUP}${BETWEEN}+${GROUP}(?![A-Z0-9])`,
+  'g',
+);
 /**
- * A word shaped as an advisory's id, as the scan's findings name them: a CVE's, a GitHub advisory's, or a
- * distribution's or a database's own, a prefix in capitals before a number of four digits or more and one part after
- * it (`DSA-5123-1`, `RHSA-2026:1234`, `RUSTSEC-2026-0001`, `TEMP-0000000-ABCDEF`).
+ * A distribution's or a database's own id: a prefix in capitals before a number of four digits or more and one part
+ * after it (`DSA-5123-1`, `RHSA-2026:1234`, `RUSTSEC-2026-0001`, `TEMP-0000000-ABCDEF`).
  */
-const ADVISORY_ID =
-  /(?<![\w-])(?:GHSA(?:-[0-9a-z]{4}){3}|[A-Z][A-Z0-9]+(?:-[A-Z]+)*-\d{4,}[-:][0-9A-Za-z]+(?:-[0-9A-Za-z]+)*)(?![\w-])/gi;
+const OTHER_ID = /(?<![\w-])[A-Z][A-Z0-9]+(?:-[A-Z]+)*-\d{4,}[-:][0-9A-Z]+(?:-[0-9A-Z]+)*(?![\w-])/g;
+
+/**
+ * Text as an advisory's id is looked for in it: in one case and one form of each character, every kind of dash a
+ * hyphen, and without the marks Markdown reads as code or emphasis or the characters that show as nothing, any of
+ * which could stand inside an id and leave it readable.
+ */
+const forIds = (text: string) =>
+  text
+    .normalize('NFKC')
+    .replace(/[`*~\p{Cf}]/gu, '')
+    .replace(/[\p{Pd}−]/gu, '-')
+    .toUpperCase();
 
 /**
  * The advisories a text names that its work item's issue does not: each word shaped as an advisory's id (a CVE's, a
- * GHSA's, a distribution's own) that is none of `named`, once, as written. The issue is where a move's advisories are
- * disclosed, and lists eight at most: an agent's words reach GitHub and the public views, so they name no advisory
- * the issue has not. Case does not make an id another.
+ * GHSA's, a distribution's own) that is none of `named`, once, in capitals with hyphens between its parts. The issue
+ * is where a move's advisories are disclosed, and lists eight at most: an agent's words reach GitHub and the public
+ * views, so they name no advisory the issue has not.
+ *
+ * Best effort, and no boundary: it finds an id as it is written and as it is plainly respelt (another dash, spaces or
+ * underscores between its parts, code marks inside it, another case), and nothing cleverer. An id spelt out in words,
+ * split across fields or encoded is not found. What keeps an undisclosed advisory out is that no agent is told one.
  */
 export function undisclosedAdvisories(text: string, named: readonly string[]): string[] {
-  const disclosed = new Set(named.map((id) => id.toUpperCase()));
-  const found = [...text.matchAll(ADVISORY_ID)].map(([id]) => id).filter((id) => !disclosed.has(id.toUpperCase()));
-  return found.filter((id, i) => found.findIndex((other) => other.toUpperCase() === id.toUpperCase()) === i);
+  const read = forIds(text);
+  const canonical = (id: string) => id.replace(new RegExp(`${BETWEEN}+`, 'g'), '-');
+  const disclosed = new Set(named.map((id) => canonical(forIds(id))));
+  const found = [
+    ...[...read.matchAll(CVE_ID)].map(([id]) => id.replace(/^CVE[-_\s]*(\d{4})[-_\s]*/, 'CVE-$1-')),
+    // Three words of four letters after "GHSA" are a sentence ("GHSA from that scan"), not an id.
+    ...[...read.matchAll(GHSA_ID)].map(([id]) => id).filter((id) => /[\d_-]/.test(id.slice(4).trim())),
+    ...[...read.replaceAll('_', '-').matchAll(OTHER_ID)].map(([id]) => id),
+  ].map(canonical);
+  return [...new Set(found)].filter((id) => !disclosed.has(id));
 }
 
 /** The advisories an agent's result names, in any of its words, that the issue does not (`undisclosedAdvisories`). */
@@ -538,6 +575,38 @@ export function scopedNamesInCode(markdown: string): string {
   return coded + markdown.slice(at);
 }
 
+/** The fields of an action's arguments that hold text GitHub publishes as Markdown. */
+const SAID = new Set(['body', 'summary', 'text', 'reply', 'comment']);
+
+/**
+ * Markdown the line is about to publish from the App's account, given back as it is when it mentions nobody. Text
+ * that mentions someone outside code fails the step (`StepFailed`), before anything of it is sent, and the next
+ * attempt is told whom and where. This is the check of the text as composed: each field of an agent's is refused a
+ * mention of its own in its schema (`refuseMentions`), but fields put together on one line can make one that none
+ * holds alone, as a code mark left open in one closes at the next one's.
+ */
+export function unmentioning(markdown: string, what: string): string {
+  const named = [...new Set(mentionsIn(markdown))];
+  if (!named.length) return markdown;
+  throw new StepFailed(
+    `${what}, as the line put it together from the step’s words, would mention ${named.slice(0, 3).join(', ')} from the App’s account: write no @name, and close every code mark in the field that opens it`,
+  );
+}
+
+/**
+ * Holds every text an action would publish to `unmentioning`: each `body`, `summary`, `text`, `reply` and `comment`
+ * among its arguments, however deep. Every action an agent's result takes goes through here (`defineAgent`), so
+ * a new composition is read without being named. A thread's first comment, by which `resolveThreads` finds it, is
+ * GitHub's already, and is not read again.
+ */
+export function unmentioningAll(action: string, args: unknown, found = action === 'resolveThreads'): void {
+  if (args === null || typeof args !== 'object') return;
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value !== 'string') unmentioningAll(action, value, found);
+    else if (SAID.has(key) && !(found && key === 'body')) unmentioning(value, `The ${key} of ${action}`);
+  }
+}
+
 /** Refuses Markdown that mentions someone outside code, naming each mention it found for the next attempt. */
 export function refuseMentions(markdown: string, ctx: z.RefinementCtx, path: PropertyKey[] = []): void {
   const named = [...new Set(mentionsIn(markdown))];
@@ -551,16 +620,21 @@ export function refuseMentions(markdown: string, ctx: z.RefinementCtx, path: Pro
  * and rollout in a pull request's description, a review's note and comments, a declined suggestion's reply. Held to
  * the describer's rule in the result's schema, where a refusal is the step's failure and the next attempt is told
  * why, and where the event keeps the words as GitHub has them: a scoped package's name is put in code
- * (`scopedNamesInCode`), counted in the most the words may be, and any mention left is refused (`refuseMentions`).
+ * (`scopedNamesInCode`), counted in the most the words may be, and any mention left is refused (`refuseMentions`),
+ * in the words alone and as the line writes them (`written`), where what stands before them on their line can make a
+ * mention of what alone is code.
  */
-export const publicWords = (max: number) =>
+export const publicWords = (max: number, written: (words: string) => string = (words) => words) =>
   z
     .string()
     .trim()
     .min(1)
     .transform(scopedNamesInCode)
     .pipe(z.string().max(max))
-    .superRefine((text, ctx) => refuseMentions(text, ctx));
+    .superRefine((text, ctx) => {
+      refuseMentions(text, ctx);
+      if (!mentions(text)) refuseMentions(written(text), ctx);
+    });
 
 /** A pull request's title of one of these Conventional Commit types, of 80 characters at most, closing no issue. */
 const titleOf = (types: string, message: string) =>

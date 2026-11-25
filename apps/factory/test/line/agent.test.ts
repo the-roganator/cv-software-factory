@@ -19,10 +19,15 @@ import {
   stepFrom,
   titleFor,
   undisclosedAdvisories,
+  unmentioning,
+  unmentioningAll,
   updateTitle,
 } from '../../src/line/agents/agent.ts';
+import { pullRequestBody } from '../../src/line/agents/coder.ts';
 import type { Asked, Signal } from '../../src/line/agents/evidence.ts';
 import { AGENTS } from '../../src/line/agents/index.ts';
+import { moveSection } from '../../src/line/moves.ts';
+import { reviewInGitHub } from '../../src/line/review.ts';
 
 describe('a fix’s title', () => {
   it('is a Conventional Commit of a fix’s type', () => {
@@ -263,6 +268,105 @@ describe('an agent’s words the line publishes on GitHub', () => {
   });
 });
 
+describe('what the line puts together from an agent’s words', () => {
+  const SPEC = {
+    outcome: 'A price shows two digits of pence.',
+    // Each part passes alone: one opens a code mark, and the mention in the other is in code. On one line the first
+    // two marks pair, and the mention is live.
+    criteria: [{ given: 'a price in the `cart', when: 'it is written in pounds', expect: '`@mrogan` reads £35.00' }],
+    scope: ['src/money.ts'],
+    risks: [],
+    rollout: 'Ships as it is.',
+  };
+  const refusal = (send: () => void) => {
+    try {
+      send();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  it('is read as it is sent: a pull request’s draft or a move’s section whose parts make a mention is refused', () => {
+    for (const part of [SPEC.criteria[0]?.given, SPEC.criteria[0]?.expect]) expect(mentionsIn(part ?? '')).toEqual([]);
+    const draft = pullRequestBody('7', 12, SPEC, 'fix');
+    const section = moveSection(SPEC, [], [], undefined);
+    expect(mentionsIn(draft)).toEqual(['@mrogan']);
+    expect(mentionsIn(section)).toEqual(['@mrogan']);
+    const opened = refusal(() => unmentioningAll('openPullRequest', { head: 'factory/7', body: draft, draft: true }));
+    expect(opened).toBeInstanceOf(StepFailed);
+    expect((opened as Error).message).toBe(
+      'The body of openPullRequest, as the line put it together from the step’s words, would mention @mrogan from the App’s account: write no @name, and close every code mark in the field that opens it',
+    );
+    expect(
+      refusal(() => unmentioningAll('updatePullRequest', { number: 3, body: `Words.\n\n${section}` })),
+    ).toBeInstanceOf(StepFailed);
+    // What mentions nobody is sent as it is, a title and a commit's message unread: neither is Markdown.
+    expect(unmentioning('The move of `@grpc/grpc-js`.', 'The body')).toBe('The move of `@grpc/grpc-js`.');
+    unmentioningAll('openPullRequest', { title: 'fix(deps): move @grpc/grpc-js to 1.14.7', body: 'It moves.' });
+    unmentioningAll('applyPatch', { message: 'fix(deps): move @grpc/grpc-js\n\nThe pin step moved @grpc/grpc-js.' });
+  });
+
+  it('is read wherever a review puts a finding: its body, its comments, the check’s summary and a thread’s reply', () => {
+    // Alone, a fence's info string; after the line's own words on its line, live.
+    const fenced = { path: 'src/money.ts', line: 3, blocking: true, comment: '``` @mrogan must see this' };
+    // A path that closes the code the line writes it in.
+    const pathed = { path: 'a` @mrogan `b', line: 3, blocking: true, comment: 'Seven pence shows as 7.' };
+    for (const finding of [fenced, pathed]) {
+      const review = { verdict: 'changes-requested' as const, note: 'One holds.', findings: [finding] };
+      const shown = reviewInGitHub(review, [], { commit: 'c'.repeat(40), workItem: '7', review: 1, last: false });
+      expect(mentionsIn(shown.body)).toEqual(['@mrogan']);
+      expect(mentionsIn(shown.check.summary)).toEqual(['@mrogan']);
+      expect(refusal(() => unmentioningAll('createCheckRun', shown.check))).toBeInstanceOf(StepFailed);
+      expect(refusal(() => unmentioningAll('review', { number: 3, body: shown.body, comments: [] }))).toBeInstanceOf(
+        StepFailed,
+      );
+    }
+    const comments = [{ path: 'src/money.ts', line: 3, body: '**Blocking**\n\nAsk @mrogan.' }];
+    expect(refusal(() => unmentioningAll('review', { number: 3, body: 'Fine.', comments }))).toBeInstanceOf(StepFailed);
+    // A thread is found by its first comment, which GitHub has already: only the reply is the line's to send.
+    const thread = { ...comments[0], reply: 'Declined by the factory’s coder: it is the library’s way.' };
+    unmentioningAll('resolveThreads', { number: 3, threads: [thread] });
+    const replied = refusal(() =>
+      unmentioningAll('resolveThreads', { number: 3, threads: [{ ...thread, reply: 'Declined: ask @mrogan.' }] }),
+    );
+    expect((replied as Error).message).toContain('The reply of resolveThreads');
+    expect(refusal(() => unmentioningAll('closeIssue', { number: 3, comment: 'Thanks @mrogan.' }))).toBeInstanceOf(
+      StepFailed,
+    );
+  });
+
+  it('fails the step before anything of it is sent, whatever the agent’s result does', async () => {
+    const sent: string[] = [];
+    const agent = defineAgent<{ asked: Asked; signals: Signal[] }, { note: string }>({
+      agent: 'reviewer',
+      maxTurns: 1,
+      deadlineSeconds: 1,
+      input: async () => ({
+        asked: { kind: 'request', request: { title: 'Sort by price', words: 'Sort.' } },
+        signals: [],
+      }),
+      prompt: () => 'Review it.',
+      schema: () => z.object({ note: z.string() }),
+      apply: async ({ note }, _handback, _input, context) => {
+        await context.act('comment', { number: 3, body: `- \`src/a.ts:1\`: ${note}` });
+        return [];
+      },
+    });
+    const effects = {
+      act: async (action: string) => {
+        sent.push(action);
+      },
+    } as unknown as EffectsContext;
+    const finish = async (note: string) =>
+      (await agent.start({ state: {} } as StepContext)).finish({ result: { note } } as never, effects);
+    await expect(finish('``` @mrogan must see this')).rejects.toBeInstanceOf(StepFailed);
+    expect(sent).toEqual([]);
+    await finish('Fine as it is.');
+    expect(sent).toEqual(['comment']);
+  });
+});
+
 describe('an agent’s words about a move', () => {
   const scan = (advisories: string[]): Signal => ({
     sense: 'dependency',
@@ -288,7 +392,7 @@ describe('an agent’s words about a move', () => {
     },
   };
 
-  it('name no advisory the issue does not: each id-shaped word the issue lacks is found, once, as written', () => {
+  it('name no advisory the issue does not: each id-shaped word the issue lacks is found, once, in capitals', () => {
     const named = ['GHSA-0000-0000-0001', 'CVE-2099-0001'];
     expect(undisclosedAdvisories('Clears GHSA-0000-0000-0001 and cve-2099-0001.', named)).toEqual([]);
     expect(
@@ -296,7 +400,7 @@ describe('an agent’s words about a move', () => {
         'Clears CVE-2099-0001, and CVE-2099-0002 (ghsa-0000-0000-0002) too; `CVE-2099-0002` again.',
         named,
       ),
-    ).toEqual(['CVE-2099-0002', 'ghsa-0000-0000-0002']);
+    ).toEqual(['CVE-2099-0002', 'GHSA-0000-0000-0002']);
     // A distribution's or a database's own id, as the scan gives one for an image's package.
     expect(
       undisclosedAdvisories('DSA-5123-1, DLA-3456-2, RHSA-2026:1234, RUSTSEC-2026-0001 and TEMP-0000000-ABCDEF.', []),
@@ -305,6 +409,40 @@ describe('an agent’s words about a move', () => {
     expect(
       undisclosedAdvisories('SHA-256, UTF-8, ISO-8601, RFC-9110, node-24.11.1, 2026-11-25 and factory/1234-move.', []),
     ).toEqual([]);
+  });
+
+  it('find an id respelt: another dash, spaces or underscores between its parts, code marks inside it, another case', () => {
+    for (const respelt of [
+      'CVE\u20112026\u20111234',
+      'CVE-2026\u20131234',
+      'CVE\u22122026\u22121234',
+      'CVE 2026 1234',
+      'cve_2026_1234',
+      'CVE-`2026`-1234',
+      'CVE-**2026**-1234',
+      'C\u200bVE-2026-1234',
+      '\uff23\uff36\uff25-2026-1234',
+    ]) {
+      expect(undisclosedAdvisories(`It also clears ${respelt}.`, ['CVE-2026-0001']), respelt).toEqual([
+        'CVE-2026-1234',
+      ]);
+    }
+    for (const respelt of [
+      'GHSA aaaa-bbbb-cccc',
+      'ghsa_aaaa_bbbb_cccc',
+      'GHSA\u2013aaaa\u2013bbbb\u2013cccc',
+      'GHSA 9x2c q4m7 r8vw',
+    ]) {
+      expect(undisclosedAdvisories(`See ${respelt}.`, [])[0], respelt).toMatch(
+        /^GHSA-(AAAA-BBBB-CCCC|9X2C-Q4M7-R8VW)$/,
+      );
+    }
+    expect(undisclosedAdvisories('See rustsec_2026_0001.', [])).toEqual(['RUSTSEC-2026-0001']);
+    // One the issue names is named however it is spelt, and a sentence is no id.
+    expect(
+      undisclosedAdvisories('Clears CVE 2026 1234 and ghsa_aaaa_bbbb_cccc.', ['cve-2026-1234', 'GHSA-aaaa-bbbb-cccc']),
+    ).toEqual([]);
+    expect(undisclosedAdvisories('The GHSA from that scan, and the CVE of 2026: 1234 lines.', [])).toEqual([]);
   });
 
   const names = (advisories: string[]) => ({

@@ -180,6 +180,8 @@ describe('the coder', () => {
       declined: [{ suggestion: 1, reason: 'The test is `@testing-library/dom`’s own way.' }],
     });
     expect(declining('As @mrogan asked.').success).toBe(false);
+    // Code alone, a fence's info string, and a mention after the words the line replies with.
+    expect(declining('``` @mrogan must see this').success).toBe(false);
   });
 
   it('names the files outside its scope it needs, each with why, instead of changing them, and never a protected one', () => {

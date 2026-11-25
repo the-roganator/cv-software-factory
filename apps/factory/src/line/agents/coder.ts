@@ -179,12 +179,17 @@ const pressed = (input: CoderInput) =>
 /** The most a coder may say of why it changed nothing: it is the hold's reason, after the line's own words. */
 export const UNCHANGED_MAX = 200;
 
+/** The reply a declined suggestion's thread is answered with. */
+const declinedReply = (reason: string) => `Declined by the factory’s coder: ${reason}`;
+
 /**
  * The suggestions the coder declines, each by its number as it was given them, with its reason, which answers the
  * suggestion's thread on the pull request (`publicWords`).
  */
 const declined = z
-  .array(z.strictObject({ suggestion: z.number().int().min(1).max(MAX_FINDINGS), reason: publicWords(300) }))
+  .array(
+    z.strictObject({ suggestion: z.number().int().min(1).max(MAX_FINDINGS), reason: publicWords(300, declinedReply) }),
+  )
   .max(MAX_FINDINGS);
 
 /** The files outside the scope the coder needs to change and may not, each with why. */
@@ -977,7 +982,7 @@ async function answerDeclined(
 ) {
   const answers = declined.flatMap(({ suggestion, reason }) => {
     const finding = suggestions[suggestion - 1];
-    const reply = `Declined by the factory’s coder: ${reason}`;
+    const reply = declinedReply(reason);
     return finding ? lineage(context.state.reviews, finding).map((f) => ({ finding: f, reply })) : [];
   });
   await answerThreads(context, 'declined', pullRequest, threadAnswers(answers));

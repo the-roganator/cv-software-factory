@@ -46,6 +46,7 @@
  */
 import { cutTo, MAX_FINDINGS, PATH_CHARS, type PayloadOf } from '@software-factory/events';
 import { z } from 'zod';
+import { plainPath } from '../../github/paths.ts';
 import { type Answer, LIMITS, suggestionsGoBack, type WorkItemState } from '../machine.ts';
 import { type PinnedMove, targetWords, versionsWords } from '../moves.ts';
 import {
@@ -53,11 +54,22 @@ import {
   cites,
   type Finding,
   lineage,
+  listed,
   reviewInGitHub,
   suggestionsLeft,
   threadAnswers,
 } from '../review.ts';
-import { askedOf, defineAgent, FLAG_NAMES_FILE, heAnswered, need, publicWords, words } from './agent.ts';
+import {
+  askedOf,
+  defineAgent,
+  FLAG_NAMES_FILE,
+  heAnswered,
+  mentions,
+  need,
+  publicWords,
+  refuseMentions,
+  words,
+} from './agent.ts';
 import { contradictedList, flagLine, side } from './coder.ts';
 import { type Asked, askedLines, askedName, askedTitle, numbered, reported, type Signal } from './evidence.ts';
 
@@ -97,8 +109,11 @@ export interface ReviewerInput {
 }
 
 const finding = z.strictObject({
-  /** A file the change changes, from the repository's root. */
-  path: words(PATH_CHARS),
+  /**
+   * A file the change changes, from the repository's root: a plain path, with no code mark, which would close the
+   * code the line writes it in.
+   */
+  path: words(PATH_CHARS).refine((path) => plainPath(path) && !path.includes('`'), 'a plain path in the repository'),
   /** A line in the change's version of the file, that the diff shows. */
   line: z.number().int().positive(),
   blocking: z.boolean(),
@@ -165,6 +180,8 @@ export function reviewerResult(criteria = 12, earlier = 0) {
         ctx.addIssue({ code: 'custom', path: ['verdict'], message: 'changes requested with nothing blocking' });
       }
       findings.forEach((f, i) => {
+        // As the review's body and the check's summary list it, on one line after its path and its mark.
+        if (!mentions(f.comment)) refuseMentions(listed(f), ctx, ['findings', i, 'comment']);
         if (f.holds !== undefined && f.holds > earlier) {
           const message = earlier
             ? `the review before left ${earlier} findings to answer, not ${f.holds}`

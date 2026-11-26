@@ -751,9 +751,10 @@ export async function moveNode(
  * image at `to` runs another, Node moves to it first (`moveNode`), and the image is pinned at `to`. A Node behind the
  * one pinned is refused: a move goes forward.
  *
- * A checkout with no `FROM` of the image at `from`, and every one at `to`, its tag and its digest, has the move
- * already, and nothing is written. One with none at `from` and a `FROM` at neither is refused, whatever its others
- * pin: a pin would be left unmoved.
+ * A checkout with no `FROM` of the image at `from` and at least one at `to`, its tag and its digest, has the move
+ * already, and nothing is written; one with none at `from` and none at `to` is refused. A `FROM` of the image at any
+ * other tag is another pin, with a move of its own (the scan lists pins by line): it is not this move's to make, and
+ * is left alone here as it is when the move is made.
  */
 export async function moveImage(
   dir: string,
@@ -779,7 +780,6 @@ export async function moveImage(
     await moveNode(dir, { ecosystem: 'node', name: 'node', from: pinned, to: runs }, get, now, move.name, digest);
   }
   let there = false;
-  let elsewhere = false;
   const moved = await moveFroms(
     dir,
     // The digest the registry was just asked for, and agreed was the move's: never a second answer.
@@ -787,12 +787,11 @@ export async function moveImage(
       if (image !== move.name) return undefined;
       if ((move.from.includes('@') ? `${tag}@${pinned}` : tag) === move.from) return { tag: toTag, digest: toDigest };
       if (tag === toTag && pinned === toDigest) there = true;
-      else elsewhere = true;
       return undefined;
     },
     digest,
   );
-  if (!moved && (!there || elsewhere)) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
+  if (!moved && !there) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
 }
 
 /**

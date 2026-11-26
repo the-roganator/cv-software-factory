@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { APP_LOGIN } from '../../src/github/actions.ts';
 import { DEPENDABOT } from '../../src/github/dependabot.ts';
-import { APP_USER } from '../../src/github/issues.ts';
+import { APP_USER, MARTIN } from '../../src/github/issues.ts';
 import { branchOf } from '../../src/github/pins.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import type { Route, Sent } from './fake.ts';
@@ -40,6 +40,8 @@ export interface FakePull {
   mergeable: boolean | null;
   /** Who closed it: the App when it closed it through the API; a test closes it as Martin by setting `state`. */
   closed_by?: string;
+  /** The commit its merge made on main, for one a test merged. */
+  merge_commit_sha?: string;
   /** For Dependabot's: each file's patch, or none where GitHub would not send one. */
   files?: { filename: string; patch?: string }[];
 }
@@ -176,6 +178,7 @@ export class FakeRepo {
       state: p.state,
       body: p.body,
       merged_at: p.merged_at,
+      merge_commit_sha: p.merge_commit_sha ?? null,
       draft: false,
       created_at: '2026-11-11T00:00:00Z',
       user: { login: p.user, id: p.user === APP_LOGIN ? APP_USER : 1 },
@@ -233,9 +236,9 @@ export class FakeRepo {
       {
         // `base...head`, as GitHub compares: from their merge base, the commits head has, newest last, and what changed.
         method: 'GET',
-        path: new RegExp(`^${at}/compare/[0-9a-f]{40}\\.\\.\\.[0-9a-f]{40}$`),
+        path: new RegExp(`^${at}/compare/[0-9a-f]{40}\\.\\.\\.[0-9a-f]{40}(\\?per_page=1)?$`),
         answer: ({ path }) => {
-          const [base = '', head = ''] = path.slice(`${at}/compare/`.length).split('...');
+          const [base = '', head = ''] = path.slice(`${at}/compare/`.length).split('?')[0]?.split('...') ?? [];
           if (!this.made.has(base) || !this.made.has(head)) return notFound;
           const behind = new Set(this.#ancestors(base));
           const ahead = this.#ancestors(head).filter((sha) => !behind.has(sha));
@@ -482,8 +485,10 @@ export class FakeRepo {
           if (path.includes('/events')) return { body: [] };
           // A pull request's comments are the App's, said through the actions: GitHub names who made each.
           if (made && 'head' in made)
-            return { body: (made.comments ?? []).map((body) => ({ body, user: { login: APP_LOGIN } })) };
-          return { body: (made && 'comments' in made ? made.comments : []).map((body) => ({ body })) };
+            return { body: (made.comments ?? []).map((body) => ({ body, user: { login: APP_LOGIN, id: APP_USER } })) };
+          return {
+            body: (made && 'comments' in made ? made.comments : []).map((body) => ({ body, user: { id: APP_USER } })),
+          };
         },
       },
       {
@@ -509,7 +514,12 @@ export class FakeRepo {
               state: made.state,
               closed_at: null,
               user: { id: made.user === APP_LOGIN ? APP_USER : 49_699_333 },
-              closed_by: made.state === 'closed' ? { login: made.closed_by ?? 'mrogan' } : null,
+              closed_by:
+                made.state === 'closed'
+                  ? made.closed_by === undefined || made.closed_by === 'mrogan'
+                    ? { login: 'mrogan', id: MARTIN }
+                    : { login: made.closed_by, id: made.closed_by === APP_LOGIN ? APP_USER : 1 }
+                  : null,
               ...(pull ? { pull_request: {} } : {}),
             },
           };

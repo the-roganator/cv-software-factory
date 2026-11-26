@@ -87,8 +87,8 @@ const queue = (over: Partial<MergeQueue> = {}): MergeQueue => ({
 });
 
 const level =
-  (autonomy: Autonomy = 'guarded', autoMerge = true): LevelReader =>
-  async () => ({ autonomy, autoMerge });
+  (autonomy: Autonomy = 'guarded', autoMerge = true, stopped = false): LevelReader =>
+  async () => ({ autonomy, autoMerge, stopped });
 
 /** A log whose lines a test reads: what the queue said of each wait. */
 function capture() {
@@ -364,12 +364,57 @@ describe('the workflow pin queue watch', () => {
     }
     // What Martin changes holds from the next pass, with nothing restarted.
     let autonomy: Autonomy = 'supervised';
-    const { pass, enqueued } = harness({ level: async () => ({ autonomy, autoMerge: true }) });
+    const { pass, enqueued } = harness({ level: async () => ({ autonomy, autoMerge: true, stopped: false }) });
     await pass();
     expect(enqueued).toEqual([]);
     autonomy = 'guarded';
     await pass();
     expect(enqueued).toEqual([[81, HEAD]]);
+  });
+
+  it('adds none while the line is stopped, at any level, and adds it once the line runs again', async () => {
+    for (const autonomy of ['guarded', 'lights-out'] as const) {
+      let stopped = true;
+      const said = capture();
+      const { pass, enqueued } = harness({
+        level: async () => ({ autonomy, autoMerge: true, stopped }),
+        log: said.log,
+      });
+      await pass();
+      await pass();
+      expect(enqueued, autonomy).toEqual([]);
+      expect(said.lines).toMatchObject([
+        { waits: 'stopped', why: 'the line is stopped, so an exact-pin waits for Martin' },
+      ]);
+      stopped = false;
+      await pass();
+      expect(enqueued, autonomy).toEqual([[81, HEAD]]);
+    }
+  });
+
+  it('leaves out a head that left the queue for anything but failed checks, on a worker that has just started, and says so in its log', async () => {
+    const said = capture();
+    const taken = queue({
+      removed: {
+        at: '2026-11-24T21:10:00Z',
+        by: 'mrogan',
+        reason: 'dequeued',
+        commit: NEWER,
+        failures: 0,
+        atHead: true,
+      },
+    });
+    const { pass, enqueued, sent } = harness({ queued: () => taken, log: said.log });
+    await pass();
+    await pass();
+    expect(enqueued).toEqual([]);
+    expect(said.lines.filter((line) => line.level === 40)).toMatchObject([
+      {
+        msg: 'the workflow pin pull request left the merge queue for a reason other than failed checks: it waits for Martin',
+      },
+    ]);
+    // Nothing is said on Dependabot's pull request, and nothing read of its comments.
+    expect(sent.filter((s) => s.path.includes('/comments'))).toEqual([]);
   });
 
   it('waits for every other required check, and for one that failed says what would move it, once', async () => {
@@ -415,7 +460,16 @@ describe('the workflow pin queue watch', () => {
 
   it(`adds a head the queue took out for failed checks again, ${QUEUE_TRIES} times in all, then leaves it for Martin with no comment`, async () => {
     const out = (failures: number, reason = 'failed_checks') =>
-      queue({ removed: { at: '2026-11-24T21:10:00Z', by: 'github-merge-queue', reason, commit: NEWER, failures } });
+      queue({
+        removed: {
+          at: '2026-11-24T21:10:00Z',
+          by: 'github-merge-queue',
+          reason,
+          commit: NEWER,
+          failures,
+          atHead: true,
+        },
+      });
     let state = queue();
     const said = capture();
     const { pass, enqueued } = harness({ queued: () => state, log: said.log });

@@ -646,3 +646,43 @@ describe('the moves the scan made with the pin step', () => {
     });
   });
 });
+
+describe('a move the pin step made, whose merge was undone on main', () => {
+  it('holds its group, which the step makes whole, with an issue for each of its moves, until the move’s target changes', async () => {
+    const repo = new FakeRepo(files());
+    let scanned = repo.main;
+    let group = lockGroup({
+      moves: [1],
+      changed: [{ path: 'pnpm-lock.yaml', text: LOCK.replace('a@1.0.0', 'a@1.0.1') }],
+    });
+    group.steps = group.steps.slice(0, 1);
+    let moves = scan().slice(0, 1);
+    const w = harness(repo, () => made(scanned, moves, [group]));
+    await w.pass();
+    const [pull] = openPins(repo);
+    expect(pull?.head).toBe(LOCK_BRANCH);
+    // Merged, then reverted on main; the next day's scan lists it again, with another package beside it.
+    const merged = repo.push({ 'pnpm-lock.yaml': repo.file(LOCK_BRANCH, 'pnpm-lock.yaml') as string });
+    Object.assign(pull as object, { state: 'closed', merged_at: '2026-11-11T09:00:00Z', merge_commit_sha: merged });
+    repo.push({ 'pnpm-lock.yaml': LOCK });
+    scanned = repo.main;
+    group = lockGroup();
+    moves = scan().slice(0, 2);
+    await w.pass();
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    const open = repo.issues.filter((i) => i.state === 'open');
+    expect(open.map((i) => i.body.includes('its merge was then undone on `main`')).sort()).toEqual([false, true]);
+    expect(open.find((i) => !i.body.includes('its merge was then undone'))?.body).toContain(
+      'together with a move whose merge was undone on `main`',
+    );
+    expect(w.lines.filter((line) => String(line.msg).includes('undone on main'))).toHaveLength(1);
+
+    // A later release of the package undone is another move: the group is made, and both issues close.
+    group = lockGroup({ changed: [{ path: 'pnpm-lock.yaml', text: MOVED.replace('a@1.0.1', 'a@1.0.2') }] });
+    group.steps = [{ ...(group.steps[0] as MadeGroup['steps'][number]), after: ['1.0.2'] }, ...group.steps.slice(1)];
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([LOCK_BRANCH]);
+    expect(repo.issues.filter((i) => i.state === 'open')).toEqual([]);
+  });
+});

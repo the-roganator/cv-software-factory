@@ -507,6 +507,8 @@ export class LiveReads implements Reads {
           reason: lastRemoved.reason ?? null,
           commit: lastRemoved.beforeCommit?.oid ?? null,
           failures,
+          // Without the head's time, or the time it last went in, it counts as at this head: it errs towards Martin.
+          atHead: !(Date.parse(lastAdded?.createdAt ?? '') < headAt),
         }
       : null;
     const queued = entry

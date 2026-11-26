@@ -304,7 +304,11 @@ describe('acting in GitHub', () => {
     const { github, sent } = client([
       { method: 'GET', path: `/repos/${REPO}/issues/16`, answer: () => ({ body: { ...BY_APP, state } }) },
       { method: 'GET', path: /^\/repos\/.+\/issues\/16\/events/, answer: () => ({ body: [] }) },
-      { method: 'GET', path: /^\/repos\/.+\/issues\/16\/comments/, answer: () => ({ body: comments }) },
+      {
+        method: 'GET',
+        path: /^\/repos\/.+\/issues\/16\/comments/,
+        answer: () => ({ body: comments.map((made) => ({ ...made, ...BY_APP })) }),
+      },
       {
         method: 'POST',
         path: `/repos/${REPO}/issues/16/comments`,
@@ -353,7 +357,7 @@ describe('acting in GitHub', () => {
         path: /^\/repos\/.+\/issues\/16\/comments/,
         answer: ({ path }) => {
           const since = new URL(path, 'https://api.github.test').searchParams.get('since') ?? '';
-          return { body: comments.filter((made) => made.created_at >= since) };
+          return { body: comments.filter((made) => made.created_at >= since).map((made) => ({ ...made, ...BY_APP })) };
         },
       },
       {
@@ -833,7 +837,11 @@ describe('closing a pull request', () => {
     const comments: { body: string }[] = [];
     const { github, sent } = client([
       { method: 'GET', path: `/repos/${REPO}/pulls/66`, answer: () => ({ body: pull }) },
-      { method: 'GET', path: /^\/repos\/.+\/issues\/66\/comments/, answer: () => ({ body: comments }) },
+      {
+        method: 'GET',
+        path: /^\/repos\/.+\/issues\/66\/comments/,
+        answer: () => ({ body: comments.map((made) => ({ ...made, ...BY_APP })) }),
+      },
       {
         method: 'POST',
         path: `/repos/${REPO}/issues/66/comments`,
@@ -927,13 +935,83 @@ describe('closing a pull request', () => {
 });
 
 describe('commenting on an issue', () => {
+  it('takes only its own comments for what it has said: the same words from anyone else do not keep it silent', async () => {
+    const comments: { body: string; user: { id: number } | null }[] = [
+      { body: 'Released behind its flag.', user: { id: 4242 } },
+      { body: 'Released behind its flag.', user: null },
+    ];
+    const { github, sent } = client([
+      { method: 'GET', path: `/repos/${REPO}/issues/31`, answer: () => ({ body: BY_APP }) },
+      { method: 'GET', path: /^\/repos\/.+\/issues\/31\/comments/, answer: () => ({ body: comments }) },
+      {
+        method: 'POST',
+        path: `/repos/${REPO}/issues/31/comments`,
+        answer: ({ body }) => {
+          comments.push({ ...(body as { body: string }), ...BY_APP });
+          return { status: 201, body: {} };
+        },
+      },
+    ]);
+    const actions = new LiveActions(github, { guard: appsOwn() });
+    await actions.comment(REPO, 31, 'Released behind its flag.');
+    await actions.comment(REPO, 31, 'Released behind its flag.');
+    expect(calls(sent).filter((s) => s.method === 'POST')).toHaveLength(1);
+  });
+
+  it('reads every page of an issue’s comments and events, so what it said past the first hundred is not said again', async () => {
+    const filler = Array.from({ length: 100 }, (_, i) => ({ body: `Comment ${i}.`, user: { id: 4242 } }));
+    const pages = [filler, [{ body: 'Verified in production.', ...BY_APP }]];
+    const page = (path: string) => Number(new URLSearchParams(path.split('?')[1]).get('page'));
+    const events = [
+      Array.from({ length: 100 }, () => ({ event: 'labeled', created_at: '2026-10-10T10:00:00Z' })),
+      [{ event: 'reopened', created_at: '2026-10-11T10:00:00Z' }],
+    ];
+    const { github, sent } = client([
+      { method: 'GET', path: `/repos/${REPO}/issues/16`, answer: () => ({ body: { ...BY_APP, state: 'open' } }) },
+      {
+        method: 'GET',
+        path: /^\/repos\/.+\/issues\/16\/events/,
+        answer: ({ path }) => ({ body: events[page(path) - 1] ?? [] }),
+      },
+      {
+        method: 'GET',
+        path: /^\/repos\/.+\/issues\/16\/comments/,
+        answer: ({ path }) => ({ body: pages[page(path) - 1] ?? [] }),
+      },
+      { method: 'POST', path: `/repos/${REPO}/issues/16/comments`, answer: () => ({ status: 201, body: {} }) },
+      { method: 'PATCH', path: `/repos/${REPO}/issues/16`, answer: () => ({ body: {} }) },
+    ]);
+    const actions = new LiveActions(github, { guard: appsOwn() });
+    await actions.comment(REPO, 16, 'Verified in production.');
+    await actions.closeIssue(REPO, 16, 'completed', 'Verified in production.');
+    expect(calls(sent).filter((s) => s.method === 'POST')).toEqual([]);
+    // The reopening on the events' second page is the time its comments are read from.
+    expect(sent.some((s) => s.path.includes('since=2026-10-11T10%3A00%3A00Z'))).toBe(true);
+  });
+
+  it('fails rather than take the first pages of a list for the whole of it', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ body: `Comment ${i}.`, user: { id: 4242 } }));
+    const { github, sent } = client([
+      { method: 'GET', path: `/repos/${REPO}/issues/31`, answer: () => ({ body: BY_APP }) },
+      { method: 'GET', path: /^\/repos\/.+\/issues\/31\/comments/, answer: () => ({ body: full }) },
+      { method: 'POST', path: `/repos/${REPO}/issues/31/comments`, answer: () => ({ status: 201, body: {} }) },
+    ]);
+    const actions = new LiveActions(github, { guard: appsOwn() });
+    await expect(actions.comment(REPO, 31, 'Released behind its flag.')).rejects.toThrow(/not read whole/);
+    expect(calls(sent).filter((s) => s.method === 'POST')).toEqual([]);
+  });
+
   it('says each thing once: asked again, after a failure or a restart, it says nothing more', async () => {
     // As GitHub may keep one: with \r\n for its line endings.
     const comments: { body: string }[] = [{ body: 'Something said before.\r\nOn two lines.' }];
     let failPost = 1;
     const { github, sent } = client([
       { method: 'GET', path: `/repos/${REPO}/issues/31`, answer: () => ({ body: BY_APP }) },
-      { method: 'GET', path: /^\/repos\/.+\/issues\/31\/comments/, answer: () => ({ body: comments }) },
+      {
+        method: 'GET',
+        path: /^\/repos\/.+\/issues\/31\/comments/,
+        answer: () => ({ body: comments.map((made) => ({ ...made, ...BY_APP })) }),
+      },
       {
         method: 'POST',
         path: `/repos/${REPO}/issues/31/comments`,

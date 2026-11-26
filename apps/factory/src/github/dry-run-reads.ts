@@ -269,7 +269,14 @@ export class DryRunReads implements Reads {
     const mergesAt = new Date(at.getTime() + this.#times.mergeAfterMs);
     const checks = await this.#passing(repo, commit, at, mergesAt);
     if (state.merged) {
-      const removed = { at: mergesAt.toISOString(), by: 'github-merge-queue', reason: 'merged', commit, failures: 0 };
+      const removed = {
+        at: mergesAt.toISOString(),
+        by: 'github-merge-queue',
+        reason: 'merged',
+        commit,
+        failures: 0,
+        atHead: true,
+      };
       return { ...base, queued: null, removed, checks };
     }
     if (state.state === 'closed') {
@@ -277,7 +284,7 @@ export class DryRunReads implements Reads {
       return {
         ...base,
         queued: null,
-        removed: { at: closed, by: APP_LOGIN, reason: 'dequeued', commit, failures: 0 },
+        removed: { at: closed, by: APP_LOGIN, reason: 'dequeued', commit, failures: 0, atHead: true },
         checks,
       };
     }

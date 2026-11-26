@@ -7,7 +7,7 @@
  * gate passes as a move (`move`, or `major` for one across a major that clears no Critical) when it is exactly the
  * scan's moves, which the gate makes itself. These watches add each to the queue, so a pin the gate passed reaches `main` with nobody's hand
  * on it: the deploy pin at every autonomy level, as it runs only what Martin already merged, and a move only when the
- * level in force allows its rule and auto-merge is on (`enqueues`, `policy/line.ts`, read as `level.ts` reads them), as the line's are. The app's deploy pull request is the line's, within
+ * level in force allows its rule and auto-merge is on (`enqueues`, `policy/line.ts`, read as `level.ts` reads them), as the line's are, and the line is not stopped. The app's deploy pull request is the line's, within
  * Martin's autonomy level and auto-merge (`line/deploy.ts`); a pull request the gate held, even one Martin then
  * approved, a release, and anything else, is his.
  *
@@ -24,7 +24,8 @@
  *   as `guardPinBranch` has it) into main, not a draft, labelled `pin` by the App and by nobody else, every time it was
  *   labelled, and none Martin holds on its branch, the gate's
  *   rule is `move` or `major`, and the autonomy level in force, read just before the enqueue, queues that rule
- *   with auto-merge on (Supervised, and off, when they cannot be read). The gate trusts no branch, label or title; the queue reads
+ *   with auto-merge on (Supervised, and off, when they cannot be read), and the line is not stopped (stopped, when
+ *   that cannot be read): a stopped line queues as Supervised does. The gate trusts no branch, label or title; the queue reads
  *   them so that nothing but the pin watch's own pull request rides the rule, and the verdict is what passes it;
  * - the review App's own `review` check on that head concluded with a verdict that passes it by that rule at that head
  *   (`merging.ts`): no other rule, and never a hold, a pending one, Martin's approval, or one for another head;
@@ -49,7 +50,11 @@
  * GitHub's record of the pull request so a restart does not start the count again, the worker stops and says so in a
  * comment on the pull request, naming the checks that failed last. That head is then Martin's; a new head, as when the
  * next scan moves the pin further, starts again. A head that left the queue any other way (Martin took it out, GitHub
- * found a conflict) is not added again; a worker that restarts may, once, and the queue tests it again.
+ * found a conflict, the queue was cleared) is not added again, by GitHub's own record of the removal, its reason and
+ * who made it, so a worker that restarts does not add it either: only `failed_checks` goes in again. The worker says
+ * so once in a comment on its own pull request, and a new head starts again. A removal is of the head when the pull
+ * request last went into the queue after that head was committed (`MergeQueue.removed.atHead`): the queue dropping
+ * a pull request because its branch moved is a removal of the head before, and holds nothing.
  *
  * A required check can fail on the head itself for the same reasons, before the queue sees it, and a hung job is
  * cancelled by its own time limit and fails. Once the gate passed the head and every required check there finished, a
@@ -75,11 +80,12 @@
  *   No watch of the worker's wrote this head, so there is no positive check to make first: the gate's verdict at the
  *   very head, which the enqueue then names (`expectedHeadOid`), is the proof of what it is;
  * - the autonomy level in force, read just before the enqueue, queues an exact pin with auto-merge on (Guarded and
- *   Lights-out; Supervised, and off, when they cannot be read): a new commit of the factory's workflows is new change
- *   to the app, as the local deploy pin is not;
+ *   Lights-out; Supervised, and off, when they cannot be read), and the line is not stopped: a new commit of the
+ *   factory's workflows is new change to the app, as the local deploy pin is not;
  * - its checks, the conflict and the queue, as for the others. The worker writes nothing to Dependabot's branch and
  *   says nothing on its pull request, so a required check that failed on the head is not run again from a new head,
- *   and a head out of tries is said in the log alone: either waits for Martin, or for Dependabot's next rebase.
+ *   and a head out of tries, or out of the queue for good, is said in the log alone: either waits for Martin, or for
+ *   Dependabot's next rebase.
  *
  * In a dry run this watch does nothing: the pull request is one GitHub has, and a dry run adds nothing there.
  */
@@ -151,6 +157,7 @@ export type QueueWait =
   | { waits: 'not-a-workflow-pin'; why: string }
   | { waits: 'verdict'; why: string }
   | { waits: 'checks'; why: string }
+  | { waits: 'stopped'; why: string }
   | { waits: 'level'; why: string }
   | { waits: 'auto-merge'; why: string }
   | { waits: 'failed'; why: string }
@@ -274,12 +281,13 @@ const LEVEL_NAME: Record<Autonomy, string> = {
 };
 
 /**
- * Whether the autonomy level and auto-merge in force let the worker queue a pull request the gate passed by a rule
- * (`enqueues`, as the line asks it): the level's wait first, then the switch's.
+ * Whether the line's stop, the autonomy level and auto-merge in force let the worker queue a pull request the gate
+ * passed by a rule (`enqueues`, as the line asks it): the stop's wait first, then the level's, then the switch's.
  */
 export function levelWait(merging: Merging, rule: QueueRule): QueueWait | undefined {
   const waits = mergingWait(merging, rule);
   const a = /^[aeiou]/.test(rule) ? 'an' : 'a';
+  if (waits === 'stopped') return { waits, why: `the line is stopped, so ${a} ${rule} waits for Martin` };
   if (waits === 'level') return { waits, why: `at ${LEVEL_NAME[merging.autonomy]} ${a} ${rule} waits for Martin` };
   if (waits === 'auto-merge') return { waits, why: `with auto-merge off ${a} ${rule} waits for Martin` };
   return undefined;
@@ -346,6 +354,26 @@ export function spentComment(head: string, failed: readonly string[]): string {
 /** The mark of the comment that says a head is out of tries, by the head it names. */
 const SPENT_MARK = /<!-- factory: out of tries ([0-9a-f]{40}) -->/;
 
+/** A removal's reason or actor as a comment says it: GitHub's own word, and nothing that could end the comment. */
+const word = (text: string | null) => (text ?? '').replace(/[^A-Za-z0-9_ [\]-]/g, '').slice(0, 60) || 'unknown';
+
+/**
+ * What the worker says on its own pull request whose head left the merge queue for any reason but a failed check:
+ * who took it out and GitHub's reason, and that the head stays out.
+ */
+export function removedComment(head: string, removed: { by: string | null; reason: string | null }): string {
+  return (
+    `This pull request left the merge queue at ${head.slice(0, 7)}, taken out by \`${word(removed.by)}\` ` +
+    `(GitHub's reason: \`${word(removed.reason).toLowerCase()}\`). The factory adds a head again only when a required ` +
+    "check failed on the queue's commit, so it adds this head no more: it is Martin's to add to the queue again or " +
+    'close. A new head starts again.\n\n' +
+    `<!-- factory: out of the queue ${head} -->`
+  );
+}
+
+/** The mark of the comment that says a head left the queue for good, by the head it names. */
+const REMOVED_MARK = /<!-- factory: out of the queue ([0-9a-f]{40}) -->/;
+
 /**
  * How many runs of its checks one commit of a watch's gets, its first and each time it is written again
  * (`commitAgain`), before the queue stops writing it again: a required check that failed or hung on the App's own move
@@ -368,18 +396,25 @@ export function spentRunsComment(head: string, failed: readonly string[]): strin
 /** The mark of the comment that says a head's checks are out of tries, by the head it names. */
 const SPENT_RUNS_MARK = /<!-- factory: checks out of tries ([0-9a-f]{40}) -->/;
 
+/** How many pages of a hundred comments are read of a pull request before the read fails as not whole. */
+const COMMENT_PAGES = 10;
+
 /**
- * Whether the App has already said on the pull request what a mark says of this head, by the mark its comment
- * carries: read from GitHub, so a worker that restarts says it no more than once, whichever checks failed last when
- * it reads. One page, as the actions read one: a pin pull request has a handful of comments.
+ * Whether the App has already said on the pull request what a mark says of this head, by the mark its own comment
+ * carries (the App's by its id, `APP_USER`): read from GitHub, so a worker that restarts says it no more than once,
+ * whichever checks failed last when it reads. Every page, oldest first, up to `COMMENT_PAGES`.
  */
 async function spentSaid(github: GitHub, repo: string, number: number, head: string, mark = SPENT_MARK) {
-  const comments = await github.read(
-    repo,
-    `/repos/${repo}/issues/${number}/comments?per_page=100`,
-    z.array(z.object({ body: z.string().nullable(), user: z.object({ login: z.string() }).nullable() })),
-  );
-  return comments.some((made) => made.user?.login === APP_LOGIN && mark.exec(made.body ?? '')?.[1] === head);
+  for (let page = 1; page <= COMMENT_PAGES; page++) {
+    const comments = await github.read(
+      repo,
+      `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`,
+      z.array(z.object({ body: z.string().nullable(), user: z.object({ id: z.number().int() }).nullable() })),
+    );
+    if (comments.some((made) => made.user?.id === APP_USER && mark.exec(made.body ?? '')?.[1] === head)) return true;
+    if (comments.length < 100) return false;
+  }
+  throw new GitHubError('malformed', `#${number} in ${repo} has more comments than the queue reads.`);
 }
 
 /** A commit's message, as git's data API gives it. */
@@ -473,7 +508,7 @@ export interface DeployQueueDependencies {
   log: Logger;
 }
 
-/** The pin queue's: the queue's, and the level and auto-merge in force, which decide which moves it adds (`level.ts`). */
+/** The pin queue's: the queue's, and the line's stop, the level and auto-merge in force, which decide which moves it adds (`level.ts`). */
 export interface PinQueueDependencies extends DeployQueueDependencies {
   level: LevelReader;
 }
@@ -515,7 +550,7 @@ export function headWait(
 interface Attempt {
   at: string;
   failures: number;
-  /** Once this worker added it, or found it in the queue: out of the queue again, only failed checks add it again. */
+  /** Once this worker added it, or found it in the queue: out of the queue with no removal read, it is not added again. */
   queued: boolean;
   /** Once it is refused, out of tries, or out of the queue for good. */
   done: boolean;
@@ -620,12 +655,26 @@ async function queueOne(
     );
     return;
   }
+  // Out of the queue at this head for anything else, by GitHub's record of it (Martin took it out, the queue found a
+  // conflict, the queue was cleared), it stays out, as a restart reads the same record. Said before the head is left,
+  // once across restarts, as above.
+  if (out?.atHead && !failed) {
+    if (actions.comment && !(await spentSaid(github, repo, number, head, REMOVED_MARK)))
+      await actions.comment(repo, number, removedComment(head, out));
+    attempt.done = true;
+    log.warn(
+      { repo, number, head, reason: out.reason, by: out.by },
+      `the ${kind} pull request left the merge queue for a reason other than failed checks: it waits for Martin`,
+    );
+    return;
+  }
+  // Added by this worker and gone from the queue with no removal read: not added again.
   if (attempt.queued && !failed) {
     attempt.done = true;
     return;
   }
-  // The level and auto-merge, read now, just before the enqueue, so what Martin changed holds from this pass: none
-  // read is Supervised, with auto-merge off (`level.ts`).
+  // The line's stop, the level and auto-merge, read now, just before the enqueue, so what Martin changed holds from
+  // this pass: none read is stopped, at Supervised, with auto-merge off (`level.ts`).
   if (level) {
     const allowed = levelWait(await level(), rule);
     if (allowed) return state.wait(number, head, allowed);
@@ -687,7 +736,7 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
     if (attempt.done) return;
     const notOne = deployPullWait(target, pull) ?? headWait(deps.heads, repo, pull, 'not-a-deploy');
     if (notOne) return state.wait(pull.number, pull.head.sha, notOne);
-    // The deploy pin runs only what Martin already merged: neither the level nor auto-merge governs it.
+    // The deploy pin runs only what Martin already merged: neither the level, auto-merge nor the line's stop governs it.
     await queueOne(deps, state, repo, 'deploy', pull, ['exact-pin'], attempt);
   };
 }
@@ -716,7 +765,11 @@ export const pinHeadsOf =
     return refs.filter((ref) => pinBranch(ref.ref.replace(/^refs\/heads\//, ''))).map((ref) => ref.object.sha);
   };
 
-/** Whether anyone but the App ever took the `pin` label off a pull request, by its events: Martin's hold of it. */
+/**
+ * Whether anyone but the App ever took the `pin` label off a pull request, by its events: Martin's hold of it. Anyone's
+ * hand holds, not his alone: a hold only ever keeps a move for Martin, so it fails closed, and what passes a pull
+ * request is the gate's verdict, which has its own rule for who may.
+ */
 export function heldByLabel(events: LabelEvents): boolean {
   return events.some((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER);
 }

@@ -137,7 +137,7 @@ export function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
         },
       },
       heads,
-      level: async () => ({ autonomy: 'guarded', autoMerge: true }) as const,
+      level: async () => ({ autonomy: 'guarded', autoMerge: true, stopped: false }) as const,
       log: quiet,
     },
     FACTORY,

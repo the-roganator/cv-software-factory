@@ -1,6 +1,6 @@
 /**
  * Applies the public repositories' GitHub settings, so they are reviewable like code and reproducible. Both get
- * the same ruleset, review environment and security settings; only the checks each requires differ. Safe to run again.
+ * the same rulesets, review environment and security settings; only the checks each requires differ. Safe to run again.
  *
  *     node scripts/github-settings.ts                  # every repository below
  *     node scripts/github-settings.ts <owner/repo>     # one of them
@@ -16,8 +16,9 @@
  * here, and names any ruleset it does not know, such as one added in the browser. It exits 1 if anything it can see differs.
  * drift-check.yml runs it weekly. GitHub shows who may bypass a ruleset only to a reader who may change it: with a
  * token that cannot, such as the drift check App's, `--check` warns that it did not compare that list, and compares
- * the rest; with an admin's `gh`, it compares that too, and fails if anyone may bypass. `--see-bypass` fails on what
- * it could not see as on drift: `make guardrails` checks so with Martin's `gh`, so its proof cannot pass unread.
+ * the rest; with an admin's `gh`, it compares that too, and fails if anyone may bypass but those a ruleset here names
+ * (`BRANCH_WRITERS`, on `branches` alone). `--see-bypass` fails on what it could not see as on drift: `make guardrails`
+ * checks so with Martin's `gh`, so its proof cannot pass unread.
  *
  * It also reads each repository's record of the rulesets' verdicts on pushes (rule suites) for the last week, and
  * fails on any push that bypassed a ruleset: anyone the list once named, or who bypassed before it named nobody,
@@ -157,7 +158,7 @@ export const APPS = {
 } satisfies Record<string, { slug: string; id?: number; clientId?: string; holder: string; permissions: Permissions }>;
 
 /**
- * The one ruleset on main (ADR 0014), which nobody bypasses: every change is a pull request, squash-merged, signed
+ * The ruleset on main (ADR 0014), which nobody bypasses: every change is a pull request, squash-merged, signed
  * and linear, through the merge queue, once its required checks pass, `review` among them, and CodeQL has found
  * nothing it holds a merge for (`CODE_SCANNING`). GitHub's own review rule is not here: the queue admits only a pull
  * request that meets every rule, so review is a check it can wait for.
@@ -203,6 +204,79 @@ export const rules = (requiredChecks: string[]) => ({
     { type: 'merge_queue', parameters: MERGE_QUEUE },
   ],
 });
+
+/** Martin's GitHub account, by its id, as `scripts/review-routing.ts` has it (a test holds the two together). */
+export const MARTIN = 6206459;
+
+/** Dependabot, as the GitHub App that pushes its branches. */
+export const DEPENDABOT = 29110;
+
+/**
+ * The branches the `branches` ruleset leaves alone, as ruleset patterns (`*` stops at a `/`, `**` does not): the
+ * factory's App's, which it writes with its key (everything under `factory/`: a fix's branch, the pin watch's
+ * `factory/pin/…` and `factory/pin-next/…`, the deploy watch's `factory/deploy/local`, the smoke run's and the red
+ * team's; each repository's deploy branch; release-please's, which runs with the App's token), the merge queue's own,
+ * which GitHub makes, and main, which the `main` ruleset holds. A test holds these to the names the code writes.
+ *
+ * Whoever holds the App's key can therefore still write the App's own branches, and only those: what is on one is
+ * judged by the review gate as the App's change, never passed as Martin's.
+ */
+export const AUTOMATION_BRANCHES = [
+  '~DEFAULT_BRANCH',
+  'refs/heads/factory/**/*',
+  'refs/heads/deploy/local',
+  'refs/heads/release-please--*',
+  'refs/heads/gh-readonly-queue/**/*',
+];
+
+/**
+ * Who writes a branch that is not the automation's: Martin, and Dependabot, whose `dependabot/…` branches are so
+ * its own. Each is exempt, so the ruleset is not run for their pushes and none is recorded as a bypass: any bypass
+ * the record of pushes shows is still someone else's, and still drift.
+ */
+export const BRANCH_WRITERS = [
+  { actor_id: DEPENDABOT, actor_type: 'Integration', bypass_mode: 'exempt' },
+  { actor_id: MARTIN, actor_type: 'User', bypass_mode: 'exempt' },
+];
+
+/**
+ * The ruleset on every other branch: only Martin and Dependabot create, move or delete one. The review gate passes a
+ * pull request Martin opened from a branch of the repository as his own (`martin-opened`), and the factory's App may
+ * write contents, so without this whoever held the App's key could add a commit to a branch of his and have it merge
+ * as his. A session at Martin's `gh` pushes as him.
+ */
+export const branches = () => ({
+  name: 'branches',
+  target: 'branch',
+  enforcement: 'active',
+  conditions: { ref_name: { include: ['~ALL'], exclude: AUTOMATION_BRANCHES } },
+  bypass_actors: BRANCH_WRITERS,
+  rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }],
+});
+
+/**
+ * The ruleset on a tag named `main`, which nobody bypasses: none is made, moved or deleted. The scan's runs are
+ * found by the name of the ref they ran on (`apps/factory/src/vulnerabilities/state.ts`), and a workflow run on a tag
+ * `main` would carry the branch's name. Every other tag, a release's `v…` among them, is left alone.
+ */
+export const tagMain = () => ({
+  name: 'tag main',
+  target: 'tag',
+  enforcement: 'active',
+  conditions: { ref_name: { include: [`refs/tags/${KEY_BRANCH}`], exclude: [] } },
+  bypass_actors: [],
+  rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }],
+});
+
+/** A ruleset as this script makes one. */
+export interface Ruleset {
+  name: string;
+  bypass_actors: { actor_id: number; actor_type: string; bypass_mode: string }[];
+  rules: { type: string }[];
+}
+
+/** Every ruleset a repository has: `--check` names any other as unknown. */
+export const rulesets = (requiredChecks: string[]): Ruleset[] => [rules(requiredChecks), branches(), tagMain()];
 
 /**
  * Code scanning as a gate: a pull request merges only once CodeQL has analysed it, and not while its analysis finds a
@@ -315,7 +389,7 @@ export interface Findings {
 
 /** Compares a repository's live rulesets, environments and fork-run approval with these, and says what differs. */
 function check(requiredChecks: string[]): Findings {
-  const wanted = [rules(requiredChecks)];
+  const wanted = rulesets(requiredChecks);
   const live = JSON.parse(gh('GET', '/rulesets?per_page=100')) as { id: number; name: string }[];
   const problems = live
     .filter((r) => !wanted.some((w) => w.name === r.name))
@@ -345,15 +419,20 @@ function check(requiredChecks: string[]): Findings {
 /**
  * What differs between a live ruleset and this script's. GitHub shows who may bypass a ruleset only to those who may
  * change it, so a reader that cannot change it gets no `bypass_actors` key at all. Whether the key is there decides,
- * not whose token read it: with it, the list is compared like the rest, and anyone it names is drift; without it, the
- * list is unseen, never read as nobody, and the rest is still compared.
+ * not whose token read it: with it, the list is compared like the rest, and anyone it names whom this script's does
+ * not is drift, as is anyone missing from it; without it, the list is unseen, never read as nobody, and the rest is
+ * still compared.
  */
-export function rulesetProblems(live: unknown, wanted: ReturnType<typeof rules>): Findings {
+export function rulesetProblems(live: unknown, wanted: Ruleset): Findings {
   const seesBypass = !!live && typeof live === 'object' && 'bypass_actors' in live;
-  const { bypass_actors: _, ...rest } = wanted;
+  const { bypass_actors: may, ...rest } = wanted;
   const problems: string[] = [];
-  if (seesBypass && !matches((live as { bypass_actors: unknown }).bypass_actors, wanted.bypass_actors)) {
-    problems.push(`ruleset "${wanted.name}" lets someone bypass it`);
+  if (seesBypass && !matches(byActor((live as { bypass_actors: unknown }).bypass_actors), byActor(may))) {
+    problems.push(
+      may.length
+        ? `ruleset "${wanted.name}" is not bypassed by exactly those this script names`
+        : `ruleset "${wanted.name}" lets someone bypass it`,
+    );
   }
   if (!matches(inOrderOf(live, rest.rules), rest)) problems.push(`ruleset "${wanted.name}" differs from this script's`);
   const unseen = seesBypass
@@ -362,6 +441,16 @@ export function rulesetProblems(live: unknown, wanted: ReturnType<typeof rules>)
         `ruleset "${wanted.name}": this token cannot see who may bypass it, which GitHub shows only to those who may change it, so that was not compared; an admin's \`--check\` compares it, as \`make guardrails\` does`,
       ];
   return { problems, unseen };
+}
+
+/** A list of bypass actors in one order, by kind and id, so GitHub's own order is no drift. */
+function byActor(actors: unknown): unknown {
+  if (!Array.isArray(actors)) return actors;
+  const key = (a: unknown) => {
+    const { actor_type: type, actor_id: id } = (a ?? {}) as { actor_type?: unknown; actor_id?: unknown };
+    return `${String(type)} ${String(id)}`;
+  };
+  return [...actors].sort((a, b) => key(a).localeCompare(key(b)));
 }
 
 /**
@@ -653,6 +742,10 @@ function apply(name: string, requiredChecks: string[]): void {
     `ruleset "main": pull requests only, linear and signed, through the merge queue, held for ${CODE_SCANNING.tool}'s alerts; requires ${[...requiredChecks, REVIEW_CHECK].join('; ')}`,
     () => apply(rules(requiredChecks)),
   );
+  step('ruleset "branches": only Martin and Dependabot write a branch that is not the automation\'s', () =>
+    apply(branches()),
+  );
+  step(`ruleset "tag main": no tag is named ${KEY_BRANCH}`, () => apply(tagMain()));
   for (const name of RETIRED) {
     const id = existing.find((r) => r.name === name)?.id;
     if (id) step(`ruleset "${name}" deleted`, () => gh('DELETE', `/rulesets/${id}`));

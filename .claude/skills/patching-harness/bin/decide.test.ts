@@ -22,6 +22,7 @@ import {
   leftAloneFault,
   lockfileKey,
   majorNextFault,
+  majorNotFirst,
   moveFits,
   newerFault,
   notListed,
@@ -1224,5 +1225,21 @@ describe('a move within the major, and then the major', () => {
     expect(
       majorNextFault(first, [{ id: 2, moves: [{ ...major, major: false, to: 'chart prometheus 29.50.0' }] }]),
     ).toMatch(/which is no major/);
+  });
+});
+
+describe('a test of a pin’s major, on a scan that lists a move within the major first', () => {
+  it('has a verdict where the scan lists the major: every fix of the pin is one', () => {
+    expect(majorNotFirst({ name: 'loki', from: '18.13.7', to: 'chart loki 21.6.0 (a major)', major: true })).toBe(
+      undefined,
+    );
+    // No move of the pin at all is another fault, and the verdict's to say.
+    expect(majorNotFirst(undefined)).toBeUndefined();
+  });
+
+  it('has none where a release within the major clears some of its findings: that move comes first, and merges', () => {
+    const why = majorNotFirst({ name: 'grafana', from: '13.2.7', to: 'chart grafana 13.7.0', major: false });
+    expect(why).toContain('the scan lists grafana from 13.2.7 to chart grafana 13.7.0, a move within its major');
+    expect(why).toContain('no major of grafana to judge until that has merged');
   });
 });

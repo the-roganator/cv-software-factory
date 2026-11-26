@@ -249,6 +249,10 @@ export const TESTS: Test[] = [
     deployed: { kind: 'chart', apps: ['otel-collector', 'pod-logs'] },
   },
   {
+    // A major is the pin's first move only where no release within its major clears any of its findings: where one
+    // does, the scan lists that move first, and 4a and 4b are dropped from the run with no verdict (decide.ts's
+    // `majorNotFirst`), as the major lists only once that has merged. loki 18.13.7 has 18.17.1 behind it, and grafana
+    // 13.2.7 has 13.7.0: which comes first is the scan's to say, from each candidate's own report.
     id: '4a',
     title: 'loki chart, a major',
     repo: FACTORY,

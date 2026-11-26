@@ -55,6 +55,7 @@ import {
   leftAloneFault,
   type MovesFile,
   majorNextFault,
+  majorNotFirst,
   moveFits,
   N10_RULESETS,
   newerFault,
@@ -2464,6 +2465,15 @@ function run(state: State) {
       `scan ${state.scan1.id} lists no move of ${absent.join(', ')}${said.length ? `; it warns: ${said.join(' | ')}` : ', and warns of none of them by name'}`,
     );
   }
+  // A test of a pin's major whose scan lists a move within the major first has no major to judge: it is dropped,
+  // with why, and the run's other tests go on. The move within the major still opens and merges, as test 2's does.
+  for (const t of tests.filter((t) => t.major && !t.routine && !t.mustNot && !state.dropped?.[t.id])) {
+    const why = majorNotFirst((state.scan1.moves ?? []).find((m) => t.moves.includes(m.name) && moveFits(m, t)));
+    if (!why) continue;
+    state.dropped = { ...state.dropped, [t.id]: why };
+    say(state, `pre-flight, no verdict for ${t.id}, which is dropped from this run: ${why}`);
+    save(state);
+  }
   if (!state.pods0) {
     say(state, `the clock starts at scan ${state.scan1.id}, ${state.scan1.createdAt}`);
     state.pods0 = podRestarts();
@@ -2884,7 +2894,8 @@ function run(state: State) {
     // A failure nothing left can undo ends that test's wait too: its verdict is read after the watch, as every one is.
     for (const t of tests) {
       const seen = state.seen[t.id];
-      if (!seen || seen.certain || t.checksRun?.spent || t.unread || t.duplicate || t.made) continue;
+      if (!seen || seen.certain || t.checksRun?.spent || t.unread || t.duplicate || t.made || state.dropped?.[t.id])
+        continue;
       const tl = seen.timeline;
       seen.certain = certainFail({
         mustHold: Boolean(mustHold(t)),
@@ -2910,7 +2921,15 @@ function run(state: State) {
     const refusedPush = (t: Test) => Boolean(state.forged?.[t.id]?.refused || state.forged?.[t.id]?.landed);
     const all =
       refused ||
-      tests.every((t) => done(t) || holds(t) || settled(t) || refusedPush(t) || Boolean(state.seen[t.id]?.certain));
+      tests.every(
+        (t) =>
+          Boolean(state.dropped?.[t.id]) ||
+          done(t) ||
+          holds(t) ||
+          settled(t) ||
+          refusedPush(t) ||
+          Boolean(state.seen[t.id]?.certain),
+      );
     const stopped =
       Boolean(
         state.line?.held || state.line?.closed || state.line?.stalled || state.line?.strays.length || state.then?.held,

@@ -540,6 +540,128 @@ describe('the scan’s moves', () => {
     }
   });
 
+  /**
+   * The routine day with two pins that wait: an image's fix held for its content's day, with the one finding the
+   * state names there, and a routine update of another image, which the state recorded and gave no move.
+   */
+  const waitingDay = () => {
+    const day = routineDay();
+    const [first] = day.state.findings;
+    if (!first) throw new Error('the fixture has no finding');
+    const { move: _, fix: __, ...open } = first;
+    day.state.findings.push({ ...open, advisory: 'CVE-2099-40001', package: 'libwaits', severity: 'HIGH', waiting: 1 });
+    day.state.routine.push({
+      name: 'ghcr.io/example/behind',
+      from: '2.0.0',
+      to: `image 2.1.0@sha256:${'4'.repeat(64)}`,
+      pins: [{ file: 'deploy/behind/Dockerfile', line: 1 }],
+      seen: '2026-11-07T06:15:00Z',
+    });
+    day.moves.waiting = [
+      {
+        name: 'ghcr.io/example/held',
+        pins: [{ file: 'deploy/held/Dockerfile', line: 1 }],
+        from: '1.0.0',
+        lockfile: false,
+        why: 'content',
+        to: `image 1.0.1@sha256:${'3'.repeat(64)}`,
+        until: '2026-11-11T04:15:00Z',
+        clears: { ...none, HIGH: 1 },
+        deadline: '2026-11-18T04:15:00Z',
+      },
+      {
+        name: 'ghcr.io/example/behind',
+        pins: [{ file: 'deploy/behind/Dockerfile', line: 1 }],
+        from: '2.0.0',
+        lockfile: false,
+        why: 'content',
+        to: `image 2.1.0@sha256:${'4'.repeat(64)}`,
+        until: '2026-11-11T04:15:00Z',
+        clears: none,
+        routine: true,
+      },
+    ];
+    return day;
+  };
+
+  it('give each pin that waits its findings from the state, and say nothing of them for a scan that does not', async () => {
+    // A scan from before it said what waits: no list, which is not an empty one, and its moves read as they did.
+    const before = await read(routineDay());
+    expect(before).not.toHaveProperty('waiting');
+    const day = waitingDay();
+    const said = await read(day);
+    expect(said.moves).toEqual(before.moves);
+    expect(said.file).toEqual(before.file);
+    expect(said.waiting).toEqual([
+      {
+        ...day.moves.waiting[0],
+        index: 1,
+        findings: [{ advisory: 'CVE-2099-40001', package: 'libwaits', severity: 'HIGH' }],
+      },
+      { ...day.moves.waiting[1], index: 2, findings: [] },
+    ]);
+    // Nothing waiting is said so: an empty list, and a pin a refusal names is read with no target.
+    const empty = routineDay();
+    empty.moves.waiting = [];
+    expect((await read(empty)).waiting).toEqual([]);
+    const refused = waitingDay();
+    const { to: _, until: __, ...entry } = refused.moves.waiting[0];
+    refused.moves.waiting[0] = { ...entry, why: 'no-better' };
+    expect((await read(refused)).waiting?.[0]).toMatchObject({ why: 'no-better', findings: [{ package: 'libwaits' }] });
+  });
+
+  it('fail on a list of what waits that the sealed state does not bear out, or that is not its shape', async () => {
+    const wrong = (change: (day: ReturnType<typeof waitingDay>) => void) => {
+      const day = waitingDay();
+      change(day);
+      return day;
+    };
+    // A finding the artifact counts as waiting and the state does not name, and one the state names past the list.
+    await fails(
+      wrong((day) => day.state.findings.pop()),
+      /the pin that waits at place 1 counts 1 results and the state gives it 0/,
+    );
+    await fails(
+      wrong((day) => day.moves.waiting.shift()),
+      /the pin that waits at place 1, a routine update's, is no release the state recorded as waiting|counts 0 results and the state gives it 1/,
+    );
+    await fails(
+      wrong((day) => {
+        (day.state.findings.at(-1) as { waiting: number }).waiting = 3;
+      }),
+      /the state's finding \d+ waits at place 3 of 2/,
+    );
+    // A state that names a pin as waiting, under a file that lists none: the artifact has lost its list.
+    await fails(
+      wrong((day) => {
+        delete day.moves.waiting;
+      }),
+      /the state names a pin that waits and moves\.json lists none/,
+    );
+    // A routine update's wait the state has no record of, or has listed as a move.
+    await fails(
+      wrong((day) => day.state.routine.pop()),
+      /place 2, a routine update's, is no release the state recorded as waiting/,
+    );
+    // A pin listed twice for one reason.
+    await fails(
+      wrong((day) => day.moves.waiting.push(day.moves.waiting[1])),
+      /the pin that waits at place 3 is listed twice/,
+    );
+    for (const bad of [
+      (entry: Record<string, unknown>) => Object.assign(entry, { why: 'later' }),
+      (entry: Record<string, unknown>) => Object.assign(entry, { lockfile: true }),
+      (entry: Record<string, unknown>) => Object.assign(entry, { results: ['a'.repeat(64)] }),
+      (entry: Record<string, unknown>) => Object.assign(entry, { to: 'somewhere' }),
+      (entry: Record<string, unknown>) => delete entry.until,
+      (entry: Record<string, unknown>) => Object.assign(entry, { clears: none }),
+    ])
+      await fails(
+        wrong((day) => bad(day.moves.waiting[0])),
+        /not the shape this worker reads \(waiting\.0/,
+      );
+  });
+
   it('fail on a routine lockfile move the state has no record of, or one recorded outside the files it names', async () => {
     await fails(
       recorded((routine) => routine.pop()),

@@ -1055,19 +1055,29 @@ export function revertedVerdict(o: {
 
 // ── Content that waits a day ────────────────────────────────────────────────────────────────────────────────────────
 
-/** The scan's document, `moves.json`: its moves, and, should it name them, the moves that wait (`WAITING_KEY`). */
+/** The scan's document, `moves.json`: its moves, and the pins it says wait (`WAITING_KEY`). */
 export interface MovesFile {
   moves?: readonly { name: string; from?: string; to?: string; major?: boolean }[];
   [key: string]: unknown;
 }
-/** The key `moves.json` would list waiting moves under, by name; the scan lists none today, and a waiting move is absent. */
+/**
+ * The key `moves.json` lists what waits under (moves.ts's `MovesFile.waiting`): each pin with somewhere to go and no
+ * move, by its name, with why. A scan from before it said so has no such key, and does not say.
+ */
 export const WAITING_KEY = 'waiting';
-/** How a scan shows a move of a name: listed, said to wait, or absent, which is how a waiting move reads. */
-export function shownAs(file: MovesFile | undefined, name: string): 'listed' | 'waiting' | 'absent' {
+/** Why a pin waits for its content's day, as an entry under `WAITING_KEY` says it (moves.ts's `WaitingWhy`). */
+export const WAITS_FOR_CONTENT = 'content';
+/**
+ * How a scan shows a move of a name: `listed`; `waiting`, held for its content's day; `absent`, neither, by a scan
+ * that says what waits (refused as no better than the pin among them); or `unsaid`, not listed by a scan that does
+ * not say what waits, which is no word that it does.
+ */
+export type Shown = 'listed' | 'waiting' | 'absent' | 'unsaid';
+export function shownAs(file: MovesFile | undefined, name: string): Shown {
   if (file?.moves?.some((move) => move.name === name)) return 'listed';
   const waiting = file?.[WAITING_KEY];
-  if (Array.isArray(waiting) && waiting.some((each) => each === name || each?.name === name)) return 'waiting';
-  return 'absent';
+  if (!Array.isArray(waiting)) return 'unsaid';
+  return waiting.some((each) => each?.name === name && each?.why === WAITS_FOR_CONTENT) ? 'waiting' : 'absent';
 }
 /**
  * The moves a run's tests stand on that a scan does not list: with any, and the scan the first after a reset, which
@@ -1076,16 +1086,20 @@ export function shownAs(file: MovesFile | undefined, name: string): 'listed' | '
 export const notListed = (needed: readonly string[], moves: readonly { name: string }[] | undefined): string[] =>
   needed.filter((name) => !(moves ?? []).some((move) => move.name === name));
 /**
- * Content first seen today waits a day (test 28): the first scan after the reset, with no state to read, does not list
- * the move, and the scan after it, on the first's state with its sightings put back, does. Listed by the first, the
- * wait did not hold. Listed by neither, nothing shows it was the wait that kept it out: no verdict.
+ * Content first seen today waits a day (test 28): the first scan after the reset, with no state to read, lists no
+ * move of it and says it waits for its content's day; no pull request of the App's is opened for it before the scan
+ * after, which, on the first's state with its sightings put back, lists it. Listed by the first, the wait did not
+ * hold. Not said to wait by the first (a scan that does not say what waits among them), or listed by neither, nothing
+ * shows it was the wait that kept it out: no verdict.
  */
 export function waitedVerdict(o: {
   move: string;
   /** How the first scan after the reset shows it; undefined when the run made no reset, or read one scan alone. */
-  first: { id: number; shown: 'listed' | 'waiting' | 'absent' } | undefined;
+  first: { id: number; shown: Shown } | undefined;
   /** Whether the scan after it lists it. */
   second: { id: number; listed: boolean } | undefined;
+  /** The App's pull requests that carry the move, opened before the second scan began. */
+  early?: readonly number[] | undefined;
 }): { pass: boolean; why: string } {
   const fail = (why: string) => ({ pass: false, why });
   if (!o.second) return fail('the scan has not finished');
@@ -1097,13 +1111,25 @@ export function waitedVerdict(o: {
       : fail(`no verdict: scan ${o.second.id} does not list ${o.move}, and no scan after it was read`);
   if (o.first.shown === 'listed')
     return fail(`scan ${o.first.id}, the first after the reset, lists ${o.move}: its content did not wait`);
+  if (o.early?.length)
+    return fail(
+      `#${o.early.join(', #')} was opened for ${o.move} before scan ${o.second.id}, while its content had not waited`,
+    );
+  if (o.first.shown === 'unsaid')
+    return fail(
+      `no verdict: scan ${o.first.id} does not list ${o.move} and does not say what waits (its moves.json has no \`${WAITING_KEY}\`): nothing shows the wait kept it out`,
+    );
+  if (o.first.shown === 'absent')
+    return fail(
+      `no verdict: scan ${o.first.id} neither lists ${o.move} nor says it waits for its content's day: nothing shows the wait kept it out`,
+    );
   if (!o.second.listed)
     return fail(
-      `no verdict: scan ${o.first.id} does not list ${o.move}, and nor does scan ${o.second.id} on its state: nothing shows the wait kept it out (is SCRATCH_CONTENT_SEEN_DAYS_AGO set, and staged/factory/28-… on the baseline?)`,
+      `no verdict: scan ${o.first.id} says ${o.move} waits, and scan ${o.second.id} on its state does not list it (is SCRATCH_CONTENT_SEEN_DAYS_AGO set, and staged/factory/28-… on the baseline?)`,
     );
   return {
     pass: true,
-    why: `scan ${o.first.id}, with no state, ${o.first.shown === 'waiting' ? `says ${o.move} waits` : `does not list ${o.move}`}; scan ${o.second.id}, on its state with the sightings put back, lists it`,
+    why: `scan ${o.first.id}, with no state, lists no move of ${o.move} and says it waits for its content's day; no pull request was opened for it before scan ${o.second.id}, which, on its state with the sightings put back, lists it`,
   };
 }
 
@@ -1113,7 +1139,8 @@ export function waitedVerdict(o: {
  * Why the line must be stopped before an app test's scans, from the store's last start or stop, or nothing when it is
  * stopped or was never started: a running line looks again at a ticket as it takes it, and after each release, by
  * the app's newest scan, and the first scan after a reset, which has no state, lists no image's move. The findings of
- * a move not listed are in no move, which that look reads as cleared, and the restored ticket would close unworked.
+ * a move not listed are in no move, which that look reads as cleared where the scan does not say what waits (the
+ * app's, at a commit of the workflow from before it did), and the restored ticket would close unworked.
  */
 export const lineTooEarly = (last: string | undefined): string | undefined =>
   last === 'line.started'

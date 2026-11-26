@@ -57,7 +57,9 @@
  * (`StateRoutine.content`), and the move lists at the digest the tag serves that day where that has waited, or else
  * at the newest it has seen that has, so a tag rebuilt every day comes due all the same, a day behind, and one pushed
  * again after its wait lists at what it was. A digest the tag no longer serves is asked for by itself before it is
- * listed: one the registry has dropped is forgotten, and the pin waits for the next. A chart's pin holds no digest
+ * listed: one the registry has dropped is forgotten, and the pin waits for the next. A pin whose tag has waited and
+ * whose content has not is in the listing's `waits`, which `moves.json` gives as `waiting`: it is no move that day,
+ * and not a move gone. A chart's pin holds no digest
  * and its index's is not read, so a chart's content is its version, whose day is the first sight its wait already
  * counts from. A package has pnpm's wait, and k3s its release's day on GitHub.
  *
@@ -82,7 +84,7 @@ import {
 } from './deadlines.ts';
 import { dayText, readTarget, type Target, targetText, writable } from './fixes.ts';
 import { type Chart, isFixture } from './inventory.ts';
-import { type Behind, isMajor, isRoutine, type Move, type Pin, pinKey } from './moves.ts';
+import { type Behind, isMajor, isRoutine, type Move, type Pin, pinKey, type RoutineWait } from './moves.ts';
 import { satisfies } from './node.ts';
 import { repositoryOf, splitReference } from './reference.ts';
 import { lockfileLine, type ReadTarget } from './scan.ts';
@@ -146,6 +148,11 @@ export interface Listing {
   behind: Behind[];
   /** Each release considered, listed or still waiting, with the day it was first seen. */
   records: Seen[];
+  /**
+   * Each image whose tag has waited its days and whose content has not waited its own (`ROUTINE.contentDays`): the
+   * first of its digests to come due, and when. Absent where there is none.
+   */
+  waits?: RoutineWait[] | undefined;
   /** The pins read, by what became of them: listed, waiting for a release's day, up to date, or left alone. */
   counts: { pins: number; listed: number; waiting: number; current: number; left: number; unread: number };
 }
@@ -325,6 +332,7 @@ export async function routine(asked: Asked): Promise<Listing> {
   counts.left = left;
   counts.pins = groups.length + left;
   const behind: Behind[] = [];
+  const waits: RoutineWait[] = [];
   const records = new Map<string, Seen>();
   /** The digests an image's pins hold, in order: what tells a pin from the same pin once it has moved on its tag. */
   const heldOf = (group: Pinned) =>
@@ -388,6 +396,17 @@ export async function routine(asked: Asked): Promise<Listing> {
     return 'listed';
   };
   const usable = (target: Target) => writable({ target, day: now });
+  /** A tag that has waited and whose content has not: the first of the digests seen to come due, and when. */
+  const contentWait = (group: Pinned, seen: StateSeen[]): Outcome => {
+    const wait = waitMs(policy.contentDays, policy.slackHours);
+    const [first] = seen
+      .map((each) => ({ to: readTarget(each.target), until: Date.parse(each.seen) + wait }))
+      .filter((each) => each.to && !Number.isNaN(each.until))
+      .sort((a, b) => a.until - b.until);
+    if (first?.to)
+      waits.push({ kind: group.kind, name: group.name, pins: pinsOf(group), from: group.from, ...first, to: first.to });
+    return 'waiting';
+  };
 
   const image = async (group: Pinned): Promise<Outcome> => {
     const [reference = ''] = group.references;
@@ -433,19 +452,13 @@ export async function routine(asked: Asked): Promise<Listing> {
       waiting = true;
       if (!waited(group, target, Number.NaN, policy.days, 0, content.kept)) continue;
       // The newest tag that has waited: it lists at a digest that has waited its own day, or not yet.
-      if (!due) return 'waiting';
+      if (!due) return contentWait(group, content.kept);
       const at = target.digest === digest ? `${name}:${each}` : `${name}@${target.digest}`;
       if (target.digest !== digest && !(await served(at).catch(() => undefined))) {
         // A digest the tag has moved on from and the registry no longer has: forgotten, and the next is waited for.
-        waited(
-          group,
-          today,
-          Number.NaN,
-          policy.days,
-          0,
-          content.kept.filter((seen) => seen !== content.due),
-        );
-        return 'waiting';
+        const left = content.kept.filter((seen) => seen !== content.due);
+        waited(group, today, Number.NaN, policy.days, 0, left);
+        return contentWait(group, left);
       }
       // An image that runs Node brings its Node, which waits for mise as Node's own move does.
       const ready = await lookups.nodeReady(at);
@@ -583,7 +596,7 @@ export async function routine(asked: Asked): Promise<Listing> {
           ? -1
           : 1,
   );
-  return { behind, records: sorted, counts };
+  return { behind, records: sorted, counts, ...(waits.length ? { waits } : {}) };
 }
 
 /**

@@ -1152,31 +1152,51 @@ describe('a move put back on main', () => {
 });
 
 describe('content that waits a day', () => {
-  it('reads a move as listed, said to wait, or absent', () => {
+  it('reads a move as listed, said to wait for its content, absent, or not said', () => {
     expect(shownAs({ moves: [{ name: 'postgres' }] }, 'postgres')).toBe('listed');
-    expect(shownAs({ moves: [], waiting: [{ name: 'postgres' }] }, 'postgres')).toBe('waiting');
-    expect(shownAs({ moves: [], waiting: ['postgres'] }, 'postgres')).toBe('waiting');
-    expect(shownAs({ moves: [{ name: 'loki' }] }, 'postgres')).toBe('absent');
-    expect(shownAs(undefined, 'postgres')).toBe('absent');
+    expect(shownAs({ moves: [], waiting: [{ name: 'postgres', why: 'content' }] }, 'postgres')).toBe('waiting');
+    // Refused as no better than the pin, or another pin's wait, is no wait of this one's content.
+    expect(shownAs({ moves: [], waiting: [{ name: 'postgres', why: 'no-better' }] }, 'postgres')).toBe('absent');
+    expect(shownAs({ moves: [], waiting: [{ name: 'loki', why: 'content' }] }, 'postgres')).toBe('absent');
+    expect(shownAs({ moves: [{ name: 'loki' }], waiting: [] }, 'postgres')).toBe('absent');
+    // A scan that does not say what waits says nothing of a move it does not list.
+    expect(shownAs({ moves: [{ name: 'loki' }] }, 'postgres')).toBe('unsaid');
+    expect(shownAs(undefined, 'postgres')).toBe('unsaid');
   });
   it('names the moves a scan does not list', () => {
     expect(notListed(['postgres', 'k3s'], [{ name: 'k3s' }])).toEqual(['postgres']);
     expect(notListed(['postgres'], undefined)).toEqual(['postgres']);
     expect(notListed([], [])).toEqual([]);
   });
-  it('passes when the first scan after the reset does not list it and the one on its state does', () => {
+  it('passes when the first scan after the reset says it waits and the one on its state lists it', () => {
     const verdict = waitedVerdict({
       move: 'postgres',
-      first: { id: 1, shown: 'absent' },
+      first: { id: 1, shown: 'waiting' },
       second: { id: 2, listed: true },
+      early: [],
     });
     expect(verdict).toEqual({
       pass: true,
-      why: expect.stringMatching(/scan 1, with no state, does not list postgres; scan 2/),
+      why: expect.stringMatching(/scan 1, with no state, lists no move of postgres and says it waits .* scan 2/),
     });
-    expect(
-      waitedVerdict({ move: 'postgres', first: { id: 1, shown: 'waiting' }, second: { id: 2, listed: true } }).why,
-    ).toMatch(/says postgres waits/);
+  });
+  it('gives no verdict when the first scan does not say it waits', () => {
+    const second = { id: 2, listed: true };
+    expect(waitedVerdict({ move: 'postgres', first: { id: 1, shown: 'unsaid' }, second }).why).toMatch(
+      /^no verdict: scan 1 does not list postgres and does not say what waits/,
+    );
+    expect(waitedVerdict({ move: 'postgres', first: { id: 1, shown: 'absent' }, second }).why).toMatch(
+      /^no verdict: scan 1 neither lists postgres nor says it waits/,
+    );
+  });
+  it('fails when a pull request was opened for it before the second scan', () => {
+    const verdict = waitedVerdict({
+      move: 'postgres',
+      first: { id: 1, shown: 'waiting' },
+      second: { id: 2, listed: true },
+      early: [41],
+    });
+    expect(verdict).toEqual({ pass: false, why: expect.stringMatching(/^#41 was opened for postgres before scan 2/) });
   });
   it('fails when the first scan lists it', () => {
     const verdict = waitedVerdict({
@@ -1194,8 +1214,8 @@ describe('content that waits a day', () => {
       /^no verdict/,
     );
     expect(
-      waitedVerdict({ move: 'postgres', first: { id: 1, shown: 'absent' }, second: { id: 2, listed: false } }).why,
-    ).toMatch(/^no verdict: .*nothing shows the wait kept it out/);
+      waitedVerdict({ move: 'postgres', first: { id: 1, shown: 'waiting' }, second: { id: 2, listed: false } }).why,
+    ).toMatch(/^no verdict: scan 1 says postgres waits, and scan 2 on its state does not list it/);
     expect(waitedVerdict({ move: 'postgres', first: undefined, second: undefined }).why).toBe(
       'the scan has not finished',
     );
@@ -1218,7 +1238,9 @@ describe('a move within the major, and then the major', () => {
         { id: 3, moves: [major] },
       ]),
     ).toBeUndefined();
-    expect(majorNextFault(first, [{ id: 2, moves: [], waiting: ['prometheus'] }])).toBeUndefined();
+    expect(
+      majorNextFault(first, [{ id: 2, moves: [], waiting: [{ name: 'prometheus', why: 'content' }] }]),
+    ).toBeUndefined();
   });
   it('fails when no later scan lists it, or lists a move from there that is no major', () => {
     expect(majorNextFault(first, [{ id: 2, moves: [] }])).toMatch(/scan 2 lists no major of prometheus from 29.49.0/);

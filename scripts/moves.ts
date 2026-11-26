@@ -78,6 +78,8 @@ export interface ScanDay {
   asked: Map<string, string>;
   /** The images the scan read, each at its pin (`moves.json`'s `scanned`): what an image's move is from. */
   scanned?: MovesFile['scanned'] | undefined;
+  /** The pins the scan says wait (`moves.json`'s `waiting`): no move, and what a change at one is told. */
+  waiting?: MovesFile['waiting'] | undefined;
 }
 
 /**
@@ -149,9 +151,10 @@ export async function scanMoves(
   if (!bytes) throw new Error(`run ${kept.run}'s moves hold no ${MOVES_FILE}`);
   const file = MOVES_FILE_SCHEMA.parse(JSON.parse(bytes.toString('utf-8'))) as MovesFile;
   const run: ScanRun = { id: Number(kept.run), event: '', conclusion: null, headSha: '', updatedAt: '', url: '' };
-  const { moves } = joined(repo, run, file, openKept(sealed, key, repo));
+  const { moves, waiting } = joined(repo, run, file, openKept(sealed, key, repo));
   return {
     moves,
+    ...(waiting ? { waiting } : {}),
     judged: Date.parse(file.judged),
     asked: await askedOf(api, repo, kept.run, key),
     scanned: file.scanned,
@@ -283,7 +286,7 @@ export async function readMove(each: Run, pr: PullRequest, github: GitHub): Prom
         const said = await proveMove(
           two.changed,
           scan,
-          { base: (path) => texts.get(path), derive: two.derive, scanned: day.scanned },
+          { base: (path) => texts.get(path), derive: two.derive, scanned: day.scanned, waiting: day.waiting },
           each.repo === APP_REPOSITORY,
         );
         return byAge(said, day.judged);

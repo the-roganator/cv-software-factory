@@ -127,6 +127,16 @@ describe('a state’s shape', () => {
     ['a move with no fix', (s) => Object.assign(finding(s), { fix: undefined }), 'a move that is not one'],
     ['a move that is no place', (s) => Object.assign(finding(s), { move: 0 }), 'a move that is not one'],
     [
+      'a place among those waiting that is none',
+      (s) => Object.assign(finding(s), { move: undefined, fix: undefined, waiting: 0 }),
+      'a place among those waiting that is not one',
+    ],
+    [
+      'a finding in a move and waiting too',
+      (s) => Object.assign(finding(s), { waiting: 1 }),
+      'a place among those waiting that is not one',
+    ],
+    [
       'an item’s key that is not text',
       (s) => Object.assign(finding(s), { item: 7 }),
       'gives finding 1 a value for item that is not text',

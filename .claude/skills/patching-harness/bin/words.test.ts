@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { levelWait } from '../../../../apps/factory/src/github/deploy-queue.ts';
 import { issueOf, REVERTED, strayed } from '../../../../apps/factory/src/github/pins.ts';
-import { movesFile } from '../../../../apps/factory/src/vulnerabilities/moves.ts';
+import { type Judged, movesFile, waiting } from '../../../../apps/factory/src/vulnerabilities/moves.ts';
 import { day, FakeRepo, FILES, factoryMoves } from '../../../../apps/factory/test/github/pins-harness.ts';
 import { rulesets } from '../../../../scripts/github-settings.ts';
 import { FACTORY_APP, type Facts, MARTIN, type PullRequest, route } from '../../../../scripts/review-routing.ts';
@@ -17,6 +17,7 @@ import {
   SUPERVISED_WAIT,
   shownAs,
   WAITING_KEY,
+  WAITS_FOR_CONTENT,
   waitsFault,
 } from './decide.ts';
 
@@ -107,10 +108,53 @@ describe('the gate’s words, as the harness reads them', () => {
 });
 
 describe('the scan’s document, as the harness reads it', () => {
-  it('names no waiting move: one that waits is absent, which is how 28 and 2 read it', () => {
-    const file = movesFile([], { repository: real(FACTORY), now: Date.parse('2026-11-26T06:00:00Z') });
-    expect(Object.keys(file)).not.toContain(WAITING_KEY);
-    expect(shownAs({ ...file }, 'postgres')).toBe('absent');
+  const context = { repository: real(FACTORY), now: Date.parse('2026-11-26T06:00:00Z') };
+  const postgres = {
+    finding: {
+      item: 'postgres',
+      package: 'libpq',
+      advisory: 'CVE-2026-0001',
+      installed: '17.1',
+      file: 'deploy/postgres.yaml',
+      line: 9,
+    } as Judged['finding'],
+    severity: 'HIGH' as const,
+    excepted: false,
+    firstSeenToday: true,
+    kind: 'third-party' as const,
+    name: 'postgres',
+    pin: { file: 'deploy/postgres.yaml', line: 9 },
+    from: '17.1',
+  };
+  const target = { kind: 'image' as const, tag: '17.2', digest: `sha256:${'b'.repeat(64)}` };
+  const file = (why: 'content' | 'no-better') =>
+    JSON.parse(
+      JSON.stringify(
+        movesFile(
+          [],
+          context,
+          undefined,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          waiting([postgres], [why === 'content' ? { why, to: target, until: context.now + 79_200_000 } : { why }]),
+        ),
+      ),
+    );
+  it('names a pin held for its content’s day under the key 28 and 2 read, with why', () => {
+    const held = file('content');
+    expect(held[WAITING_KEY]).toEqual([expect.objectContaining({ name: 'postgres', why: WAITS_FOR_CONTENT })]);
+    expect(shownAs(held, 'postgres')).toBe('waiting');
+    expect(shownAs(file('no-better'), 'postgres')).toBe('absent');
+  });
+  it('writes the key with nothing waiting, and none from a scan that does not say', () => {
+    const none = movesFile([], context, undefined, [], undefined, undefined, undefined, []);
+    expect(none[WAITING_KEY]).toEqual([]);
+    expect(shownAs({ ...none }, 'postgres')).toBe('absent');
+    const before = movesFile([], context);
+    expect(Object.keys(before)).not.toContain(WAITING_KEY);
+    expect(shownAs({ ...before }, 'postgres')).toBe('unsaid');
   });
 });
 

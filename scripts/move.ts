@@ -38,7 +38,7 @@ import type { ReadMove } from '../apps/factory/src/github/scanning.ts';
 import { moveOf } from '../apps/factory/src/patching/sends.ts';
 import { repositoryOfImage } from '../apps/factory/src/repositories.ts';
 import { readTarget, type Target } from '../apps/factory/src/vulnerabilities/fixes.ts';
-import { isRoutine, type ScannedImage } from '../apps/factory/src/vulnerabilities/moves.ts';
+import { isRoutine, type ScannedImage, type Waiting } from '../apps/factory/src/vulnerabilities/moves.ts';
 import { splitReference } from '../apps/factory/src/vulnerabilities/reference.ts';
 import { importedVersions, type Move as PinStepMove } from '../apps/runner/src/pins.ts';
 import type { MoveResult } from './review-routing.ts';
@@ -77,6 +77,18 @@ export interface MoveIO {
    * them a pin that writes a tag alone is no one's, and its move is refused.
    */
   scanned?: readonly Pick<ScannedImage, 'image' | 'pin'>[] | undefined;
+  /**
+   * The pins the scan says wait (`moves.json`'s `waiting`): each has somewhere to go and no move today. None makes a
+   * change a move; a change at one that is no move says why the scan lists none there.
+   */
+  waiting?: readonly Pick<Waiting, 'name' | 'pins' | 'why' | 'until'>[] | undefined;
+}
+
+/** Why a pin the scan says waits has no move today, as a pull request that changes it is told. */
+export function waitsFor(each: Pick<Waiting, 'name' | 'why' | 'until'>): string {
+  return each.why === 'content'
+    ? `the scan of main holds the move of ${each.name} until ${each.until ?? 'a later scan'}: its content has not waited its day, and it is a move once the scan lists it`
+    : `the scan of main lists no move of ${each.name}: no release it read is better than the pin`;
 }
 
 const REGULAR = /^100(644|755)$/;
@@ -311,7 +323,12 @@ export async function proveMove(
   if (!carried.length) {
     const first = changed[0] as Changed;
     const line = touched.get(first.path)?.values().next().value;
-    return { none: `${first.path}${line ? `:${line}` : ''} is no pin of a move the scan of main asked for` };
+    const said = `${first.path}${line ? `:${line}` : ''} is no pin of a move the scan of main asked for`;
+    // A pin the scan says waits is no move either: the answer says what it waits for, or why there is none.
+    const held = (io.waiting ?? []).find((each) =>
+      each.pins.some((pin) => pin.line >= 1 && touched.get(pin.file)?.has(pin.line)),
+    );
+    return { none: held ? `${said}; ${waitsFor(held)}` : said };
   }
   const steps: PinStepMove[] = [];
   const edits: ScanMove[] = [];

@@ -13,6 +13,9 @@
  * made any: in the factory for the pin watch to commit, in the app for the line's pin step to make again as the scan
  * made them. Absent, there are none; there and not opening for that run and its commit, the read fails.
  *
+ * `moves.json` also lists each pin with somewhere to go and no move that day (`waiting`), where the scan says so: read
+ * with the findings the state names there (`Moves.waiting`), and absent for a scan that does not say.
+ *
  * Both are the scan's by where they are, one run's, and each is held to the other: a state that does not open with
  * the repository's key for that run, a finding in a move past the list, or a count that differs from `moves.json`'s,
  * fails the whole read, and nothing of it is returned. A run that left `moves.json` and no state fails it too: there
@@ -38,6 +41,7 @@ import {
   type MovesFile,
   type PublicMove,
   type ScannedImage,
+  type Waiting,
 } from '../vulnerabilities/moves.ts';
 import { SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
 import {
@@ -124,6 +128,14 @@ export interface ReadMove extends PublicMove {
   findings: MoveFinding[];
 }
 
+/** A pin that waits as `moves.json` gives it (moves.ts's `Waiting`), with what the state holds. */
+export interface ReadWaiting extends Waiting {
+  /** Its place in `moves.json`'s `waiting`, from 1. */
+  index: number;
+  /** The findings that wait with it, as the state names them: none for a routine update's. */
+  findings: Pick<MoveFinding, 'advisory' | 'package' | 'severity'>[];
+}
+
 export interface Moves {
   repository: string;
   run: ScanRun;
@@ -131,8 +143,14 @@ export interface Moves {
    * The day as `moves.json` gives it; null only when the run failed before it wrote one, when its conclusion says
    * why. A successful run with none fails the read.
    */
-  file: Omit<MovesFile, 'moves'> | null;
+  file: Omit<MovesFile, 'moves' | 'waiting'> | null;
   moves: ReadMove[];
+  /**
+   * Each pin with somewhere to go and no move today, and why, with its findings from the state. Absent where the scan
+   * does not say what waits (one from before it did): a reader then takes its moves as it did, and a pin no move
+   * lists as moved, or a finding as fixed, on that scan's word alone. There, even empty, a pin it names is neither.
+   */
+  waiting?: ReadWaiting[] | undefined;
   /**
    * The moves the run made with the pin step (github/made.ts): in the factory for the pin watch to commit, in the app
    * for the time and the answers its line's pin step makes them again with. Absent where it made none, or for a run
@@ -295,6 +313,35 @@ export const MOVES_FILE_SCHEMA = z.strictObject({
       bench: z.literal(true).optional(),
     }),
   ),
+  // Each pin that waits, and why: a scan from before it said so writes none, and its file reads as it did.
+  waiting: z
+    .array(
+      z
+        .strictObject({
+          name: z.string(),
+          pins: z.array(z.strictObject({ file: z.string(), line: z.number().int().nonnegative() })),
+          from: z.string(),
+          lockfile: z.literal(false),
+          why: z.enum(['content', 'no-better']),
+          to: z.string().optional(),
+          until: DAY.optional(),
+          clears: COUNTS,
+          deadline: DAY.optional(),
+          routine: z.literal(true).optional(),
+        })
+        // A wait for content names what it waits for and until when; a refusal names neither.
+        .refine((each) => (each.why === 'content') === (each.to !== undefined && each.until !== undefined), {
+          message: 'a wait that does not say what for',
+        })
+        .refine(
+          (each) => each.to === undefined || readTarget(each.to) !== undefined,
+          'a target the grammar does not read',
+        )
+        // A routine update's asks for no finding, and it waits for its content alone.
+        .refine((each) => !each.routine || (each.why === 'content' && total(each.clears) === 0), 'no routine wait')
+        .refine((each) => each.routine || total(each.clears) > 0, 'a wait of no finding'),
+    )
+    .optional(),
   scanned: z
     .array(SCANNED)
     .refine((list) => new Set(list.map((each) => JSON.stringify(each))).size === list.length, 'an image twice'),
@@ -533,7 +580,7 @@ export function joined(
   run: ScanRun,
   file: MovesFile,
   state: State,
-): { file: Omit<MovesFile, 'moves'>; moves: ReadMove[] } {
+): { file: Omit<MovesFile, 'moves' | 'waiting'>; moves: ReadMove[]; waiting?: ReadWaiting[] } {
   if (file.repository !== repo) throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is another repository's`);
   if (file.run !== String(run.id))
     throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} names ${file.run ? `run ${file.run}` : 'no run'}`);
@@ -584,8 +631,48 @@ export function joined(
       repo,
       `${MOVES_FILE} counts ${file.totals.fixed} results with a fix and the state gives its moves ${read}`,
     );
-  const { moves: _, ...rest } = file;
-  return { file: rest, moves };
+  const waiting = waitingOf(repo, file, state);
+  const { moves: _, waiting: __, ...rest } = file;
+  return { file: rest, moves, ...(waiting ? { waiting } : {}) };
+}
+
+/**
+ * `moves.json`'s pins that wait, each with its findings from the state, and each held to it, as a move is: a finding
+ * names a place on the list, and none that is in a move; every entry has as many findings as it counts, and none of
+ * them twice; a routine update's has none, and is a release the state recorded for that pin and gave no move. So what
+ * waits is the sealed state's word as much as the artifact's. A state that names a place and a file with no list do
+ * not agree. Nothing where the file has no list: that scan does not say.
+ */
+function waitingOf(repo: string, file: MovesFile, state: State): ReadWaiting[] | undefined {
+  const named = state.findings.find((each) => each.waiting !== undefined);
+  if (!file.waiting) {
+    if (named) throw disagrees(repo, `the state names a pin that waits and ${MOVES_FILE} lists none`);
+    return undefined;
+  }
+  const findings: ReadWaiting['findings'][] = file.waiting.map(() => []);
+  for (const [at, each] of state.findings.entries()) {
+    if (each.waiting === undefined) continue;
+    const list = findings[each.waiting - 1];
+    if (!list || each.move !== undefined)
+      throw disagrees(repo, `the state's finding ${at + 1} waits at place ${each.waiting} of ${file.waiting.length}`);
+    list.push({ advisory: each.advisory, package: each.package, severity: each.severity });
+  }
+  const seen = new Set<string>();
+  return file.waiting.map((entry, i): ReadWaiting => {
+    const where = `the pin that waits at place ${i + 1}`;
+    const key = JSON.stringify([entry.name, entry.from, entry.why, entry.routine === true]);
+    if (seen.has(key)) throw disagrees(repo, `${where} is listed twice`);
+    seen.add(key);
+    const own = findings[i] ?? [];
+    if (own.length !== total(entry.clears))
+      throw disagrees(repo, `${where} counts ${total(entry.clears)} results and the state gives it ${own.length}`);
+    if (
+      entry.routine &&
+      !(state.routine ?? []).some((r) => r.move === undefined && r.name === entry.name && r.from === entry.from)
+    )
+      throw disagrees(repo, `${where}, a routine update's, is no release the state recorded as waiting`);
+    return { ...entry, index: i + 1, findings: own };
+  });
 }
 
 const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

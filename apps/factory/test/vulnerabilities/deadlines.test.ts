@@ -37,7 +37,7 @@ import {
 } from '../../src/vulnerabilities/deadlines.ts';
 import type { Policy } from '../../src/vulnerabilities/exceptions.ts';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
-import { moves, movesFile } from '../../src/vulnerabilities/moves.ts';
+import { moves, movesFile, publicWaiting, waiting } from '../../src/vulnerabilities/moves.ts';
 import { releasedAt } from '../../src/vulnerabilities/registry.ts';
 import { alertKey, type Finding, fingerprint, merge, messageOf, sarif } from '../../src/vulnerabilities/sarif.ts';
 import {
@@ -47,7 +47,7 @@ import {
   type ReadTarget,
   type TrivyReport,
 } from '../../src/vulnerabilities/scan.ts';
-import type { State } from '../../src/vulnerabilities/state.ts';
+import { open, type State, seal } from '../../src/vulnerabilities/state.ts';
 
 /**
  * Each finding's deadline (deadlines.ts), on invented findings, alerts in the shape code scanning's API gives them, and
@@ -229,7 +229,7 @@ async function judge(world: World, now = NOW) {
   };
   const { sources, asked } = sourcesOf(world);
   const lines: string[] = [];
-  const { rows, fixes, judged, looked, unread, excepted, missed, waits } = await assess(
+  const { rows, fixes, judged, looked, unread, excepted, missed, waits, held } = await assess(
     handoff,
     sources,
     now,
@@ -249,7 +249,7 @@ async function judge(world: World, now = NOW) {
   const judgement = verdict(rows);
   /** How the run ends after its upload: its last lines and its exit code. */
   const ends = () => ending({ passes: judgement.passes, lines: judgement.lines.slice(3), unread, missed });
-  return { rows, fixes, judged, looked, unread, excepted, missed, asked, lines, kept, ends, verdict: judgement };
+  return { rows, fixes, judged, looked, unread, excepted, missed, asked, lines, kept, ends, held, verdict: judgement };
 }
 
 /** A Trivy report of an image made at the time given, with the findings given. */
@@ -516,10 +516,15 @@ describe('an image’s fix', () => {
         tags,
         images: { [NEWEST]: rated('2026-11-01T00:00:00Z', [other('CVE-2099-29003', 'HIGH')]) },
       };
-      const { fixes, rows, lines } = await judge(world);
+      const { fixes, rows, lines, held, judged } = await judge(world);
       expect(fixes[0]).toBeUndefined();
       expect(rows[0]?.bucket).toBe('none');
       expect(lines.filter((line) => line.includes(NO_BETTER))).toHaveLength(1);
+      // The result is held as refused, and moves.json names its pin so, with what waits there.
+      expect(held).toEqual([{ why: 'no-better' }]);
+      expect(waiting(judged, held).map(publicWaiting)).toEqual([
+        expect.objectContaining({ name: 'node', from: '24.22.1-trixie-slim', why: 'no-better', lockfile: false }),
+      ]);
       // With fewer Criticals it is better, whatever its Highs.
       const critical = os({ advisory: 'CVE-2099-20009', severity: 'CRITICAL' });
       const fewer = await judge({
@@ -1112,6 +1117,18 @@ describe('an image’s fix, while the scan has known its digest less than a day'
     const first = await judge(serving('c'));
     expect(first.fixes).toEqual([undefined]);
     expect(first.rows[0]).toMatchObject({ installable: NOW + WAIT, bucket: 'none' });
+    // It is held for its content's day, by its target and when that comes due; and for nothing once it lists.
+    const target = { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') };
+    expect(first.held).toEqual([{ why: 'content', to: target, until: NOW + WAIT }]);
+    expect(waiting(first.judged, first.held).map(publicWaiting)).toEqual([
+      expect.objectContaining({
+        name: 'node',
+        why: 'content',
+        to: `image 24.23.0-trixie-slim@${digest('c')}`,
+        until: new Date(NOW + WAIT).toISOString().replace('.000Z', 'Z'),
+      }),
+    ]);
+    expect((await judge(serving('c', first.kept()), NOW + DAY)).held).toEqual([undefined]);
     // A Critical first seen long ago with its fix a day off fails nothing: no move could be made today.
     expect(first.verdict.passes).toBe(true);
     expect(moves(first.judged, { repository: REPOSITORY, app: false, now: NOW })).toEqual([]);
@@ -1132,6 +1149,8 @@ describe('an image’s fix, while the scan has known its digest less than a day'
   it('is the newest digest that has waited where the tag is pushed again, and never the one pushed today', async () => {
     const day0 = await judge(serving('c'));
     const day1 = await judge(serving('d', day0.kept()), NOW + DAY);
+    // The digest of the day before stands in: there is a move, and nothing is held.
+    expect(day1.held).toEqual([undefined]);
     expect(day1.fixes[0]).toEqual({
       target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') },
       day: NOW + WAIT,
@@ -2953,6 +2972,56 @@ describe('a day’s moves.json', () => {
     expect(`${JSON.stringify(file, null, 2)}\n`).toBe(
       readFileSync(new URL('./fixtures/moves.json', import.meta.url), 'utf-8'),
     );
+  });
+
+  it('says what waits beside the moves: nothing on the recorded day, and each fix whose content is first seen that day', async () => {
+    const recorded = readFileSync(new URL('./fixtures/moves.json', import.meta.url), 'utf-8');
+    const written = async (over: Partial<World> = {}) => {
+      const { judged, rows, held } = await day(over);
+      const list = moves(judged, context);
+      const { counts, bySeverity } = verdict(rows, false, list);
+      return movesFile(list, context, '19234567890', [], counts, bySeverity, undefined, waiting(judged, held));
+    };
+    // With nothing waiting the list is there and empty, and the rest of the file is the recorded one.
+    const { waiting: none, ...rest } = await written();
+    expect(none).toEqual([]);
+    expect(`${JSON.stringify(rest, null, 2)}\n`).toBe(recorded);
+    // The state names each waiting result's place in that list, and none for a result that does not wait.
+    const first = await day({ policy });
+    const places = first.judged.map((_, index) => (first.held[index] ? 7 : undefined));
+    const findings = first.judged.map((each) => each.finding);
+    const state = stateOf(REPOSITORY, '1', first.rows, findings, [], [], places);
+    expect(state.findings.map((each) => each.waiting)).toEqual([undefined, 7, 7, undefined, undefined]);
+    const key = Buffer.alloc(32, 7);
+    expect(open(seal(state, key), key, REPOSITORY, '1').findings.map((each) => each.waiting)).toEqual(
+      state.findings.map((each) => each.waiting),
+    );
+    // Under the policy's day for content, with no state: the image's fix and the chart's wait, and are no moves.
+    const file = await written({ policy });
+    expect(file.moves.map((move) => move.name)).toEqual(['k3s', 'a package in `pnpm-lock.yaml`']);
+    const high = { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+    expect(file.waiting).toEqual([
+      {
+        name: 'example',
+        pins: [{ file: 'deploy/base/example.yaml', line: 14 }],
+        from: '13.2.7',
+        lockfile: false,
+        why: 'content',
+        to: 'chart example 14.3.1 (a major)',
+        until: '2026-11-11T02:30:00Z',
+        clears: high,
+      },
+      {
+        name: 'node',
+        pins: [{ file: '.devcontainer/Dockerfile', line: 2 }],
+        from: '24.22.1-trixie-slim',
+        lockfile: false,
+        why: 'content',
+        to: `image 24.100.0-trixie-slim@sha256:${'d'.repeat(64)}`,
+        until: '2026-11-11T02:30:00Z',
+        clears: high,
+      },
+    ]);
   });
 
   it('marks a chart’s later major a major whether or not its pinned version is written with a v', async () => {

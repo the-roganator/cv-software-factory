@@ -41,6 +41,11 @@
  * `pnpm-lock.yaml`", with neither its versions nor its lines, which name the package in a public lockfile; the alerts
  * hold the rest.
  *
+ * A fix that exists and is no move today is in `waiting` (`Waiting`), beside the moves, with why: its target's content
+ * has not waited its day (`content`), or no release read is better than the pin (`no-better`); and so is a routine
+ * update of an image whose tag has waited and whose content has not. A reader that takes "no move lists it" to mean
+ * "fixed" or "gone" reads `waiting` first.
+ *
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
 
@@ -362,6 +367,159 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
   return [...out, ...routine];
 }
 
+/** Why a pin with somewhere to go has no move today: see `Waiting`. */
+export type WaitingWhy = 'content' | 'no-better';
+
+/** One result with no fix today, and why (deadlines.ts's `assess`): what `waiting` is made from. */
+export interface Held {
+  why: WaitingWhy;
+  /** For `content`: the first of its targets to come due, and when. */
+  to?: Target | undefined;
+  until?: number | undefined;
+}
+
+/** A routine update of an image whose tag has waited its days and whose content has not (routine.ts). */
+export interface RoutineWait {
+  kind: Kind;
+  name: string;
+  pins: Pin[];
+  from: string;
+  to: Target;
+  until: number;
+}
+
+/** A pin that waits, before it is printed: `Waiting`, with the results that wait, by their fingerprints. */
+export interface Wait {
+  name: string;
+  pins: Pin[];
+  from: string;
+  why: WaitingWhy;
+  to?: Target | undefined;
+  until?: number | undefined;
+  clears: Counts;
+  deadline?: number | undefined;
+  routine: boolean;
+  /** The results that wait (sarif.ts's `fingerprint`): never printed. */
+  results: string[];
+}
+
+/**
+ * The day's pins that wait: each pin whose results have a fix that is no move today, once for each reason, the most
+ * urgent first as the moves are; then each routine update that waits for its content, by name. The excepted are left
+ * out, as of a move, and a lockfile's, which neither reason holds, is never named. `held` is by the results' index.
+ */
+export function waiting(results: Judged[], held: (Held | undefined)[], routine: RoutineWait[] = []): Wait[] {
+  const groups = new Map<string, { each: Judged; held: Held }[]>();
+  for (const [index, each] of results.entries()) {
+    const its = held[index];
+    if (!its || each.excepted || each.kind === 'lockfile') continue;
+    const key = JSON.stringify([pinKey(each), its.why]);
+    const group = groups.get(key);
+    if (group) group.push({ each, held: its });
+    else groups.set(key, [{ each, held: its }]);
+  }
+  const out: Wait[] = [];
+  for (const group of groups.values()) {
+    const [first] = group;
+    if (!first) continue;
+    const pins = new Map<string, Pin>();
+    for (const { each } of group) pins.set(`${each.pin.file}:${each.pin.line}`, each.pin);
+    const clears = zero();
+    for (const { each } of group) clears[each.severity]++;
+    const dues = group.flatMap(({ each }) => (each.due === undefined ? [] : [each.due]));
+    // The first of its targets to come due, and the furthest of those due then.
+    const untils = group.flatMap((one) => (one.held.until === undefined ? [] : [one.held.until]));
+    const until = untils.length ? Math.min(...untils) : undefined;
+    const to = furthest(group.flatMap((one) => (one.held.to && one.held.until === until ? [one.held.to] : [])));
+    out.push({
+      name: first.each.name,
+      pins: [...pins.values()].sort((a, b) => order(a.file, b.file) || a.line - b.line),
+      from: first.each.from,
+      why: first.held.why,
+      ...(first.held.why === 'content' ? { to, until } : {}),
+      clears,
+      deadline: dues.length ? Math.min(...dues) : undefined,
+      routine: false,
+      results: group.map(({ each }) => fingerprint(each.finding)),
+    });
+  }
+  out.sort(
+    (a, b) =>
+      (a.deadline ?? Number.POSITIVE_INFINITY) - (b.deadline ?? Number.POSITIVE_INFINITY) ||
+      b.clears.CRITICAL - a.clears.CRITICAL ||
+      b.clears.HIGH - a.clears.HIGH ||
+      order(a.name, b.name) ||
+      order(a.from, b.from) ||
+      order(a.why, b.why),
+  );
+  const behind = new Map<string, Wait>();
+  for (const each of routine) {
+    if (each.kind === 'lockfile') continue;
+    const key = pinKey(each);
+    if (behind.has(key)) continue;
+    behind.set(key, {
+      name: each.name,
+      pins: [...each.pins].sort((a, b) => order(a.file, b.file) || a.line - b.line),
+      from: each.from,
+      why: 'content',
+      to: each.to,
+      until: each.until,
+      clears: zero(),
+      deadline: undefined,
+      routine: true,
+      results: [],
+    });
+  }
+  return [...out, ...[...behind.values()].sort((a, b) => order(a.name, b.name) || order(a.from, b.from))];
+}
+
+/**
+ * A pin that has somewhere to go and no move today, as the log, the step summary and `moves.json` give it: a fix that
+ * exists and is not listed, or a routine update that is not. Named as a move names its pin; never a lockfile's, whose
+ * package would be withheld, and never a result's fingerprint, as of a move.
+ */
+export interface Waiting {
+  name: string;
+  pins: Pin[];
+  from: string;
+  lockfile: false;
+  /**
+   * `content`: its target's content (an image's digest, a chart's version) has not waited `ROUTINE.contentDays` since
+   * the scan first saw it. `no-better`: no release read has fewer findings than the pin, worst severity first, though
+   * one no longer has a finding of it.
+   */
+  why: WaitingWhy;
+  /**
+   * For `content`: fixes.ts's text of the first of its targets to come due, and when, UTC to the second, the slack
+   * of a daily scan taken off (state.ts's `waitMs`). Content pushed again before then waits its own day, and the move
+   * lists at the newest that has waited.
+   */
+  to?: string | undefined;
+  until?: string | undefined;
+  /** The results that wait, by severity: what its move would clear. All zero for a routine update's. */
+  clears: Counts;
+  /** Their earliest deadline, where any has one: UTC, to the second. */
+  deadline?: string | undefined;
+  /** Set for a routine update's wait: no finding asks for it. */
+  routine?: true | undefined;
+}
+
+/** A pin that waits with nothing in it the log may not print. */
+export function publicWaiting(wait: Wait): Waiting {
+  return {
+    name: wait.name,
+    pins: wait.pins,
+    from: wait.from,
+    lockfile: false,
+    why: wait.why,
+    ...(wait.to ? { to: targetText(wait.to) } : {}),
+    ...(wait.until === undefined ? {} : { until: dayText(wait.until) }),
+    clears: wait.clears,
+    ...(wait.deadline === undefined ? {} : { deadline: dayText(wait.deadline) }),
+    ...(wait.routine ? { routine: true as const } : {}),
+  };
+}
+
 /** A move as the log, the step summary and `moves.json` give it: a lockfile's named by its file alone. */
 export interface PublicMove {
   repository: string;
@@ -456,6 +614,13 @@ export interface MovesFile {
     routineUnread?: number;
   } & DayCounts;
   moves: PublicMove[];
+  /**
+   * Each pin with somewhere to go and no move today, and why (`Waiting`). Optional under the same `MOVES_VERSION`, as
+   * `totals.open` is, and by the rule `totals.routine` keeps: written by every scan that judges what waits, an empty
+   * list included, and by none that predates it, so a reader takes "absent" as "this scan does not say what waits",
+   * and reads its moves as it did; and a pin no move lists as moved or fixed only where none here names it.
+   */
+  waiting?: Waiting[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];
 }
@@ -490,6 +655,8 @@ export function movesFile(
   open?: Counts,
   /** The day's routine listing, where the scan made one: how many pins it could not read. */
   listing?: { unread: number },
+  /** The day's pins that wait (`waiting`), from a scan that judged them: none is an empty list. */
+  waits?: Wait[],
 ): MovesFile {
   const lanes = Object.fromEntries(LANES.map((lane) => [lane, list.filter((m) => m.lane === lane).length])) as Record<
     Lane,
@@ -512,6 +679,7 @@ export function movesFile(
       ...day,
     },
     moves: list.map(publicMove),
+    ...(waits ? { waiting: waits.map(publicWaiting) } : {}),
     scanned: [...scanned].sort(
       (a, b) => order(a.pin.file, b.pin.file) || a.pin.line - b.pin.line || order(a.image, b.image),
     ),
@@ -531,15 +699,29 @@ export function table(file: MovesFile): string[] {
   const lines = [
     `Moves: ${file.totals.fixed} results with a fix, in ${file.totals.moves} moves${file.totals.routine ? `, ${file.totals.routine} of them routine` : ''}${lanes ? ` (${lanes})` : ''}.`,
   ];
-  if (!file.moves.length) return lines;
-  lines.push(
-    '',
-    '| Move | From | To | Clears | Leaves | New today | Deadline | Lane |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- |',
-  );
-  for (const move of file.moves)
+  if (file.moves.length) {
     lines.push(
-      `| ${move.name} | ${move.from || '–'} | ${move.to || '–'} | ${short(move.clears)} | ${short(move.leaves)} | ${move.newToday} | ${move.deadline ?? '–'} | ${move.lane} |`,
+      '',
+      '| Move | From | To | Clears | Leaves | New today | Deadline | Lane |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |',
     );
+    for (const move of file.moves)
+      lines.push(
+        `| ${move.name} | ${move.from || '–'} | ${move.to || '–'} | ${short(move.clears)} | ${short(move.leaves)} | ${move.newToday} | ${move.deadline ?? '–'} | ${move.lane} |`,
+      );
+  }
+  if (file.waiting?.length) {
+    lines.push('', `Waiting: ${file.waiting.length} with somewhere to go and no move today.`, '');
+    for (const each of file.waiting) lines.push(`- ${waitingLine(each)}`);
+  }
   return lines;
+}
+
+/** One pin that waits, in a line: what it is, why it has no move, and what waits with it. */
+export function waitingLine(each: Waiting): string {
+  const what = each.routine ? 'a routine update' : `a fix of ${short(each.clears)}`;
+  const due = each.deadline ? `, due ${each.deadline}` : '';
+  return each.why === 'content'
+    ? `${each.name} ${each.from}: ${what}${due}, to ${each.to ?? 'a release'}, waits for its content's day, until ${each.until ?? 'the next scan'}.`
+    : `${each.name} ${each.from}: ${what}${due} is not listed: no release read is better than the pin.`;
 }

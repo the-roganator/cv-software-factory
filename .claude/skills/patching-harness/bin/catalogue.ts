@@ -174,9 +174,10 @@ export interface Test {
    */
   reverted?: { of: string };
   /**
-   * Content first seen at this run's reset waits its day: the first scan after the reset, which has no state, does not
-   * list `move`, and the scan after it, which reads the first's state with its sightings put days back
-   * (staged/factory/28-…), does.
+   * Content first seen at this run's reset waits its day: the first scan after the reset, which has no state, lists
+   * no move of `move` and says it waits for its content's day, no pull request of the App's is opened for it before
+   * the scan after, and that scan, which reads the first's state with its sightings put days back
+   * (staged/factory/28-…), lists it.
    */
   waits?: { move: string };
   /**

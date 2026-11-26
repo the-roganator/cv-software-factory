@@ -1,18 +1,18 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { withChecksRun } from '../apps/factory/src/github/actions.ts';
 import { type Made, sealMade } from '../apps/factory/src/github/made.ts';
 import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../apps/factory/src/repositories.ts';
-import { newKey, readKey, type StateApi } from '../apps/factory/src/vulnerabilities/state.ts';
+import { newKey, readKey, type State, type StateApi, seal } from '../apps/factory/src/vulnerabilities/state.ts';
 import { zipOf } from '../apps/factory/test/vulnerabilities/zip-of.ts';
 import type { Get, Move as PinStepMove } from '../apps/runner/src/pins.ts';
 import { SCAN_MAX_AGE_HOURS } from '../policy/vulnerabilities.ts';
 import { askedKey, type Derivation, deriveOn } from './derive.ts';
 import { type MoveIO, proveMove, type ScanMove } from './move.ts';
-import { askedOf, byAge, derivationOf, mergeOf, type ScanDay, sides, tooOld } from './moves.ts';
+import { askedOf, byAge, derivationOf, mergeOf, type ScanDay, scanMoves, sides, tooOld } from './moves.ts';
 import type { GitHub, PullRequest, Run } from './review-gate.ts';
 
 // The gate's two sides of a merge, read from a repository of git's own as from GitHub's copy, and the move proved on
@@ -448,5 +448,78 @@ describe('the scan the gate judges by has an age limit', () => {
     // A change that is no move by the last scan is none whatever its age: a scan that stops holds up moves alone.
     expect(byAge({ none: 'it changes no file' }, ago(100), NOW)).toEqual({ none: 'it changes no file' });
     expect(byAge({ reason: 'deploy/a.yaml:2 changes' }, ago(100), NOW)).toEqual({ reason: 'deploy/a.yaml:2 changes' });
+  });
+});
+
+describe('the scan’s moves as the gate reads them, with what waits', () => {
+  const FIXTURES = join(import.meta.dirname, '../apps/factory/test/github/fixtures/scanning');
+  const fixture = (name: string) => JSON.parse(readFileSync(join(FIXTURES, name), 'utf8'));
+  const RUN = '42000000001';
+  const text = newKey();
+  /** GitHub with one finished scan of main, its `moves.json` and the state sealed for that run. */
+  const github = (file: object, state: State): StateApi => ({
+    json: async (path) => {
+      if (path.includes('/actions/workflows/'))
+        return {
+          workflow_runs: path.includes('event=schedule')
+            ? [{ id: Number(RUN), event: 'schedule', head_branch: 'main', head_repository: { full_name: APP } }]
+            : [],
+        };
+      const name = /artifacts\?name=(\w+)/.exec(path)?.[1] ?? '';
+      const id = { moves: 1, state: 2 }[name];
+      return { artifacts: id ? [{ id, name, expired: false, size_in_bytes: 1 }] : [] };
+    },
+    bytes: async (path) =>
+      path.includes('/artifacts/1/')
+        ? zipOf({ 'moves.json': JSON.stringify(file) })
+        : zipOf({ 'state.sealed': seal(state, readKey(text)) }),
+  });
+  const held = {
+    name: 'ghcr.io/example/held',
+    pins: [{ file: 'deploy/held/Dockerfile', line: 1 }],
+    from: '1.0.0',
+    lockfile: false,
+    why: 'content',
+    to: `image 1.0.1@sha256:${'3'.repeat(64)}`,
+    until: '2026-11-11T04:15:00Z',
+    clears: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+  };
+  /** The fixtures' state with one more finding, in no move, that waits at the first place. */
+  const waitingState = (): State => {
+    const state: State = fixture('state.json');
+    const { move: _, fix: __, ...open } = state.findings[0] as State['findings'][number];
+    state.findings.push({ ...open, advisory: 'CVE-2099-40001', package: 'libwaits', waiting: 1 });
+    return state;
+  };
+
+  it('reads a file with what waits, held to the state its run sealed, and one from a scan that does not say', async () => {
+    const before = await scanMoves(APP, 'token', text, github(fixture('moves.json'), fixture('state.json')));
+    expect(before.moves).toHaveLength(2);
+    expect(before).not.toHaveProperty('waiting');
+    const day = await scanMoves(
+      APP,
+      'token',
+      text,
+      github({ ...fixture('moves.json'), waiting: [held] }, waitingState()),
+    );
+    expect(day.moves).toEqual(before.moves);
+    expect(day.waiting).toEqual([
+      {
+        ...held,
+        index: 1,
+        findings: [{ advisory: 'CVE-2099-40001', package: 'libwaits', severity: expect.any(String) }],
+      },
+    ]);
+  });
+
+  it('refuses a list of what waits that the sealed state does not bear out', async () => {
+    const forged = github({ ...fixture('moves.json'), waiting: [held] }, fixture('state.json'));
+    await expect(scanMoves(APP, 'token', text, forged)).rejects.toThrow(
+      /the pin that waits at place 1 counts 1 results and the state gives it 0/,
+    );
+    const dropped = github(fixture('moves.json'), waitingState());
+    await expect(scanMoves(APP, 'token', text, dropped)).rejects.toThrow(
+      /the state names a pin that waits and moves\.json lists none/,
+    );
   });
 });

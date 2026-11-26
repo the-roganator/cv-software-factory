@@ -856,6 +856,25 @@ describe('what is not a move, and says what differs', () => {
 describe('a move the scan gave to no one to make', () => {
   const grpc = { [LOCK]: lockfile('1.14.7', '7.6.5'), 'package.json': swap('package.json', '1.14.5', '1.14.7') };
   const postgres = change({ [POSTGRES]: swap(POSTGRES, `18.6-alpine3.24@${D_OLD}`, `18.7-alpine3.24@${D_NEW}`) });
+
+  it('is no move while the scan holds it, and says what it waits for, or that none is better than the pin', async () => {
+    const listed = SCAN.find((m) => m.name === 'postgres') as ScanMove;
+    const rest = SCAN.filter((m) => m !== listed);
+    const held = { name: 'postgres', pins: listed.pins, why: 'content' as const, until: '2026-11-27T04:00:00Z' };
+    const said = (waiting: MoveIO['waiting']) => proveMove(postgres, rest, { ...io(), waiting }, false);
+    const none = `${POSTGRES}:${listed.pins[0]?.line} is no pin of a move the scan of main asked for`;
+    expect(await said([held])).toEqual({
+      none: `${none}; the scan of main holds the move of postgres until 2026-11-27T04:00:00Z: its content has not waited its day, and it is a move once the scan lists it`,
+    });
+    expect(await said([{ ...held, why: 'no-better', until: undefined }])).toEqual({
+      none: `${none}; the scan of main lists no move of postgres: no release it read is better than the pin`,
+    });
+    // A scan that does not say what waits, one with nothing waiting, and another pin's wait: as it was.
+    for (const waiting of [undefined, [], [{ ...held, pins: [{ file: PROMETHEUS, line: 7 }] }]])
+      expect(await said(waiting)).toEqual({ none });
+    // Listed, it is the move, whatever waits beside it.
+    expect(await proveMove(postgres, SCAN, { ...io(), waiting: [held] }, false)).toMatchObject({ rule: 'move' });
+  });
   const laned = (lane: ScanMove['lane']) => SCAN.map((m) => (m.name === 'postgres' ? { ...m, lane } : m));
 
   it('refuses a benched package’s fix, exactly the scan’s bump though it is: it waits for Martin’s bench run', async () => {

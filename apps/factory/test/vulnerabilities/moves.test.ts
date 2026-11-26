@@ -12,7 +12,9 @@ import {
   moves,
   movesFile,
   publicMove,
+  publicWaiting,
   table,
+  waiting,
 } from '../../src/vulnerabilities/moves.ts';
 import type { Finding, Severity } from '../../src/vulnerabilities/sarif.ts';
 
@@ -672,5 +674,124 @@ describe('a pin that is merely behind', () => {
       }),
     ]);
     expect(file.moves.map(isRoutine)).toEqual([true]);
+  });
+});
+
+describe('the pins that wait', () => {
+  const TARGET: Target = { kind: 'image', tag: '2.18.0', digest: DIGEST };
+  /** A result with a fix that is no move today. */
+  const waits = (over: Parameters<typeof result>[0] = {}) => result({ target: undefined, due: undefined, ...over });
+  const content = { why: 'content' as const, to: TARGET, until: NOW + DAY - 7_200_000 };
+
+  it('names each pin once for each reason, with what waits there, its target and when it comes due', () => {
+    const results = [
+      waits({ severity: 'CRITICAL' }),
+      waits(),
+      waits({ name: 'example/other', from: '3.1.0', pin: { file: 'deploy/y.yaml', line: 8 }, due: NOW + DAY }),
+      // One with a fix today, one with none and nothing held, and one excepted: none of them waits.
+      result(),
+      waits(),
+      waits({ excepted: true }),
+    ];
+    const list = waiting(results, [content, content, { why: 'no-better' }, undefined, undefined, content]);
+    expect(list.map(publicWaiting)).toEqual([
+      {
+        name: 'example/other',
+        pins: [{ file: 'deploy/y.yaml', line: 8 }],
+        from: '3.1.0',
+        lockfile: false,
+        why: 'no-better',
+        clears: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+        deadline: '2026-11-11T04:30:00Z',
+      },
+      {
+        name: 'example/image',
+        pins: [{ file: 'deploy/x.yaml', line: 3 }],
+        from: '2.17.0',
+        lockfile: false,
+        why: 'content',
+        to: `image 2.18.0@${DIGEST}`,
+        until: '2026-11-11T02:30:00Z',
+        clears: { CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+      },
+    ]);
+    // The results that wait are kept by their fingerprints, and never printed, as a move's are not.
+    expect(list.map((each) => each.results.length)).toEqual([1, 2]);
+    expect(JSON.stringify(list.map(publicWaiting))).not.toContain(list[0]?.results[0]);
+    // The same results in another order give the same list.
+    const held = [content, content, { why: 'no-better' as const }];
+    expect(waiting([...results.slice(0, 3)].reverse(), [...held].reverse()).map(publicWaiting)).toEqual(
+      list.map(publicWaiting),
+    );
+  });
+
+  it('names a routine update that waits for its content after the fixes, and never a lockfile’s', () => {
+    const routine = {
+      kind: 'third-party' as const,
+      pins: [{ file: 'deploy/z.yaml', line: 2 }],
+      to: TARGET,
+      until: NOW,
+    };
+    const list = waiting(
+      [waits(), waits({ kind: 'lockfile', name: 'left-pad' })],
+      [content, content],
+      [
+        { ...routine, name: 'example/zeta', from: '1.0.0' },
+        { ...routine, name: 'example/alpha', from: '1.0.0' },
+        { ...routine, kind: 'lockfile', name: 'left-pad', from: '1.0.0' },
+      ],
+    ).map(publicWaiting);
+    expect(list.map((each) => [each.name, each.routine])).toEqual([
+      ['example/image', undefined],
+      ['example/alpha', true],
+      ['example/zeta', true],
+    ]);
+    expect(list[1]).toEqual({
+      name: 'example/alpha',
+      pins: [{ file: 'deploy/z.yaml', line: 2 }],
+      from: '1.0.0',
+      lockfile: false,
+      why: 'content',
+      to: `image 2.18.0@${DIGEST}`,
+      until: '2026-11-10T04:30:00Z',
+      clears: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+      routine: true,
+    });
+  });
+
+  it('is written by a scan that judged what waits, an empty list included, and changes nothing else of the file', () => {
+    const list = moves([result()], context());
+    const before = movesFile(list, context(), '19234567890');
+    expect('waiting' in before).toBe(false);
+    const none = movesFile(list, context(), '19234567890', [], undefined, undefined, undefined, []);
+    expect(none.waiting).toEqual([]);
+    const held = waiting([waits()], [content]);
+    const some = movesFile(list, context(), '19234567890', [], undefined, undefined, undefined, held);
+    expect(some.waiting).toEqual(held.map(publicWaiting));
+    for (const file of [none, some]) {
+      const { waiting: _, ...rest } = file;
+      expect(JSON.stringify(rest)).toBe(JSON.stringify(before));
+    }
+    // The table says what waits, under the moves; with nothing waiting it reads as it did.
+    expect(table(none)).toEqual(table(before));
+    expect(table(some).slice(table(before).length)).toEqual([
+      '',
+      'Waiting: 1 with somewhere to go and no move today.',
+      '',
+      `- example/image 2.17.0: a fix of 1 high, to image 2.18.0@${DIGEST}, waits for its content's day, until 2026-11-11T02:30:00Z.`,
+    ]);
+    const refused = movesFile(
+      [],
+      context(),
+      '1',
+      [],
+      undefined,
+      undefined,
+      undefined,
+      waiting([waits()], [{ why: 'no-better' }]),
+    );
+    expect(table(refused).at(-1)).toBe(
+      '- example/image 2.17.0: a fix of 1 high is not listed: no release read is better than the pin.',
+    );
   });
 });

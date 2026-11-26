@@ -58,15 +58,18 @@ red_off() {
 # running, with new work off, on any exit, as a stopped line queues no move in whatever runs next.
 line() { # stopped|running
   local out
-  out=$(cd "$H" && ./stop.sh "$1") || { broke "the line $1"; return 1; }
+  out=$(cd "$H" && ./stop.sh "$1") || { broke "the line is not $1"; return 1; }
   echo "the line: $out"
 }
 line_stopped=
 on_exit() {
   red_off
-  if [ -n "$line_stopped" ]; then (cd "$H" && ./stop.sh running) || echo "BROKE: the line is still stopped: ./stop.sh running"; fi
+  if [ -n "$line_stopped" ]; then (cd "$H" && ./stop.sh running >/dev/null) || echo "BROKE: the scratch line may still be stopped: ./stop.sh running"; fi
 }
 trap on_exit EXIT
+# A signal ends the pass through the same exit, so a line D stopped is started again.
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
 
 # A batch: the moves the scratch pin watch takes, in batch.env. No baseline is built for it: the harness's own reset of
 # the factory copy writes them where the worker reads them as it starts (copies.sh's pin_watch).
@@ -204,9 +207,13 @@ if want D && [ -n "$based" ]; then
 # every move waits. Then Guarded, auto-merge on, the line still stopped (26): the stop alone holds prometheus's move,
 # which Guarded would queue. Then Supervised with the line running: the level alone holds them.
 echo "##### D: Supervised and the line stopped, no move queued $(date -u +%H:%MZ)"
-level supervised show
+# The stop first, and nothing of D without it: on a line still running Guarded queues the batch's moves, and 26 would
+# read FAIL with a move merged for a fault of the set-up. on_exit puts the line back whatever it came to.
 line_stopped=yes
-line stopped
+if ! line stopped; then
+  echo "D: pre-flight, no verdict: the scratch line could not be stopped (./stop.sh stopped says why); no phase was run"
+else
+level supervised show
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # C's moves, on the shared baseline; a build that failed part way leaves `work/` dirty and the reset refuses.
 batch 2,4a,4b
@@ -306,8 +313,11 @@ level guarded show
 phase "26 a stopped line queues no move, Guarded" stopped 6 300
 # Supervised, and then the line running: the worker says of each move that it waits for the level.
 level supervised show
-line running
-phase "no move queued, Supervised and running" supervised 6 0
+if line running; then
+  phase "no move queued, Supervised and running" supervised 6 0
+else
+  echo "no move queued, Supervised and running: pre-flight, no verdict: the scratch line could not be started"
+fi
 gh pr list -R "$R" --state all -L 12 --json number,title,state,createdAt,mergedAt \
   -q ".[]|select(.createdAt>\"$since\")|\"#\(.number) \(.state) merged=\(.mergedAt) \(.title)\""
 echo "queue: $(gh api graphql -f owner="${R%%/*}" -f name="${R#*/}" -f query='query($owner: String!, $name: String!) {repository(owner:$owner,name:$name){mergeQueue(branch:"main"){entries(first:20){nodes{pullRequest{number}}}}}}' -q '.data.repository.mergeQueue.entries.nodes|map(.pullRequest.number)|join(",")')"
@@ -316,6 +326,7 @@ k -n factory logs deploy/github --since-time="$since" | grep -o '"why":"[^"]*"' 
 # builds' deploy pin would roll the factory under the app's tests. So the copy rests before the level goes back.
 at_rest "$LOGS/confirm-d.log"
 level guarded show
+fi
 line running && line_stopped=
 fi
 

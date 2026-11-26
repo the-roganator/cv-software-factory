@@ -21,6 +21,8 @@
 #                            ask Dependabot to make it again on main (the harness calls it before a run whose test
 #                            needs one)
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
+#   ./copies.sh line stop|start|new-work-off  the scratch line stopped or started, or new work set off, by the
+#                            factory copy's own `make` in work/factory, as Martin's commands (stop.sh calls it)
 #   ./copies.sh summon-dependabot [factory|app]  have Dependabot look at a copy now, the app's by default (test 20;
 #                            the harness calls it)
 #   ./copies.sh move-on-main <file> <image> <tag> <tag@digest>  an image's move put on the app copy's main, as another
@@ -414,6 +416,19 @@ in_copy() {
   fi
   (cd "$dir" && env -u GITHUB_APP_PRIVATE_KEY -u PUSHOVER_APP_TOKEN -u PUSHOVER_USER_KEY -u PRIVATE_DIR -u KUBECONFIG \
     -u FACTORY_REPOSITORY -u APP_REPOSITORY mise exec -- "$@")
+}
+
+# The scratch line stopped or started, or new work set off, as Martin's own commands: the copy's `make stop-the-line`,
+# `make start-the-line` and `make new-work OFF=1`, which append the events as `factory line` does, with his operator
+# role, whatever the store holds (a line never started has nothing to stop, and the command says so).
+line_make() {
+  [[ -f "$WORK/factory/Makefile" ]] || die "build first"
+  case "${1:-}" in
+    stop) in_copy make stop-the-line REASON='a patching test' ;;
+    start) in_copy make start-the-line REASON='a patching test' ;;
+    new-work-off) in_copy make new-work OFF=1 ;;
+    *) die "line takes stop, start or new-work-off, not ${1:-nothing}" ;;
+  esac
 }
 
 # The scratch cluster, made by the factory copy's own `make up` at its baseline: Argo CD then deploys each copy's main.
@@ -940,6 +955,7 @@ case "${1:-}" in
   forget-closed) forget_closed "$FACTORY_COPY"; forget_closed "$APP_COPY" ;;
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
+  line) line_make "${2:-}" ;;
   summon-dependabot) summon_dependabot "${2:-app}" ;;
   reopen-dependabot)
     case "${2:-}" in
@@ -952,5 +968,5 @@ case "${1:-}" in
   lift-exception) shift; lift_exception "$@" ;;
   revert-move) revert_move "${2:-}" ;;
   pin-watch) pin_watch ;;
-  *) sed -n '2,42p' "$0"; exit 2 ;;
+  *) sed -n '2,44p' "$0"; exit 2 ;;
 esac

@@ -168,7 +168,10 @@ function getOf(world: World) {
     if (manifest) {
       const [, host, path, tag] = manifest as unknown as [string, string, string, string];
       const repository = host === 'registry-1.docker.io' ? path.replace(/^library\//, '') : `${host}/${path}`;
-      const digest = world.digests?.[`${repository}:${tag}`];
+      // A tag's digest; and, asked for by a digest, that digest where a tag of the repository serves it.
+      const digest = /^sha256:[0-9a-f]{64}$/.test(tag)
+        ? Object.entries(world.digests ?? {}).find(([at, its]) => at.startsWith(`${repository}:`) && its === tag)?.[1]
+        : world.digests?.[`${repository}:${tag}`];
       return digest
         ? new Response(null, { headers: { 'docker-content-digest': digest } })
         : new Response(null, { status: 404 });

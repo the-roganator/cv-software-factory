@@ -53,6 +53,7 @@ import {
   issueFault,
   issueOfMove,
   leftAloneFault,
+  lineTooEarly,
   type MovesFile,
   majorNextFault,
   majorNotFirst,
@@ -2363,6 +2364,18 @@ function run(state: State) {
     appJustReset = reset.includes('app');
     save(state);
   }
+  // An app test's ticket is restored with the store, and the line's look as it takes a ticket, or after a release,
+  // reads the app's newest scan: the first after a reset has no state and lists no image's move, so its findings are
+  // in no move and the look would close the ticket as cleared. The line therefore stays stopped from the restore
+  // until the scan the run stands on is in, when the run starts it (below); a store saved with it running is stopped.
+  if (only?.dependency && !state.scan1 && !state.startedAt) {
+    const early = lineTooEarly(
+      store("select type from events where type in ('line.started', 'line.stopped') order by seq desc limit 1")[0]?.[0],
+    );
+    if (early) {
+      say(state, `${early}: ${make(['stop-the-line', 'REASON=a patching test waits for its scan']).trim()}`);
+    }
+  }
   if (!state.scan1) issueWatch(state, tests);
   if (!state.scan1) preflight(state, appJustReset);
   for (const id of Object.keys(state.dropped ?? {})) {
@@ -2471,6 +2484,7 @@ function run(state: State) {
     const why = majorNotFirst((state.scan1.moves ?? []).find((m) => t.moves.includes(m.name) && moveFits(m, t)));
     if (!why) continue;
     state.dropped = { ...state.dropped, [t.id]: why };
+    tests.splice(tests.indexOf(t), 1);
     say(state, `pre-flight, no verdict for ${t.id}, which is dropped from this run: ${why}`);
     save(state);
   }
@@ -2894,8 +2908,7 @@ function run(state: State) {
     // A failure nothing left can undo ends that test's wait too: its verdict is read after the watch, as every one is.
     for (const t of tests) {
       const seen = state.seen[t.id];
-      if (!seen || seen.certain || t.checksRun?.spent || t.unread || t.duplicate || t.made || state.dropped?.[t.id])
-        continue;
+      if (!seen || seen.certain || t.checksRun?.spent || t.unread || t.duplicate || t.made) continue;
       const tl = seen.timeline;
       seen.certain = certainFail({
         mustHold: Boolean(mustHold(t)),
@@ -2921,15 +2934,7 @@ function run(state: State) {
     const refusedPush = (t: Test) => Boolean(state.forged?.[t.id]?.refused || state.forged?.[t.id]?.landed);
     const all =
       refused ||
-      tests.every(
-        (t) =>
-          Boolean(state.dropped?.[t.id]) ||
-          done(t) ||
-          holds(t) ||
-          settled(t) ||
-          refusedPush(t) ||
-          Boolean(state.seen[t.id]?.certain),
-      );
+      tests.every((t) => done(t) || holds(t) || settled(t) || refusedPush(t) || Boolean(state.seen[t.id]?.certain));
     const stopped =
       Boolean(
         state.line?.held || state.line?.closed || state.line?.stalled || state.line?.strays.length || state.then?.held,

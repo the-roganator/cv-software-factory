@@ -20,6 +20,7 @@ import {
   issueFault,
   issueOfMove,
   leftAloneFault,
+  lineTooEarly,
   lockfileKey,
   majorNextFault,
   majorNotFirst,
@@ -1241,5 +1242,13 @@ describe('a test of a pin’s major, on a scan that lists a move within the majo
     const why = majorNotFirst({ name: 'grafana', from: '13.2.7', to: 'chart grafana 13.7.0', major: false });
     expect(why).toContain('the scan lists grafana from 13.2.7 to chart grafana 13.7.0, a move within its major');
     expect(why).toContain('no major of grafana to judge until that has merged');
+  });
+});
+
+describe('the line under an app’s test, before the scan the run stands on', () => {
+  it('must be stopped where the store was saved with it running, and is left where it is stopped or never started', () => {
+    expect(lineTooEarly('line.started')).toMatch(/running before the scan the run stands on is in/);
+    expect(lineTooEarly('line.stopped')).toBeUndefined();
+    expect(lineTooEarly(undefined)).toBeUndefined();
   });
 });

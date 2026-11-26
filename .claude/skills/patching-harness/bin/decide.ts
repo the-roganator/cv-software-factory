@@ -1107,6 +1107,19 @@ export function waitedVerdict(o: {
   };
 }
 
+// ── The line under an app's test, before its scan ───────────────────────────────────────────────────────────────────
+
+/**
+ * Why the line must be stopped before an app test's scans, from the store's last start or stop, or nothing when it is
+ * stopped or was never started: a running line looks again at a ticket as it takes it, and after each release, by
+ * the app's newest scan, and the first scan after a reset, which has no state, lists no image's move. The findings of
+ * a move not listed are in no move, which that look reads as cleared, and the restored ticket would close unworked.
+ */
+export const lineTooEarly = (last: string | undefined): string | undefined =>
+  last === 'line.started'
+    ? 'the restored line is running before the scan the run stands on is in, and would read the first, stateless scan'
+    : undefined;
+
 // ── A move within the major, and then the major ─────────────────────────────────────────────────────────────────────
 
 /**

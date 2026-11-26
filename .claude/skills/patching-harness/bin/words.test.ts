@@ -4,8 +4,16 @@ import { issueOf, REVERTED, strayed } from '../../../../apps/factory/src/github/
 import { movesFile } from '../../../../apps/factory/src/vulnerabilities/moves.ts';
 import { day, FakeRepo, FILES, factoryMoves } from '../../../../apps/factory/test/github/pins-harness.ts';
 import { rulesets } from '../../../../scripts/github-settings.ts';
-import { FACTORY_APP, type Facts, MARTIN, type PullRequest, route } from '../../../../scripts/review-routing.ts';
-import { APP, ASKED_FOR_CHANGES, FACTORY, NOT_THE_MOVE, RULESET_REFUSAL } from './catalogue.ts';
+import {
+  APP_REPO,
+  FACTORY_APP,
+  FACTORY_REPO,
+  type Facts,
+  MARTIN,
+  type PullRequest,
+  route,
+} from '../../../../scripts/review-routing.ts';
+import { ASKED_FOR_CHANGES, FACTORY, NOT_THE_MOVE, RULESET_REFUSAL } from './catalogue.ts';
 import {
   N10_RULESETS,
   OF_A_MOVE,
@@ -43,8 +51,6 @@ const facts = (repo: string, over: Partial<Facts> = {}): Facts => ({
   labelsRemoved: [],
   ...over,
 });
-/** The copies' names are the real ones' with `-scratch`: the gate tells the app's repository by the real name. */
-const real = (copy: string) => copy.replace(/-scratch$/, '');
 
 describe('the worker’s words, as the harness reads them', () => {
   it('reads a move undone on main in the issue the watch writes for it (27)', () => {
@@ -82,33 +88,33 @@ describe('the worker’s words, as the harness reads them', () => {
 describe('the gate’s words, as the harness reads them', () => {
   it('reads Martin’s request for changes in the hold’s title (25)', () => {
     const asked = [{ user: { id: MARTIN }, state: 'CHANGES_REQUESTED', commit_id: HEAD }];
-    const decision = route(facts(real(FACTORY), { reviews: asked, move: { rule: 'move', title: 'A move' } }));
+    const decision = route(facts(FACTORY_REPO, { reviews: asked, move: { rule: 'move', title: 'A move' } }));
     expect(decision).toMatchObject({ pass: false, rule: 'held' });
     expect(decision.title).toMatch(ASKED_FOR_CHANGES);
-    expect(route(facts(real(FACTORY))).title).not.toMatch(ASKED_FOR_CHANGES);
+    expect(route(facts(FACTORY_REPO)).title).not.toMatch(ASKED_FOR_CHANGES);
   });
 
   it('reads a change that is not the scan’s move in the hold’s title, in either repository (N9, X1)', () => {
     const reason = 'deploy/base/kyverno/values.yaml:12 is "x" where the scan’s moves make "y"';
     const pin = { reason: 'it changes no digest' };
     // In the factory's repository, where only a pin or a move passes: "…, nor a move: …".
-    const here = route(facts(real(FACTORY), { pin, move: { reason } }));
+    const here = route(facts(FACTORY_REPO, { pin, move: { reason } }));
     expect(here.title).toContain(`nor a move: ${reason}`);
     expect(here.title).toMatch(NOT_THE_MOVE);
     // In the app's, held for its tags: "…; not a move: …", which X1's own pattern reads on from.
-    const there = route(facts(real(APP), { tags: [{ tag: 'code-owned', because: ['Dockerfile'] }], move: { reason } }));
+    const there = route(facts(APP_REPO, { tags: [{ tag: 'code-owned', because: ['Dockerfile'] }], move: { reason } }));
     expect(there.title).toContain(`not a move: ${reason}`);
     expect(there.title).toMatch(NOT_THE_MOVE);
     // A line that is another pin's now, as the gate's own edit and the watch's say it.
     expect(strayed({ file: 'deploy/x.yaml', line: 3 }, 'kyverno', 'v1.16.0')).toMatch(NOT_THE_MOVE);
     // A hold for anything else is not read as one.
-    expect(route(facts(real(FACTORY), { pin })).title).not.toMatch(NOT_THE_MOVE);
+    expect(route(facts(FACTORY_REPO, { pin })).title).not.toMatch(NOT_THE_MOVE);
   });
 });
 
 describe('the scan’s document, as the harness reads it', () => {
   it('names no waiting move: one that waits is absent, which is how 28 and 2 read it', () => {
-    const file = movesFile([], { repository: real(FACTORY), now: Date.parse('2026-11-26T06:00:00Z') });
+    const file = movesFile([], { repository: FACTORY_REPO, now: Date.parse('2026-11-26T06:00:00Z') });
     expect(Object.keys(file)).not.toContain(WAITING_KEY);
     expect(shownAs({ ...file }, 'postgres')).toBe('absent');
   });

@@ -131,10 +131,14 @@ export const dependabotOpened = (pr: PullRequest) => pr.user?.id === DEPENDABOT 
 
 /**
  * Whether Martin has had his say on a pull request at its head. A review that only comments says nothing; of the rest,
- * his latest counts: an approval, changes asked, or an approval dismissed. `reviews` is in the order GitHub gives them,
+ * his latest counts: an approval, changes asked, or a review dismissed. `reviews` is in the order GitHub gives them,
  * oldest first.
+ *
+ * `asked` says his latest is a request for changes, whatever commit he made it on: a push leaves it standing, and no
+ * rule passes the pull request while it does (`route`). His approval after it ends it, and so does its dismissal, which
+ * GitHub records as that review's state.
  */
-export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & { rule?: Rule } {
+export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & { rule?: Rule; asked?: true } {
   // From a branch in this repository: one Martin opens from someone else's fork would carry their pushes.
   if (pr.user?.id === MARTIN && fromHere(pr)) {
     return { pass: true, title: 'Martin opened it', rule: 'martin-opened' };
@@ -144,7 +148,7 @@ export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & 
     .at(-1);
   const head = short(pr.head.sha);
   if (!latest) return { pass: false, title: `Waits for Martin to approve ${head}` };
-  if (latest.state === 'CHANGES_REQUESTED') return { pass: false, title: 'Martin asked for changes' };
+  if (latest.state === 'CHANGES_REQUESTED') return { pass: false, title: 'Martin asked for changes', asked: true };
   if (latest.state === 'DISMISSED')
     return { pass: false, title: `His last review was dismissed: waits for him to approve ${head}` };
   if (latest.commit_id !== pr.head.sha) {
@@ -1122,6 +1126,9 @@ export function route(facts: Facts): Decision {
   const { repo, pr, reviews, tags } = facts;
   const martin = verdict(pr, reviews);
   if (martin.pass && martin.rule) return { pass: true, title: martin.title, rule: martin.rule, tags };
+  // Changes Martin asked for hold it whatever it is, an exact pin and a move too: no rule below passes it without him,
+  // and it is no wait, as nothing but his next review ends it.
+  if (martin.asked) return { pass: false, title: martin.title, rule: 'held', tags };
   const held = (why: string): Decision => ({
     pass: false,
     title: `${why}: ${lower(martin.title)}`,

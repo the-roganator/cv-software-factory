@@ -7,6 +7,7 @@ import {
   besideWords,
   branchFits,
   certainFail,
+  changesVerdict,
   type DuplicateFacts,
   dependabotMissing,
   duplicateVerdict,
@@ -20,8 +21,10 @@ import {
   issueOfMove,
   leftAloneFault,
   lockfileKey,
+  majorNextFault,
   moveFits,
   newerFault,
+  notListed,
   type PodFacts,
   type PullFacts,
   pickScan,
@@ -31,8 +34,10 @@ import {
   printOf,
   probeQuery,
   queuedFault,
+  queueWords,
   REFUSAL_KINDS,
   restartVerdict,
+  revertedVerdict,
   rolloutProgressing,
   routineBranch,
   routineMajorBranch,
@@ -40,6 +45,7 @@ import {
   saysNotPulled,
   seenToTheGates,
   settleMs,
+  shownAs,
   staleTarget,
   startingPods,
   stillListed,
@@ -47,6 +53,8 @@ import {
   targetOf,
   ticketFault,
   unreadMoves,
+  waitedVerdict,
+  waitsFault,
   watcherRode,
   withoutDependabot,
   withSetting,
@@ -984,5 +992,231 @@ describe('the store restarting under a report', () => {
     const verdict = restartVerdict({ ...ok, errors: ['logs-7c9: 1 (check failed)'] });
     expect(verdict.pass).toBe(false);
     expect(verdict.why).toContain('logs-7c9');
+  });
+});
+
+describe('a pin move Martin asked for changes on', () => {
+  const says = /Martin asked for changes/;
+  const held: HoldFacts & { gateWords?: string } = {
+    number: 7,
+    state: 'open',
+    head: 'a'.repeat(40),
+    red: [],
+    pending: [],
+    rule: 'held',
+    touched: ['reviewed by the-roganator-martin'],
+    gateWords: 'Martin asked for changes',
+  };
+  const review = { number: 7, head: held.head, pending: ['lint, types, tests'] };
+  const judge = (over: Partial<Parameters<typeof changesVerdict>[0]> = {}) =>
+    changesVerdict({ pulls: [held], review, says, decided: true, ...over });
+
+  it('passes once the gate holds it for his review, its checks are in, and the worker has said it waits', () => {
+    expect(judge()).toEqual({
+      pass: true,
+      why: expect.stringMatching(/#7 held by the gate .*never queued; asked while/),
+    });
+  });
+  it('waits for the worker’s word, and for the checks', () => {
+    expect(judge({ decided: false }).why).toMatch(/waiting for its checks and the worker/);
+    expect(judge({ pulls: [{ ...held, pending: ['platform'] }] }).why).toMatch(/not settled: waiting on platform/);
+  });
+  it('fails when it merged or was queued', () => {
+    expect(judge({ pulls: [{ ...held, state: 'merged' }] }).why).toMatch(/merged, though Martin asked/);
+    expect(judge({ pulls: [{ ...held, queuedBy: 'the-app[bot]' }] }).why).toMatch(
+      /added to the merge queue by the-app/,
+    );
+  });
+  it('fails when the gate passed it, or held it for another reason', () => {
+    expect(judge({ pulls: [{ ...held, rule: 'move' }] }).why).toMatch(/passed it as move, though Martin asked/);
+    expect(judge({ pulls: [{ ...held, gateWords: 'Held for its risk tags' }] }).why).toMatch(/not because he asked/);
+  });
+  it('gives no verdict when every check was in before the review, as the worker could have queued it first', () => {
+    const late = judge({ review: { ...review, pending: [] } });
+    expect(late.pass).toBe(false);
+    expect(late.why).toMatch(/^no verdict: every required check of #7 was in/);
+  });
+  it('fails without the review, with no pull request, with two, or touched by another hand', () => {
+    expect(judge({ review: undefined }).why).toMatch(/was not posted/);
+    expect(judge({ pulls: [] }).why).toMatch(/no pull request opened/);
+    expect(judge({ pulls: [held, { ...held, number: 8 }] }).why).toMatch(/2 pull requests/);
+    expect(judge({ pulls: [{ ...held, touched: [...held.touched, 'labeled by someone'] }] }).why).toBe(
+      '#7 touched: labeled by someone',
+    );
+  });
+  it('keeps a hold decided at an earlier head, unless the gate passes a later one', () => {
+    const later = { ...held, head: 'b'.repeat(40), pending: ['platform', 'review'], rule: undefined };
+    expect(judge({ pulls: [later], decided: false, heldAt: { head: held.head } }).pass).toBe(true);
+    const passed = { ...later, pending: [], rule: 'move' };
+    expect(judge({ pulls: [passed], decided: false, heldAt: { head: held.head } }).why).toMatch(/passed it as move/);
+  });
+});
+
+describe('what the worker says a move waits for', () => {
+  const line = (number: number, head: string, waits: string, why: string) =>
+    JSON.stringify({ level: 30, number, head, waits, why, msg: 'the pin pull request waits to be queued' });
+  const stopped = 'the line is stopped, so a move waits for Martin';
+  const major = 'the line is stopped, so a major waits for Martin';
+  const supervised = 'at Supervised a move waits for Martin';
+  const pulls = [
+    { number: 1, head: 'aaa', queued: false, pending: 0 },
+    { number: 2, head: 'bbb', queued: false, pending: 0 },
+  ];
+
+  it('reads the last word at each head from the log', () => {
+    const words = queueWords(
+      [line(1, 'aaa', 'checks', 'tests is running'), 'not json', line(1, 'aaa', 'stopped', stopped)].join('\n'),
+    );
+    expect(words.get('1 aaa')).toEqual({ waits: 'stopped', why: stopped });
+    expect(words.get('2 bbb')).toBeUndefined();
+  });
+  it('wants the stop said of every move, and of one that Guarded would queue', () => {
+    const words = queueWords([line(1, 'aaa', 'stopped', stopped), line(2, 'bbb', 'stopped', major)].join('\n'));
+    expect(waitsFault(pulls, words, 'stopped')).toBeUndefined();
+    const majors = queueWords([line(1, 'aaa', 'stopped', major), line(2, 'bbb', 'stopped', major)].join('\n'));
+    expect(waitsFault(pulls, majors, 'stopped')).toMatch(/none of them is a move Guarded would queue/);
+  });
+  it('tells the level’s wait from the stop’s, and takes either where both are in force', () => {
+    const words = queueWords([line(1, 'aaa', 'stopped', stopped), line(2, 'bbb', 'level', supervised)].join('\n'));
+    expect(waitsFault(pulls, words, 'either')).toBeUndefined();
+    expect(waitsFault(pulls, words, 'stopped')).toMatch(/#2 at bbb: the worker says it waits for level/);
+    expect(waitsFault(pulls, words, 'supervised')).toMatch(/#1 at aaa: the worker says it waits for stopped/);
+    const guarded = queueWords(line(1, 'aaa', 'level', 'at Guarded a major waits for Martin'));
+    expect(waitsFault([pulls[0] as (typeof pulls)[number]], guarded, 'supervised')).toMatch(
+      /not that it waits at Supervised/,
+    );
+  });
+  it('fails on a queued pull request, checks still running, no word, or no pull request', () => {
+    const words = queueWords(line(1, 'aaa', 'stopped', stopped));
+    expect(waitsFault([{ ...pulls[0], queued: true } as (typeof pulls)[number]], words, 'stopped')).toBe(
+      '#1 is in the merge queue',
+    );
+    expect(waitsFault([{ ...pulls[0], pending: 2 } as (typeof pulls)[number]], words, 'stopped')).toMatch(/2 checks/);
+    expect(waitsFault(pulls, words, 'stopped')).toMatch(/#2 at bbb: the worker has said nothing of it/);
+    expect(waitsFault([], words, 'either')).toBe('no move has a pull request open');
+  });
+});
+
+describe('a move put back on main', () => {
+  const app = 'the-app[bot]';
+  const facts = {
+    of: '14a',
+    move: { name: 'k3s', from: 'v1.37.1+k3s1' },
+    merged: 12,
+    revert: 'c'.repeat(40),
+    scan: { id: 9, moves: [{ name: 'k3s', from: 'v1.37.1+k3s1' }] },
+    pulls: [] as number[],
+    issues: [{ number: 20, author: app, body: 'Its merge was undone on main: the factory leaves it unmade.' }],
+    app,
+    watchedMs: 5 * 60_000,
+    settleMs: 5 * 60_000,
+  };
+  it('passes when the scan lists it again, no pull request opens over the watch, and the App’s issue says so', () => {
+    expect(revertedVerdict(facts)).toEqual({
+      pass: true,
+      why: expect.stringMatching(/scan 9 lists it again.*issue #20/),
+    });
+  });
+  it('fails at once on a pull request for it again', () => {
+    expect(revertedVerdict({ ...facts, pulls: [31], watchedMs: 0 }).why).toMatch(/the App opened #31 for it again/);
+  });
+  it('fails without an issue of the App’s that says so', () => {
+    expect(revertedVerdict({ ...facts, issues: [] }).why).toMatch(/no issue of the App's says so/);
+    const silent = [{ number: 20, author: app, body: 'Move k3s.' }];
+    expect(revertedVerdict({ ...facts, issues: silent }).why).toMatch(/issue #20 does not say it was undone on main/);
+    const another = [{ ...facts.issues[0], author: 'someone' }] as typeof facts.issues;
+    expect(revertedVerdict({ ...facts, issues: another }).why).toMatch(/no issue of the App's says so/);
+  });
+  it('is not yet a pass before the watch is over', () => {
+    expect(revertedVerdict({ ...facts, watchedMs: 60_000 })).toEqual({
+      pass: false,
+      why: expect.stringMatching(/watching for a pull request/),
+    });
+  });
+  it('gives no verdict when the move never merged, or the scan does not list it again', () => {
+    expect(revertedVerdict({ ...facts, merged: undefined }).why).toMatch(/^no verdict: test 14a's move did not merge/);
+    expect(revertedVerdict({ ...facts, scan: { id: 9, moves: [] } }).why).toMatch(/^no verdict: .*does not list k3s/);
+  });
+  it('fails when the pins were not put back, or the scan left no moves', () => {
+    expect(revertedVerdict({ ...facts, revert: undefined }).why).toMatch(/were not put back on main/);
+    expect(revertedVerdict({ ...facts, scan: { id: 9, moves: undefined } }).why).toMatch(/left no moves/);
+  });
+});
+
+describe('content that waits a day', () => {
+  it('reads a move as listed, said to wait, or absent', () => {
+    expect(shownAs({ moves: [{ name: 'postgres' }] }, 'postgres')).toBe('listed');
+    expect(shownAs({ moves: [], waiting: [{ name: 'postgres' }] }, 'postgres')).toBe('waiting');
+    expect(shownAs({ moves: [], waiting: ['postgres'] }, 'postgres')).toBe('waiting');
+    expect(shownAs({ moves: [{ name: 'loki' }] }, 'postgres')).toBe('absent');
+    expect(shownAs(undefined, 'postgres')).toBe('absent');
+  });
+  it('names the moves a scan does not list', () => {
+    expect(notListed(['postgres', 'k3s'], [{ name: 'k3s' }])).toEqual(['postgres']);
+    expect(notListed(['postgres'], undefined)).toEqual(['postgres']);
+    expect(notListed([], [])).toEqual([]);
+  });
+  it('passes when the first scan after the reset does not list it and the one on its state does', () => {
+    const verdict = waitedVerdict({
+      move: 'postgres',
+      first: { id: 1, shown: 'absent' },
+      second: { id: 2, listed: true },
+    });
+    expect(verdict).toEqual({
+      pass: true,
+      why: expect.stringMatching(/scan 1, with no state, does not list postgres; scan 2/),
+    });
+    expect(
+      waitedVerdict({ move: 'postgres', first: { id: 1, shown: 'waiting' }, second: { id: 2, listed: true } }).why,
+    ).toMatch(/says postgres waits/);
+  });
+  it('fails when the first scan lists it', () => {
+    const verdict = waitedVerdict({
+      move: 'postgres',
+      first: { id: 1, shown: 'listed' },
+      second: { id: 2, listed: true },
+    });
+    expect(verdict).toEqual({ pass: false, why: expect.stringMatching(/its content did not wait/) });
+  });
+  it('fails when the run read one scan that lists it, and gives no verdict when neither lists it', () => {
+    expect(waitedVerdict({ move: 'postgres', first: undefined, second: { id: 2, listed: true } }).why).toMatch(
+      /the first this run read, lists postgres/,
+    );
+    expect(waitedVerdict({ move: 'postgres', first: undefined, second: { id: 2, listed: false } }).why).toMatch(
+      /^no verdict/,
+    );
+    expect(
+      waitedVerdict({ move: 'postgres', first: { id: 1, shown: 'absent' }, second: { id: 2, listed: false } }).why,
+    ).toMatch(/^no verdict: .*nothing shows the wait kept it out/);
+    expect(waitedVerdict({ move: 'postgres', first: undefined, second: undefined }).why).toBe(
+      'the scan has not finished',
+    );
+  });
+});
+
+describe('a move within the major, and then the major', () => {
+  const first = { name: 'prometheus', to: 'chart prometheus 29.49.0', major: false };
+  const major = { name: 'prometheus', from: '29.49.0', to: 'chart prometheus 30.0.1 (a major)', major: true };
+  it('fails when the first scan names the major', () => {
+    expect(majorNextFault({ ...first, to: major.to, major: true }, [])).toMatch(/names a major for prometheus/);
+  });
+  it('says nothing while no later scan is read', () => {
+    expect(majorNextFault(first, [])).toBeUndefined();
+  });
+  it('is content with a later scan that lists the major from the release it moved to, or says it waits', () => {
+    expect(
+      majorNextFault(first, [
+        { id: 2, moves: [] },
+        { id: 3, moves: [major] },
+      ]),
+    ).toBeUndefined();
+    expect(majorNextFault(first, [{ id: 2, moves: [], waiting: ['prometheus'] }])).toBeUndefined();
+  });
+  it('fails when no later scan lists it, or lists a move from there that is no major', () => {
+    expect(majorNextFault(first, [{ id: 2, moves: [] }])).toMatch(/scan 2 lists no major of prometheus from 29.49.0/);
+    expect(majorNextFault(first, [{ id: 2, moves: [{ ...major, from: '29.35.0' }] }])).toMatch(/lists no major/);
+    expect(
+      majorNextFault(first, [{ id: 2, moves: [{ ...major, major: false, to: 'chart prometheus 29.50.0' }] }]),
+    ).toMatch(/which is no major/);
   });
 });

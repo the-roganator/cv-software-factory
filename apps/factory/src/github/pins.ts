@@ -494,13 +494,15 @@ const routineWords = (count: number) =>
     : 'Each is a routine update: a newer release, with no advisory behind it and no deadline.';
 
 /**
- * What a deadline counts, said wherever a move within its pin's major leaves results: its deadline is the earliest of
- * what it clears and of what it leaves that only a later major clears (moves.ts), so the day shown is the pin's.
+ * What a deadline counts, said wherever a move within its pin's major leaves results that only a later major clears
+ * (the scan's `forMajor`): its deadline is the earliest of what it clears and of those (moves.ts), so the day shown is
+ * the pin's. A move that leaves only results with no fix leaves nothing for a major, and its deadline is of what it
+ * clears alone.
  */
 const LEAVES_FOR_A_MAJOR =
   'The deadline is the earliest among what the move clears and what it leaves that only a major clears: the scan lists that major as a move of its own once this one has merged.';
-const leavesForLater = (move: Pick<ReadMove, 'major' | 'leaves' | 'deadline'>) =>
-  !move.major && move.deadline !== undefined && SEVERITIES.some((s) => move.leaves[s]);
+const leavesForLater = (move: Pick<ReadMove, 'major' | 'forMajor' | 'deadline'>) =>
+  !move.major && move.deadline !== undefined && SEVERITIES.some((s) => move.forMajor?.[s]);
 
 /**
  * What each move clears and leaves, and its deadline, as a table after a blank line. A routine update clears nothing

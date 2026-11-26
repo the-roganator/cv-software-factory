@@ -9,6 +9,7 @@ import {
   isRoutine,
   type Judged,
   MOVES_VERSION,
+  type Move,
   moves,
   movesFile,
   publicMove,
@@ -364,7 +365,28 @@ describe('one pin with several targets', () => {
     });
     expect(list[0]?.clears.HIGH).toBe(2);
     expect(list[0]?.leaves.HIGH).toBe(1);
+    expect(list[0]?.forMajor?.HIGH).toBe(1);
     expect(list[0]?.results).toHaveLength(2);
+  });
+
+  it('counts what a move leaves for a major apart from what it leaves with no fix', () => {
+    const unfixed = (due: number) => ({
+      ...result({ kind: 'chart', name: 'grafana', from: '13.2.7', target: undefined }),
+      severity: 'CRITICAL' as const,
+      due,
+    });
+    // A result with no fix is left, for no major: the move says nothing is left for one, and its deadline is of what
+    // it clears alone, however soon the unfixed one is due.
+    const [alone] = moves([{ ...chart('13.7.0', false), due: NOW + 4 * DAY }, unfixed(NOW + DAY)], context());
+    expect(alone).toMatchObject({ major: false, deadline: NOW + 4 * DAY });
+    expect(alone?.leaves.CRITICAL).toBe(1);
+    expect(alone?.forMajor).toBeUndefined();
+    expect(publicMove(alone as Move)).not.toHaveProperty('forMajor');
+    // With one a major clears beside it, that one alone is for the major, and the file says so.
+    const [both] = moves([chart('13.7.0', false), chart('14.4.1', true), unfixed(NOW + DAY)], context());
+    expect(both?.leaves).toMatchObject({ CRITICAL: 1, HIGH: 1 });
+    expect(both?.forMajor).toMatchObject({ CRITICAL: 0, HIGH: 1 });
+    expect(publicMove(both as Move).forMajor).toMatchObject({ CRITICAL: 0, HIGH: 1 });
   });
 
   it('gives a move within the major the earliest deadline of what it clears and of what it leaves for the major', () => {

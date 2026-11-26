@@ -106,7 +106,12 @@ export interface Move {
   clears: Counts;
   leaves: Counts;
   /**
-   * Its earliest deadline: among those it clears, and those it leaves that only a major clears (`withinMajor`), which
+   * Of what it leaves, the results only a major clears (`withinMajor`), where it leaves any: the rest of what it
+   * leaves has no fix, or is another move's.
+   */
+  forMajor?: Counts | undefined;
+  /**
+   * Its earliest deadline: among those it clears, and those it leaves that only a major clears (`forMajor`), which
    * are in no move until this one has merged, so the pin's urgency is never hidden behind a move within its major.
    */
   deadline?: number | undefined;
@@ -299,6 +304,8 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
     for (const each of members) clears[each.severity]++;
     const leaves = zero();
     for (const each of byPin.get(pinKey(first)) ?? []) if (!members.includes(each)) leaves[each.severity]++;
+    const forMajor = zero();
+    for (const each of group) if (!members.includes(each)) forMajor[each.severity]++;
     // The whole group's: what a move within the major leaves for the major is due all the same, and is in no other move.
     const dues = group.flatMap((each) => (each.due === undefined ? [] : [each.due]));
     const move: Move = {
@@ -310,6 +317,7 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
       major: isMajor(target, first.from),
       clears,
       leaves,
+      ...(total(forMajor) ? { forMajor } : {}),
       deadline: dues.length ? Math.min(...dues) : undefined,
       newToday: members.filter((each) => each.firstSeenToday).length,
       lane: 'none',
@@ -561,6 +569,8 @@ export interface PublicMove {
   major: boolean;
   clears: Counts;
   leaves: Counts;
+  /** Of what it leaves, what only a major clears, where it leaves any. */
+  forMajor?: Counts | undefined;
   /** UTC, to the second. */
   deadline?: string | undefined;
   newToday: number;
@@ -668,6 +678,7 @@ export function publicMove(move: Move): PublicMove {
     major: move.major,
     clears: move.clears,
     leaves: move.leaves,
+    ...(move.forMajor ? { forMajor: move.forMajor } : {}),
     deadline: move.deadline === undefined ? undefined : dayText(move.deadline),
     newToday: move.newToday,
     lane: move.lane,

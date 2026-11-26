@@ -305,6 +305,8 @@ export const MOVES_FILE_SCHEMA = z.strictObject({
       major: z.boolean(),
       clears: COUNTS,
       leaves: COUNTS,
+      // Of what it leaves, what only a major clears: a file with no such move reads as it did.
+      forMajor: COUNTS.optional(),
       deadline: DAY.optional(),
       newToday: z.number().int().nonnegative(),
       lane: z.enum(LANES as [(typeof LANES)[number], ...(typeof LANES)[number][]]),

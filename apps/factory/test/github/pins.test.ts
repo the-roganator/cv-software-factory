@@ -441,15 +441,22 @@ describe('the pin watch’s issues', () => {
     expect(cd?.body).toContain('**Deadline** 2026-11-18T06:00:00Z.');
   });
 
-  it('says what a deadline counts where a move within its major leaves results', () => {
+  it('says what a deadline counts where a move within its major leaves results for the major', () => {
     const repo = new FakeRepo(FILES);
     const cd = factoryMoves().find((m) => m.name === 'example-cd') as ReadMove;
     const says = 'The deadline is the earliest among what the move clears and what it leaves that only a major clears';
-    const leaves = { ...cd, leaves: { ...cd.leaves, CRITICAL: 1 } };
+    const left = { ...cd.leaves, CRITICAL: 1 };
+    const leaves = { ...cd, leaves: left, forMajor: left };
     expect(issueOf(leaves, day(repo.main, [leaves])).body).toContain(`**Deadline** ${cd.deadline}. ${says}`);
     // Nothing left, or a major itself: the deadline is of what it clears, and no more is said.
     expect(issueOf(cd, day(repo.main, [cd])).body).not.toContain(says);
     expect(issueOf({ ...leaves, major: true }, day(repo.main, [leaves])).body).not.toContain(says);
+    // What it leaves has no fix (k3s, which has no major in play): nothing is left for a major, and none is spoken of.
+    const unfixed = { ...cd, leaves: left };
+    const issue = issueOf(unfixed, day(repo.main, [unfixed])).body;
+    expect(issue).toContain(`**Deadline** ${cd.deadline}.\n`);
+    expect(issue).not.toMatch(/\bmajor\b/);
+    expect(pullBody([{ move: unfixed, edits: [] }], day(repo.main, [unfixed]))).not.toContain(says);
     // Its pull request's table says it too, once, under the rows.
     expect(pullBody([{ move: leaves, edits: [] }], day(repo.main, [leaves]))).toContain(`${cd.deadline} |\n\n${says}`);
     expect(pullBody([{ move: cd, edits: [] }], day(repo.main, [cd]))).not.toContain(says);

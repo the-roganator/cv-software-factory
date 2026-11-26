@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  besideWords,
   branchFits,
   certainFail,
   type DuplicateFacts,
@@ -778,6 +779,19 @@ describe("Dependabot's pull request for a pin the App moved", () => {
     const closed = duplicateVerdict({ pull, app, merge, lines });
     expect(closed.pass).toBe(false);
     expect(closed.why).toContain('though main lacks its line');
+  });
+
+  it('says what became of one beside a move, and never judges the move by it', () => {
+    expect(besideWords(undefined, app, merge.at)).toBe("no pull request of Dependabot's beside it");
+    expect(besideWords(pull, app, merge.at)).toBe(
+      "Dependabot's #3 beside it closed by the App as a duplicate after the merge",
+    );
+    expect(besideWords({ ...pull, comments: [] }, app, merge.at)).toContain('with no comment that says why');
+    expect(besideWords({ ...pull, closedBy: 'dependabot[bot]' }, app, merge.at)).toContain('closed by dependabot[bot]');
+    const open = { ...pull, state: 'open', closedAt: undefined, closedBy: undefined };
+    expect(besideWords(open, app, merge.at)).toBe("Dependabot's #3 beside it is still open");
+    expect(besideWords({ ...pull, state: 'merged' }, app, merge.at)).toContain('merged');
+    expect(besideWords({ ...pull, closedAt: '2026-11-25T10:10:00Z' }, app, merge.at)).not.toContain('after the merge');
   });
 
   it('leaves alone one whose lines main lacks: it is still open', () => {

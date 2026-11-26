@@ -31,6 +31,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { join } from 'node:path';
 import { APP, FACTORY, TESTS, type Test } from './catalogue.ts';
 import {
+  besideWords,
   branchFits,
   certainFail,
   type DuplicateFacts,
@@ -292,7 +293,6 @@ function preflight(state: State, appJustReset: boolean) {
       ? [{ test: t.id, title: t.pr.title, anyAge: Boolean(t.duplicate) }]
       : []),
     ...(t.duplicate ? [{ test: t.id, title: t.duplicate.leaves, asIs: true }] : []),
-    ...(t.beside ? [{ test: t.id, title: t.beside }] : []),
   ]);
   if (kept.length) {
     const repo = state.campaign === 'app' ? APP : FACTORY;
@@ -548,6 +548,8 @@ interface Seen {
   issueSays?: boolean;
   /** For a test with `duplicate`: Dependabot's pull request, and those of its that main lacks the lines of. */
   duplicate?: DuplicateFacts | undefined;
+  /** For a test with `beside`: Dependabot's pull request for the same pin, if there is one. */
+  besideOf?: DuplicateFacts | undefined;
   /** For a test with `duplicate`: the lines Dependabot's diff adds and those the App's merged move added. */
   duplicateLines?: { theirs: string[]; ours: string[] };
   leftAlone?: DuplicateFacts[];
@@ -1397,6 +1399,14 @@ function observe(state: State, tests: Test[], final = false) {
       // One read before stays read: the issue is closed once the move is made, and deleted at the next reset.
       if (read.number !== undefined || !seen.refusal?.number) seen.refusal = { ...read, ...(body ? { body } : {}) };
     }
+    if (test.beside) {
+      const title = test.beside;
+      const [newest] = listed
+        .filter((p) => p.user.login === 'dependabot[bot]' && title.test(p.title))
+        .filter((p) => p.state === 'open' || p.closed_at >= since)
+        .sort((a, b) => b.number - a.number);
+      seen.besideOf = newest ? duplicateOf(test.repo, newest) : undefined;
+    }
     if (test.duplicate) {
       const leaves = test.duplicate.leaves;
       // The newest of its pull requests: an open one, or the one this run saw closed.
@@ -1704,6 +1714,7 @@ function recoveryWords(state: State, test: Test, seen: Seen): string {
       ? `#${state.then.workItem} closed ${state.then.closed.outcome}, issue #${state.then.issue?.number} completed`
       : '',
     test.removes ? `both copies moved` : '',
+    test.beside ? besideWords(seen.besideOf, APP_BOT, seen.pulls[0]?.mergedAt) : '',
     test.refused && seen.refusal?.number
       ? `issue #${seen.refusal.number} says why the refused one waits (${seen.refusal.kind})`
       : '',

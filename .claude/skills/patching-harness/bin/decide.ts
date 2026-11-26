@@ -633,6 +633,25 @@ export function leftAloneFault(pulls: readonly DuplicateFacts[], app: string): s
     : `no verdict: Dependabot's #${closed.number}, whose lines main lacks, was closed by ${closed.closedBy ?? 'nobody known'}, not left open`;
 }
 
+/**
+ * What a move's line says of Dependabot's pull request for the same pin beside it, which is no part of the move's own
+ * verdict: that there was none, or what became of it once the move merged. Closed by the App with the worker's
+ * comment, it is the duplicate watch seen at work in that repository.
+ */
+export function besideWords(pull: DuplicateFacts | undefined, app: string, mergedAt: string | undefined): string {
+  if (!pull) return "no pull request of Dependabot's beside it";
+  const tag = `Dependabot's #${pull.number} beside it`;
+  if (pull.state === 'merged') return `${tag} merged`;
+  if (pull.state === 'open') return `${tag} is still open`;
+  const after = mergedAt && pull.closedAt && pull.closedAt >= mergedAt ? ' after the merge' : '';
+  const said = pull.comments.some((c) => c.author === app && c.body.trimStart().startsWith(DUPLICATE_CLOSED));
+  if (pull.closedBy === app)
+    return said
+      ? `${tag} closed by the App as a duplicate${after}`
+      : `${tag} closed by the App${after}, with no comment that says why`;
+  return `${tag} closed by ${pull.closedBy ?? 'nobody known'}${after}`;
+}
+
 // ── A ticket that must close with no change of its own ──────────────────────────────────────────────────────────────
 
 export interface TicketFacts {

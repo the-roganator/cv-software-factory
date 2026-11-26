@@ -125,8 +125,9 @@ export interface Test {
   /** Its pull request is Dependabot's own, which the run summons (`./copies.sh summon-dependabot`). */
   summons?: boolean;
   /**
-   * A pull request of Dependabot's, by its title, that must be open beside the test's own move as the run starts
-   * (baseline.env keeps it): the move is proven with Dependabot's of the same pin there, as the real repository has it.
+   * A pull request of Dependabot's, by its title, for the pin the test's own move makes (baseline.env keeps it while
+   * there is one). It is no part of the move's verdict: the test runs without one, and its line says there was none,
+   * or what became of it once the move merged.
    */
   beside?: RegExp;
   /**

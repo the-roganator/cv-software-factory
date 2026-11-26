@@ -271,8 +271,11 @@ since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # that word only after the gate's verdict, the checks and mergeability are through, the last step before it would queue
 # (deploy-queue.ts's queueOne), so it is the pass where the stop or the level is asked; its earlier words at that head
 # (`verdict`, `checks`, `conflict`) decide nothing.
+# The worker says a wait once a head, so a word may be older than the level or the stop a phase sets: a phase that
+# restarted the worker after its change sets `said_since` to that restart, and only the words from then count.
+said_since=
 moves_wait() { # <want>
-  (cd "$H" && mise exec -- node harness.ts waits "$since" "$1") 2>&1 | cut -c1-300
+  (cd "$H" && mise exec -- node harness.ts waits "$since" "$1" ${said_since:+"$said_since"}) 2>&1 | cut -c1-300
   return "${PIPESTATUS[0]}"
 }
 # Done once the deploy pin's pull request has merged and every move waits for the stop or the level, both in force. A
@@ -306,12 +309,20 @@ case "$deploy" in
   *) echo "deploy pin: PASS, merged at Supervised with the line stopped: $deploy" ;;
 esac
 phase "no move queued, Supervised and stopped" either 0 0
-# 26: Guarded, with auto-merge on, and the line still stopped. Watched for five of the worker's passes after the level
-# changed, each of which would queue prometheus's move were the line running.
+# 26: Guarded, with auto-merge on, and the line still stopped. The worker's word that a move waits for the stop was
+# said at Supervised, once a head, and it says nothing new when the level alone changes: so the worker is restarted
+# once the level is Guarded, and 26 stands on what the new one says of each head, having read the level as Guarded,
+# and then on five minutes more in which each of its passes would queue prometheus's move were the line running. A
+# worker that starts takes each head as its own where `main` has not moved under it, and writes it again where it has,
+# which is a round of checks: so the wait for its words is thirty minutes at most, and ends when they are in.
 (cd "$H" && ./auto-merge.sh on >/dev/null) || broke "D: auto-merge on"
 level guarded show
-phase "26 a stopped line queues no move, Guarded" stopped 6 300
-# Supervised, and then the line running: the worker says of each move that it waits for the level.
+said_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+k -n factory rollout restart deploy/github >/dev/null && k -n factory rollout status deploy/github --timeout=300s >/dev/null ||
+  broke "D: the worker's restart at Guarded; 26 below is no verdict"
+phase "26 a stopped line queues no move, Guarded" stopped 30 300
+# Supervised, and then the line running: the worker says of each move that it waits for the level, in new words.
+said_since=
 level supervised show
 if line running; then
   phase "no move queued, Supervised and running" supervised 6 0

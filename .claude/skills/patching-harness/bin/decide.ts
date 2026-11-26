@@ -1008,10 +1008,48 @@ export function rulesetsRefusal(o: {
  * `main` in backticks (apps/factory/src/github/pins.ts's `issueOf`, for `REVERTED`; words.test.ts holds the two together).
  */
 export const REVERTED_SAYS = /its merge was then undone on `main`/;
+/** The mark of a line that is neither a pass nor a failure: the run could not judge, for no fault of the code's. */
+export const NO_VERDICT = 'NO VERDICT';
+/**
+ * How often the worker's pin watch reads the scan's moves (apps/factory/src/github/pins.ts's `PASS_MS`; words.test.ts
+ * holds the two together): between two reads a new scan is unknown to it, however often the worker polls. It reads at
+ * once only as it starts.
+ */
+export const PIN_PASS_MS = 60 * 60_000;
+/**
+ * How long a run waits for the pin watch to read a scan it must have read before anything is judged on it: one whole
+ * period of the watch, which is how long a watch that was not restarted may take, and ten minutes more for a restart
+ * of the worker that falls inside it (a deploy pin's rollout, or the run's own, each of which starts the period again
+ * with a read). The run restarts the worker once the scan is in, so the read is usually a minute away.
+ */
+export const PIN_PASS_LIMIT_MS = PIN_PASS_MS + 10 * 60_000;
+/** What the pin watch logs once a scan when a pass has read its moves, with the scan's run (pins.ts's `READ_THE_SCAN`). */
+export const READ_THE_SCAN = /^the pin watch takes the moves it was told to/;
+/**
+ * The pin watch's first pass over a repository on a scan, or on one after it, from the worker's log: when, and which
+ * run it read. A scan's run ids only grow, so a later run of the same workflow is a later scan of the same `main`.
+ */
+export function watchRead(log: string, repo: string, scan: number): { at: string; run: number } | undefined {
+  const reads: { at: string; run: number }[] = [];
+  for (const line of log.split('\n')) {
+    if (!line.includes('the pin watch takes')) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (!READ_THE_SCAN.test(String(entry.msg)) || entry.repo !== repo) continue;
+      if (typeof entry.run !== 'number' || entry.run < scan) continue;
+      reads.push({ at: new Date(entry.time).toISOString(), run: entry.run });
+    } catch {}
+  }
+  return reads.sort((a, b) => a.at.localeCompare(b.at))[0];
+}
 /**
  * A move Martin reverted (test 27): the move merged, its pins were put back on `main`, and the scan after lists it
- * again from the version it had; then, for a few of the worker's passes (`watchedMs` of `settleMs`), the App opened no
- * pull request that carries it, and an issue of the App's for the move says its merge was undone on `main`.
+ * again from the version it had. Nothing is judged until the pin watch is known to have made a pass on that scan,
+ * since a watch that has not read it opens nothing either: by its own word in its log (`read`), by its issue for the
+ * move, or by a pull request for it, which fails the test at once. From the first of those the App is watched for a
+ * few of the worker's passes (`settleMs`): it passes with no pull request that carries the move and an issue of the
+ * App's that says its merge was undone on `main`, and fails when the watch read the scan and wrote no such issue.
+ * With no sign of a pass by the end of the watch (`PIN_PASS_LIMIT_MS`) there is no verdict.
  */
 export function revertedVerdict(o: {
   of: string;
@@ -1023,11 +1061,14 @@ export function revertedVerdict(o: {
   scan: { id: number; moves: readonly Pick<ListedMove, 'name' | 'from'>[] | undefined } | undefined;
   /** The App's pull requests opened since the revert that carry the move, and its issues for it since. */
   pulls: readonly number[];
-  issues: readonly { number: number; author: string; body: string }[];
+  issues: readonly { number: number; author: string; body: string; at?: string | undefined }[];
   app: string;
-  watchedMs: number;
+  /** The pin watch's pass on that scan or a later one, as its log has it (`watchRead`). */
+  read: { at: string; run: number } | undefined;
+  /** When the run last looked. */
+  watchedUntil: string | undefined;
   settleMs: number;
-}): { pass: boolean; why: string } {
+}): { pass: boolean; why: string; mark?: string } {
   const fail = (why: string) => ({ pass: false, why: why.slice(0, 420) });
   if (!o.move || o.merged === undefined)
     return fail(`no verdict: test ${o.of}'s move did not merge, so there was nothing to put back`);
@@ -1039,20 +1080,32 @@ export function revertedVerdict(o: {
     return fail(`no verdict: ${so}, and scan ${o.scan.id} does not list ${o.move.name} from ${o.move.from} again`);
   const own = o.issues.filter((issue) => issue.author === o.app);
   const said = own.find((issue) => REVERTED_SAYS.test(issue.body));
-  if (!said)
+  // The first sign that the watch made a pass on the scan: its log's word, or its issue for the move.
+  const signs = [o.read?.at, ...own.map((issue) => issue.at)].filter((at): at is string => Boolean(at)).sort();
+  const until = o.watchedUntil ?? '';
+  if (!o.read && !own.length)
+    return {
+      ...fail(`no verdict: ${so}; the pin watch had not read scan ${o.scan.id} by ${until || 'the end of the run'}`),
+      mark: NO_VERDICT,
+    };
+  const watchedMs = signs[0] && until ? Date.parse(until) - Date.parse(signs[0]) : 0;
+  const minutes = Math.round(watchedMs / 60_000);
+  const lists = `scan ${o.scan.id} lists it again`;
+  const read = o.read ? `the pin watch read scan ${o.read.run} at ${o.read.at}` : 'the pin watch made a pass';
+  if (!said && own.length)
     return fail(
-      `${so}; scan ${o.scan.id} lists it again and no pull request opened, but ${own.length ? `issue #${own.map((i) => i.number).join(', #')} does not say it was undone on main` : "no issue of the App's says so"}`,
+      `${so}; ${lists} and no pull request opened, but issue #${own.map((i) => i.number).join(', #')} does not say it was undone on main`,
     );
-  if (o.watchedMs < o.settleMs)
+  if (watchedMs < o.settleMs)
     return fail(
-      `${so}; issue #${said.number} says so; watching for a pull request (${Math.round(o.watchedMs / 60_000)} min)`,
+      `${so}; ${lists}, ${read}${said ? ` and issue #${said.number} says so` : ''}; watching for ${said ? 'a pull request' : 'its issue'} (${minutes} min)`,
     );
+  if (!said) return fail(`${so}; ${lists}, and ${read} and opened no pull request, but no issue of the App's says so`);
   return {
     pass: true,
-    why: `${so}; scan ${o.scan.id} lists it again, the App opened no pull request for it in ${Math.round(o.watchedMs / 60_000)} minutes, and issue #${said.number} says its merge was undone on main`,
+    why: `${so}; ${lists}, ${read}, the App opened no pull request for it in the ${minutes} minutes after, and issue #${said.number} says its merge was undone on main`,
   };
 }
-
 // ── Content that waits a day ────────────────────────────────────────────────────────────────────────────────────────
 
 /** The scan's document, `moves.json`: its moves, and the pins it says wait (`WAITING_KEY`). */
@@ -1180,4 +1233,21 @@ export function majorNextFault(
     if (shownAs({ [WAITING_KEY]: scan[WAITING_KEY] }, first.name) === 'waiting') return undefined;
   }
   return `scan ${later.map((s) => s.id).join(', ')} lists no major of ${first.name} from ${reached ?? first.to} as a move of its own`;
+}
+/**
+ * Which later scan gives a move within its major the major that follows it (test 2), and how: `listed`, as a move of
+ * its own from the release the first reached, by any of them; or said to wait for its content's day, which is not yet
+ * a move. Each is the scan's own word after the merge, and a verdict says which it stood on.
+ */
+export function majorNext(
+  first: Pick<ListedMove, 'name' | 'to'>,
+  later: readonly ({ id: number } & MovesFile)[],
+): { scan: number; listed: boolean } | undefined {
+  const reached = targetOf(first.to);
+  const lists = later.find((scan) =>
+    (scan.moves ?? []).some((m) => m.name === first.name && m.from === reached && m.major),
+  );
+  if (lists) return { scan: lists.id, listed: true };
+  const waits = later.find((scan) => shownAs({ [WAITING_KEY]: scan[WAITING_KEY] }, first.name) === 'waiting');
+  return waits ? { scan: waits.id, listed: false } : undefined;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { levelWait } from '../../../../apps/factory/src/github/deploy-queue.ts';
-import { issueOf, REVERTED, strayed } from '../../../../apps/factory/src/github/pins.ts';
+import { issueOf, PASS_MS, READ_THE_SCAN, REVERTED, strayed } from '../../../../apps/factory/src/github/pins.ts';
 import { type Judged, movesFile, waiting } from '../../../../apps/factory/src/vulnerabilities/moves.ts';
 import { day, FakeRepo, FILES, factoryMoves } from '../../../../apps/factory/test/github/pins-harness.ts';
 import { rulesets } from '../../../../scripts/github-settings.ts';
@@ -17,6 +17,7 @@ import { ASKED_FOR_CHANGES, FACTORY, NOT_THE_MOVE, RULESET_REFUSAL } from './cat
 import {
   N10_RULESETS,
   OF_A_MOVE,
+  PIN_PASS_MS,
   queueWords,
   REVERTED_SAYS,
   rulesetsFault,
@@ -27,6 +28,7 @@ import {
   WAITING_KEY,
   WAITS_FOR_CONTENT,
   waitsFault,
+  watchRead,
 } from './decide.ts';
 
 /**
@@ -65,6 +67,19 @@ describe('the worker’s words, as the harness reads them', () => {
     expect(issueOf(move, moves, 'a pull request the App did not open stands on its branch').body).not.toMatch(
       REVERTED_SAYS,
     );
+  });
+
+  it('reads the pin watch’s pass on a scan in its log, and waits for it by the watch’s own period (27)', () => {
+    const line = JSON.stringify({
+      level: 30,
+      time: 1795732523000,
+      repo: FACTORY,
+      run: 7,
+      taken: 1,
+      msg: READ_THE_SCAN,
+    });
+    expect(watchRead(line, FACTORY, 7)).toEqual({ at: new Date(1795732523000).toISOString(), run: 7 });
+    expect(PIN_PASS_MS).toBe(PASS_MS);
   });
 
   it('reads the line’s stop and the level’s wait in what the queue logs (26, batch D)', () => {

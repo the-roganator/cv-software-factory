@@ -123,6 +123,8 @@ const ISSUE_LANES = new Set(['issue', 'none']);
 
 /** How often a pass reads the day: the scan runs daily, and a pass is idempotent. */
 export const PASS_MS = 60 * 60_000;
+/** What the watch logs once a scan, with the scan's run, when a pass has read its moves and what it takes of them. */
+export const READ_THE_SCAN = 'the pin watch takes the moves it was told to (PIN_WATCH_ONLY), and leaves the rest alone';
 
 export interface PinWatchDependencies {
   github: GitHub;
@@ -1120,12 +1122,13 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     say(
       `scope ${run}`,
       {
+        run,
         only: every ? '*' : [...named],
         taken: taken.length,
         leftAlone: read.moves.length - taken.length,
         unknown: [...named].filter((name) => !read.moves.some((move) => move.name === name)),
       },
-      'the pin watch takes the moves it was told to (PIN_WATCH_ONLY), and leaves the rest alone',
+      READ_THE_SCAN,
     );
     /** Whether the next poll reads the day again rather than wait the hour: main moved while a move was written. */
     let again = false;

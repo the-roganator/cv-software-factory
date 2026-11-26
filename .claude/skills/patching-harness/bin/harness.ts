@@ -18,7 +18,8 @@
  * (`./copies.sh pin-watch`); a run whose pull requests the worker queues has the scratch line running, with new work
  * off (`./stop.sh running`), as a stopped line queues no move; test 25 asks for changes on its pull request, as
  * Martin's login (`gh pr review --request-changes`); and test 27 puts a merged move's pins back on the factory copy's
- * main (`./copies.sh revert-move`) and scans again. It never approves, queues, re-runs a check, answers a hold or sets
+ * main (`./copies.sh revert-move`), scans again, and restarts the scratch GitHub worker once that scan is in, so its
+ * pin watch reads it. It never approves, queues, re-runs a check, answers a hold or sets
  * a variable (a test's `variables` are read, and confirm.sh sets them). Everything else is a read.
  *
  *     node harness.ts factory [--only 1,2,N4] [--limit 60] [--lights-out] [--no-reset] [--no-scan] [--no-kick] [--no-forge] [--once]
@@ -55,12 +56,14 @@ import {
   leftAloneFault,
   lineTooEarly,
   type MovesFile,
+  majorNext,
   majorNextFault,
   majorNotFirst,
   moveFits,
   N10_RULESETS,
   newerFault,
   notListed,
+  PIN_PASS_LIMIT_MS,
   pickScan,
   pinsFault,
   pinWatchLacks,
@@ -88,6 +91,7 @@ import {
   waitedVerdict,
   waitsFault,
   watcherRode,
+  watchRead,
   withoutDependabot,
   withSetting,
   workflowPins,
@@ -698,15 +702,22 @@ interface State {
   idledAt?: string;
   /** Test 25: the review that asks for changes, the head it was posted on and the required checks running then. */
   review?: { number: number; head: string; at: string; pending: string[] };
-  /** Test 27: the merge put back, the commit that did it, and what came after. */
+  /**
+   * Test 27: the merge put back, the commit that did it, and what came after: the scan, the worker's restart once it
+   * was in (and the worker's error lines until then, which go with its pod), the pin watch's pass on that scan as its
+   * log has it, and the App's pull requests and issues for the move since.
+   */
   reverted?: {
     merge: string;
     commit?: string;
     at?: string;
     scannedAt?: string;
+    restartedAt?: string;
+    before?: { errors: string[]; errorAt: string[] };
+    read?: { at: string; run: number };
     watchedUntil?: string;
     pulls: number[];
-    issues: { number: number; author: string; body: string }[];
+    issues: { number: number; author: string; body: string; at?: string }[];
   };
   kickedAt?: string;
   /** When the run summoned Dependabot (test 20; test 22, at its reset). */
@@ -1917,7 +1928,8 @@ function verdict(state: State, test: Test): { pass: boolean; why: string; mark?:
       pulls: done?.pulls ?? [],
       issues: done?.issues ?? [],
       app: APP_BOT,
-      watchedMs: done?.scannedAt && done.watchedUntil ? Date.parse(done.watchedUntil) - Date.parse(done.scannedAt) : 0,
+      read: done?.read,
+      watchedUntil: done?.watchedUntil,
       settleMs: revertSettleMs(state.workerPollS),
     });
   }
@@ -2147,10 +2159,17 @@ function verdict(state: State, test: Test): { pass: boolean; why: string; mark?:
   if (after > 0 && !(shared && after < before))
     return fail(`${so}; the next scan still ${test.routine ? 'lists' : 'reports'} it`);
   // The major it leaves for another day: listed by a scan after the merge, as a move of its own.
+  let then = '';
   if (within) {
     const later = [state.scan2, state.scan3].filter((scan): scan is Scan => Boolean(scan?.moves)).map(fileOf);
     const fault = majorNextFault(within, later);
     if (fault) return fail(`${so}; ${fault}`.slice(0, 520));
+    // Either is the scan's own word, after the merge: the major as a move, or its pin said to wait for its content.
+    const by = majorNext(within, later);
+    if (!by) return fail(`${so}; no scan after the merge was read for its major`);
+    then = by.listed
+      ? `, its major listed after as a move of its own (scan ${by.scan})`
+      : `, its major said by scan ${by.scan} to wait for its content's day`;
   }
   const ended = !scanned ? 'merged' : test.routine ? 'no longer listed' : 'cleared';
   const dirt = state.clean;
@@ -2160,13 +2179,13 @@ function verdict(state: State, test: Test): { pass: boolean; why: string; mark?:
     : (dirt?.errors.length ?? 0);
   if (dirt && errors + dirt.unhealthy.length + dirt.restarted.length)
     return fail(`${so}, ${ended}; not clean (see the run's last lines)`);
-  const then = within ? ', its major listed after as a move of its own' : '';
   return { pass: true, why: `${so}, ${ended}${then}${recoveryWords(state, test, seen)}, nobody touched it` };
 }
 
 /**
- * How long the worker is watched after the scan that lists a reverted move again (test 27): five of its passes, each
- * of which would open the move's pull request if its rule let it, and four minutes at least.
+ * How long the worker is watched after the first sign that its pin watch read the scan that lists a reverted move
+ * again (test 27): five of its polls, and four minutes at least. The watch writes a scan's pull requests and issues in
+ * the one pass that reads it, so this is room for that pass to end, not a count of passes that might each open one.
  */
 const revertSettleMs = (workerPollS: number | undefined) =>
   Math.max(4 * 60_000, 5 * (workerPollS && workerPollS > 0 ? workerPollS : 60) * 1000);
@@ -2199,7 +2218,7 @@ function report(state: State) {
     );
   if (state.reverted)
     console.log(
-      `the revert: ${state.reverted.merge.slice(0, 7)} put back at ${state.reverted.commit?.slice(0, 7) ?? 'no commit'} (${state.reverted.at ?? 'never'}); scan ${state.scan3?.id ?? 'none'} after it; watched until ${state.reverted.watchedUntil ?? 'never'}`,
+      `the revert: ${state.reverted.merge.slice(0, 7)} put back at ${state.reverted.commit?.slice(0, 7) ?? 'no commit'} (${state.reverted.at ?? 'never'}); scan ${state.scan3?.id ?? 'none'} after it; the worker restarted ${state.reverted.restartedAt ?? 'never'}; the pin watch read ${state.reverted.read ? `scan ${state.reverted.read.run} at ${state.reverted.read.at}` : 'no scan since, by its log'}; watched until ${state.reverted.watchedUntil ?? 'never'}`,
     );
   if (state.made) console.log(`the move on main: ${state.made.said} (${state.made.at})`);
   if (state.later)
@@ -2973,6 +2992,12 @@ function run(state: State) {
   }
   settle(state);
   state.clean = clean(state);
+  // The worker the run restarted for test 27 took its log with it: its error lines until then count as any do.
+  const before = state.reverted?.before;
+  if (before) {
+    state.clean.errors.push(...before.errors);
+    state.clean.errorAt?.push(...before.errorAt);
+  }
   state.done = true;
   save(state);
   report(state);
@@ -2989,8 +3014,12 @@ function laterScan(state: State, repo: string, why: string): Scan {
 
 /**
  * Test 27: the merged move of the test it names is put back on main, as Martin reverting its merge
- * (`./copies.sh revert-move`), and the copy scanned again; then the worker is watched for `revertSettleMs`, for a pull
- * request of the App's that carries the move again, which fails it at once, and for the App's issue that says so.
+ * (`./copies.sh revert-move`), and the copy scanned again. The pin watch reads a scan as the worker starts and then
+ * once in `PIN_PASS_MS`, so the worker is restarted once that scan is in, its error lines until then kept for the look
+ * at the cluster, and the run waits, `PIN_PASS_LIMIT_MS` at most, for a sign that the watch made a pass on the scan:
+ * its log's word that it read it, its issue for the move, or a pull request of the App's that carries the move again,
+ * which fails the test at once. From the first sign it watches for `revertSettleMs` more. With no sign by the limit
+ * the test has no verdict: a watch that has not read the scan opens nothing, whatever its code would do.
  */
 function revertNow(state: State, repo: string, tests: Test[]) {
   const test = tests.find((t) => t.reverted);
@@ -3013,23 +3042,61 @@ function revertNow(state: State, repo: string, tests: Test[]) {
     done.scannedAt = new Date().toISOString();
     save(state);
   }
-  const until = Date.parse(done.scannedAt) + revertSettleMs(state.workerPollS);
+  if (!done.restartedAt) {
+    // The pod's log goes with the pod: its error lines since the run's scan are read now, for the look at the cluster.
+    const now = cluster();
+    const worker = { ...now, pods: now.pods.filter((p) => p.name.startsWith('factory/github-')) };
+    done.before = errorLines(state, worker, state.scan1?.createdAt ?? state.resetAt ?? done.scannedAt);
+    const since = new Date().toISOString();
+    kubectl(['-n', 'factory', 'rollout', 'restart', 'deployment/github']);
+    kubectl(['-n', 'factory', 'rollout', 'status', 'deployment/github', '--timeout=300s'], 320_000);
+    done.restartedAt = since;
+    say(state, `scan ${state.scan3?.id} is in: restarted the GitHub worker, whose pin watch reads it as it starts`);
+    save(state);
+  }
+  const limit = Date.parse(done.restartedAt) + PIN_PASS_LIMIT_MS;
   for (;;) {
-    const since = done.at ?? done.scannedAt;
-    done.pulls = api<any[]>(repo, 'pulls?state=all&sort=created&direction=desc&per_page=30')
-      .filter((p) => p.created_at >= since && p.user.login === APP_BOT && pinMoves(p).includes(move.name))
-      .map((p) => p.number as number);
-    done.issues = api<any[]>(repo, `issues?state=all&since=${since}&per_page=100`)
-      .filter(
-        (i) =>
-          !i.pull_request && (issueOfMove(i.title, move.name) || String(i.body ?? '').includes(`\`${move.name}\``)),
-      )
-      .map((i) => ({ number: i.number as number, author: i.user?.login ?? '', body: String(i.body ?? '') }));
+    readReverted(state, repo, move.name);
+    const signs = [done.read?.at, ...done.issues.filter((i) => i.author === APP_BOT).map((i) => i.at)]
+      .filter((at): at is string => Boolean(at))
+      .sort();
+    const until = signs[0] ? Date.parse(signs[0]) + revertSettleMs(state.workerPollS) : limit;
     if (done.pulls.length || Date.now() >= until) break;
     sleep(POLL_MS);
   }
   done.watchedUntil = new Date().toISOString();
   save(state);
+}
+/**
+ * Test 27's look: the App's pull requests since the revert that carry the move, the issues for it since, and, once,
+ * the pin watch's pass on the later scan as the worker's log since its restart has it.
+ */
+function readReverted(state: State, repo: string, name: string) {
+  const done = state.reverted;
+  const since = done?.at ?? done?.scannedAt;
+  if (!done || !since) return;
+  done.pulls = api<any[]>(repo, 'pulls?state=all&sort=created&direction=desc&per_page=30')
+    .filter((p) => p.created_at >= since && p.user.login === APP_BOT && pinMoves(p).includes(name))
+    .map((p) => p.number as number);
+  done.issues = api<any[]>(repo, `issues?state=all&since=${since}&per_page=100`)
+    .filter((i) => !i.pull_request && (issueOfMove(i.title, name) || String(i.body ?? '').includes(`\`${name}\``)))
+    .map((i) => ({
+      number: i.number as number,
+      author: i.user?.login ?? '',
+      body: String(i.body ?? ''),
+      at: i.created_at as string,
+    }));
+  if (done.read || !done.restartedAt || !state.scan3) return;
+  let log = '';
+  try {
+    log = kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${done.restartedAt}`], 300_000);
+  } catch {}
+  const read = watchRead(log, repo, state.scan3.id);
+  if (read) {
+    done.read = read;
+    say(state, `the pin watch read scan ${read.run} at ${read.at}`);
+    save(state);
+  }
 }
 
 /**
@@ -3321,10 +3388,13 @@ if (command === 'factory' || command === 'app') {
   console.log(`the pin watch takes: ${back || 'no move'}`);
 } else if (command === 'waits') {
   // Batch D's question: whether every move's pull request the App opened since <since> waits as <want> says, unqueued,
-  // its checks in, by the worker's last word at its head (decide.ts's `waitsFault`). Said, and the exit status.
-  const [since = '', want = ''] = rest;
-  if (!/^\d{4}-\d\d-\d\dT[\d:]+Z$/.test(since) || !['stopped', 'supervised', 'either'].includes(want))
-    throw new Error('waits <since, as 2026-11-26T20:00:00Z> stopped|supervised|either');
+  // its checks in, by the worker's last word at its head (decide.ts's `waitsFault`). Said, and the exit status. The
+  // worker says a wait once a head, so a word may be older than a change of the level or the stop it must answer:
+  // with <said since>, the time of a restart of the worker after that change, only its words from then count.
+  const [since = '', want = '', saidSince = since] = rest;
+  const time = /^\d{4}-\d\d-\d\dT[\d:]+Z$/;
+  if (!time.test(since) || !['stopped', 'supervised', 'either'].includes(want) || !time.test(saidSince))
+    throw new Error('waits <since, as 2026-11-26T20:00:00Z> stopped|supervised|either [<said since>]');
   const open = api<any[]>(FACTORY, 'pulls?state=open&per_page=100').filter(
     (p) => p.user.login === APP_BOT && p.created_at >= since && p.title.startsWith('chore(pin): '),
   );
@@ -3341,7 +3411,9 @@ if (command === 'factory' || command === 'app') {
       (run: any) => run.status !== 'completed',
     ).length,
   }));
-  const words = queueWords(kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${since}`], 300_000));
+  const words = queueWords(
+    kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${saidSince}`], 300_000),
+  );
   const fault = waitsFault(pulls, words, want as 'stopped' | 'supervised' | 'either');
   for (const p of pulls) {
     const word = words.get(`${p.number} ${p.head}`);
@@ -3423,7 +3495,7 @@ if (command === 'factory' || command === 'app') {
   summary();
 } else {
   console.error(
-    'usage: harness.ts factory | app <test> [--limit <min>] [--no-reset] [--no-scan] [--no-kick] [--once] | batch <tests>|none | only <tests> | rests | waits <since> stopped|supervised|either | variables <tests> | resume [<run>] | report [<run>] | reread [<run>] | summary',
+    'usage: harness.ts factory | app <test> [--limit <min>] [--no-reset] [--no-scan] [--no-kick] [--once] | batch <tests>|none | only <tests> | rests | waits <since> stopped|supervised|either [<said since>] | variables <tests> | resume [<run>] | report [<run>] | reread [<run>] | summary',
   );
   process.exit(2);
 }

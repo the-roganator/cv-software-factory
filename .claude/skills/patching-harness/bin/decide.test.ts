@@ -22,11 +22,15 @@ import {
   leftAloneFault,
   lineTooEarly,
   lockfileKey,
+  majorNext,
   majorNextFault,
   majorNotFirst,
   moveFits,
+  NO_VERDICT,
   newerFault,
   notListed,
+  PIN_PASS_LIMIT_MS,
+  PIN_PASS_MS,
   type PodFacts,
   type PullFacts,
   pickScan,
@@ -58,6 +62,7 @@ import {
   waitedVerdict,
   waitsFault,
   watcherRode,
+  watchRead,
   withoutDependabot,
   withSetting,
   workflowPins,
@@ -1101,6 +1106,14 @@ describe('what the worker says a move waits for', () => {
 
 describe('a move put back on main', () => {
   const app = 'the-app[bot]';
+  const repo = 'owner/copy';
+  const read = { at: '2026-11-26T22:35:23.000Z', run: 9 };
+  const issue = {
+    number: 20,
+    author: app,
+    body: 'The factory made this move, and its merge was then undone on `main`: the pin is back.',
+    at: '2026-11-26T22:35:38Z',
+  };
   const facts = {
     of: '14a',
     move: { name: 'k3s', from: 'v1.37.1+k3s1' },
@@ -1108,38 +1121,61 @@ describe('a move put back on main', () => {
     revert: 'c'.repeat(40),
     scan: { id: 9, moves: [{ name: 'k3s', from: 'v1.37.1+k3s1' }] },
     pulls: [] as number[],
-    issues: [
-      {
-        number: 20,
-        author: app,
-        body: 'The factory made this move, and its merge was then undone on `main`: the pin is back.',
-      },
-    ],
+    issues: [issue],
     app,
-    watchedMs: 5 * 60_000,
+    read,
+    watchedUntil: '2026-11-26T22:40:23.000Z',
     settleMs: 5 * 60_000,
   };
-  it('passes when the scan lists it again, no pull request opens over the watch, and the App’s issue says so', () => {
+  it('passes once the watch read the scan, opened no pull request after, and its issue says so', () => {
     expect(revertedVerdict(facts)).toEqual({
       pass: true,
-      why: expect.stringMatching(/scan 9 lists it again.*issue #20/),
+      why: expect.stringMatching(/scan 9 lists it again, the pin watch read scan 9 at .*5 minutes after.*issue #20/),
+    });
+    // Its issue alone is a sign of its pass, where the log gave none: the watch is counted from the issue.
+    expect(revertedVerdict({ ...facts, read: undefined, watchedUntil: '2026-11-26T22:40:38Z' })).toEqual({
+      pass: true,
+      why: expect.stringMatching(/the pin watch made a pass, .*issue #20 says its merge was undone on main/),
     });
   });
-  it('fails at once on a pull request for it again', () => {
-    expect(revertedVerdict({ ...facts, pulls: [31], watchedMs: 0 }).why).toMatch(/the App opened #31 for it again/);
+  it('fails at once on a pull request for it again, whatever else is known', () => {
+    for (const each of [facts, { ...facts, read: undefined, issues: [], watchedUntil: undefined }]) {
+      const verdict = revertedVerdict({ ...each, pulls: [31] });
+      expect(verdict).toMatchObject({ pass: false, why: expect.stringMatching(/the App opened #31 for it again/) });
+      expect(verdict.mark).toBeUndefined();
+    }
   });
-  it('fails without an issue of the App’s that says so', () => {
-    expect(revertedVerdict({ ...facts, issues: [] }).why).toMatch(/no issue of the App's says so/);
-    const silent = [{ number: 20, author: app, body: 'Move k3s.' }];
-    expect(revertedVerdict({ ...facts, issues: silent }).why).toMatch(/issue #20 does not say it was undone on main/);
-    const another = [{ ...facts.issues[0], author: 'someone' }] as typeof facts.issues;
-    expect(revertedVerdict({ ...facts, issues: another }).why).toMatch(/no issue of the App's says so/);
-  });
-  it('is not yet a pass before the watch is over', () => {
-    expect(revertedVerdict({ ...facts, watchedMs: 60_000 })).toEqual({
+  it('gives no verdict, neither a pass nor a failure, while the watch is not known to have read the scan', () => {
+    const early = { ...facts, read: undefined, issues: [], watchedUntil: '2026-11-26T22:34:46.777Z' };
+    expect(revertedVerdict(early)).toEqual({
       pass: false,
-      why: expect.stringMatching(/watching for a pull request/),
+      mark: NO_VERDICT,
+      why: expect.stringMatching(
+        /^no verdict: #12 merged and was put back .*; the pin watch had not read scan 9 by 2026-11-26T22:34:46.777Z$/,
+      ),
     });
+    // An issue of someone else's is no sign of the watch's pass.
+    const another = [{ ...issue, author: 'someone' }];
+    expect(revertedVerdict({ ...early, issues: another }).mark).toBe(NO_VERDICT);
+  });
+  it('fails when the watch read the scan and wrote no issue that says so', () => {
+    expect(revertedVerdict({ ...facts, issues: [] })).toEqual({
+      pass: false,
+      why: expect.stringMatching(
+        /the pin watch read scan 9 at .* and opened no pull request, but no issue of the App's/,
+      ),
+    });
+    const silent = [{ ...issue, body: 'Move k3s.' }];
+    expect(revertedVerdict({ ...facts, issues: silent }).why).toMatch(/issue #20 does not say it was undone on main/);
+    expect(revertedVerdict({ ...facts, issues: silent }).mark).toBeUndefined();
+  });
+  it('is not yet a pass, or a failure for want of an issue, before the watch after the sign is over', () => {
+    const soon = '2026-11-26T22:36:23.000Z';
+    expect(revertedVerdict({ ...facts, watchedUntil: soon })).toEqual({
+      pass: false,
+      why: expect.stringMatching(/issue #20 says so; watching for a pull request \(1 min\)/),
+    });
+    expect(revertedVerdict({ ...facts, issues: [], watchedUntil: soon }).why).toMatch(/watching for its issue/);
   });
   it('gives no verdict when the move never merged, or the scan does not list it again', () => {
     expect(revertedVerdict({ ...facts, merged: undefined }).why).toMatch(/^no verdict: test 14a's move did not merge/);
@@ -1148,6 +1184,29 @@ describe('a move put back on main', () => {
   it('fails when the pins were not put back, or the scan left no moves', () => {
     expect(revertedVerdict({ ...facts, revert: undefined }).why).toMatch(/were not put back on main/);
     expect(revertedVerdict({ ...facts, scan: { id: 9, moves: undefined } }).why).toMatch(/left no moves/);
+  });
+
+  it('reads the pin watch’s pass on a scan from the worker’s log, by the run it names', () => {
+    const line = (run: number | undefined, time: number, of = repo) =>
+      JSON.stringify({
+        level: 30,
+        time,
+        repo: of,
+        run,
+        taken: 1,
+        msg: 'the pin watch takes the moves it was told to (PIN_WATCH_ONLY), and leaves the rest alone',
+      });
+    const at = Date.parse('2026-11-26T22:35:23Z');
+    // An earlier scan's pass, another repository's, and a line that names no run are no pass on this scan.
+    const before = [line(8, at - 60_000), line(9, at, 'owner/other'), line(undefined, at), 'not json'].join('\n');
+    expect(watchRead(before, repo, 9)).toBeUndefined();
+    expect(watchRead(`${before}\n${line(9, at)}`, repo, 9)).toEqual({ at: '2026-11-26T22:35:23.000Z', run: 9 });
+    // A later scan of the same main is read after this one was listed: the first such pass is the sign.
+    expect(watchRead([line(11, at + 60_000), line(10, at)].join('\n'), repo, 9)).toMatchObject({ run: 10 });
+  });
+  it('waits for the watch one of its periods and a restart', () => {
+    expect(PIN_PASS_LIMIT_MS).toBeGreaterThan(PIN_PASS_MS);
+    expect(PIN_PASS_LIMIT_MS).toBe(70 * 60_000);
   });
 });
 
@@ -1241,6 +1300,13 @@ describe('a move within the major, and then the major', () => {
     expect(
       majorNextFault(first, [{ id: 2, moves: [], waiting: [{ name: 'prometheus', why: 'content' }] }]),
     ).toBeUndefined();
+  });
+  it('says which word of a later scan it stands on: the major listed, before one said to wait', () => {
+    const waits = { id: 2, moves: [], waiting: [{ name: 'prometheus', why: 'content' }] };
+    expect(majorNext(first, [waits])).toEqual({ scan: 2, listed: false });
+    expect(majorNext(first, [waits, { id: 3, moves: [major] }])).toEqual({ scan: 3, listed: true });
+    expect(majorNext(first, [{ id: 2, moves: [] }])).toBeUndefined();
+    expect(majorNext(first, [{ id: 2, moves: [{ ...major, from: '29.35.0' }] }])).toBeUndefined();
   });
   it('fails when no later scan lists it, or lists a move from there that is no major', () => {
     expect(majorNextFault(first, [{ id: 2, moves: [] }])).toMatch(/scan 2 lists no major of prometheus from 29.49.0/);

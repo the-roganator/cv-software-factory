@@ -23,6 +23,7 @@ import {
   type PinScope,
   pinWatch,
   pullBody,
+  READ_THE_SCAN,
   readPinScope,
 } from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
@@ -763,7 +764,12 @@ describe('the pin watch, told which moves to take (PIN_WATCH_ONLY)', () => {
     expect(touched.some((path) => path.endsWith(`/${other?.number}`) || path.includes(`/${other?.number}/`))).toBe(
       false,
     );
-    expect(lines.find((l) => /pin watch takes/.test(l.msg))).toMatchObject({ only: ['example-logs'], taken: 1 });
+    // With the scan's run, so a reader of the log knows which scan the pass read.
+    expect(lines.find((l) => l.msg === READ_THE_SCAN)).toMatchObject({
+      run: 42_000_000_101,
+      only: ['example-logs'],
+      taken: 1,
+    });
   });
 
   it('told one name, opens that move’s pull request and no other', async () => {

@@ -78,7 +78,7 @@ import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { retried } from '../gates/retry.ts';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
 import { judge as excepting, type Policy } from './exceptions.ts';
-import { dayText, type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
+import { dayText, type Fix, type MoveTag, readFix, type Target, targetText, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
 import { counted, dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
 import {
@@ -1768,7 +1768,19 @@ export async function assess(
   // An image's or a chart's fix is installable once its content has waited its day, which only the state can say.
   const keys = findings.map((finding) => placeKey(placeOf(finding)));
   const last = read.state && { state: read.state, keyOf: placeKey };
+  const own = [...found.fixes];
   const waits = contentWaits(found, keys, last, policy.ROUTINE.contentDays, now);
+  // A target that stands in from the state's sightings is held to its registry as a fix the state kept is (`listed`):
+  // one no longer listed is no target, and the result is left with this run's own, on the day its content has waited.
+  await Promise.all(
+    found.fixes.map(async (target, index) => {
+      const today = own[index];
+      if (!target || !today || target === today || (await found.listed(index, target))) return;
+      const waiting = waits[index]?.find((each) => each.target === targetText(today));
+      found.fixes[index] = waiting ? today : undefined;
+      found.at[index] = waiting ? time(waiting.day) : undefined;
+    }),
+  );
   const fixes = fixesOf(found.at, found.fixes, states, now);
   // A fix's day where it has one; a fix still inside pnpm's wait keeps its time, so its row starts no clock yet.
   const installableAt = fixes.map((fix, index) =>

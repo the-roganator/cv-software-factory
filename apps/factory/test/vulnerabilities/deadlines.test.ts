@@ -1145,6 +1145,27 @@ describe('an image’s fix, while the scan has known its digest less than a day'
     expect(move?.to).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('d') });
   });
 
+  it('takes no target from the state’s sightings that its registry no longer lists: this run’s own waits its day', async () => {
+    const day0 = await judge(serving('c'));
+    // A later release is the newest the next day, first seen then; the one that has waited is still listed, or pulled.
+    const later = (tags: string[]): World => ({
+      ...serving('d', day0.kept()),
+      tags: { node: ['24.22.1-trixie-slim', ...tags, '24.23.1-trixie-slim'] },
+      images: { 'node:24.23.1-trixie-slim': imageReport('2026-09-02T00:00:00Z') },
+      digests: { 'node:24.23.1-trixie-slim': digest('d') },
+    });
+    const listed = await judge(later(['24.23.0-trixie-slim']), NOW + DAY);
+    expect(listed.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') });
+    const pulled = await judge(later([]), NOW + DAY);
+    expect(pulled.fixes).toEqual([undefined]);
+    expect(pulled.rows[0]).toMatchObject({ installable: NOW + 2 * DAY, bucket: 'none' });
+    expect(pulled.lines.join('\n')).toContain(`${NEWEST} is no longer listed by its registry`);
+    expect(moves(pulled.judged, { repository: REPOSITORY, app: false, now: NOW + DAY })).toEqual([]);
+    // Its own target comes due the day after, as if nothing had stood in.
+    const due = await judge({ ...later([]), state: pulled.kept() }, NOW + 2 * DAY);
+    expect(due.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.1-trixie-slim', digest: digest('d') });
+  });
+
   it('keeps the fix a state from before the wait lists, and moves it to a new digest only once that has waited', async () => {
     const listed = await judge({ ...serving('c'), policy: UNWAITED });
     expect(listed.fixes[0]?.target).toMatchObject({ digest: digest('c') });

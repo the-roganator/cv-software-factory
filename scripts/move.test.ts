@@ -853,6 +853,45 @@ describe('what is not a move, and says what differs', () => {
   });
 });
 
+describe('a move the scan gave to no one to make', () => {
+  const grpc = { [LOCK]: lockfile('1.14.7', '7.6.5'), 'package.json': swap('package.json', '1.14.5', '1.14.7') };
+  const postgres = change({ [POSTGRES]: swap(POSTGRES, `18.6-alpine3.24@${D_OLD}`, `18.7-alpine3.24@${D_NEW}`) });
+  const laned = (lane: ScanMove['lane']) => SCAN.map((m) => (m.name === 'postgres' ? { ...m, lane } : m));
+
+  it('refuses a benched package’s fix, exactly the scan’s bump though it is: it waits for Martin’s bench run', async () => {
+    const [first, ...rest] = APP_SCAN as [ScanMove, ...ScanMove[]];
+    const benched: ScanMove[] = [{ ...first, lane: 'issue', bench: true }, ...rest];
+    const asked: PinStepMove[][] = [];
+    const result = await proveApp(change(grpc), step(asked), benched);
+    expect(result).toEqual({ reason: expect.stringContaining("waits for Martin's bench run") });
+    expect(reasonOf(result)).not.toContain('grpc');
+    // Refused before the pin step runs; the day's other move is made as ever.
+    expect(asked).toEqual([]);
+    expect(await proveApp(change({ [LOCK]: lockfile('1.14.5', '7.6.6') }), step(), benched)).toMatchObject({
+      rule: 'move',
+    });
+  });
+
+  it('refuses a move in the lane `issue` or `none`, and whatever else the pull request carries with it', async () => {
+    for (const lane of ['issue', 'none'] as const) {
+      const result = await prove(postgres, laned(lane));
+      expect(result).toEqual({
+        reason: `postgres is in the scan's lane \`${lane}\`, which no one makes unattended: it waits for Martin`,
+      });
+    }
+    const both = change({
+      [POSTGRES]: swap(POSTGRES, `18.6-alpine3.24@${D_OLD}`, `18.7-alpine3.24@${D_NEW}`),
+      [PROMETHEUS]: swap(PROMETHEUS, '29.35.0', '29.47.2'),
+    });
+    expect(await prove(both, laned('issue'))).toMatchObject({ reason: expect.stringContaining('waits for Martin') });
+  });
+
+  it('makes the lanes the App and the line make: `worker`, `cluster` and `line`', async () => {
+    for (const lane of ['worker', 'cluster', 'line'] as const)
+      expect(await prove(postgres, laned(lane))).toMatchObject({ rule: 'move' });
+  });
+});
+
 describe('a move is written only on the pin the scan named', () => {
   const FILE = 'deploy/a.yaml';
   const D_BETA = digest('d');

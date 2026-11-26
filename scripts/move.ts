@@ -21,7 +21,9 @@
  * found its package, or for a routine update, whose old entry a parent may keep, where the lockfile resolves it for a
  * manifest); it may carry several of the day's moves, and must carry each whole. Anything that differs is refused, and the
  * reason says where: a line no move writes, a pin left unmoved, a version or digest other than the scan's, a file
- * added, removed, renamed or changed in mode, anything under `.github/`. What a lockfile's move withholds (its package
+ * added, removed, renamed or changed in mode, anything under `.github/`, and a move the scan gave to no one to make
+ * (`unmade`: the lanes `issue` and `none`, a fix that waits for Martin's bench run among them), which waits for Martin
+ * whoever opened it. What a lockfile's move withholds (its package
  * and versions) is never said: its name is the public list's, and a file the derivation writes is named by its line
  * alone.
  *
@@ -168,6 +170,20 @@ function strayedTool(move: ScanMove, step: PinStepMove, lock: string | undefined
   const image = splitReference(move.name).repository.split('/').at(-1) ?? '';
   const own = target?.kind === 'tool' ? target.tool === step.name : image.startsWith(`${step.name}-`);
   return own && lock?.split('\n')[pin.line - 1]?.trim() === `version = "${step.from}"` ? undefined : moved(pin, move);
+}
+
+/**
+ * Why a move is not the gate's to make, or nothing when it is. The gate makes what the App or the line makes
+ * unattended, the lanes `worker`, `cluster` and `line` (vulnerabilities/moves.ts): a move in the lane `issue` (a
+ * workflow's pin, or a benched package's fix, marked `bench`, that merges only after Martin's bench run) or `none`
+ * (nothing to move to) is an issue for Martin, and a pull request that makes it is his to approve.
+ */
+export function unmade(move: Pick<ScanMove, 'name' | 'lane' | 'bench'>): string | undefined {
+  if (move.bench)
+    return `${move.name} waits for Martin's bench run: the scan gave it to no one to make, and it merges only with his approval`;
+  if (move.lane === 'issue' || move.lane === 'none')
+    return `${move.name} is in the scan's lane \`${move.lane}\`, which no one makes unattended: it waits for Martin`;
+  return undefined;
 }
 
 /** A chart's `chart:` line, and its `targetRevision:` at a version, as an Application writes them (inventory.ts). */
@@ -338,6 +354,8 @@ export async function proveMove(
   const steps: PinStepMove[] = [];
   const edits: ScanMove[] = [];
   for (const move of carried) {
+    const waits = unmade(move);
+    if (waits) return { reason: waits };
     const step = stepMove(move, app, io.base);
     if (typeof step === 'string') return { reason: `the gate cannot make ${move.name}: ${step}` };
     if (step) steps.push(step);

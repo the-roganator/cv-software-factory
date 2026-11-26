@@ -959,10 +959,13 @@ export interface WorkflowPinChecks {
    */
   compare: (base: string, head: string) => Promise<string>;
   /**
-   * Every line of the workflows at the pull request's head that names the factory's workflows, a comment's among them,
-   * with its file and its number there, from 1.
+   * Every line of the workflows that names the factory's workflows, a comment's among them, with its file and its
+   * number there, from 1: at the pull request's head, or, in the merge queue's run, at the queue's commit for it, which
+   * is what merges, and holds a call `main` has gained since the branch was made.
    */
   calls: () => Promise<{ file: string; number: number; line: string }[]>;
+  /** Where `calls` reads, as a reason says it: `at its head` unless given. */
+  at?: string;
   /** One of the factory's workflows, by its file's name, as a commit of the factory has it, or undefined if it has none. */
   declared: (workflow: string, commit: string) => Promise<string | undefined>;
 }
@@ -978,8 +981,9 @@ export interface WorkflowPinChecks {
  * - GitHub lists every file it changes, each a workflow under `.github/workflows/`, modified, whose every changed line
  *   is one call of the factory's workflows (`uses: <the factory>/.github/workflows/<name>.yml@<commit> # main`) that
  *   reads as the line it replaces but for the commit (`callMoves`);
- * - every call it moves goes from one commit to one commit, and no call at its head is left at another (`calls`): a
- *   repository calls every workflow of the factory's at one commit;
+ * - every call it moves goes from one commit to one commit, and no call at its head is left at another (`calls`), nor,
+ *   in the merge queue's run, any at the commit that merges: a repository calls every workflow of the factory's at one
+ *   commit;
  * - the new commit descends from the old (`compare(old, new)` is `ahead`), so the pin moves forward. That alone does
  *   not say whose commit it is: GitHub answers for any commit in the repository's network, a fork's among them;
  * - the new commit is on the factory's `main` (`compare(new, 'main')` is `ahead` or `identical`: `main` descends from
@@ -1024,16 +1028,17 @@ export async function workflowPin(
     };
   if (from === to) return { reason: `it leaves the calls at ${short(to)}, the same commit` };
   const called = new Set<string>();
+  const at = checks.at ?? 'at its head';
   for (const { file, number, line } of await checks.calls()) {
     const call = WORKFLOW_CALL.exec(line);
     // Any line that names them, a comment among it: said whole, with where it is, as it holds every such bump.
     if (!call)
       return {
-        reason: `${file}:${number} at its head names the factory's workflows in a line that is not a call of one at a commit of main (\`${line.trim().slice(0, 120)}\`), which holds every bump of them until it is one, or does not name them`,
+        reason: `${file}:${number} ${at} names the factory's workflows in a line that is not a call of one at a commit of main (\`${line.trim().slice(0, 120)}\`), which holds every bump of them until it is one, or does not name them`,
       };
     if (call[3] !== to)
       return {
-        reason: `${file} at its head still calls the factory at ${short(call[3] ?? '')}: every call moves together`,
+        reason: `${file} ${at} still calls the factory at ${short(call[3] ?? '')}: every call moves together`,
       };
     called.add(call[2] ?? '');
   }
@@ -1246,8 +1251,8 @@ export function route(facts: Facts): Decision {
  * run and passes. `earlier` is the block of that check, read by `readVerdict`.
  *
  * An exact pin of the factory's workflows stands the same way. What its check read is as fixed at a head as an
- * image's signature: the lines the head changes and the calls it holds, and how two commits of the factory stand to
- * each other. Only `main` moves, and only forward, as its ruleset lets nobody rewrite it: a commit that was on it is.
+ * image's signature: the lines the head changes and the calls it holds, or those the merge queue's commit holds, which
+ * is the commit the earlier verdict is on, and how two commits of the factory stand to each other. Only `main` moves, and only forward, as its ruleset lets nobody rewrite it: a commit that was on it is.
  */
 export function stands(
   earlier: Block,

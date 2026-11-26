@@ -780,6 +780,9 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     // Anyone's but the App's, which writes no workflow, may be an exact pin of the factory's workflows: Dependabot's
     // bump of the commit they are called at. Nothing is read for a change that touches no call of them, nor for one
     // that fails on what the pull request itself says; the reads are GitHub's alone, tried again as an image's are.
+    // The calls are read at what merges: in the merge queue's run for it, the queue's commit, which has every call
+    // main gained since its branch was made, so none is left at the old commit beside those it moves.
+    const queued = each.queue?.number === pr.number ? each.queue.commit : undefined;
     const workflows: Facts['workflows'] =
       !appOpened(judged) && !verdict(judged, reviews).pass && !work
         ? await retrying(
@@ -791,7 +794,8 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
                 {
                   // The factory's repository is public, so the token of the repository that calls it reads it.
                   compare: (base, to) => compared(FACTORY_REPO, base, to, read),
-                  calls: () => factoryCalls(repo, head, read),
+                  calls: () => factoryCalls(repo, queued ?? head, read),
+                  ...(queued ? { at: `on the merge queue's commit ${short(queued)}` } : {}),
                   declared: (workflow, commit) => fileAt(FACTORY_REPO, `.github/workflows/${workflow}`, commit, read),
                 },
                 complete,

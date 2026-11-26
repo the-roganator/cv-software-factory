@@ -939,6 +939,29 @@ export function waitsFault(
 
 // ── The rulesets' two refusals ──────────────────────────────────────────────────────────────────────────────────────
 
+/** The rulesets N10 stands on, as scripts/github-settings.ts names them (words.test.ts holds the two together). */
+export const N10_RULESETS: readonly { name: string; target: string }[] = [
+  { name: 'branches', target: 'branch' },
+  { name: 'tag main', target: 'tag' },
+];
+/**
+ * Why N10 cannot be judged on a copy, from the rulesets GitHub lists for it, or nothing when each it stands on is
+ * there and enforced: a reset applies no settings, and without the ruleset a push that lands shows only that.
+ */
+export function rulesetsFault(
+  copy: string,
+  live: readonly { name?: string; target?: string; enforcement?: string }[],
+): string | undefined {
+  const lacks = N10_RULESETS.filter(
+    (want) => !live.some((r) => r.name === want.name && r.target === want.target && r.enforcement === 'active'),
+  ).map((want) => {
+    const there = live.find((r) => r.name === want.name);
+    return `"${want.name}" (${there ? `${there.enforcement ?? 'not enforced'}` : 'none'})`;
+  });
+  return lacks.length
+    ? `${copy} has no active ruleset ${lacks.join(' or ')}, which N10 stands on: run ./copies.sh settings`
+    : undefined;
+}
 /** GitHub's refusal of a commit a ruleset forbids on a branch, as `createCommitOnBranch` answers it. */
 export const COMMIT_REFUSED = /Cannot update this protected ref|Repository rule violations?/i;
 /** GitHub's refusal to create a ref a ruleset forbids: a 422, and not the 422 of a ref that is already there. */

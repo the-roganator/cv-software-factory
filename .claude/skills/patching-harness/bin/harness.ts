@@ -56,6 +56,7 @@ import {
   type MovesFile,
   majorNextFault,
   moveFits,
+  N10_RULESETS,
   newerFault,
   notListed,
   pickScan,
@@ -71,6 +72,7 @@ import {
   revertedVerdict,
   rolloutProgressing,
   routineBranch,
+  rulesetsFault,
   saysNotPulled,
   seenToTheGates,
   settleMs,
@@ -269,6 +271,17 @@ function preflight(state: State, appJustReset: boolean) {
     }
     if (!wrong.length && issued.some((t) => !state.dropped?.[t.id]))
       say(state, `pre-flight: the pin watch takes ${told}`);
+  }
+  // The rulesets N10's two pushes must be refused by, on the copy and enforced: a reset applies no settings
+  // (`./copies.sh settings` does), and a script that died with them off leaves them off. Read, never written.
+  for (const test of TESTS.filter((t) => inRun(state, t) && t.pr.by === 'forged' && t.pr.forge === 'N10')) {
+    const fault = rulesetsFault(test.repo, JSON.parse(sh('gh', ['api', `repos/${test.repo}/rulesets`])));
+    if (fault) wrong.push(fault);
+    else
+      say(
+        state,
+        `pre-flight: ${test.repo} has its rulesets ${N10_RULESETS.map((r) => `"${r.name}"`).join(' and ')}, active`,
+      );
   }
   // A test's own set-up beyond the shared baseline (`staged/<side>-<name>/`, a Test's `staged`): on the baseline exactly
   // when one of the run's tests asks for it, as it changes what the others do. Read from what `build` committed.

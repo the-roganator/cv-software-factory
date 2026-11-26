@@ -336,15 +336,10 @@ run_ok() { # <run> <repository>
   return 1
 }
 
-# Every branch ruleset on the copy (github-settings.ts makes "main", and "branches" for every branch outside the
-# prefixes the factory writes, which Martin's login, this script's, is exempt from): off for a push to main, on again
-# after. The tag ruleset ("tag main") is left on: no push here names that tag.
-ruleset() { # <copy> active|disabled
-  local id
-  for id in $(gh api "repos/$1/rulesets" --jq '.[] | select(.target == "branch") | .id'); do
-    gh api -X PUT "repos/$1/rulesets/$id" -f enforcement="$2" >/dev/null
-  done
-}
+# `ruleset <copy> active|disabled`: a copy's branch rulesets off for a push to main and on again after, and on again
+# on any exit that left them off; the tag ruleset is never touched (rulesets.sh).
+# shellcheck source=rulesets.sh
+source "$HERE/rulesets.sh"
 
 push_baseline() { # <copy> <dir>
   local copy=$1 dir=$2

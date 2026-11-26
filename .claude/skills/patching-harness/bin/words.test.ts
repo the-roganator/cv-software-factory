@@ -3,12 +3,15 @@ import { levelWait } from '../../../../apps/factory/src/github/deploy-queue.ts';
 import { issueOf, REVERTED, strayed } from '../../../../apps/factory/src/github/pins.ts';
 import { movesFile } from '../../../../apps/factory/src/vulnerabilities/moves.ts';
 import { day, FakeRepo, FILES, factoryMoves } from '../../../../apps/factory/test/github/pins-harness.ts';
+import { rulesets } from '../../../../scripts/github-settings.ts';
 import { FACTORY_APP, type Facts, MARTIN, type PullRequest, route } from '../../../../scripts/review-routing.ts';
 import { APP, ASKED_FOR_CHANGES, FACTORY, NOT_THE_MOVE, RULESET_REFUSAL } from './catalogue.ts';
 import {
+  N10_RULESETS,
   OF_A_MOVE,
   queueWords,
   REVERTED_SAYS,
+  rulesetsFault,
   rulesetsRefusal,
   STOPPED_WAIT,
   SUPERVISED_WAIT,
@@ -149,5 +152,27 @@ describe('GitHub’s words for the rulesets’ two refusals, as the harness read
     expect(line({ commit: undefined, tag: undefined })).toEqual({
       landed: "the App's commit to forged/n10 and the tag `main` went through",
     });
+  });
+});
+
+describe('the rulesets N10 stands on, as the pre-flight reads them', () => {
+  /** What GitHub lists for a repository with the settings applied: scripts/github-settings.ts's own rulesets. */
+  const live: { name: string; target: string; enforcement: string }[] = JSON.parse(JSON.stringify(rulesets([])));
+
+  it('finds each by the name and target the settings give it, active', () => {
+    expect(rulesetsFault(FACTORY, live)).toBeUndefined();
+    for (const want of N10_RULESETS) expect(live).toContainEqual(expect.objectContaining({ ...want }));
+  });
+
+  it('stops a run on a copy that lacks one, or has it off, and says what to run', () => {
+    const none = rulesetsFault(
+      FACTORY,
+      live.filter((r) => r.name === 'main'),
+    );
+    expect(none).toContain('no active ruleset "branches" (none) or "tag main" (none)');
+    expect(none).toContain('run ./copies.sh settings');
+    // Left off by a push that died with the branch rulesets disabled.
+    const off = live.map((r) => (r.name === 'branches' ? { ...r, enforcement: 'disabled' } : r));
+    expect(rulesetsFault(FACTORY, off)).toContain('no active ruleset "branches" (disabled), which N10 stands on');
   });
 });

@@ -441,6 +441,45 @@ describe('the deploy queue watch', () => {
     expect(comments[2]?.body).toContain(`<!-- factory: out of tries ${HEAD} -->`);
   });
 
+  it('says a head is out of tries, and leaves it, on a pull request with more comments than it reads', async () => {
+    // Anyone may comment on a public repository: a thousand comments must not have the queue try the head for ever.
+    const flood: Comment[] = Array.from({ length: 100 }, (_, i) => ({ body: `Comment ${i}.`, user: { id: 4242 } }));
+    const said: string[] = [];
+    const spent = harness({
+      queued: () =>
+        queue({
+          removed: {
+            at: '2026-11-18T04:53:12Z',
+            by: 'github-merge-queue',
+            reason: 'failed_checks',
+            commit: 'c'.repeat(40),
+            failures: QUEUE_TRIES,
+            person: false,
+            atHead: true,
+          },
+        }),
+      comments: flood,
+      routes: [
+        {
+          method: 'GET',
+          path: new RegExp(`^/repos/${REPO}/issues/973/comments\\?per_page=100&page=\\d+$`),
+          answer: () => ({ body: flood }),
+        },
+      ],
+      actions: {
+        enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
+        comment: async (_repo, _number, body) => {
+          said.push(body);
+        },
+      },
+    });
+    await spent.pass();
+    await spent.pass();
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain(`<!-- factory: out of tries ${HEAD} -->`);
+    expect(spent.enqueued).toEqual([]);
+  });
+
   it('tries the comment again on the next pass when it could not be made, and adds nothing meanwhile', async () => {
     let fails = 1;
     const said: string[] = [];

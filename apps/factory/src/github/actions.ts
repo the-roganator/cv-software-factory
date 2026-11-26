@@ -875,8 +875,10 @@ export class LiveActions implements Actions {
         `/repos/${repo}/issues/${number}/events?per_page=100`,
         z.object({ event: z.string(), created_at: z.string() }),
       );
-      const reopened = events.findLast((event) => event.event === 'reopened')?.created_at ?? null;
-      if (!(await this.#said(repo, number, comment, reopened))) await this.#post(repo, number, comment);
+      // Events past what is read hide when it last reopened: the comment is made, perhaps again, and the issue closes.
+      const reopened = events.items.findLast((event) => event.event === 'reopened')?.created_at ?? null;
+      if (!events.whole) await this.#post(repo, number, comment);
+      else if (!(await this.#said(repo, number, comment, reopened))) await this.#post(repo, number, comment);
     }
     await this.#github.write(repo, 'PATCH', `/repos/${repo}/issues/${number}`, {
       state: 'closed',
@@ -913,6 +915,10 @@ export class LiveActions implements Actions {
   /**
    * Whether the App's own comments on an issue since a time (or ever, with none) already say this, word for word. A
    * comment anyone else made, the same words among them, is not the App's word: it keeps the App from saying nothing.
+   * Nor do more comments than are read: anyone may comment on a public repository, and where the pages read do not
+   * say it, a thread run past `LIST_PAGES` pages is taken as not having said it, so the App says it, perhaps again,
+   * and what follows (a close, a reopening) is done. Said twice is better than an issue no flood of comments lets
+   * close.
    */
   async #said(repo: string, number: number, body: string, since: string | null): Promise<boolean> {
     const after = since ? `&since=${encodeURIComponent(since)}` : '';
@@ -922,22 +928,23 @@ export class LiveActions implements Actions {
       z.object({ body: z.string().nullable(), user: z.object({ id: z.number().int() }).nullable().optional() }),
     );
     // As GitHub keeps it: its line endings may be \r\n, and its ends trimmed.
-    return comments.some((made) => made.user?.id === APP_USER && same(made.body ?? '', body));
+    return comments.items.some((made) => made.user?.id === APP_USER && same(made.body ?? '', body));
   }
 
   /**
    * Every item of a list GitHub gives a hundred to a page, oldest first, page by page up to `LIST_PAGES`: an issue's
-   * comments or events, whose newest are its last. One that runs past them is not read whole, and fails rather than
-   * be taken for its first pages.
+   * comments or events, whose newest are its last. One that runs past them is not `whole`, and its caller decides
+   * what its first pages are worth: anyone can make a public issue's list that long, so it is an answer to go on
+   * from, never a failure.
    */
-  async #whole<T>(repo: string, path: string, item: z.ZodType<T>): Promise<T[]> {
+  async #whole<T>(repo: string, path: string, item: z.ZodType<T>): Promise<{ items: T[]; whole: boolean }> {
     const all: T[] = [];
     for (let page = 1; page <= LIST_PAGES; page++) {
       const body = await this.#github.read(repo, `${path}&page=${page}`, z.array(item));
       all.push(...body);
-      if (body.length < 100) return all;
+      if (body.length < 100) return { items: all, whole: true };
     }
-    throw new GitHubError('malformed', `GET ${path} lists more than ${LIST_PAGES} pages: it is not read whole.`);
+    return { items: all, whole: false };
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

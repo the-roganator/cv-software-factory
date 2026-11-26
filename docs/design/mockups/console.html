@@ -28,9 +28,11 @@
             | paused (by Martin) | aborted (by Martin) | held (auto-rollback off: judged bad, paused for Martin)
     ?score=on (default) | first (nothing verified yet) | off (no answer key) | sample | none (no score.updated at all)
   Patching (README, "Patching"), a summary in the bottom row's right column and the panel whole in its sheet, for everyone;
-  each move that waits on Martin is a card in Needs you, whose foot opens the sheet at its row:
-    ?move=argocd | loki | k3s | offlist | zap | grafana | parser | syft | sidecar | proxy (Patching's sheet, that row open)
+  what waits on Martin is grouped in the sheet by what he does, and Needs you has one card for all of it, which opens it:
+    ?move=loki | setupnode | sdk | postgres | lefthook | codeql | k3s | offlist | devcontainer | zap | grafana | parser
+          | syft | sidecar | proxy (Patching's sheet, that row open)
     ?patching=none (the scan passed and nothing is left to move: the quiet summary, the empty sheet, and no card)
+          | stale (the dependency sense has not read for 33 hours: said in the summary, the sheet and the card)
   Guardrails (README, "Guardrails"), a summary under Patching's and the checklist whole in its sheet, for everyone; each
   attack sits in its guardrail's row:
     ?open=1..11 (Guardrails' sheet, that row open: what holds it, its proof, its refusals and its attack)
@@ -974,6 +976,17 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
 .patch-day { margin: 0; font: 11px/1.4 var(--font-mono); color: var(--text-2); font-variant-numeric: tabular-nums; }
 .patch-day .v { font: 500 11px/1.4 var(--font-mono); vertical-align: -2px; margin-right: 6px; }
 .pm-list { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+/* What waits on Martin, grouped by what he does; then what moves by itself. */
+.pm-group { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.pm-group h3 { margin: 0; }
+.pm-group.wait h3 { color: var(--attn); }
+.pm-group .help { margin: 0; font-size: 12px; }
+.patch-stale { display: flex; gap: 8px; margin: 0; padding: 10px 12px; border-left: var(--stroke-rule) solid var(--attn); font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.patch-stale .glyph { color: var(--attn); flex: none; margin-top: 3px; }
+.patch-stale b { color: var(--text); font-weight: 500; }
+.pm .more p.run { font: 12px/1.5 var(--font-mono); }
+.need-counts { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--text-2); }
+.need-counts b { font: 500 15px var(--font-mono); color: var(--text); margin-right: 4px; font-variant-numeric: tabular-nums; }
 .pm { border-bottom: 1px solid var(--line); }
 .pm > button { display: grid; grid-template-columns: 150px minmax(0, 1fr) 190px 216px 104px 172px 16px; gap: 12px; align-items: baseline; width: 100%; min-height: 44px; padding: 10px 0; border: 0; background: none; color: var(--text); text-align: left; cursor: pointer; }
 .pm > button:hover .name { text-decoration: underline 1px var(--line-strong); text-underline-offset: 4px; }
@@ -1406,7 +1419,7 @@ const STAGE_NAME = { sense: 'Sense', triage: 'Triage', plan: 'Plan', build: 'Bui
 const STATE = { idle: ['idle', 'faint'], working: ['working', 'signal'], returning: ['sending back', 'signal'], passing: ['passed', 'ok'], blocked: ['needs you', 'attn'], failed: ['failed', 'attn'] };
 const AUTONOMY = {
   supervised: ['Supervised', 'You approve every merge and every release.'],
-  guarded: ['Guarded', 'Low-risk changes ship on their own. Anything risky waits for you.'],
+  guarded: ['Guarded', 'Low-risk changes and the scan’s moves merge on their own. A major, and anything risky, waits for you.'],
   lightsout: ['Lights-out', 'Risky changes ship too, on the gates and the canary alone. Releases, improvements, code-owned paths and anything out of scope still wait for you.'],
 };
 
@@ -2080,7 +2093,7 @@ const S = {
   visitor: q.get('mode') === 'visitor', previewing: false,
   stage: null, stopped: false, stopReason: '', autonomy: ['guarded', 'lightsout'].includes(q.get('autonomy')) ? q.get('autonomy') : 'supervised',
   // Auto-rollback off (?rollback=off, or a canary held for Martin, which only happens with it off).
-  switches: { agents: true, automerge: false, rollback: !(q.get('rollback') === 'off' || q.get('canary') === 'held') },
+  switches: { agents: true, rollback: !(q.get('rollback') === 'off' || q.get('canary') === 'held') },
   // Which guardrail's refusals are listed (?open=), and the attack launched here, if any.
   openGuard: q.get('open'), openMove: q.get('move'), launched: null,
   // Admin: the canary's state (?canary=), the line's take, whether the passkey was given in the last five minutes,
@@ -2987,7 +3000,7 @@ function needCard(h, where = 'needs') {
         <button type="button" class="btn primary small" data-answer="${h.id}:answered">Send</button></div></div>` : '';
     return `${control}<p>${what}</p>${form}`;
   }).join('');
-  const foot = h.patch ? `<button type="button" class="linkish" data-move="${h.patch}">Open its row in Patching</button>${v ? '<span>Martin moves it, on GitHub or his cluster</span>' : ''}`
+  const foot = h.patching ? `<button type="button" class="linkish" data-panel="patching">Open Patching</button>${v ? '<span>Martin answers each, on GitHub or his cluster</span>' : '<span>Each is answered there, on GitHub or your cluster</span>'}`
     : sheet ? (v ? '<span>Martin answers, signed in</span>' : '')
     : `<button type="button" class="linkish" data-open="${indexOf(h.id) >= 0 ? h.id : '1312'}">Open the work item</button>${v ? '<span>Martin answers, signed in</span>' : ''}`;
   // The way forward, first among the answers: the verb and GitHub's mark, a link to the pull request on GitHub, where
@@ -3115,7 +3128,6 @@ const lightsOutNote = (v) => `<b>Lights-out takes two settings.</b> This one, an
 // Each: [key, label, what it says (on, off), asks for the passkey when pressed in this state].
 const SWITCHES = [
   ['agents', 'Agents take new work', () => 'Off: each agent finishes its step, and nothing new is started.', () => false],
-  ['automerge', 'Auto-merge low-risk changes', () => 'The line adds a change to the merge queue once the review check passes it by a rule the autonomy level allows. Under Supervised it waits for you anyway.', (on) => !on],
   ['rollback', 'Auto-rollback', (on) => on ? 'On: a canary the analysis judges bad rolls back by itself. Off, errors or latency judged bad would pause it for you instead.'
     : 'Off: a canary whose errors or latency the analysis judges bad pauses for you, in Needs you, instead of rolling back. A failed journeys check still rolls it back, and Stop the line still aborts one.', (on) => on],
 ];
@@ -3317,43 +3329,73 @@ const MOVE_STATE = {
   none: () => ['faint', 'dash', 'Nothing to move to'], noroute: () => ['faint', 'dash', 'No route yet'],
 };
 const MOVE_ROUTE = { cluster: () => (S.visitor ? 'Martin’s cluster' : 'Your cluster'), approval: () => (S.visitor ? 'Martin’s approval' : 'Your approval'),
+  bench: () => (S.visitor ? 'Martin’s approval' : 'Your bench run'),
   worker: () => 'The worker', line: () => 'The line', dependabot: () => 'Dependabot', issue: () => 'An issue', none: () => 'None yet' };
 const GH = 'https://github.com/the-roganator/cv-software-factory';
-// key, state, name, pin, from, to, clears [C, H, M, L] (null: not scanned), due, hours to it (h, for the order; none
-// without one), due within a day or past, route,
-// pull request (or issue), why it is where it is, what to do (waiting rows: [verb, href, what it does]), its pins.
+// key, state, group (what Martin does about it, while it waits on him), name, pin, from, to, clears [C, H, M, L]
+// (null: not scanned), due, hours to it (h, for the order; none without one), due within a day or past, route, its
+// pull request (or issue), why it is where it is, what to do (waiting rows: [verb, href, what it does]), the failed
+// check's run (name, try, link: never its log), and its pins. `withheld`: a vulnerable lockfile package a visitor never
+// reads by name, nor what it clears, nor what it waits for. `routine`: a pin merely behind, which clears nothing.
 const MOVES = [
-  { key: 'argocd', st: 'wait', name: 'Argo CD', pin: 'Makefile:7, mise.toml:27', from: 'chart 10.9.5', to: '10.15.0', c: [2, 45, 60, 12], due: 'in 21 h', h: 21, soon: true, route: 'issue', pr: 1341,
-    why: 'Argo CD’s chart moves with its CLI, which mise pins, and the factory’s App writes no mise file. Issue #1341 has both pins and the target. The cluster still runs v3.4.2.',
-    act: ['Open', `${GH}/issues/1341`, 'It can be taken as it stands. The cluster’s own command then applies it, and loses nothing in the store.'],
-    left: 'Left as it is, the 2 Critical come due in 21 hours, and the scan fails until they move or are excepted.',
-    pins: [['Makefile:7', 'ARGOCD_CHART 10.9.5 → 10.15.0'], ['mise.toml:27', 'argocd 3.4 → 3.5.4']] },
-  { key: 'loki', st: 'wait', name: 'Loki chart', pin: 'deploy/base/telemetry/loki.yaml:14', from: '18.13.7', to: '21.1.1', c: [1, 21, 30, 4], due: 'in 21 h', h: 21, soon: true, route: 'approval', pr: 1344,
-    why: 'No 18.x chart has the fixed image. 21.1.1 does, three majors on, and its manifests change beyond the image, so the review gate holds #1344 for {whom}.',
+  { key: 'loki', st: 'wait', g: 'approve', name: 'Loki chart', pin: 'deploy/base/telemetry/loki.yaml:14', from: '18.13.7', to: '21.1.1', c: [1, 21, 30, 4], due: 'in 21 h', h: 21, soon: true, route: 'approval', pr: 1344,
+    why: 'No 18.x chart has the fixed image. 21.1.1 does, three majors on, so the review gate passed #1344 as a major: exactly the scan’s move, and a major. Under Guarded a major waits for {whom}; at Lights-out it would merge by itself.',
     act: ['Review', `${GH}/pull/1344`, 'Approve its head commit there: the worker then adds it to the merge queue.'],
     left: 'Left as it is, the scan fails from 11 Nov 17:49 UTC. If it cannot reach us, the entry that excepts it is {whose}, in policy/vulnerabilities.ts.',
     pins: [['deploy/base/telemetry/loki.yaml:14', 'targetRevision 18.13.7 → 21.1.1']] },
-  { key: 'k3s', st: 'wait', name: 'k3s and what it brings', pin: 'deploy/k3d/cluster.yaml:8', from: 'v1.36.4+k3s1', to: 'v1.36.5+k3s1', c: [0, 21, 44, 9], due: 'in 5 days', h: 117, route: 'cluster', pr: 1345,
+  { key: 'setupnode', st: 'wait', g: 'approve', routine: true, name: 'actions/setup-node', pin: '.github/workflows/check.yml:31 and 6 more', from: 'v6.0.0', to: 'v6.1.0', c: [0, 0, 0, 0], clrNote: 'nothing: a routine update', due: 'none', route: 'dependabot', pr: 1350,
+    why: 'A routine update of a third-party action: no finding asks for it. Dependabot opened #1350, and a third-party action’s pin is {whose} to merge at every level.',
+    act: ['Review', `${GH}/pull/1350`, 'Merge it there once its checks pass. Nothing is due: it can wait for a quiet moment.'],
+    left: 'Left as it is, nothing comes due. Dependabot keeps it up to date.',
+    pins: [['.github/workflows/check.yml:31', 'actions/setup-node v6.0.0 → v6.1.0'], ['… and 6 more', 'the same line in each workflow']] },
+  { key: 'sdk', st: 'wait', g: 'bench', withheld: true, name: '@anthropic-ai/claude-agent-sdk', pin: 'pnpm-lock.yaml, apps/factory/package.json', from: '0.4.2', to: '0.4.3', c: [0, 1, 0, 0], due: 'in 6 days', h: 141, route: 'bench', pr: 1352,
+    why: 'The SDK is the loop every agent step runs in, and the tests replay cassettes, so a change in it shows only on a live step. The App opened #1352, exactly the scan’s move, and the worker holds it until a bench run on Claude passes on its branch, which is {whose} to run. A Critical fix would move by itself.',
+    act: ['Review', `${GH}/pull/1352`, 'Run the bench on Claude on its branch, <code>factory/pin/pnpm-lock.yaml</code>; then approve its head commit there, and the worker adds it to the merge queue.'],
+    bench: true,
+    left: 'Left as it is, the scan fails from 2 Dec 04:17 UTC.',
+    pins: [['pnpm-lock.yaml', '@anthropic-ai/claude-agent-sdk 0.4.2 → 0.4.3'], ['apps/factory/package.json:14', '^0.4.2 → ^0.4.3']] },
+  { key: 'postgres', st: 'wait', g: 'stuck', name: 'Postgres', pin: 'deploy/base/store/postgres.yaml:22', from: '18.7-alpine3.24', to: '18.8-alpine3.24', c: [0, 3, 5, 1], due: 'in 4 days', h: 96, route: 'worker', pr: 1348,
+    why: 'The review gate passed #1348 as the scan’s move, and its required check failed on each of its three tries, so the worker stopped trying. What failed is in the run.',
+    run: ['database tests', 'failed · try 3 of 3', `${GH}/actions/runs/19220481337`],
+    act: ['Open', `${GH}/pull/1348`, 'Read the run. Run it again there if it was the runner, or put the cause right on its branch: the worker queues it once its checks pass.'],
+    left: 'Left as it is, the scan fails from 30 Nov 04:17 UTC.',
+    pins: [['deploy/base/store/postgres.yaml:22', 'image postgres 18.7-alpine3.24 → 18.8-alpine3.24']] },
+  { key: 'lefthook', st: 'wait', g: 'stuck', routine: true, name: 'lefthook', pin: 'pnpm-lock.yaml', from: '2.2.1', to: '2.2.2', c: [0, 0, 0, 0], clrNote: 'nothing: a routine update', due: 'none', route: 'issue', pr: 1211,
+    why: 'A routine update pnpm refused: 2.2.2 is a provenance downgrade, published without the attestation 2.2.1 had. The worker made it an issue, #1211, which says the kind of refusal, never pnpm’s words.',
+    act: ['Open', `${GH}/issues/1211`, 'Leave it: a later release with its provenance is taken by itself, and closes the issue. Or allow it in <code>pnpm-workspace.yaml</code>, with its reason.'],
+    left: 'Left as it is, nothing comes due.',
+    pins: [['pnpm-lock.yaml', 'lefthook 2.2.1 → 2.2.2']] },
+  { key: 'codeql', st: 'wait', g: 'hand', name: 'CodeQL’s action', pin: '.github/workflows/vulnerabilities.yml:88', from: 'v4.31.2', to: 'v4.31.6', c: [0, 1, 0, 0], due: 'in 6 days', h: 141, route: 'issue', pr: 1347,
+    why: 'A workflow’s pin: workflow pins are {whose} at every level, so the factory’s App writes none. Issue #1347 has the pin and the target.',
+    act: ['Open', `${GH}/issues/1347`, 'Move it in a pull request of your own. The issue closes once the next scan finds it moved.'],
+    left: 'Left as it is, the scan fails from 2 Dec 04:17 UTC.',
+    pins: [['.github/workflows/vulnerabilities.yml:88', 'github/codeql-action v4.31.2 → v4.31.6']] },
+  { key: 'k3s', st: 'wait', g: 'hand', name: 'k3s and what it brings', pin: 'deploy/k3d/cluster.yaml:8', from: 'v1.36.4+k3s1', to: 'v1.36.5+k3s1', c: [0, 21, 44, 9], due: 'in 5 days', h: 117, route: 'cluster', pr: 1345,
     why: 'Only the cluster’s own command applies a new k3s: <code>make upgrade-cluster</code>, with the line stopped. No pull request can show it works.',
     act: ['Merge', `${GH}/pull/1345`, 'Merge it once the moved cluster is up and every Application is Synced and Healthy.'],
     left: 'Left as it is, the scan fails from 16 Nov 17:49 UTC.',
     pins: [['deploy/k3d/cluster.yaml:8', 'image rancher/k3s v1.36.4+k3s1 → v1.36.5+k3s1']] },
   // One of the sense's rows: an image running that the list does not name. No target and no counts: nothing scanned it.
-  { key: 'offlist', st: 'wait', name: 'Unscanned image running', pin: 'running in default · pod debug-shell-7c9f', from: 'pinned nowhere', c: null, due: 'none', route: 'cluster',
+  { key: 'offlist', st: 'wait', g: 'hand', name: 'Unscanned image running', pin: 'running in default · pod debug-shell-7c9f', from: 'pinned nowhere', c: null, due: 'none', route: 'cluster',
     why: 'The sense found a pod running an image that no pin names, so the scan never sees it. It came from outside a merge: a pod started by hand.',
     left: 'Nothing to merge: add the image to the list in a pull request, or delete the pod. The sense reads again when it starts, and each day.',
     pins: [['default/debug-shell-7c9f', 'example/debug-shell@sha256:41c0…e2d9']] },
+  { key: 'devcontainer', st: 'wait', g: 'hand', app: true, name: 'devcontainers/base', pin: '<span class="sans">the app’s</span> .devcontainer/Dockerfile:1', from: 'ubuntu-24.04', c: null, clrNote: 'nothing to move to', due: 'none', route: 'issue', pr: 81,
+    why: 'A line nobody builds any more: its tag is no version and its image is over 180 days old, so there is nothing to move to, and its findings count under No fix yet. The worker opened an issue in the app’s repository, #81.',
+    act: ['Open', 'https://github.com/the-roganator/cv-worlds-worst-website/issues/81', 'Remove the line from the app, or build it again from a tag that moves.'],
+    left: 'Left as it is, nothing comes due: a finding with no fix has no deadline.',
+    pins: [['.devcontainer/Dockerfile:1', 'FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04']] },
   { key: 'zap', st: 'checks', name: 'ZAP’s image', pin: 'apps/console/zap/scan.ts:32', from: '2.17.0 5ccfff9a', to: '9624669d', c: [3, 1363, 3321, 2727], due: 'in 21 h', h: 21, soon: true, route: 'worker', pr: 1342,
-    why: 'The worker opened #1342. The same tag’s newer digest, so the review gate can prove it from the pull request, and it merges by itself once its checks pass.',
+    why: 'The worker opened #1342 and the review gate passed it as the scan’s move. Its checks are running, try 1 of 3; it merges by itself once they pass.',
     pins: [['apps/console/zap/scan.ts:32', 'digest 5ccfff9a → 9624669d']] },
   { key: 'grafana', st: 'queue', name: 'Grafana chart', pin: 'deploy/base/telemetry/grafana.yaml:14', from: '13.2.7', to: '13.7.2', c: [0, 8, 14, 2], due: 'in 5 days', h: 117, route: 'worker', pr: 1343,
-    why: 'The gate passed #1343 as a pin on its own line, and the worker added it to the merge queue.',
+    why: 'The gate passed #1343 as the scan’s move, its checks passed, and the worker added it to the merge queue.',
     pins: [['deploy/base/telemetry/grafana.yaml:14', 'targetRevision 13.2.7 → 13.7.2']] },
-  { key: 'parser', st: 'build', name: '@example/parser', pin: '<span class="sans">the app’s</span> pnpm-lock.yaml', from: '4.2.0', to: '4.2.3', c: [1, 0, 0, 1], due: 'in 1 day 20 h', h: 44, lockfile: true, prOpen: false, route: 'line', pr: 1338,
+  { key: 'parser', st: 'build', name: '@example/parser', pin: '<span class="sans">the app’s</span> pnpm-lock.yaml', from: '4.2.0', to: '4.2.3', c: [1, 0, 0, 1], due: 'in 1 day 20 h', h: 44, lockfile: true, withheld: true, route: 'line', pr: 1338,
     why: 'The app’s move goes down the line as a work item, #1338: its pins are written, then its gates and review, as any change.',
     pins: [['pnpm-lock.yaml', '4.2.0 → 4.2.3']] },
-  { key: 'syft', st: 'opened', name: 'Syft’s image', pin: 'deploy/images/syft/Dockerfile:6', from: 'v1.54.0', to: 'v1.55.1', c: [0, 7, 12, 3], due: 'in 5 days', h: 117, route: 'dependabot', pr: 1339,
-    why: 'Dependabot opened #1339 and has no High or Critical on a deadline, so the pin stays Dependabot’s.',
+  { key: 'syft', st: 'opened', routine: true, name: 'Syft’s image', pin: 'deploy/images/syft/Dockerfile:6', from: 'v1.54.0', to: 'v1.55.1', c: [0, 0, 0, 0], clrNote: 'nothing: a routine update', due: 'none', route: 'worker', pr: 1339,
+    why: 'A routine update, its release three days old. The worker opened #1339 apart from the fixes, so it never holds one up; Dependabot’s own pull request for it is closed once main has the version.',
     pins: [['deploy/images/syft/Dockerfile:6', 'ARG SYFT_VERSION v1.54.0 → v1.55.1']] },
   { key: 'sidecar', st: 'merged', name: 'Grafana’s and Loki’s sidecar', pin: '<span class="sans">two values files</span>', from: '2.11.2', to: '2.14.3', c: [2, 30, 22, 6], due: 'cleared 10 Nov', route: 'worker', pr: 1336,
     why: 'Merged and running: the next scan found none of what it cleared.',
@@ -3362,6 +3404,16 @@ const MOVES = [
     why: 'Nobody publishes a version without its 8 findings yet (2 High, 5 Medium, 1 Low), so they are counted under No fix yet. The scan looks again each day; a fix starts its deadline.',
     pins: [['mise.lock:141', 'k3d 5.9.0']] },
 ];
+// What Martin does about a row that waits on him, in the order the sheet groups them: [key, his heading, a visitor's,
+// the line under it, the state word]. A withheld row is in `martin` for a visitor, which says nothing of what it waits for.
+const PATCH_GROUPS = [
+  ['approve', 'Yours to approve', 'Martin’s to approve', 'Ready on GitHub, and waiting for a yes.', 'Approve'],
+  ['bench', 'Waits for your bench run', 'Waits for Martin’s bench run', 'A move of the agent loop itself: it goes once a bench run on Claude passes on its branch.', 'Run the bench'],
+  ['stuck', 'Tried and stopped', 'Tried and stopped', 'The factory made the move, and something stopped it.', 'Stopped'],
+  ['hand', 'Yours to do by hand', 'Martin’s to do by hand', 'Nothing the factory may write: a workflow, the cluster, a line no longer built.', 'By hand'],
+  ['martin', null, 'Waits on Martin', 'A package in a lockfile, withheld while it has an open finding.', 'Waits on Martin'],
+];
+const groupOf = (m) => (S.visitor && m.withheld && m.st === 'wait' ? 'martin' : m.g);
 const sevWords = (c) => ['Critical', 'High', 'Medium', 'Low'].map((s, i) => `${c[i].toLocaleString('en-GB')} ${s}`).join(', ');
 // A count as a person reads it at a glance: 845, 1.4K, 11K, 1.2M. The exact figure is its title, and in the label.
 function human(n) {
@@ -3381,7 +3433,7 @@ const clrHead = () => `<span class="clr clr-head" aria-hidden="true">${['Critica
 const moveWay = (m) => `<a class="btn way" href="${m.act[1]}" target="_blank" rel="noopener"><span class="way-words" aria-hidden="true">${m.act[0]}<svg viewBox="0 0 16 16"><use href="#logo-github"/></svg></span><span class="sr">${m.act[0]} #${m.pr} on GitHub (opens GitHub in a new tab)</span></a>`;
 const whose = (s) => s.replace('{whom}', S.visitor ? 'Martin' : 'you').replace('{whose}', S.visitor ? 'Martin’s' : 'yours');
 // A visitor never reads a lockfile move's package until its pull request is open and its diff names it.
-const moveName = (m) => m.lockfile && !m.prOpen && S.visitor ? ['A package in the app’s lockfile', 'pnpm-lock.yaml', null] : [m.name, m.pin, m];
+const moveName = (m) => m.withheld && S.visitor ? [`A package in the ${m.lockfile ? 'app’s' : 'factory’s'} lockfile`, 'pnpm-lock.yaml', null] : [m.name, m.pin, m];
 
 // What the panel's head, the sheet's, and the summary count.
 // The findings with no fix yet, by severity: 14,844 in all. Nothing can move them; each day's scan looks again.
@@ -3397,7 +3449,8 @@ function patchCounts() {
   const next = rows.filter((m) => m.h !== undefined && m.st !== 'merged').sort((a, b) => a.h - b.h)[0];
   // Every open finding, by severity: those the moves clear and those with no fix yet. Excepted ones are not open.
   const open = sev.map((n, i) => n + NO_FIX[i]);
-  return { none, moves, unscanned, waiting, sev, open, next, failed: !none };
+  const groups = PATCH_GROUPS.map(([g]) => [g, rows.filter((m) => m.st === 'wait' && groupOf(m) === g).length]).filter(([, n]) => n);
+  return { none, moves, unscanned, waiting, groups, sev, open, next, failed: !none, stale: q.get('patching') === 'stale' };
 }
 // How many moves and how many wait on Martin, as the sheet's head says it; the summary's leaves out the unscanned
 // images, which it says on a line of their own.
@@ -3413,29 +3466,36 @@ function patchingBody() {
       <p class="patch-day"><span class="v tone-ok">${glyph('check')}Scan passed today</span><span>· 04:17 UTC · <span class="zero">0</span> new High or Critical · <span class="zero">0</span> overdue · <span class="zero">0</span> due within a day</span></p>
       <p class="patch-empty">Nothing to move. Every finding with a fix has been cleared. 14,844 have no fix yet, and are looked at again tomorrow.</p></section>`;
   }
-  // What waits on Martin first, then by earliest deadline, then rows with none.
-  const order = [...MOVES].sort((a, b) => (b.st === 'wait') - (a.st === 'wait') || (a.h ?? Infinity) - (b.h ?? Infinity));
+  // What waits on Martin, grouped by what he does, each group by earliest deadline; then every other row by deadline.
+  const byDue = (a, b) => (a.h ?? Infinity) - (b.h ?? Infinity);
+  const waiting = PATCH_GROUPS.map(([g, mine, his, line]) => [v ? his : mine, line, MOVES.filter((m) => m.st === 'wait' && groupOf(m) === g).sort(byDue)]).filter(([, , rows]) => rows.length);
+  const moving = MOVES.filter((m) => m.st !== 'wait').sort(byDue);
   const cleared = c.sev.reduce((a, b) => a + b, 0).toLocaleString('en-GB');
   const row = (m) => {
-    const [tone, gl, word] = MOVE_STATE[m.st](), open = S.openMove === m.key, [name, pin, shown] = moveName(m);
-    const ft = !shown ? '<span class="zero">versions once its pull request opens</span>' : m.to ? `${m.from} → <span class="to">${m.to}</span>` : m.from;
+    const [tone, gl, word0] = MOVE_STATE[m.st](), open = S.openMove === m.key, [name, pin, shown] = moveName(m);
+    const word = m.st === 'wait' ? PATCH_GROUPS.find(([g]) => g === groupOf(m))[4] : word0;
+    const ft = !shown ? '<span class="zero">versions withheld</span>' : m.to ? `${m.from} → <span class="to">${m.to}</span>` : m.from;
     const more = !open ? '' : `<div class="more" id="pm-more-${m.key}">
-      <div><span class="label">${m.st === 'wait' ? 'Why it waits' : 'Where it is'}</span><p>${whose(m.why)}</p></div>
-      ${m.st === 'wait' ? `<div><span class="label">What to do</span>${m.act ? `<div class="answers">${moveWay(m)}<p>${v ? 'Martin does it there.' : m.act[2]}</p></div>` : ''}<p class="help">${whose(m.left)}</p></div>` : ''}
-      ${m.c ? `<div><span class="label">Clears · ${m.c.reduce((a, b) => a + b, 0).toLocaleString('en-GB')} findings</span><p>${sevWords(m.c)}. The packages and advisories are in code scanning.${v ? '' : ` <a href="${GH}/security/code-scanning" target="_blank" rel="noopener">Code scanning ↗</a>`}</p></div>` : ''}
+      <div><span class="label">${m.st === 'wait' ? 'Why it waits' : 'Where it is'}</span><p>${shown ? whose(m.why) : 'Its package is withheld while it has an open finding, and so is what it waits for. Martin sees both, signed in.'}</p></div>
+      ${m.run ? `<div><span class="label">What failed</span><p class="run"><span class="mono">${m.run[0]}</span> · ${m.run[1]} · <a href="${m.run[2]}" target="_blank" rel="noopener">its run ↗</a></p><p class="help">The console never copies a check’s log: the run on GitHub has it whole.</p></div>` : ''}
+      ${m.st === 'wait' ? `<div><span class="label">What to do</span>${m.act ? `<div class="answers">${moveWay(m)}<p>${v ? 'Martin does it there.' : m.act[2]}</p></div>` : ''}${m.bench && !v ? '<p class="help">How to run it: <a href="https://github.com/the-roganator/cv-software-factory/blob/main/docs/ON-THE-HOST.md#the-bench" target="_blank" rel="noopener">the bench, on the host</a>.</p>' : ''}<p class="help">${whose(m.left)}</p></div>` : ''}
+      ${m.c && shown && m.c.some(Boolean) ? `<div><span class="label">Clears · ${m.c.reduce((a, b) => a + b, 0).toLocaleString('en-GB')} finding${m.c.reduce((a, b) => a + b, 0) === 1 ? '' : 's'}</span><p>${sevWords(m.c)}. The packages and advisories are in code scanning.${v ? '' : ` <a href="${GH}/security/code-scanning" target="_blank" rel="noopener">Code scanning ↗</a>`}</p></div>` : ''}
       ${shown ? `<div><span class="label">${m.c ? 'Every pin' : 'Where it runs'}</span><div class="reflist pins">${m.pins.map(([f, w]) => `<div><span class="mono">${f}</span><span>${w}</span></div>`).join('')}</div></div>` : ''}
     </div>`;
     return `<div class="pm ${m.st === 'wait' ? 'wait' : ''}"><button type="button" data-move="${m.key}" aria-expanded="${open}" ${open ? `aria-controls="pm-more-${m.key}"` : ''}>
       <span class="v tone-${tone}">${glyph(gl)}${word}</span>
       <span class="what"><span class="name">${name}</span><span class="pin">${pin}</span></span>
-      <span class="facts">${ft ? `<span class="ft">${ft}</span>` : ''}${moveClears(m.c, m.clrNote)}<span class="due ${m.soon ? 'tone-attn' : ''}">${m.due}</span></span>
-      <span class="pill route">${MOVE_ROUTE[m.route]()}${m.pr ? ` · #${m.pr}` : ''}</span>${glyph('chev', 'glyph chev')}</button>${more}</div>`;
+      <span class="facts">${ft ? `<span class="ft">${ft}</span>` : ''}${shown ? (m.c && !m.c.some(Boolean) && m.clrNote ? `<span class="clr none">${m.clrNote}</span>` : moveClears(m.c, m.clrNote)) : '<span class="clr none">withheld</span>'}<span class="due ${m.soon ? 'tone-attn' : ''}">${m.due}</span></span>
+      <span class="pill route">${(shown || m.st !== 'wait' ? MOVE_ROUTE[m.route] : MOVE_ROUTE.approval)()}${m.pr && (shown || m.st !== 'wait') ? ` · #${m.pr}` : ''}</span>${glyph('chev', 'glyph chev')}</button>${more}</div>`;
   };
   return `<section class="patching" id="patching" aria-labelledby="sheet-title">
     <p class="help">Everything the factory and the app build or run is scanned every day. A finding with a fix has a deadline by its severity. One row here is one pin to move, and what moving it clears.</p>
-    <p class="patch-day"><span class="v tone-attn">${glyph('cross')}Scan failed today</span><span>· 04:17 UTC · 41 new High or Critical: 6 have a fix (in 2 moves below), 35 have none yet · <span class="zero">0</span> overdue · <span class="tone-attn">6 due within a day (in 3 moves below)</span></span></p>
+    ${c.stale ? `<p class="patch-stale">${glyph('cross')}<span><b>The dependency sense has not read since 25 Nov 05:30 UTC, 33 hours ago.</b> Everything below is that read’s, and may be out of date: a pull request may have merged, or stopped, since. ${v ? 'Martin has been told.' : 'Its log says why; your phone was told at 26 hours.'}</span></p>` : ''}
+    <p class="patch-day"><span class="v tone-attn">${glyph('cross')}Scan failed today</span><span>· 04:17 UTC · 41 new High or Critical: 6 have a fix (in 2 moves below), 35 have none yet · <span class="zero">0</span> overdue · <span class="tone-attn">6 due within a day (in 3 moves below)</span> · pull requests read ${c.stale ? '25 Nov 05:30' : '14:05'} UTC</span></p>
     <div class="pm-head"><span class="pm">${clrHead()}</span></div>
-    <div class="pm-list">${order.map(row).join('')}</div>
+    ${waiting.map(([title, line, rows]) => `<div class="pm-group wait"><h3 class="label">${title} · ${rows.length}</h3><p class="help">${line}</p></div><div class="pm-list">${rows.map(row).join('')}</div>`).join('')}
+    <div class="pm-group"><h3 class="label">Moving by itself · ${moving.length}</h3><p class="help">Nothing to do: each merges by itself, or has nothing to move to yet.</p></div>
+    <div class="pm-list">${moving.map(row).join('')}</div>
     <div class="pm-total"><span class="label">All open</span><span class="pm clr-wrap">${moveClears(c.open)}</span></div>
     <div class="patch-counts">
       <div><b>14,844</b><span class="label">No fix yet</span><p class="help">looked at again each day; a fix starts its deadline</p></div>
@@ -3443,7 +3503,7 @@ function patchingBody() {
       <div><b class="zero">0</b><span class="label">Excepted</span><p class="help">Martin’s, in policy/vulnerabilities.ts, each for 90 days at most</p></div>
       <div><b class="zero">0</b><span class="label">Past their deadline</span><p class="help">the scan fails while there is one</p></div>
     </div>
-    <p class="help">A move the review gate can prove from its pull request merges by itself. One that needs a cluster, or changes more than a pin, waits on ${v ? 'Martin, signed in with his passkey' : 'you'}. Each merge is in the audit log.</p>
+    <p class="help">A move the review gate can prove from its pull request merges by itself, at the level ${v ? 'Martin sets' : 'you set'}. A major below Lights-out, a workflow’s pin, the cluster, the agent loop and anything the factory tried and could not finish wait on ${v ? 'Martin' : 'you'}. Each merge is in the audit log.</p>
     <div class="links"><a href="?view=audit">Audit log</a>${v ? '' : `<a href="${GH}/security/code-scanning" target="_blank" rel="noopener">Code scanning ↗</a>`}<a href="${GH}/blob/main/docs/COMPONENTS/SECURITY-SCANNING.md" target="_blank" rel="noopener">How patching works</a></div></section>`;
 }
 
@@ -3452,7 +3512,7 @@ function patchingBody() {
 // or the scan failed: then its rule, and each reason in attn. A Critical count alone is not a reason.
 function renderPatching() {
   const v = S.visitor, c = patchCounts(), el = $('patching-sum');
-  const soon = !!c.next?.soon, attn = c.waiting > 0 || soon || c.failed;
+  const soon = !!c.next?.soon, attn = c.waiting > 0 || soon || c.failed || c.stale;
   el.classList.toggle('attn', attn);
   el.innerHTML = `<div class="panel-head"><h2 id="patching-sum-title">Patching</h2><span class="label">${patchHeadWords(c, v, { unscanned: false })}</span></div>
     <div class="sum-clr">
@@ -3461,28 +3521,26 @@ function renderPatching() {
       <div><span>${c.none ? 'Nothing to clear' : 'The moves clear'}</span><span class="pm">${moveClears(c.sev, null, true)}</span></div>
     </div>
     <ul class="sum-lines">
+      ${c.stale ? `<li class="tone-attn">${glyph('cross')}<span>Not read since 25 Nov 05:30 UTC</span></li>` : ''}
       ${c.unscanned ? `<li class="tone-attn">${glyph('ring')}<span>${c.unscanned} unscanned image${c.unscanned === 1 ? '' : 's'} running</span></li>` : ''}
       <li class="${soon ? 'tone-attn' : ''}">${glyph(c.next ? 'ring' : 'dash')}<span>${c.next ? `Next due ${c.next.due}${soon ? `: ${c.next.name}` : ''}` : 'No deadline to meet'}</span></li>
       <li class="${c.failed ? 'tone-attn' : 'tone-ok'}">${glyph(c.failed ? 'cross' : 'check')}<span>${c.failed ? 'Scan failed today · 04:17 UTC' : 'Scan passed today · 04:17 UTC'}</span></li>
     </ul>
     <div class="links"><button type="button" class="linkish sum-open" data-panel="patching">${c.none ? 'Open Patching' : `All ${c.moves} moves`}</button></div>`;
 }
-// Each move that waits on Martin is a card in Needs you too, with one answer, its pull request (or issue), and what
-// happens if he leaves it. It opens its row in Patching rather than a work item: a move is not one.
-const PATCH_CARD = {
-  argocd: ['Patch · an issue', 'Argo CD v3.5.4 needs the toolchain moved', (m) => `Clears ${m.c[0]} Critical and ${m.c[1]} High. Its chart moves with its CLI, which mise pins, so no pull request of the App’s can write it.`],
-  loki: ['Patch · {whose} approval', 'Loki’s fix is three majors on', (m) => `No 18.x chart has the fixed image. ${m.to} does, and its manifests change beyond the image.`, (m) => `${m.from} → ${m.to} · 14 manifests change · clears ${m.c[0]} Critical, ${m.c[1]} High`],
-  k3s: ['Patch · {whose} cluster', 'k3s v1.36.5 needs the cluster moved', (m) => `Clears ${m.c[1]} High. Only <code>make upgrade-cluster</code> applies it, with the line stopped: #${m.pr} records the pin once it runs.`],
-  offlist: ['Patch · {whose} cluster', 'An unscanned image is running', () => 'A pod in <code>default</code> runs <code>example/debug-shell</code>, which no pin names, so the daily scan never sees it.'],
-};
+// Patching in Needs you: one card at most, while anything there waits on Martin or its read is stale. It counts what
+// waits by what he does, says the next deadline among them, and opens the sheet, where each is answered.
+const GROUP_WORDS = { approve: ['to approve', 'to approve'], bench: ['bench run', 'bench runs'], stuck: ['tried and stopped', 'tried and stopped'], hand: ['to do by hand', 'to do by hand'], martin: ['waiting on Martin', 'waiting on Martin'] };
 function patchHolds() {
-  if (q.get('patching') === 'none') return [];
-  return MOVES.filter((m) => m.st === 'wait').map((m) => {
-    const [kicker, title, ev, words] = PATCH_CARD[m.key], who = (s) => s.replace('{whose}', S.visitor ? 'Martin’s' : 'your');
-    return { id: `patch-${m.key}`, patch: m.key, kicker: who(kicker), meta: m.due === 'none' ? 'running in default · no deadline' : `${m.name} · due ${m.due}`, title,
-      ev: `<p class="ev">${ev(m)}</p>${words ? `<p class="words">${words(m)}</p>` : ''}`,
-      way: m.act ? [m.act[1], m.act[0], m.pr, m.act[2], 'Martin does it there.'] : null, answers: [], after: whose(m.left) };
-  });
+  const c = patchCounts(), v = S.visitor;
+  if (c.none || (!c.waiting && !c.stale)) return [];
+  const next = MOVES.filter((m) => m.st === 'wait' && m.h !== undefined).sort((a, b) => a.h - b.h)[0];
+  const [nextName] = next ? moveName(next) : [];
+  const lines = c.groups.map(([g, n]) => `<li><b>${n}</b> ${GROUP_WORDS[g][n === 1 ? 0 : 1]}</li>`).join('');
+  return [{ id: 'patching', patching: true, kicker: 'Patching', meta: next ? `next due ${next.due}` : 'nothing due',
+    title: `${c.waiting} patch${c.waiting === 1 ? '' : 'es'} wait${c.waiting === 1 ? 's' : ''} on ${v ? 'Martin' : 'you'}`,
+    ev: `${c.stale ? `<p class="ev tone-attn">The dependency sense has not read since 25 Nov 05:30 UTC, so this may be out of date.</p>` : ''}<ul class="need-counts">${lines}</ul>${next ? `<p class="ev">First due: ${nextName}, ${next.due}${next.soon ? '.' : '.'}</p>` : ''}`,
+    way: null, answers: [], after: next?.soon ? whose(next.left) : '' }];
 }
 
 /* ==== Dialogs: stop and start the line, abort, and the passkey again ======================== */

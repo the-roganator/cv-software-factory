@@ -80,15 +80,22 @@ export interface ScanDay {
   scanned?: MovesFile['scanned'] | undefined;
 }
 
+/** How far ahead of the gate's clock a scan's time may be and still be read as now: two clocks' difference. */
+const CLOCK_SKEW_MS = 5 * 60_000;
+
 /**
- * Why a scan is too old to judge by, as a wait says it, or nothing while it is not: judged longer ago than
- * `SCAN_MAX_AGE_HOURS`, or at no time the gate can read.
+ * Why a scan is no judgement by its time, as a wait says it, or nothing while it is one: judged longer ago than
+ * `SCAN_MAX_AGE_HOURS`, at no time the gate can read, or at a time still to come. `moves.json` says when it was
+ * judged, and the scan's seal does not hold that time: one that names a day to come would never grow old.
  */
 export function tooOld(judged: number, now = Date.now()): string | undefined {
+  const next = "the next scan's moves settle it";
+  if (judged - now > CLOCK_SKEW_MS)
+    return `the scan of main it would pass by says it was judged at a time still to come, which is no judgement: ${next}`;
   const hours = (now - judged) / 3_600_000;
   if (hours <= SCAN_MAX_AGE_HOURS) return undefined;
   const ago = Number.isFinite(hours) ? `${Math.floor(hours)} hours ago` : 'at no time the gate can read';
-  return `the scan of main it would pass by was judged ${ago}, and one judged more than ${SCAN_MAX_AGE_HOURS} hours ago is no judgement: the next scan's moves settle it`;
+  return `the scan of main it would pass by was judged ${ago}, and one judged more than ${SCAN_MAX_AGE_HOURS} hours ago is no judgement: ${next}`;
 }
 
 /**

@@ -29,10 +29,11 @@
     ?score=on (default) | first (nothing verified yet) | off (no answer key) | sample | none (no score.updated at all)
   Patching (README, "Patching"), a summary in the bottom row's right column and the panel whole in its sheet, for everyone;
   what waits on Martin is grouped in the sheet by what he does, and Needs you has one card for all of it, which opens it:
-    ?move=loki | setupnode | sdk | postgres | lefthook | codeql | k3s | offlist | devcontainer | zap | grafana | parser
-          | syft | sidecar | proxy (Patching's sheet, that row open)
+    ?move=loki | setupnode | sdk | undici | prometheus | tempo | postgres | lefthook | traefik | valkey | codeql | k3s
+          | offlist | devcontainer | zap | grafana | parser | redis | syft | sidecar | proxy (Patching's sheet, that row open)
     ?patching=none (the scan passed and nothing is left to move: the quiet summary, the empty sheet, and no card)
           | stale (the dependency sense has not read for 33 hours: said in the summary, the sheet and the card)
+          | scanstale (the factory's scan is past its 36 hours: its moves wait)   ?dialog=stop then Patching: rows that would queue say the line is stopped
   Guardrails (README, "Guardrails"), a summary under Patching's and the checklist whole in its sheet, for everyone; each
   attack sits in its guardrail's row:
     ?open=1..11 (Guardrails' sheet, that row open: what holds it, its proof, its refusals and its attack)
@@ -985,6 +986,8 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
 .patch-stale .glyph { color: var(--attn); flex: none; margin-top: 3px; }
 .patch-stale b { color: var(--text); font-weight: 500; }
 .pm .more p.run { font: 12px/1.5 var(--font-mono); }
+.pm .leaves { font-size: 12px; color: var(--text-muted); }
+.pm .leaves.tone-attn { color: var(--attn); }
 .need-counts { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--text-2); }
 .need-counts b { font: 500 15px var(--font-mono); color: var(--text); margin-right: 4px; font-variant-numeric: tabular-nums; }
 .pm { border-bottom: 1px solid var(--line); }
@@ -3223,7 +3226,7 @@ function guardrails() {
       [true, 'attack', 'yesterday', '1297'], [['Fri 21:10', 'typed-judgement', 'A report telling the factory to set every price to £0, quarantined at 0.99', '1297']]],
     ['9', 'Everything is reversible', 'The canary rolls itself back; Stop the line ends every step, takes nothing new and aborts a canary in flight.',
       [true, 'make guardrails · the stop-the-line drill', '2h ago'], `The last rollback: v0.9.10, at 14:29, by its analysis.${S.switches.rollback ? '' : ' Auto-rollback is off, by Martin: a canary judged bad waits for him.'}`],
-    ['10', 'Public means hostile', 'The factory reads no issue as work, and acts only on what it opened; an outside pull request runs with no secret and is never passed without Martin.',
+    ['10', 'Public means hostile', 'The factory reads no issue as work, and acts only on what it opened, with two exceptions of Dependabot’s: in the app, its bump of the commit the factory’s workflows are called at, which the worker queues once the gate passes it as an exact pin; and, in either repository, one whose every change main already has, which it closes. An outside pull request runs with no secret and is never passed without Martin.',
       [true, 'tests in CI on main · 5b2c0d9', '3h ago'], [['Fri 11:02', 'github-guard', 'A comment on an issue the App did not open', null]]],
     ['11', 'No fix widens its ticket', 'The scope fence refuses a patch outside its spec’s scope; out-of-scope waits for Martin in every mode.',
       [true, 'make guardrails', '2h ago'], [['16:36', 'scope-fence', 'Patch 1 changed src/server.ts, outside the spec’s scope', '1312'], ['15:44', 'scope-fence', 'Patch 2 needed deploy/app.yaml, which no scope may name', '1318']]],
@@ -3325,7 +3328,7 @@ const MOVE_STATE = {
   wait: () => ['attn', 'ring', S.visitor ? 'Waits on Martin' : 'Waits on you'],
   checks: () => ['signal', 'ring', 'Checks running'], queue: () => ['signal', 'ring', 'In the merge queue'],
   plan: () => ['signal', 'ring', 'In plan'], build: () => ['signal', 'ring', 'In build'], review: () => ['signal', 'ring', 'In review'],
-  opened: () => ['signal', 'ring', 'Opened'], merged: () => ['ok', 'check', 'Merged, running'], unrun: () => ['signal', 'ring', 'Merged, not running yet'],
+  opened: () => ['signal', 'ring', 'Opened'], day: () => ['faint', 'ring', 'Waits its day'], merged: () => ['ok', 'check', 'Merged, running'], unrun: () => ['signal', 'ring', 'Merged, not running yet'],
   none: () => ['faint', 'dash', 'Nothing to move to'], noroute: () => ['faint', 'dash', 'No route yet'],
 };
 const MOVE_ROUTE = { cluster: () => (S.visitor ? 'Martin’s cluster' : 'Your cluster'), approval: () => (S.visitor ? 'Martin’s approval' : 'Your approval'),
@@ -3348,12 +3351,29 @@ const MOVES = [
     act: ['Review', `${GH}/pull/1350`, 'Merge it there once its checks pass. Nothing is due: it can wait for a quiet moment.'],
     left: 'Left as it is, nothing comes due. Dependabot keeps it up to date.',
     pins: [['.github/workflows/check.yml:31', 'actions/setup-node v6.0.0 → v6.1.0'], ['… and 6 more', 'the same line in each workflow']] },
-  { key: 'sdk', st: 'wait', g: 'bench', withheld: true, name: '@anthropic-ai/claude-agent-sdk', pin: 'pnpm-lock.yaml, apps/factory/package.json', from: '0.4.2', to: '0.4.3', c: [0, 1, 0, 0], due: 'in 6 days', h: 141, route: 'bench', pr: 1352,
-    why: 'The SDK is the loop every agent step runs in, and the tests replay cassettes, so a change in it shows only on a live step. The App opened #1352, exactly the scan’s move, and the worker holds it until a bench run on Claude passes on its branch, which is {whose} to run. A Critical fix would move by itself.',
-    act: ['Review', `${GH}/pull/1352`, 'Run the bench on Claude on its branch, <code>factory/pin/pnpm-lock.yaml</code>; then approve its head commit there, and the worker adds it to the merge queue.'],
+  { key: 'sdk', st: 'wait', g: 'bench', withheld: true, name: '@anthropic-ai/claude-agent-sdk', pin: 'pnpm-lock.yaml, apps/factory/package.json', from: '0.4.2', to: '0.4.3', c: [0, 1, 0, 0], due: 'in 6 days', h: 141, route: 'issue', pr: 1352,
+    why: 'The SDK is the loop every agent step runs in, and the tests replay cassettes, so a change in it shows only on a live step. A fix rated below Critical is an issue of the App’s, #1352, with its target and deadline, until a bench run on Claude with 0.4.3 passes, which is {whose} to run. A Critical fix would move by itself.',
+    act: ['Open', `${GH}/issues/1352`, 'Run the bench on Claude with 0.4.3, then move it as the issue says.'],
     bench: true,
     left: 'Left as it is, the scan fails from 2 Dec 04:17 UTC.',
     pins: [['pnpm-lock.yaml', '@anthropic-ai/claude-agent-sdk 0.4.2 → 0.4.3'], ['apps/factory/package.json:14', '^0.4.2 → ^0.4.3']] },
+  // Held by a person: a revert on main, changes asked for, a head taken out of the merge queue.
+  { key: 'undici', st: 'wait', g: 'held', withheld: true, lockfile: false, name: 'undici', pin: 'pnpm-lock.yaml', from: '7.16.0', to: '7.18.2', c: [0, 2, 1, 0], due: 'in 3 days', h: 72, route: 'issue', pr: 1357,
+    why: '{You} reverted its move on main (#1354), so the factory leaves it unmade until its target changes. Issue #1357 says so. The day’s lockfile moves are one pull request, so it holds the other two with it.',
+    alsoHeld: [['ws', '8.18.2 → 8.18.3', 'clears 1 High'], ['tar', '7.4.3 → 7.5.1', 'clears 1 High']],
+    act: ['Open', `${GH}/issues/1357`, 'Close the issue to let it be made again at the same target, or leave it: a new target makes it again by itself.'],
+    left: 'Left as it is, the scan fails from 29 Nov 04:17 UTC, for it and the two it holds.',
+    pins: [['pnpm-lock.yaml', 'undici 7.16.0 → 7.18.2']] },
+  { key: 'prometheus', st: 'wait', g: 'held', name: 'Prometheus chart', pin: 'deploy/base/telemetry/prometheus.yaml:14', from: '30.0.1', to: '30.2.0', c: [0, 4, 9, 2], due: 'in 5 days', h: 117, route: 'approval', pr: 1355,
+    why: '{You} asked for changes on #1355, so the review gate holds it, “Martin asked for changes”, at this head and every later one until {you} approve{s} it or dismiss {your} review.',
+    act: ['Review', `${GH}/pull/1355`, 'Approve it, or dismiss your review: the worker then queues it as the scan’s move.'],
+    left: 'Left as it is, the scan fails from 1 Dec 04:17 UTC.',
+    pins: [['deploy/base/telemetry/prometheus.yaml:14', 'targetRevision 30.0.1 → 30.2.0']] },
+  { key: 'tempo', st: 'wait', g: 'held', name: 'Tempo chart', pin: 'deploy/base/telemetry/tempo.yaml:14', from: '1.24.1', to: '1.24.3', c: [0, 2, 3, 0], due: 'in 5 days', h: 118, route: 'worker', pr: 1356,
+    why: 'A person took #1356 out of the merge queue at its head, 9c41e07, and the worker never queues that head again. A new head, or adding it to the queue by hand, ends the hold.',
+    act: ['Open', `${GH}/pull/1356`, 'Add it to the merge queue there once you are content, or push a new head.'],
+    left: 'Left as it is, the scan fails from 1 Dec 04:17 UTC.',
+    pins: [['deploy/base/telemetry/tempo.yaml:14', 'targetRevision 1.24.1 → 1.24.3']] },
   { key: 'postgres', st: 'wait', g: 'stuck', name: 'Postgres', pin: 'deploy/base/store/postgres.yaml:22', from: '18.7-alpine3.24', to: '18.8-alpine3.24', c: [0, 3, 5, 1], due: 'in 4 days', h: 96, route: 'worker', pr: 1348,
     why: 'The review gate passed #1348 as the scan’s move, and its required check failed on each of its three tries, so the worker stopped trying. What failed is in the run.',
     run: ['database tests', 'failed · try 3 of 3', `${GH}/actions/runs/19220481337`],
@@ -3365,6 +3385,17 @@ const MOVES = [
     act: ['Open', `${GH}/issues/1211`, 'Leave it: a later release with its provenance is taken by itself, and closes the issue. Or allow it in <code>pnpm-workspace.yaml</code>, with its reason.'],
     left: 'Left as it is, nothing comes due.',
     pins: [['pnpm-lock.yaml', 'lefthook 2.2.1 → 2.2.2']] },
+  { key: 'traefik', st: 'wait', g: 'stuck', name: 'Traefik’s image', pin: 'deploy/base/ingress/traefik.yaml:22', from: 'v3.6.1', to: 'v3.6.4', c: [0, 3, 2, 1], due: 'in 4 days', h: 97, route: 'issue', pr: 1361,
+    why: 'Its branch, <code>factory/pin/deploy/base/ingress/traefik.yaml</code>, has a pull request that is not the App’s, #1360, so the worker refused the move and opened issue #1361. It never writes a branch it does not own.',
+    act: ['Open', `${GH}/issues/1361`, 'Close #1360 or rename its branch: the next pass makes the move.'],
+    left: 'Left as it is, the scan fails from 30 Nov 04:17 UTC.',
+    pins: [['deploy/base/ingress/traefik.yaml:22', 'image traefik v3.6.1 → v3.6.4']] },
+  { key: 'valkey', st: 'wait', g: 'stuck', name: 'Valkey’s image', pin: 'deploy/base/cache/valkey.yaml:19', from: '8.1.3-alpine', c: [1, 4, 0, 0], clrNote: 'no target chosen', due: 'in 1 day 6 h', h: 30, route: 'none',
+    why: 'A fix exists, but no release is better than the pin: the scan tried three candidates, and none has fewer findings at the worst severity. It lists no target, so nothing moves.',
+    run: ['the scan’s judgement', 'no candidate better · 3 tried', `${GH}/actions/runs/19219874402`],
+    act: ['Open', `${GH}/actions/runs/19219874402`, 'Read which candidates it tried. Pin one by hand in a pull request, or except the finding in policy/vulnerabilities.ts while no release fixes it cleanly.'],
+    left: 'Left as it is, the scan fails from 28 Nov 10:17 UTC.',
+    pins: [['deploy/base/cache/valkey.yaml:19', 'image valkey 8.1.3-alpine']] },
   { key: 'codeql', st: 'wait', g: 'hand', name: 'CodeQL’s action', pin: '.github/workflows/vulnerabilities.yml:88', from: 'v4.31.2', to: 'v4.31.6', c: [0, 1, 0, 0], due: 'in 6 days', h: 141, route: 'issue', pr: 1347,
     why: 'A workflow’s pin: workflow pins are {whose} at every level, so the factory’s App writes none. Issue #1347 has the pin and the target.',
     act: ['Open', `${GH}/issues/1347`, 'Move it in a pull request of your own. The issue closes once the next scan finds it moved.'],
@@ -3388,12 +3419,15 @@ const MOVES = [
   { key: 'zap', st: 'checks', name: 'ZAP’s image', pin: 'apps/console/zap/scan.ts:32', from: '2.17.0 5ccfff9a', to: '9624669d', c: [3, 1363, 3321, 2727], due: 'in 21 h', h: 21, soon: true, route: 'worker', pr: 1342,
     why: 'The worker opened #1342 and the review gate passed it as the scan’s move. Its checks are running, try 1 of 3; it merges by itself once they pass.',
     pins: [['apps/console/zap/scan.ts:32', 'digest 5ccfff9a → 9624669d']] },
-  { key: 'grafana', st: 'queue', name: 'Grafana chart', pin: 'deploy/base/telemetry/grafana.yaml:14', from: '13.2.7', to: '13.7.2', c: [0, 8, 14, 2], due: 'in 5 days', h: 117, route: 'worker', pr: 1343,
-    why: 'The gate passed #1343 as the scan’s move, its checks passed, and the worker added it to the merge queue.',
+  { key: 'grafana', st: 'queue', name: 'Grafana chart', pin: 'deploy/base/telemetry/grafana.yaml:14', from: '13.2.7', to: '13.7.2', c: [0, 8, 14, 2], leaves: [0, 2, 0, 0], due: 'in 5 days', h: 117, route: 'worker', pr: 1343,
+    why: 'The gate passed #1343 as the scan’s move, its checks passed, and the worker added it to the merge queue. It stays within its major, and leaves 2 High that only the next major clears: that major is listed on a later scan, and the deadline here is the earliest of what it clears or leaves.',
     pins: [['deploy/base/telemetry/grafana.yaml:14', 'targetRevision 13.2.7 → 13.7.2']] },
   { key: 'parser', st: 'build', name: '@example/parser', pin: '<span class="sans">the app’s</span> pnpm-lock.yaml', from: '4.2.0', to: '4.2.3', c: [1, 0, 0, 1], due: 'in 1 day 20 h', h: 44, lockfile: true, withheld: true, route: 'line', pr: 1338,
     why: 'The app’s move goes down the line as a work item, #1338: its pins are written, then its gates and review, as any change.',
     pins: [['pnpm-lock.yaml', '4.2.0 → 4.2.3']] },
+  { key: 'redis', st: 'day', name: 'Redis image', pin: 'deploy/base/cache/redis.yaml:17', from: '8.2.2', to: '8.2.3', c: [0, 1, 2, 0], due: 'in 6 days', h: 140, route: 'worker',
+    why: 'A fix exists, but the scan first saw its digest 14 hours ago, and an image or chart waits a day before it is a move, so a release pulled in its first hours never runs here. It is listed tomorrow.',
+    pins: [['deploy/base/cache/redis.yaml:17', 'image redis 8.2.2 → 8.2.3']] },
   { key: 'syft', st: 'opened', routine: true, name: 'Syft’s image', pin: 'deploy/images/syft/Dockerfile:6', from: 'v1.54.0', to: 'v1.55.1', c: [0, 0, 0, 0], clrNote: 'nothing: a routine update', due: 'none', route: 'worker', pr: 1339,
     why: 'A routine update, its release three days old. The worker opened #1339 apart from the fixes, so it never holds one up; Dependabot’s own pull request for it is closed once main has the version.',
     pins: [['deploy/images/syft/Dockerfile:6', 'ARG SYFT_VERSION v1.54.0 → v1.55.1']] },
@@ -3409,6 +3443,7 @@ const MOVES = [
 const PATCH_GROUPS = [
   ['approve', 'Yours to approve', 'Martin’s to approve', 'Ready on GitHub, and waiting for a yes.', 'Approve'],
   ['bench', 'Waits for your bench run', 'Waits for Martin’s bench run', 'A move of the agent loop itself: it goes once a bench run on Claude passes on its branch.', 'Run the bench'],
+  ['held', 'Held by you', 'Held by a person', 'Someone stopped it on GitHub, and it waits until that is undone.', 'Held'],
   ['stuck', 'Tried and stopped', 'Tried and stopped', 'The factory made the move, and something stopped it.', 'Stopped'],
   ['hand', 'Yours to do by hand', 'Martin’s to do by hand', 'Nothing the factory may write: a workflow, the cluster, a line no longer built.', 'By hand'],
   ['martin', null, 'Waits on Martin', 'A package in a lockfile, withheld while it has an open finding.', 'Waits on Martin'],
@@ -3431,7 +3466,7 @@ function moveClears(c, note, cleared = false) {
 const clrHead = () => `<span class="clr clr-head" aria-hidden="true">${['Critical', 'High', 'Medium', 'Low'].map((n) => `<span title="${n}">${n[0]}</span>`).join('')}</span>`;
 // The way to a move's pull request or issue, drawn as Needs you draws a merge's: the verb and GitHub's mark.
 const moveWay = (m) => `<a class="btn way" href="${m.act[1]}" target="_blank" rel="noopener"><span class="way-words" aria-hidden="true">${m.act[0]}<svg viewBox="0 0 16 16"><use href="#logo-github"/></svg></span><span class="sr">${m.act[0]} #${m.pr} on GitHub (opens GitHub in a new tab)</span></a>`;
-const whose = (s) => s.replace('{whom}', S.visitor ? 'Martin' : 'you').replace('{whose}', S.visitor ? 'Martin’s' : 'yours');
+const whose = (s) => s.replace('{whom}', S.visitor ? 'Martin' : 'you').replace('{whose}', S.visitor ? 'Martin’s' : 'yours').replace(/\{You\}/g, S.visitor ? 'Martin' : 'You').replace(/\{you\}/g, S.visitor ? 'he' : 'you').replace('{your}', S.visitor ? 'his' : 'your').replace('{s}', S.visitor ? 's' : '');
 // A visitor never reads a lockfile move's package until its pull request is open and its diff names it.
 const moveName = (m) => m.withheld && S.visitor ? [`A package in the ${m.lockfile ? 'app’s' : 'factory’s'} lockfile`, 'pnpm-lock.yaml', null] : [m.name, m.pin, m];
 
@@ -3450,7 +3485,7 @@ function patchCounts() {
   // Every open finding, by severity: those the moves clear and those with no fix yet. Excepted ones are not open.
   const open = sev.map((n, i) => n + NO_FIX[i]);
   const groups = PATCH_GROUPS.map(([g]) => [g, rows.filter((m) => m.st === 'wait' && groupOf(m) === g).length]).filter(([, n]) => n);
-  return { none, moves, unscanned, waiting, groups, sev, open, next, failed: !none, stale: q.get('patching') === 'stale' };
+  return { none, moves, unscanned, waiting, groups, sev, open, next, failed: !none, stale: q.get('patching') === 'stale', scanStale: q.get('patching') === 'scanstale' };
 }
 // How many moves and how many wait on Martin, as the sheet's head says it; the summary's leaves out the unscanned
 // images, which it says on a line of their own.
@@ -3477,21 +3512,25 @@ function patchingBody() {
     const ft = !shown ? '<span class="zero">versions withheld</span>' : m.to ? `${m.from} → <span class="to">${m.to}</span>` : m.from;
     const more = !open ? '' : `<div class="more" id="pm-more-${m.key}">
       <div><span class="label">${m.st === 'wait' ? 'Why it waits' : 'Where it is'}</span><p>${shown ? whose(m.why) : 'Its package is withheld while it has an open finding, and so is what it waits for. Martin sees both, signed in.'}</p></div>
-      ${m.run ? `<div><span class="label">What failed</span><p class="run"><span class="mono">${m.run[0]}</span> · ${m.run[1]} · <a href="${m.run[2]}" target="_blank" rel="noopener">its run ↗</a></p><p class="help">The console never copies a check’s log: the run on GitHub has it whole.</p></div>` : ''}
+      ${m.alsoHeld ? `<div><span class="label">Held with it</span>${shown ? `<div class="reflist pins">${m.alsoHeld.map(([n, w, c]) => `<div><span class="mono">${n}</span><span>${w} · ${c}</span></div>`).join('')}</div>` : `<p>${m.alsoHeld.length} other moves in the same lockfile.</p>`}</div>` : ''}
+      ${m.leaves ? `<div><span class="label">Leaves · a major clears the rest</span><p>${sevWords(m.leaves)}, which only a move across its major clears.</p></div>` : ''}
+      ${m.run ? `<div><span class="label">${m.key === 'valkey' ? 'Why no target' : 'What failed'}</span><p class="run"><span class="mono">${m.run[0]}</span> · ${m.run[1]} · <a href="${m.run[2]}" target="_blank" rel="noopener">its run ↗</a></p><p class="help">The console never copies a check’s log: the run on GitHub has it whole.</p></div>` : ''}
       ${m.st === 'wait' ? `<div><span class="label">What to do</span>${m.act ? `<div class="answers">${moveWay(m)}<p>${v ? 'Martin does it there.' : m.act[2]}</p></div>` : ''}${m.bench && !v ? '<p class="help">How to run it: <a href="https://github.com/the-roganator/cv-software-factory/blob/main/docs/ON-THE-HOST.md#the-bench" target="_blank" rel="noopener">the bench, on the host</a>.</p>' : ''}<p class="help">${whose(m.left)}</p></div>` : ''}
       ${m.c && shown && m.c.some(Boolean) ? `<div><span class="label">Clears · ${m.c.reduce((a, b) => a + b, 0).toLocaleString('en-GB')} finding${m.c.reduce((a, b) => a + b, 0) === 1 ? '' : 's'}</span><p>${sevWords(m.c)}. The packages and advisories are in code scanning.${v ? '' : ` <a href="${GH}/security/code-scanning" target="_blank" rel="noopener">Code scanning ↗</a>`}</p></div>` : ''}
       ${shown ? `<div><span class="label">${m.c ? 'Every pin' : 'Where it runs'}</span><div class="reflist pins">${m.pins.map(([f, w]) => `<div><span class="mono">${f}</span><span>${w}</span></div>`).join('')}</div></div>` : ''}
     </div>`;
     return `<div class="pm ${m.st === 'wait' ? 'wait' : ''}"><button type="button" data-move="${m.key}" aria-expanded="${open}" ${open ? `aria-controls="pm-more-${m.key}"` : ''}>
       <span class="v tone-${tone}">${glyph(gl)}${word}</span>
-      <span class="what"><span class="name">${name}</span><span class="pin">${pin}</span></span>
+      <span class="what"><span class="name">${name}</span><span class="pin">${pin}</span>${m.leaves ? '<span class="leaves">a major clears the rest</span>' : ''}${m.alsoHeld ? `<span class="leaves">holds ${m.alsoHeld.length} more with it</span>` : ''}${S.stopped && ['checks', 'queue', 'opened'].includes(m.st) ? '<span class="leaves tone-attn">waits: the line is stopped</span>' : ''}</span>
       <span class="facts">${ft ? `<span class="ft">${ft}</span>` : ''}${shown ? (m.c && !m.c.some(Boolean) && m.clrNote ? `<span class="clr none">${m.clrNote}</span>` : moveClears(m.c, m.clrNote)) : '<span class="clr none">withheld</span>'}<span class="due ${m.soon ? 'tone-attn' : ''}">${m.due}</span></span>
       <span class="pill route">${(shown || m.st !== 'wait' ? MOVE_ROUTE[m.route] : MOVE_ROUTE.approval)()}${m.pr && (shown || m.st !== 'wait') ? ` · #${m.pr}` : ''}</span>${glyph('chev', 'glyph chev')}</button>${more}</div>`;
   };
   return `<section class="patching" id="patching" aria-labelledby="sheet-title">
     <p class="help">Everything the factory and the app build or run is scanned every day. A finding with a fix has a deadline by its severity. One row here is one pin to move, and what moving it clears.</p>
     ${c.stale ? `<p class="patch-stale">${glyph('cross')}<span><b>The dependency sense has not read since 25 Nov 05:30 UTC, 33 hours ago.</b> Everything below is that read’s, and may be out of date: a pull request may have merged, or stopped, since. ${v ? 'Martin has been told.' : 'Its log says why; your phone was told at 26 hours.'}</span></p>` : ''}
-    <p class="patch-day"><span class="v tone-attn">${glyph('cross')}Scan failed today</span><span>· 04:17 UTC · 41 new High or Critical: 6 have a fix (in 2 moves below), 35 have none yet · <span class="zero">0</span> overdue · <span class="tone-attn">6 due within a day (in 3 moves below)</span> · pull requests read ${c.stale ? '25 Nov 05:30' : '14:05'} UTC</span></p>
+    <p class="patch-day"><span class="v tone-attn">${glyph('cross')}Scan failed today</span><span>· 04:17 UTC · 41 new High or Critical: 6 have a fix (in 2 moves below), 35 have none yet · <span class="zero">0</span> overdue · <span class="tone-attn">6 due within a day (in 3 moves below)</span></span></p>
+    <p class="patch-day patch-read"><span>Judged: the factory’s ${c.scanStale ? '<span class="tone-attn">24 Nov 23:50 UTC, 38 hours ago</span>' : '04:17 UTC'} · the app’s 04:21 UTC · pull requests read ${c.stale ? '25 Nov 05:30' : '14:05'} UTC · 1 fix waits its day (Redis, below)</span></p>
+    ${c.scanStale ? `<p class="patch-stale">${glyph('cross')}<span><b>The factory’s scan was last judged 38 hours ago.</b> Past 36 hours the review gate passes no move, so every factory move below waits until a scan runs again. ${v ? 'Martin has been told.' : 'Your phone was told. Its last run is linked from the line above.'}</span></p>` : ''}
     <div class="pm-head"><span class="pm">${clrHead()}</span></div>
     ${waiting.map(([title, line, rows]) => `<div class="pm-group wait"><h3 class="label">${title} · ${rows.length}</h3><p class="help">${line}</p></div><div class="pm-list">${rows.map(row).join('')}</div>`).join('')}
     <div class="pm-group"><h3 class="label">Moving by itself · ${moving.length}</h3><p class="help">Nothing to do: each merges by itself, or has nothing to move to yet.</p></div>
@@ -3512,7 +3551,7 @@ function patchingBody() {
 // or the scan failed: then its rule, and each reason in attn. A Critical count alone is not a reason.
 function renderPatching() {
   const v = S.visitor, c = patchCounts(), el = $('patching-sum');
-  const soon = !!c.next?.soon, attn = c.waiting > 0 || soon || c.failed || c.stale;
+  const soon = !!c.next?.soon, attn = c.waiting > 0 || soon || c.failed || c.stale || c.scanStale;
   el.classList.toggle('attn', attn);
   el.innerHTML = `<div class="panel-head"><h2 id="patching-sum-title">Patching</h2><span class="label">${patchHeadWords(c, v, { unscanned: false })}</span></div>
     <div class="sum-clr">
@@ -3522,6 +3561,7 @@ function renderPatching() {
     </div>
     <ul class="sum-lines">
       ${c.stale ? `<li class="tone-attn">${glyph('cross')}<span>Not read since 25 Nov 05:30 UTC</span></li>` : ''}
+      ${c.scanStale ? `<li class="tone-attn">${glyph('cross')}<span>The factory’s scan is 38 h old: its moves wait</span></li>` : ''}
       ${c.unscanned ? `<li class="tone-attn">${glyph('ring')}<span>${c.unscanned} unscanned image${c.unscanned === 1 ? '' : 's'} running</span></li>` : ''}
       <li class="${soon ? 'tone-attn' : ''}">${glyph(c.next ? 'ring' : 'dash')}<span>${c.next ? `Next due ${c.next.due}${soon ? `: ${c.next.name}` : ''}` : 'No deadline to meet'}</span></li>
       <li class="${c.failed ? 'tone-attn' : 'tone-ok'}">${glyph(c.failed ? 'cross' : 'check')}<span>${c.failed ? 'Scan failed today · 04:17 UTC' : 'Scan passed today · 04:17 UTC'}</span></li>
@@ -3530,16 +3570,16 @@ function renderPatching() {
 }
 // Patching in Needs you: one card at most, while anything there waits on Martin or its read is stale. It counts what
 // waits by what he does, says the next deadline among them, and opens the sheet, where each is answered.
-const GROUP_WORDS = { approve: ['to approve', 'to approve'], bench: ['bench run', 'bench runs'], stuck: ['tried and stopped', 'tried and stopped'], hand: ['to do by hand', 'to do by hand'], martin: ['waiting on Martin', 'waiting on Martin'] };
+const GROUP_WORDS = { held: ['held by you', 'held by you'], approve: ['to approve', 'to approve'], bench: ['bench run', 'bench runs'], stuck: ['tried and stopped', 'tried and stopped'], hand: ['to do by hand', 'to do by hand'], martin: ['waiting on Martin', 'waiting on Martin'] };
 function patchHolds() {
   const c = patchCounts(), v = S.visitor;
-  if (c.none || (!c.waiting && !c.stale)) return [];
+  if (c.none || (!c.waiting && !c.stale && !c.scanStale)) return [];
   const next = MOVES.filter((m) => m.st === 'wait' && m.h !== undefined).sort((a, b) => a.h - b.h)[0];
   const [nextName] = next ? moveName(next) : [];
   const lines = c.groups.map(([g, n]) => `<li><b>${n}</b> ${GROUP_WORDS[g][n === 1 ? 0 : 1]}</li>`).join('');
   return [{ id: 'patching', patching: true, kicker: 'Patching', meta: next ? `next due ${next.due}` : 'nothing due',
     title: `${c.waiting} patch${c.waiting === 1 ? '' : 'es'} wait${c.waiting === 1 ? 's' : ''} on ${v ? 'Martin' : 'you'}`,
-    ev: `${c.stale ? `<p class="ev tone-attn">The dependency sense has not read since 25 Nov 05:30 UTC, so this may be out of date.</p>` : ''}<ul class="need-counts">${lines}</ul>${next ? `<p class="ev">First due: ${nextName}, ${next.due}${next.soon ? '.' : '.'}</p>` : ''}`,
+    ev: `${c.stale ? `<p class="ev tone-attn">The dependency sense has not read since 25 Nov 05:30 UTC, so this may be out of date.</p>` : ''}${c.scanStale ? `<p class="ev tone-attn">The factory’s scan is 38 hours old, so the gate passes none of its moves.</p>` : ''}<ul class="need-counts">${lines}</ul>${next ? `<p class="ev">First due: ${nextName}, ${next.due}${next.soon ? '.' : '.'}</p>` : ''}`,
     way: null, answers: [], after: next?.soon ? whose(next.left) : '' }];
 }
 
@@ -3565,11 +3605,11 @@ function openDialog(kind, ctx = {}) {
   const reason = (id, ph) => `<label class="label" for="${id}">Reason</label><textarea id="${id}" maxlength="300" placeholder="${ph}" required></textarea>`;
   const cancel = '<button type="button" class="btn" data-dialog-close>Cancel</button>';
   if (kind === 'stop') el.innerHTML = `<h2 id="dialog-title" tabindex="-1">Stop the line</h2>
-    <p>Every agent stops at the end of its step, nothing new is taken, and a canary in flight is aborted: the version before takes all the traffic. <code>make stop-the-line</code> does the same when the console can’t.</p>
+    <p>Every agent stops at the end of its step, nothing new is taken, and a canary in flight is aborted: the version before takes all the traffic. Patching’s moves wait too: the worker queues none until you start the line, though a local deploy pin still merges. <code>make stop-the-line</code> does the same when the console can’t.</p>
     ${reason('stop-reason', 'Why, for the audit log')}
     <div class="row">${cancel}<button type="button" class="btn attn" data-dialog-ok>Stop the line</button></div>`;
   else if (kind === 'start') el.innerHTML = `<h2 id="dialog-title" tabindex="-1">Start the line</h2>
-    <p>Agents take work again, as the take settings say. A release stopped with the line stays stopped until you retry it.</p>
+    <p>Agents take work again, as the take settings say, and the worker queues patching’s moves again. A release stopped with the line stays stopped until you retry it.</p>
     ${reason('start-reason', 'Why, for the audit log')}
     <div class="row">${cancel}<button type="button" class="btn primary" data-dialog-ok>${fresh ? 'Start the line' : `Use your passkey and start${glyph('key', 'key')}`}</button></div>
     ${fresh ? '' : '<p class="help">Starting the line asks for your passkey again.</p>'}`;

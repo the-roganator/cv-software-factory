@@ -291,6 +291,8 @@ export const MOVES_FILE_SCHEMA = z.strictObject({
       newToday: z.number().int().nonnegative(),
       lane: z.enum(LANES as [(typeof LANES)[number], ...(typeof LANES)[number][]]),
       lockfile: z.boolean(),
+      // A fix that waits for Martin's bench run: a file with no such move reads as it did.
+      bench: z.literal(true).optional(),
     }),
   ),
   scanned: z

@@ -389,6 +389,37 @@ describe('the pin watch beside Dependabot', () => {
   });
 });
 
+describe('a newer scan of the same moves', () => {
+  it('writes each open pull request’s description again, at the same head, so the review gate judges it by that scan', async () => {
+    // The gate holds a move it would pass by a scan judged too long ago as a wait (scripts/moves.ts's `byAge`), and
+    // judges a head again only when something asks: the description names the scan's run, so the watch's pass over a
+    // newer scan edits it, the edit runs the pull request's workflow, and the gate judges after that.
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    let run = 42_000_000_101;
+    const w = harness(repo, () => day(scanned, factoryMoves(), run));
+    await w.pass();
+    const before = openPins(repo).map((p) => ({ number: p.number, head: repo.refs.get(p.head), body: p.body }));
+    expect(before.length).toBeGreaterThan(0);
+    for (const pull of before) expect(pull.body).toContain('run [42000000101]');
+    // The same pass again changes nothing; the next day's scan, of the same moves, changes each description alone.
+    const sentBy = (from: number) =>
+      w.sent.slice(from).filter((s) => s.method === 'PATCH' && /\/pulls\/\d+$/.test(s.path));
+    let from = w.sent.length;
+    await w.pass();
+    expect(sentBy(from)).toEqual([]);
+    run = 42_000_000_102;
+    from = w.sent.length;
+    await w.pass();
+    expect(sentBy(from)).toHaveLength(before.length);
+    for (const pull of before) {
+      const now = openPins(repo).find((p) => p.number === pull.number);
+      expect(now?.body).toContain('run [42000000102]');
+      expect(repo.refs.get(now?.head ?? '')).toBe(pull.head);
+    }
+  });
+});
+
 describe('the pin watch’s issues', () => {
   it('opens one issue for each move it cannot write, labelled pin, naming no package', async () => {
     const repo = new FakeRepo(FILES);

@@ -49,7 +49,13 @@ export function github(extra: Route[] = []) {
       {
         method: 'GET',
         path: /\/issues\/\d+\/comments/,
-        answer: ({ path }) => ({ body: comments.get(Number(path.split('/').at(-2))) ?? [] }),
+        // Each is one the App made, through the route below: GitHub names who made a comment.
+        answer: ({ path }) => ({
+          body: (comments.get(Number(path.split('/').at(-2))) ?? []).map((made) => ({
+            ...made,
+            user: { id: APP_USER },
+          })),
+        }),
       },
       {
         method: 'POST',

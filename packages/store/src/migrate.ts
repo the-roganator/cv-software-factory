@@ -74,7 +74,8 @@ export const PASSWORDS = {
   redteam: { role: 'factory_redteam', variable: 'REDTEAM_PASSWORD' },
   // The dependency sense's (0050_patching.sql), which is no member of the workers' role either.
   patching: { role: 'factory_patching', variable: 'PATCHING_PASSWORD' },
-  // The GitHub worker's (0054_github-reads-the-level.sql), which reads Martin's controls and nothing else.
+  // The GitHub worker's (0054_github-reads-the-level.sql), which reads Martin's controls, whether he has the line
+  // stopped (0055_github-reads-the-stop.sql), and nothing else.
   github: { role: 'factory_github', variable: 'FACTORY_GITHUB_PASSWORD' },
 } as const;
 

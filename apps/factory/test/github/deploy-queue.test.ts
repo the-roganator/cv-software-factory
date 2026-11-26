@@ -8,7 +8,7 @@ import type { Autonomy } from '@software-factory/events';
 import { type Logger, pino } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { ENQUEUES, enqueues } from '../../../../policy/line.ts';
-import { APP_LOGIN, DryRunActions, withChecksRun } from '../../src/github/actions.ts';
+import { DryRunActions, withChecksRun } from '../../src/github/actions.ts';
 import { GitHubError } from '../../src/github/client.ts';
 import {
   checksWait,
@@ -24,11 +24,12 @@ import {
   QUEUED_DEPLOYS,
   type QueuePull,
   RUN_TRIES,
+  removedComment,
   verdictWait,
 } from '../../src/github/deploy-queue.ts';
 import { DEPLOYS, type DeployTarget } from '../../src/github/deploys.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
-import { type LevelReader, noLevel, storeLevel } from '../../src/github/level.ts';
+import { type LevelReader, mergingWait, noLevel, storeLevel } from '../../src/github/level.ts';
 import type { MergeQueue, ReviewVerdict } from '../../src/github/merging.ts';
 import { PatchRefused } from '../../src/github/patches.ts';
 import type { PinScope } from '../../src/github/pins.ts';
@@ -108,7 +109,7 @@ const vouching = (pulls: () => QueuePull[]) => ({
 
 interface Comment {
   body: string;
-  user: { login: string };
+  user: { id: number };
 }
 
 /** A worker's deploy queue watch against a deploy branch with these open pull requests, as each pass reads them. */
@@ -137,7 +138,7 @@ function harness(o: {
       },
       {
         method: 'GET',
-        path: `/repos/${REPO}/issues/973/comments?per_page=100`,
+        path: `/repos/${REPO}/issues/973/comments?per_page=100&page=1`,
         answer: () => ({ body: o.comments ?? [] }),
       },
       ...(o.routes ?? []),
@@ -336,6 +337,7 @@ describe('the deploy queue watch', () => {
                 reason,
                 commit: 'c'.repeat(40),
                 failures: reason === 'failed_checks' ? outs : 0,
+                atHead: true,
               },
               checks: [run('lint, types, tests', 'failure'), run('browser tests', 'skipped')],
             }),
@@ -377,6 +379,7 @@ describe('the deploy queue watch', () => {
           reason: 'FAILED_CHECKS',
           commit: 'c'.repeat(40),
           failures,
+          atHead: true,
         },
       });
     // A worker new to the head, which another before it added: one failure short, it adds it; at the limit, never.
@@ -403,6 +406,7 @@ describe('the deploy queue watch', () => {
           reason: 'failed_checks',
           commit: 'c'.repeat(40),
           failures: QUEUE_TRIES,
+          atHead: true,
         },
         checks,
       });
@@ -413,7 +417,7 @@ describe('the deploy queue watch', () => {
         actions: {
           enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
           comment: async (_repo, _number, body) => {
-            comments.push({ body, user: { login: APP_LOGIN } });
+            comments.push({ body, user: { id: APP_USER } });
           },
         },
       });
@@ -423,8 +427,8 @@ describe('the deploy queue watch', () => {
     await worker([run('lint, types, tests', 'failure'), run('browser tests', 'failure')]).pass();
     expect(comments).toHaveLength(1);
     // A mark in a comment another account made, or for another head, is not the App's word for this one.
-    comments.splice(0, 1, { body: comments[0]?.body as string, user: { login: 'someone' } });
-    comments.push({ body: `<!-- factory: out of tries ${NEWER} -->`, user: { login: APP_LOGIN } });
+    comments.splice(0, 1, { body: comments[0]?.body as string, user: { id: MARTIN } });
+    comments.push({ body: `<!-- factory: out of tries ${NEWER} -->`, user: { id: APP_USER } });
     await worker([]).pass();
     expect(comments).toHaveLength(3);
     expect(comments[2]?.body).toContain(`<!-- factory: out of tries ${HEAD} -->`);
@@ -443,6 +447,7 @@ describe('the deploy queue watch', () => {
             reason: 'failed_checks',
             commit: null,
             failures: QUEUE_TRIES,
+            atHead: true,
           },
         }),
       actions: {
@@ -463,13 +468,77 @@ describe('the deploy queue watch', () => {
     expect(enqueued).toEqual([]);
   });
 
-  it('never adds again a head that left the queue for any reason but failed checks', async () => {
+  it('never adds again a head that left the queue for any reason but failed checks, and says so once', async () => {
     for (const reason of ['dequeued', 'merge_conflict', 'queue_cleared']) {
       const { pass, enqueued, said } = failing(reason);
       for (let i = 0; i < 4; i++) await pass();
       expect(enqueued, reason).toHaveLength(1);
-      expect(said, reason).toEqual([]);
+      expect(said, reason).toEqual([[973, removedComment(HEAD, { by: 'github-merge-queue', reason })]]);
     }
+  });
+
+  it('leaves out a head Martin took out of the queue, across a restart, by GitHub’s record of the removal', async () => {
+    const comments: Comment[] = [];
+    const taken = queue({
+      added: { at: '2026-11-18T04:47:47Z', by: 'mrogan-software-factory' },
+      removed: {
+        at: '2026-11-18T04:53:12Z',
+        by: 'mrogan',
+        reason: 'DEQUEUED',
+        commit: null,
+        failures: 0,
+        atHead: true,
+      },
+    });
+    // Each a worker that has just started: it added nothing itself, and reads the removal from GitHub.
+    for (let restart = 0; restart < 3; restart++) {
+      const enqueued: number[] = [];
+      const { pass } = harness({
+        queued: () => taken,
+        comments,
+        actions: {
+          enqueuePullRequest: async (_repo, number) => {
+            enqueued.push(number);
+            return { position: 1, state: 'QUEUED' };
+          },
+          comment: async (_repo, _number, body) => void comments.push({ body, user: { id: APP_USER } }),
+        },
+      });
+      await pass();
+      await pass();
+      expect(enqueued).toEqual([]);
+    }
+    expect(comments.map((made) => made.body)).toEqual([removedComment(HEAD, { by: 'mrogan', reason: 'DEQUEUED' })]);
+    expect(comments[0]?.body).toContain("taken out by `mrogan` (GitHub's reason: `dequeued`)");
+    // The same words from anyone else are not the App's: it says its own.
+    const theirs: Comment[] = [{ body: comments[0]?.body as string, user: { id: MARTIN } }];
+    const { pass } = harness({
+      queued: () => taken,
+      comments: theirs,
+      actions: {
+        enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
+        comment: async (_repo, _number, body) => void theirs.push({ body, user: { id: APP_USER } }),
+      },
+    });
+    await pass();
+    expect(theirs).toHaveLength(2);
+  });
+
+  it('adds a head whose pull request left the queue at the head before: a branch that moved is no removal of the new head', async () => {
+    const before = queue({
+      added: { at: '2026-11-18T04:47:47Z', by: 'mrogan-software-factory' },
+      removed: {
+        at: '2026-11-18T04:53:12Z',
+        by: 'github-merge-queue',
+        reason: 'dequeued',
+        commit: null,
+        failures: 0,
+        atHead: false,
+      },
+    });
+    const { pass, enqueued } = harness({ queued: () => before });
+    await pass();
+    expect(enqueued).toEqual([[973, HEAD]]);
   });
 
   it('adds a failed head again only while the gate, its checks and main still pass it', async () => {
@@ -487,6 +556,7 @@ describe('the deploy queue watch', () => {
                 reason: 'failed_checks',
                 commit: null,
                 failures: outs,
+                atHead: true,
               },
             }),
       enqueue: async () => {
@@ -575,7 +645,7 @@ describe('the deploy queue watch', () => {
         comments,
         actions: {
           enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }),
-          comment: async (_repo, _number, body) => void comments.push({ body, user: { login: APP_LOGIN } }),
+          comment: async (_repo, _number, body) => void comments.push({ body, user: { id: APP_USER } }),
           commitAgain: async (_repo, _branch, _head, checksRun) => {
             again.push(checksRun);
             return NEWER;
@@ -815,7 +885,7 @@ function capture() {
   return { lines, log: pino({ level: 'info' }, { write: (line: string) => void lines.push(JSON.parse(line)) }) };
 }
 
-const guarded: LevelReader = async () => ({ autonomy: 'guarded', autoMerge: true });
+const guarded: LevelReader = async () => ({ autonomy: 'guarded', autoMerge: true, stopped: false });
 
 /** A worker's pin queue watch against a repository with these open pull requests and each one's events. */
 function pinHarness(o: {
@@ -900,7 +970,7 @@ describe('the pin queue watch', () => {
   it('queues a move at Guarded and Lights-out, a major only at Lights-out, and nothing at Supervised', async () => {
     const at = (autonomy: Autonomy, rule: 'move' | 'major') =>
       pinHarness({
-        level: async () => ({ autonomy, autoMerge: true }),
+        level: async () => ({ autonomy, autoMerge: true, stopped: false }),
         verdict: (n) => pinVerdict(PIN_HEAD, { rule }, n),
       });
     const cases: [Autonomy, 'move' | 'major', boolean][] = [
@@ -926,7 +996,7 @@ describe('the pin queue watch', () => {
     const h = pinHarness({
       level: async () => {
         reads++;
-        return { autonomy, autoMerge: true };
+        return { autonomy, autoMerge: true, stopped: false };
       },
       verdict: (n) => pinVerdict(PIN_HEAD, { rule: 'major' }, n),
     });
@@ -947,7 +1017,7 @@ describe('the pin queue watch', () => {
       let autoMerge = false;
       const { lines, log } = capture();
       const h = pinHarness({
-        level: async () => ({ autonomy, autoMerge }),
+        level: async () => ({ autonomy, autoMerge, stopped: false }),
         verdict: (n) => pinVerdict(PIN_HEAD, { rule }, n),
         log,
       });
@@ -965,9 +1035,48 @@ describe('the pin queue watch', () => {
     }
   });
 
+  it('queues no move while the line is stopped, at any level, says so once, and queues it once the line runs again', async () => {
+    for (const [autonomy, rule] of [
+      ['guarded', 'move'],
+      ['lights-out', 'move'],
+      ['lights-out', 'major'],
+    ] as const) {
+      let stopped = true;
+      const { lines, log } = capture();
+      const h = pinHarness({
+        level: async () => ({ autonomy, autoMerge: true, stopped }),
+        verdict: (n) => pinVerdict(PIN_HEAD, { rule }, n),
+        log,
+      });
+      await h.pass();
+      await h.pass();
+      expect(h.enqueued, `${rule} at ${autonomy}`).toEqual([]);
+      expect(lines.filter((l) => l.waits !== undefined)).toEqual([
+        expect.objectContaining({ waits: 'stopped', why: `the line is stopped, so a ${rule} waits for Martin` }),
+      ]);
+      stopped = false;
+      await h.pass();
+      expect(h.enqueued, `${rule} at ${autonomy}`).toEqual([[1040, PIN_HEAD]]);
+    }
+  });
+
+  it('says the stop first, then the level, then the switch, and stops nothing Supervised would queue', () => {
+    const on = { autonomy: 'lights-out', autoMerge: true } as const;
+    for (const rule of ['move', 'major', 'exact-pin'] as const) {
+      expect(mergingWait({ ...on, stopped: true }, rule)).toBe('stopped');
+      expect(mergingWait({ ...on, stopped: false }, rule)).toBeUndefined();
+      expect(mergingWait({ ...on, stopped: true }, rule) === 'stopped').toBe(
+        !enqueues({ ...on, autonomy: 'supervised' }, rule),
+      );
+    }
+    expect(mergingWait({ autonomy: 'supervised', autoMerge: false, stopped: true }, 'move')).toBe('stopped');
+    expect(mergingWait({ autonomy: 'guarded', autoMerge: true, stopped: false }, 'major')).toBe('level');
+    expect(mergingWait({ autonomy: 'guarded', autoMerge: false, stopped: false }, 'move')).toBe('auto-merge');
+  });
+
   it('says the level, not the switch, of a move neither allows', async () => {
     const { lines, log } = capture();
-    const h = pinHarness({ level: async () => ({ autonomy: 'supervised', autoMerge: false }), log });
+    const h = pinHarness({ level: async () => ({ autonomy: 'supervised', autoMerge: false, stopped: false }), log });
     await h.pass();
     expect(h.enqueued).toEqual([]);
     expect(lines.filter((l) => l.waits !== undefined)).toEqual([
@@ -980,8 +1089,8 @@ describe('the pin queue watch', () => {
     const log = { info: () => {}, warn: (...args: unknown[]) => void warned.push(args) };
     const failing = storeLevel({} as never, log);
     // A store that is not there: `latestControls` throws on its first query.
-    expect(await failing()).toEqual({ autonomy: 'supervised', autoMerge: false });
-    expect(await failing()).toEqual({ autonomy: 'supervised', autoMerge: false });
+    expect(await failing()).toEqual({ autonomy: 'supervised', autoMerge: false, stopped: true });
+    expect(await failing()).toEqual({ autonomy: 'supervised', autoMerge: false, stopped: true });
     expect(warned).toHaveLength(1);
     const h = pinHarness({ level: failing });
     await h.pass();
@@ -996,7 +1105,7 @@ describe('the pin queue watch', () => {
     const h = pinHarness({
       level: async () => {
         reads++;
-        return { autonomy: 'guarded', autoMerge: true };
+        return { autonomy: 'guarded', autoMerge: true, stopped: false };
       },
       verdict: (n) => pinVerdict(PIN_HEAD, null, n),
     });

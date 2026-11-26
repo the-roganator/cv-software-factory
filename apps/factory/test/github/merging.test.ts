@@ -516,6 +516,21 @@ describe('the merge queue', () => {
     });
   });
 
+  it('says whether it left the queue at the head it has now: it last went in after that head was committed', async () => {
+    const events = [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:50:00Z', 'dequeued')];
+    const at = async (committed?: string, over = events) =>
+      (await queueReads(queueAnswer({ events: over, ...(committed ? { committed } : {}) })).mergeQueue(REPO, 17))
+        .removed?.atHead;
+    // The head was committed before it went in: the removal is of this head.
+    expect(await at('2026-11-04T11:30:00Z')).toBe(true);
+    // A head committed since it went in, as when its branch moved and the queue dropped it: of the head before.
+    expect(await at('2026-11-04T11:45:00Z')).toBe(false);
+    expect(await at('2026-11-04T11:55:00Z')).toBe(false);
+    // Without the head's time, or the time it went in, it counts as this head's: it errs towards Martin.
+    expect(await at()).toBe(true);
+    expect(await at('2026-11-04T11:45:00Z', [removed('2026-11-04T11:50:00Z', 'dequeued')])).toBe(true);
+  });
+
   it('reads why it left the queue, and what the queue’s failed check said', async () => {
     const read = await queueReads(
       queueAnswer({ events: [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:46:00Z', 'failed_checks')] }),

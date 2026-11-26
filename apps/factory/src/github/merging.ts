@@ -112,6 +112,12 @@ export interface MergeQueue {
          * this head, that is, as a head is committed before it is queued.
          */
         failures: number;
+        /**
+         * Whether it left the queue at the head it has now: it last went in after that head was committed, as a head
+         * is committed before it is queued. True without the times to tell, which errs towards Martin. A removal that
+         * a push made (the queue drops a pull request whose branch moves) is of the head before, and is not.
+         */
+        atHead: boolean;
       })
     | null;
   /**

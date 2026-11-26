@@ -41,7 +41,7 @@ import {
   withCarries,
 } from './deploys.ts';
 import { MARK_PAGES, workItemMarkOf } from './issue-mark.ts';
-import { type IssueAction, IssueGuard, type Opener, openedBy, type QueueAsker } from './issues.ts';
+import { APP_USER, type IssueAction, IssueGuard, type Opener, openedBy, type QueueAsker } from './issues.ts';
 import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
 import {
@@ -523,6 +523,9 @@ const RESOLVE = `mutation($id: ID!) {
 const byApp = (author: { login: string } | null) =>
   author?.login.replace(/\[bot\]$/, '') === APP_LOGIN.replace(/\[bot\]$/, '');
 
+/** How many pages of a hundred an issue's comments or events are read to, before the read fails as not whole. */
+const LIST_PAGES = 10;
+
 /** A comment's body as it is compared: GitHub may keep the line endings it was sent with, or not. */
 const same = (a: string, b: string) => a.replace(/\r\n/g, '\n').trim() === b.replace(/\r\n/g, '\n').trim();
 
@@ -867,10 +870,10 @@ export class LiveActions implements Actions {
       if (issue.state !== 'open') return;
       // A close whose comment was made and whose closing failed is tried again: the comment is not made twice. Only
       // what was said since the issue last reopened counts: a close of an earlier pass may have said the same.
-      const events = await this.#github.read(
+      const events = await this.#whole(
         repo,
         `/repos/${repo}/issues/${number}/events?per_page=100`,
-        z.array(z.object({ event: z.string(), created_at: z.string() })),
+        z.object({ event: z.string(), created_at: z.string() }),
       );
       const reopened = events.findLast((event) => event.event === 'reopened')?.created_at ?? null;
       if (!(await this.#said(repo, number, comment, reopened))) await this.#post(repo, number, comment);
@@ -907,16 +910,34 @@ export class LiveActions implements Actions {
     await this.#github.write(repo, 'PATCH', `/repos/${repo}/pulls/${number}`, { state: 'closed' });
   }
 
-  /** Whether an issue's comments since a time (or ever, with none) already say this, word for word. */
+  /**
+   * Whether the App's own comments on an issue since a time (or ever, with none) already say this, word for word. A
+   * comment anyone else made, the same words among them, is not the App's word: it keeps the App from saying nothing.
+   */
   async #said(repo: string, number: number, body: string, since: string | null): Promise<boolean> {
     const after = since ? `&since=${encodeURIComponent(since)}` : '';
-    const comments = await this.#github.read(
+    const comments = await this.#whole(
       repo,
       `/repos/${repo}/issues/${number}/comments?per_page=100${after}`,
-      z.array(z.object({ body: z.string().nullable() })),
+      z.object({ body: z.string().nullable(), user: z.object({ id: z.number().int() }).nullable().optional() }),
     );
     // As GitHub keeps it: its line endings may be \r\n, and its ends trimmed.
-    return comments.some((made) => same(made.body ?? '', body));
+    return comments.some((made) => made.user?.id === APP_USER && same(made.body ?? '', body));
+  }
+
+  /**
+   * Every item of a list GitHub gives a hundred to a page, oldest first, page by page up to `LIST_PAGES`: an issue's
+   * comments or events, whose newest are its last. One that runs past them is not read whole, and fails rather than
+   * be taken for its first pages.
+   */
+  async #whole<T>(repo: string, path: string, item: z.ZodType<T>): Promise<T[]> {
+    const all: T[] = [];
+    for (let page = 1; page <= LIST_PAGES; page++) {
+      const body = await this.#github.read(repo, `${path}&page=${page}`, z.array(item));
+      all.push(...body);
+      if (body.length < 100) return all;
+    }
+    throw new GitHubError('malformed', `GET ${path} lists more than ${LIST_PAGES} pages: it is not read whole.`);
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { type Changed, proveMove } from '../../../../scripts/move.ts';
 import { DryRunActions, LiveActions } from '../../src/github/actions.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
-import { treeSource } from '../../src/github/pin-guard.ts';
+import { pinNextBranch, treeSource } from '../../src/github/pin-guard.ts';
 import {
   branchOf,
   carriedBy,
@@ -80,6 +80,11 @@ function harness(
     /** One pass, an hour after the last. */
     pass: async () => {
       clock += PASS_MS;
+      await watch();
+    },
+    /** The poller's next call, a minute on: a pass only when the last did not finish. */
+    poll: async () => {
+      clock += 60_000;
       await watch();
     },
   };
@@ -1134,10 +1139,232 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(appPulls(repo)).toHaveLength(2);
   });
 
+  it('leaves out a move whose merge was undone on main, and the rest of its file’s moves go on without it', async () => {
+    const repo = new FakeRepo(files());
+    const before = repo.file('main', KYVERNO) as string;
+    let scanned = repo.main;
+    const [first, ...rest] = four();
+    let moves = [first as ReadMove];
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    const pull = openPins(repo)[0] as (typeof repo.pulls)[number];
+    const sha = repo.push({ [KYVERNO]: repo.file(BRANCH, KYVERNO) as string });
+    Object.assign(pull, { state: 'closed', merged_at: '2026-11-11T09:00:00Z', merge_commit_sha: sha });
+    repo.push({ [KYVERNO]: before });
+    scanned = repo.main;
+    moves = [first as ReadMove, ...rest];
+    await w.pass();
+    const [open] = openPins(repo);
+    expect(carriedBy(open?.body).sort()).toEqual(rest.map((m) => m.name).sort());
+    expect(repo.issues.filter((i) => i.state === 'open' && i.body.includes('undone on `main`'))).toHaveLength(1);
+  });
+
   it('reads no mark it did not write as a move it carries', () => {
     expect(carriedBy(undefined)).toEqual([]);
     expect(carriedBy('<!-- factory: pin-moves %5B%22a%22%2C7%5D -->')).toEqual(['a']);
     expect(carriedBy('<!-- factory: pin-moves %7B%7D -->')).toEqual([]);
     expect(carriedBy('<!-- factory: pin-moves %E0%A4%A -->')).toEqual([]);
+  });
+});
+
+/** A log whose lines a test reads. */
+function capture() {
+  const lines: { level: number; msg: string; branch?: string; move?: string; number?: number }[] = [];
+  return { lines, log: pino({ level: 'info' }, { write: (line: string) => void lines.push(JSON.parse(line)) }) };
+}
+
+const DASHBOARDS = 'deploy/base/telemetry/dashboards.yaml';
+const dashboards = () => factoryMoves().filter((m) => m.name === 'example-dashboards');
+const issueFor = (repo: FakeRepo, key: string) =>
+  repo.issues.find((i) => i.body.includes(`<!-- factory: pin-issue ${key} -->`));
+/** The commits the watch made for a pin branch through the App's commit API: each on the branch beside it, then moved. */
+const commitsTo = (sent: Sent[], branch: string) =>
+  sent.filter(
+    (s) =>
+      s.path === '/graphql' &&
+      (s.body as { variables?: { input?: { branch?: { branchName?: string } } } }).variables?.input?.branch
+        ?.branchName === pinNextBranch(branch),
+  );
+
+/** Merges a branch's pull request as the queue does: its files on main in one commit, which GitHub names on it. */
+function merge(repo: FakeRepo, branch: string) {
+  const pull = repo.pulls.find((p) => p.head === branch && p.state === 'open');
+  if (!pull) throw new Error(`No open pull request from ${branch}.`);
+  const sha = repo.push({ [DASHBOARDS]: repo.file(branch, DASHBOARDS) as string });
+  Object.assign(pull, { state: 'closed', merged_at: '2026-11-11T09:00:00Z', merge_commit_sha: sha });
+  return pull;
+}
+
+describe('a move whose merge was undone on main', () => {
+  it('is left unmade until its target changes, said once and as one issue, and made at the new target', async () => {
+    const repo = new FakeRepo(FILES);
+    const before = repo.file('main', DASHBOARDS) as string;
+    let scanned = repo.main;
+    let moves = dashboards();
+    const said = capture();
+    const w = harness(repo, () => day(scanned, moves), { log: said.log });
+    const branch = pinBranchOf('example-dashboards');
+    await w.pass();
+    merge(repo, branch);
+    // The day's scan still lists the move main now has: the watch waits, as it does for any line changed since.
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(repo.issues).toEqual([]);
+
+    // Martin reverts it on main, and the next scan lists the same move again.
+    repo.push({ [DASHBOARDS]: before });
+    scanned = repo.main;
+    const made = commitsTo(w.sent, branch).length;
+    await w.pass();
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(commitsTo(w.sent, branch)).toHaveLength(made);
+    const issue = issueFor(repo, 'example-dashboards');
+    expect(issue?.state).toBe('open');
+    expect(issue?.body).toContain('leaves unmade');
+    expect(issue?.body).toContain('its merge was then undone on `main`');
+    expect(said.lines.filter((line) => line.msg.includes('undone on main'))).toMatchObject([
+      { level: 30, move: 'example-dashboards', branch },
+    ]);
+
+    // A worker that has just started finds the same, from GitHub alone.
+    const restarted = harness(repo, () => day(scanned, moves));
+    await restarted.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(writes(restarted.sent)).toEqual([]);
+
+    // A later target is another move: made, and its issue closed.
+    moves = moves.map((m) => ({ ...m, to: 'chart example-dashboards 13.8.0' }));
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([branch]);
+    expect(issue?.state).toBe('closed');
+  });
+
+  it('makes the move again on a main whose history no longer has the merge, and with the merge put back does nothing', async () => {
+    const repo = new FakeRepo(FILES);
+    const baseline = repo.main;
+    const w = harness(repo, () => day(baseline, dashboards()));
+    const branch = pinBranchOf('example-dashboards');
+    await w.pass();
+    merge(repo, branch);
+    // Main written again from the commit before the merge: nothing was undone on it.
+    repo.refs.set('main', baseline);
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([branch]);
+    expect(repo.issues).toEqual([]);
+  });
+});
+
+describe('a pin branch someone else holds', () => {
+  it('is not written under another’s pull request: refused for that branch, with an issue, and the other moves go on', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const branch = pinBranchOf('example-dashboards');
+    const theirs = repo.commitOn('main', { [DASHBOARDS]: 'spec: theirs\n' });
+    repo.refs.set(branch, theirs);
+    const other = repo.addPull({ head: branch, user: 'someone', title: 'Not the App’s' });
+    const w = harness(repo, () => day(scanned, factoryMoves()));
+    await w.pass();
+    await w.pass();
+    // Their branch is where they left it, and nothing was committed to it.
+    expect(repo.refs.get(branch)).toBe(theirs);
+    expect(commitsTo(w.sent, branch)).toEqual([]);
+    // Every other move of the day has its pull request.
+    expect(openPins(repo).filter((p) => p.user !== 'someone').length).toBe(
+      new Set(
+        factoryMoves()
+          .filter((m) => m.lane === 'worker' || m.lane === 'cluster')
+          .map((m) => branchOf(m)),
+      ).size - 1,
+    );
+    expect(w.records().filter((r) => r.payload?.mechanism === 'github-guard')).toMatchObject([
+      { payload: { output: expect.stringContaining(`Pull request #${other.number}, which the App did not open`) } },
+    ]);
+    const issue = issueFor(repo, 'example-dashboards');
+    expect(issue?.state).toBe('open');
+    expect(issue?.body).toContain('A pull request the App did not open is open from the branch');
+
+    // Once theirs is closed the watch makes the move, and closes the issue.
+    other.state = 'closed';
+    await w.pass();
+    expect(openPins(repo).some((p) => p.head === branch && p.user !== 'someone')).toBe(true);
+    expect(issue?.state).toBe('closed');
+  });
+
+  it('costs only its own branch when GitHub refuses the pull request, and commits no more until the next pass', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const branch = pinBranchOf('example-dashboards');
+    let refuses = true;
+    const routes = repo.routes.bind(repo);
+    repo.routes = (...args) => {
+      const all = routes(...args);
+      const open = all.find((r) => r.method === 'POST' && r.path === `/repos/${FACTORY}/pulls`);
+      return [
+        {
+          method: 'POST',
+          path: `/repos/${FACTORY}/pulls`,
+          answer: (request) =>
+            refuses && (request.body as { head: string }).head === branch
+              ? { status: 422, body: { message: 'Validation Failed' } }
+              : (open as NonNullable<typeof open>).answer(request),
+        },
+        ...all,
+      ];
+    };
+    const w = harness(repo, () => day(scanned, factoryMoves()));
+    await w.pass();
+    expect(openPins(repo).some((p) => p.head === branch)).toBe(false);
+    expect(openPins(repo).length).toBeGreaterThan(1);
+    expect(issueFor(repo, 'example-dashboards')?.body).toContain('GitHub refused the pull request');
+    expect(issueFor(repo, 'example-cd')?.state).toBe('open');
+    expect(w.records().filter((r) => r.payload?.mechanism === 'github-guard')).toMatchObject([
+      { payload: { output: expect.stringContaining('GitHub refused a pull request') } },
+    ]);
+    // The pass finished: the poller's next calls, each a minute on, commit nothing.
+    await w.poll();
+    await w.poll();
+    expect(commitsTo(w.sent, branch)).toHaveLength(1);
+    refuses = false;
+    await w.pass();
+    expect(openPins(repo).some((p) => p.head === branch)).toBe(true);
+    expect(issueFor(repo, 'example-dashboards')?.state).toBe('closed');
+  });
+});
+
+describe('a close that is not Martin’s', () => {
+  it('holds nothing: a pin pull request anyone else closed is opened again, and one Martin closed waits', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const said = capture();
+    const w = harness(repo, () => day(scanned, dashboards()), { log: said.log });
+    const branch = pinBranchOf('example-dashboards');
+    await w.pass();
+    const [first] = openPins(repo);
+    Object.assign(first as object, { state: 'closed', closed_by: 'someone' });
+    await w.pass();
+    const [second] = openPins(repo);
+    expect(second?.head).toBe(branch);
+    expect(second?.number).not.toBe(first?.number);
+    expect(said.lines.filter((line) => line.msg.includes('someone but Martin closed'))).toMatchObject([
+      { number: first?.number },
+    ]);
+    Object.assign(second as object, { state: 'closed', closed_by: 'mrogan' });
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+  });
+
+  it('holds no issue closed either: one anyone else closed is opened again for the same target', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const w = harness(repo, () => day(scanned, factoryMoves()));
+    await w.pass();
+    const cd = issueFor(repo, 'example-cd');
+    Object.assign(cd as object, { state: 'closed', closed_by: 'someone' });
+    await w.pass();
+    expect(cd?.state).toBe('open');
+    Object.assign(cd as object, { state: 'closed', closed_by: 'mrogan' });
+    await w.pass();
+    expect(cd?.state).toBe('closed');
   });
 });

@@ -268,15 +268,16 @@ export const STORE_GRANTS = {
   factory_github: {
     for:
       'The GitHub worker: reads the autonomy level and auto-merge, the latest of Martin’s controls ' +
-      '(`controls.changed`), so it adds to the merge queue only the moves they queue (`enqueues`, ' +
-      '`policy/line.ts`), and nothing else: the ' +
-      'columns that read needs, of the controls his roles appended. It appends nothing, and reads no other table ' +
-      '(0054_github-reads-the-level.sql). Its password is in `postgres-github`.',
+      '(`controls.changed`), and whether he has the line stopped, his latest `line.started` or `line.stopped`, so it ' +
+      'adds to the merge queue only the moves they queue (`enqueues`, `policy/line.ts`), and none while the line is ' +
+      'stopped; and nothing else: the columns those reads need, of the events his roles appended. It appends ' +
+      'nothing, and reads no other table (0054_github-reads-the-level.sql, 0055_github-reads-the-stop.sql). Its ' +
+      'password is in `postgres-github`.',
     on: { events: ['select (seq, type, version, payload, appended_by)'] },
     rows: {
       events: {
         select:
-          "(type = 'controls.changed') AND ((appended_by IS NULL) OR " +
+          "(type in ('controls.changed', 'line.started', 'line.stopped')) AND ((appended_by IS NULL) OR " +
           "(appended_by in ('factory_admin', 'factory_operator', 'factory_enrol')))",
       },
     },

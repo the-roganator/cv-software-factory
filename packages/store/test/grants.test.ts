@@ -34,7 +34,7 @@ import {
 } from '../../../policy/store-grants.ts';
 import { DiskArtifacts } from '../src/artifacts.ts';
 import type { JSONValue } from '../src/client.ts';
-import { latestControls } from '../src/commands.ts';
+import { latestControls, lineState } from '../src/commands.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
 import { migrate } from '../src/migrate.ts';
@@ -862,7 +862,7 @@ describe("the day's moves", () => {
 });
 
 describe('the autonomy level', () => {
-  it('is all the GitHub worker reads: Martin’s latest controls, as the line reads them, and nothing else', async () => {
+  it('and the stop are all the GitHub worker reads: Martin’s latest controls and whether he has the line stopped, as the line reads them, and nothing else', async () => {
     const real = await freshDatabase('github_reads_level');
     try {
       await writer(real.operator).append(opened('3201'));
@@ -872,8 +872,17 @@ describe('the autonomy level', () => {
       // The same read the line makes, and the same answer.
       expect(await latestControls(real.github)).toEqual(await latestControls(real.as.line));
       expect(await latestControls(real.github)).toMatchObject({ autonomy: 'guarded' });
-      // No other event, and only the columns the read needs.
-      expect(await real.github`select type from events`).toEqual([{ type: 'controls.changed' }]);
+      // Whether he has the line stopped, as the line reads it.
+      expect(await lineState(real.github)).toBe('running');
+      await writer(real.admin).append(command('line.stopped'));
+      expect(await lineState(real.github)).toBe('stopped');
+      expect(await lineState(real.github)).toBe(await lineState(real.as.line));
+      // No other event, and only the columns the reads need.
+      expect(await real.github`select type from events order by seq`).toEqual([
+        { type: 'line.started' },
+        { type: 'controls.changed' },
+        { type: 'line.stopped' },
+      ]);
       await expect(real.github`select summary from events`).rejects.toThrow('permission denied');
       await expect(real.github`select id, ts, work_item, actor from events`).rejects.toThrow('permission denied');
       // It appends nothing, and changes nothing.

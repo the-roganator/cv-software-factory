@@ -312,7 +312,8 @@ spec:
 # The GitHub worker reaches GitHub and GHCR, over TLS, and nothing else outside the cluster. Their addresses are many
 # and change, so, as for the gateway, the rule is the internet on 443 with the cluster's, the local network's and the
 # host's addresses excepted. Only the line calls it. It sends its telemetry, and reaches Postgres, where its role reads
-# the autonomy level and nothing else (0054_github-reads-the-level.sql).
+# the autonomy level and whether the line is stopped, and nothing else (0054_github-reads-the-level.sql,
+# 0055_github-reads-the-stop.sql).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

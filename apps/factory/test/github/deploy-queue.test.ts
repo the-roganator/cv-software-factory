@@ -516,7 +516,7 @@ describe('the deploy queue watch', () => {
   });
 
   it('never adds again a head a person took out of the queue, whatever the reason, and says so once', async () => {
-    for (const reason of ['dequeued', 'merge_conflict', 'queue_cleared', 'failed_checks']) {
+    for (const reason of ['manual', 'merge_conflict', 'stack_invalidated', 'failed_checks']) {
       const { pass, enqueued, said } = failing(reason, 'mrogan', true);
       for (let i = 0; i < 4; i++) await pass();
       expect(enqueued, reason).toHaveLength(1);
@@ -528,9 +528,9 @@ describe('the deploy queue watch', () => {
     // The queue's bot, whatever its reason; and nobody GitHub names, for a reason known to be the queue's.
     for (const [reason, by, person] of [
       ['merge_conflict', 'github-merge-queue', false],
-      ['queue_cleared', 'github-merge-queue', false],
+      ['stack_invalidated', 'github-merge-queue', false],
       ['a_reason_not_yet_known', 'github-merge-queue', false],
-      ['queue_cleared', null, null],
+      ['stack_invalidated', null, null],
       ['MERGE_CONFLICT', null, null],
     ] as const) {
       const { pass, enqueued, said } = failing(reason, by, person);
@@ -543,8 +543,15 @@ describe('the deploy queue watch', () => {
     }
   });
 
+  it('leaves out a head taken out as `manual` though GitHub names the queue’s bot, as it does for one closed while queued', async () => {
+    const { pass, enqueued, said } = failing('manual', 'github-merge-queue', false);
+    for (let i = 0; i < 4; i++) await pass();
+    expect(enqueued).toHaveLength(1);
+    expect(said).toEqual([[973, removedComment(HEAD, { by: 'github-merge-queue', reason: 'manual' })]]);
+  });
+
   it('leaves out, with the comment, a head nobody GitHub names took out for a reason that is not the queue’s', async () => {
-    for (const reason of ['dequeued', 'a_reason_not_yet_known']) {
+    for (const reason of ['manual', 'a_reason_not_yet_known']) {
       const { pass, enqueued, said } = failing(reason, null, null);
       for (let i = 0; i < 4; i++) await pass();
       expect(enqueued, reason).toHaveLength(1);
@@ -582,7 +589,7 @@ describe('the deploy queue watch', () => {
       removed: {
         at: '2026-11-18T04:53:12Z',
         by: 'mrogan',
-        reason: 'DEQUEUED',
+        reason: 'MANUAL',
         commit: null,
         failures: 0,
         person: true,
@@ -607,8 +614,8 @@ describe('the deploy queue watch', () => {
       await pass();
       expect(enqueued).toEqual([]);
     }
-    expect(comments.map((made) => made.body)).toEqual([removedComment(HEAD, { by: 'mrogan', reason: 'DEQUEUED' })]);
-    expect(comments[0]?.body).toContain("taken out by `mrogan` (GitHub's reason: `dequeued`)");
+    expect(comments.map((made) => made.body)).toEqual([removedComment(HEAD, { by: 'mrogan', reason: 'MANUAL' })]);
+    expect(comments[0]?.body).toContain("taken out by `mrogan` (GitHub's reason: `manual`)");
     // The same words from anyone else are not the App's: it says its own.
     const theirs: Comment[] = [{ body: comments[0]?.body as string, user: { id: MARTIN } }];
     const { pass } = harness({
@@ -629,7 +636,7 @@ describe('the deploy queue watch', () => {
       removed: {
         at: '2026-11-18T04:53:12Z',
         by: 'github-merge-queue',
-        reason: 'dequeued',
+        reason: 'manual',
         commit: null,
         failures: 0,
         person: false,

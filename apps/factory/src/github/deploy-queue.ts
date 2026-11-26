@@ -651,8 +651,9 @@ async function queueOne(
     attempt.queued = true;
     return;
   }
-  // Out of the queue, or never in it. Taken out by the queue itself (a failed check, a group ahead that failed, the
-  // queue cleared, a conflict that has since gone: `queueOwn`), it goes in again, up to `QUEUE_TRIES` times.
+  // Out of the queue, or never in it. Taken out by the queue itself (a failed check, a group ahead that failed, a
+  // stack below it that changed, a conflict that has since gone: `queueOwn`), it goes in again, up to `QUEUE_TRIES`
+  // times.
   const out = queue.head === head ? queue.removed : null;
   const failed = out !== null && queueOwn(out);
   if (failed && out.failures >= QUEUE_TRIES) {

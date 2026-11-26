@@ -523,7 +523,7 @@ describe('the merge queue', () => {
   });
 
   it('says whether it left the queue at the head it has now: it last went in after that head was committed', async () => {
-    const events = [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:50:00Z', 'dequeued')];
+    const events = [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:50:00Z', 'manual')];
     const at = async (committed?: string, over = events) =>
       (await queueReads(queueAnswer({ events: over, ...(committed ? { committed } : {}) })).mergeQueue(REPO, 17))
         .removed?.atHead;
@@ -534,7 +534,7 @@ describe('the merge queue', () => {
     expect(await at('2026-11-04T11:55:00Z')).toBe(false);
     // Without the head's time, or the time it went in, it counts as this head's: it errs towards Martin.
     expect(await at()).toBe(true);
-    expect(await at('2026-11-04T11:45:00Z', [removed('2026-11-04T11:50:00Z', 'dequeued')])).toBe(true);
+    expect(await at('2026-11-04T11:45:00Z', [removed('2026-11-04T11:50:00Z', 'manual')])).toBe(true);
   });
 
   it('reads why it left the queue, and what the queue’s failed check said', async () => {
@@ -556,7 +556,7 @@ describe('the merge queue', () => {
     const by = async (actor: Parameters<typeof removed>[2]) =>
       (
         await queueReads(
-          queueAnswer({ events: [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:46:00Z', 'dequeued', actor)] }),
+          queueAnswer({ events: [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:46:00Z', 'manual', actor)] }),
         ).mergeQueue(REPO, 17)
       ).removed?.person;
     expect(await by(PERSON)).toBe(true);
@@ -578,12 +578,15 @@ describe('the merge queue', () => {
       removed('2026-11-04T11:46:00Z', 'FAILED_CHECKS'),
       added('2026-11-04T11:50:00Z'),
       // A person's removal is not the queue's own, and nor is one nobody is named for with a reason not the queue's.
-      removed('2026-11-04T11:52:00Z', 'dequeued', PERSON),
+      removed('2026-11-04T11:52:00Z', 'manual', PERSON),
       added('2026-11-04T11:53:00Z'),
-      removed('2026-11-04T11:54:00Z', 'dequeued', null),
+      removed('2026-11-04T11:54:00Z', 'manual', null),
+      // Nor is a `manual` one GitHub names the queue's bot for: the pull request was closed while it was queued.
+      added('2026-11-04T11:54:20Z'),
+      removed('2026-11-04T11:54:40Z', 'manual', QUEUE_BOT),
       added('2026-11-04T11:55:00Z'),
       // The queue's own, for another reason than a failed check: counted with them.
-      removed('2026-11-04T11:56:00Z', 'queue_cleared', QUEUE_BOT),
+      removed('2026-11-04T11:56:00Z', 'stack_invalidated', QUEUE_BOT),
       added('2026-11-04T11:57:00Z'),
       removed('2026-11-04T11:58:00Z', 'merge_conflict', null),
       added('2026-11-04T12:00:00Z'),

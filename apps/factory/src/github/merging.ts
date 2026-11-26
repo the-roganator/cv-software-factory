@@ -101,20 +101,21 @@ export interface MergeQueue {
   added: QueueEvent | null;
   /**
    * The last time it left the queue, when it has not gone back in since: GitHub's reason (`merged`, `failed_checks`,
-   * `dequeued`, …), and the queue's commit it was tested on.
+   * `merge_conflict`, `stack_invalidated`, `manual`), and the queue's commit it was tested on.
    */
   removed:
     | (QueueEvent & {
         reason: string | null;
         commit: string | null;
         /**
-         * How often the queue itself has taken it out (`queueOwn`: a failed check, a conflict, the queue cleared) since
+         * How often the queue itself has taken it out (`queueOwn`: a failed check, a conflict, a stack that changed) since
          * its head was committed, of the times read: at this head, that is, as a head is committed before it is queued.
          */
         failures: number;
         /**
-         * Whether a person took it out: GitHub names who did, and it is no bot. False for the queue's own bot or the
-         * App; null where GitHub names nobody, or a bot that is neither.
+         * Whether a person took it out: GitHub names who did (a `User`, or any actor but a `Bot`). False for the
+         * queue's own bot or the App; null where GitHub names nobody, or a bot that is neither. GitHub names the
+         * queue's bot for a pull request closed while it was queued, with the reason `manual` (`queueOwn`).
          */
         person: boolean | null;
         /**
@@ -131,16 +132,31 @@ export interface MergeQueue {
   checks: CheckRun[];
 }
 
-/** GitHub's reasons for a removal the queue makes itself, which no person asked for. */
-const QUEUE_REASONS: readonly string[] = ['failed_checks', 'merge_conflict', 'queue_cleared'];
+/**
+ * GitHub's reasons for a removal the queue makes itself, which no person asked for, as its timeline gives them (a free
+ * string in its schema; these are the ones the two repositories' history holds, each with the queue's bot as its
+ * actor, beside `merged`): a required check failed on the queue's commit, a conflict with the base, and a pull
+ * request below it in its stack that changed or left.
+ */
+const QUEUE_REASONS: readonly string[] = ['failed_checks', 'merge_conflict', 'stack_invalidated'];
 
 /**
- * Whether a removal is the queue's own, which says nothing of what Martin wants: made by the queue's bot or the App,
- * whatever the reason; never one a person made; and where GitHub names nobody, or another bot, only for a reason
- * known to be the queue's (`QUEUE_REASONS`), so an unknown hand with an unknown reason counts as a person's.
+ * GitHub's reason for a removal someone asked for: a person who took it out, whom it names as the actor, or one who
+ * closed the pull request while it was queued, where it names the queue's bot.
  */
-export const queueOwn = (removed: { reason: string | null; person: boolean | null }): boolean =>
-  removed.person === null ? QUEUE_REASONS.includes(removed.reason?.toLowerCase() ?? '') : !removed.person;
+const MANUAL = 'manual';
+
+/**
+ * Whether a removal is the queue's own, which says nothing of what Martin wants: never a `manual` one, whoever GitHub
+ * names for it; otherwise one made by the queue's bot or the App, whatever the reason; never one a person made; and
+ * where GitHub names nobody, or another bot, only for a reason known to be the queue's (`QUEUE_REASONS`), so an
+ * unknown hand with an unknown reason counts as a person's.
+ */
+export const queueOwn = (removed: { reason: string | null; person: boolean | null }): boolean => {
+  const reason = removed.reason?.toLowerCase() ?? '';
+  if (reason === MANUAL) return false;
+  return removed.person === null ? QUEUE_REASONS.includes(reason) : !removed.person;
+};
 
 /** The login of the merge queue's own bot, without the `[bot]` REST adds. */
 export const QUEUE_BOTS: readonly string[] = ['github-merge-queue'];

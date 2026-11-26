@@ -208,6 +208,12 @@ function sourcesOf(world: World) {
   return { sources, asked };
 }
 
+/**
+ * The policy with no day for an image's or a chart's content to wait: these cases are of what fixes a finding and the
+ * fix's own day, which the content's day (state.ts's `contentWaits`, and its own cases) is counted on top of.
+ */
+const UNWAITED: Policy = { ...policy, ROUTINE: { ...policy.ROUTINE, contentDays: 0 } };
+
 async function judge(world: World, now = NOW) {
   const handoff: Handoff = {
     repository: REPOSITORY,
@@ -221,12 +227,12 @@ async function judge(world: World, now = NOW) {
   };
   const { sources, asked } = sourcesOf(world);
   const lines: string[] = [];
-  const { rows, fixes, judged, looked, unread, excepted, missed } = await assess(
+  const { rows, fixes, judged, looked, unread, excepted, missed, waits } = await assess(
     handoff,
     sources,
     now,
     (line) => lines.push(line),
-    world.policy,
+    world.policy ?? UNWAITED,
   );
   /** The state this run would keep, as run 1's. */
   const kept = () =>
@@ -235,6 +241,8 @@ async function judge(world: World, now = NOW) {
       '1',
       rows,
       judged.map((each) => each.finding),
+      [],
+      waits,
     );
   const judgement = verdict(rows);
   /** How the run ends after its upload: its last lines and its exit code. */
@@ -1006,6 +1014,75 @@ describe('an image’s fix', () => {
     await expect(assess({ ...handoff, started: new Date(NOW).toISOString() }, noAlerts, NOW)).rejects.toThrow(
       /code scanning answered 503/,
     );
+  });
+});
+
+describe('an image’s fix, while the scan has known its digest less than a day', () => {
+  const finding = os({ severity: 'CRITICAL' });
+  const NEWEST = 'node:24.23.0-trixie-slim';
+  const digest = (letter: string) => `sha256:${letter.repeat(64)}`;
+  const serving = (letter: string, state?: State): World => ({
+    findings: [finding],
+    ...(state ? { state } : { alerts: [alertOf(finding, '2026-10-01T00:00:00Z')] }),
+    tags: { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'] },
+    // Its publisher says it was made long ago.
+    images: { [NEWEST]: imageReport('2026-09-01T00:00:00Z') },
+    digests: { [NEWEST]: digest(letter) },
+    policy,
+  });
+
+  it('is no fix the day it is first seen, with a state or none, and one the next day, its deadline counted from then', async () => {
+    const first = await judge(serving('c'));
+    expect(first.fixes).toEqual([undefined]);
+    expect(first.rows[0]).toMatchObject({ installable: NOW + DAY, bucket: 'none' });
+    // A Critical first seen long ago with its fix a day off fails nothing: no move could be made today.
+    expect(first.verdict.passes).toBe(true);
+    expect(moves(first.judged, { repository: REPOSITORY, app: false, now: NOW })).toEqual([]);
+    const next = await judge(serving('c', first.kept()), NOW + DAY);
+    expect(next.fixes).toEqual([
+      { target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') }, day: NOW + DAY },
+    ]);
+    // Two days for a Critical, from the day the fix could first be installed.
+    expect(next.rows[0]).toMatchObject({ installable: NOW + DAY, due: NOW + 3 * DAY, bucket: 'week' });
+    // With the state lost the day after, the wait starts again, and the alert has nothing to keep.
+    const lost = await judge(
+      { ...serving('c'), alerts: [alertOf(first.judged[0]?.finding as Finding, '2026-10-01T00:00:00Z')] },
+      NOW + DAY,
+    );
+    expect(lost.fixes).toEqual([undefined]);
+  });
+
+  it('is the newest digest that has waited where the tag is pushed again, and never the one pushed today', async () => {
+    const day0 = await judge(serving('c'));
+    const day1 = await judge(serving('d', day0.kept()), NOW + DAY);
+    expect(day1.fixes[0]).toEqual({
+      target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') },
+      day: NOW + DAY,
+    });
+    // Rebuilt every day, it is fixed every day by the digest of the day before, and its day never moves.
+    const day2 = await judge(serving('e', day1.kept()), NOW + 2 * DAY);
+    expect(day2.fixes[0]).toEqual({
+      target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('d') },
+      day: NOW + DAY,
+    });
+    // Its move names that digest.
+    const [move] = moves(day2.judged, { repository: REPOSITORY, app: false, now: NOW + 2 * DAY });
+    expect(move?.to).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('d') });
+  });
+
+  it('keeps the fix a state from before the wait lists, and moves it to a new digest only once that has waited', async () => {
+    const listed = await judge({ ...serving('c'), policy: UNWAITED });
+    expect(listed.fixes[0]?.target).toMatchObject({ digest: digest('c') });
+    // The first run that waits: the state's fix stands, though it has no day for the digest.
+    const kept = await judge(serving('c', listed.kept()), NOW + DAY);
+    expect(kept.fixes[0]).toEqual(listed.fixes[0]);
+    const pushed = await judge(serving('d', kept.kept()), NOW + 1.5 * DAY);
+    expect(pushed.fixes[0]).toEqual(listed.fixes[0]);
+    const waited = await judge(serving('d', pushed.kept()), NOW + 2.5 * DAY);
+    expect(waited.fixes[0]).toEqual({
+      ...listed.fixes[0],
+      target: { ...listed.fixes[0]?.target, digest: digest('d') },
+    });
   });
 });
 
@@ -2047,7 +2124,7 @@ describe('what fixes it', () => {
       tags,
       images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') },
     });
-    const { rows, judged } = await assess(handoff, sources, NOW);
+    const { rows, judged } = await assess(handoff, sources, NOW, undefined, UNWAITED);
     const list = moves(judged, { repository: REPOSITORY, app: false, now: NOW });
     const { lines, passes } = verdict(rows, false, list);
     expect(passes).toBe(false);

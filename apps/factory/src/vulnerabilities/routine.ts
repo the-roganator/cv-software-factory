@@ -16,7 +16,8 @@
  *   or for a tag that is not a version the image it names now. Behind when the tag differs, or the tag is the same and
  *   a pin's digest is not the index digest the registry serves, which is asked with a request no registry counts as
  *   a pull. An image that runs Node waits for mise as a fix does (`nodeReady`). A newer tag on the line is never
- *   another major: the line keeps its first number, so Node's and Postgres's majors are no routine move.
+ *   another major: the line keeps its first number, so Node's and Postgres's majors are no routine move. Each run
+ *   reads the line's newest tag and the tags the state has waiting for the pin, and takes the newest that has waited.
  * - **A chart** (an Application's, and the Makefile's): the newest version on the pinned major that renders with our
  *   values; only when that major has nothing newer, the newest of the next major there is, a major.
  * - **k3s**: the newest published release on its line (`k3sLine`).
@@ -41,11 +42,22 @@
  * would list the day it appeared. So an image's tag and a chart's version wait from the day the scan first saw the pin
  * behind them, which the state keeps (`StateRoutine.seen`); with no state to read (a proving run, a repository's
  * first run, a state lost) no image or chart is listed, and the wait starts that day. The wait is kept by the pin and
- * the release, never the release's digest: a tag built again while it waits, or after, is the release it was, and the
- * move lists at the digest the tag serves that day, so a tag rebuilt every day comes due all the same. A record
+ * the release, never the release's digest: a tag built again while it waits, or after, is the release it was. A record
  * belongs to the pin as it was (its name, what it pins, and the digests an image's pins hold): once the pin moves,
  * its records are dropped and the wait starts again. Where the newest release is too young and an older one is not,
- * a package, a chart or k3s takes the newest that has waited; an image's line has one newest, and it waits.
+ * the pin takes the newest that has waited: a package's, a chart's and k3s's from what their registries list, an
+ * image's from the tags the state has waiting for the pin, at most `TAGS`, and while they are that many no newer tag
+ * is taken up, so a line that tags faster than the wait still comes due.
+ *
+ * **The content's day.** A tag is a name, and its publisher, or whoever holds the account, can push it again: so an
+ * image's move lists only at a digest the scan first saw at least `ROUTINE.contentDays` ago, on top of the tag's
+ * wait. The state keeps the digests each waiting tag served, with the day each was first seen
+ * (`StateRoutine.content`), and the move lists at the digest the tag serves that day where that has waited, or else
+ * at the newest it has seen that has, so a tag rebuilt every day comes due all the same, a day behind, and one pushed
+ * again after its wait lists at what it was. A digest the tag no longer serves is asked for by itself before it is
+ * listed: one the registry has dropped is forgotten, and the pin waits for the next. A chart's pin holds no digest
+ * and its index's is not read, so a chart's content is its version, whose day is the first sight its wait already
+ * counts from. A package has pnpm's wait, and k3s its release's day on GitHub.
  *
  * **It never fails the run.** A lookup that fails costs that pin's routine move for the day, with one warning for each
  * source, which never names a lockfile's package: the log is public.
@@ -60,6 +72,7 @@ import {
   K3S_IMAGE,
   k3sLine,
   newestOf,
+  newestOnLine,
   type PackageVersions,
   pool,
   type Sources,
@@ -71,10 +84,13 @@ import { type Behind, isMajor, isRoutine, type Move, type Pin, pinKey } from './
 import { satisfies } from './node.ts';
 import { repositoryOf, splitReference } from './reference.ts';
 import { lockfileLine, type ReadTarget } from './scan.ts';
-import type { StateRoutine } from './state.ts';
+import { type StateRoutine, type StateSeen, settle } from './state.ts';
 import { compareTags, compareVersions, majorOf } from './versions.ts';
 
 const DAY = 86_400_000;
+
+/** The most tags of one image's line the state keeps for a pin: the newest that has waited and those still waiting. */
+export const TAGS = 8;
 
 /** A version with no prerelease, and a manifest's range the pin step moves: `^`, `~` or a version. */
 const PLAIN = /^\d+\.\d+\.\d+$/;
@@ -110,6 +126,8 @@ export interface Asked {
   policy: Routine | undefined;
   /** The records the last state kept (`State.routine`): when each target was first seen. */
   last?: StateRoutine[] | undefined;
+  /** When the scan first saw each content any record of the last state has a day for (state.ts's `sightings`). */
+  seen?: Map<string, number> | undefined;
   /** The pins a finding's move has (moves.ts's `pinsOf`): none of them is looked up. */
   taken?: Set<string> | undefined;
   /** pnpm's `minimumReleaseAge` in the scanned repository, in minutes. */
@@ -321,20 +339,28 @@ export async function routine(asked: Asked): Promise<Listing> {
       pin.held ?? [],
       target.kind === 'image' ? `image ${target.tag}` : targetText(target),
     ]);
+  const pinOf = (each: { name: string; from: string; held?: string[] | undefined }) =>
+    JSON.stringify([each.name, each.from, each.held ?? []]);
   const before = new Map<string, number>();
+  /** The digests each waiting tag served, as the last state has them, and the tags it has for each pin. */
+  const contents = new Map<string, StateSeen[]>();
+  const known = new Map<string, Set<string>>();
   for (const each of asked.last ?? []) {
     const seen = Date.parse(each.seen);
     const target = readTarget(each.to);
     if (Number.isNaN(seen) || !target) continue;
     const key = waitKey(each, target);
     before.set(key, Math.min(before.get(key) ?? seen, seen));
+    if (target.kind !== 'image') continue;
+    contents.set(key, [...(contents.get(key) ?? []), ...(each.content ?? [])]);
+    known.set(pinOf(each), (known.get(pinOf(each)) ?? new Set()).add(target.tag));
   }
   /**
    * Whether a release has waited its days, and whatever else it waits for: its record is kept either way, with the
    * day the scan first saw it for this pin. `own` is the release's day where its registry, not its publisher, gives
    * one, never taken to be later than that first sight; with none (an image, a chart), first sight is its day.
    */
-  const waited = (group: Pinned, target: Target, own: number, days: number, also = 0) => {
+  const waited = (group: Pinned, target: Target, own: number, days: number, also = 0, content?: StateSeen[]) => {
     const held = heldOf(group);
     const key = waitKey({ ...group, held }, target);
     const last = before.get(key);
@@ -347,6 +373,7 @@ export async function routine(asked: Asked): Promise<Listing> {
       pins: pinsOf(group),
       ...(held.length ? { held } : {}),
       seen: dayText(seen),
+      ...(content?.length ? { content } : {}),
     });
     return day + days * DAY <= now && also <= now;
   };
@@ -365,18 +392,62 @@ export async function routine(asked: Asked): Promise<Listing> {
     const latest = await newestOf(reference, lookups.tags);
     // A registry that lists nothing as new as the pin moves nothing back.
     if (!latest || (latest.version && compareTags(latest.tag, tag) < 0)) return 'current';
-    // The digest alone is wanted: asked with a request a registry does not count as a pull, where the sources have one.
-    const digest = await (sources.served ?? lookups.digest)(latest.reference);
     const held = heldOf(group);
-    if (latest.tag === tag && held.every((pin) => pin === digest)) return 'current';
-    const target: Target = { kind: 'image', tag: latest.tag, digest };
-    if (!usable(target)) return 'current';
-    // The wait is from the first day the scan saw the pin behind this tag, whatever digest the tag served then: the
-    // day an image says it was made is its publisher's to write. Once waited, it moves to what the tag serves today.
-    if (!waited(group, target, Number.NaN, policy.days)) return 'waiting';
-    // An image that runs Node brings its Node, which waits for mise as Node's own move does.
-    const ready = await lookups.nodeReady(latest.reference);
-    return ready !== undefined && ready <= now ? list(group, target) : 'waiting';
+    // The tags the state has for the pin that the line still lists, and the newest while they are fewer than `TAGS`.
+    const listed = latest.version ? await lookups.tags(name) : [latest.tag];
+    const had = [...(known.get(pinOf({ ...group, held })) ?? [])].filter(
+      (each) => listed.includes(each) && (!latest.version || newestOnLine(tag, [each])) && compareTags(each, tag) >= 0,
+    );
+    const tags = had.includes(latest.tag) || had.length >= TAGS ? had : [...had, latest.tag];
+    // The digest alone is wanted: asked with a request a registry does not count as a pull, where the sources have one.
+    const served = sources.served ?? lookups.digest;
+    let waiting = false;
+    for (const each of tags.sort((a, b) => compareTags(b, a))) {
+      const digest = await served(`${name}:${each}`);
+      // The pin's own tag, serving what the pin holds: nothing there, or older, to move to.
+      if (each === tag && held.every((pin) => pin === digest)) break;
+      const today: Target = { kind: 'image', tag: each, digest };
+      if (!usable(today)) continue;
+      // The digests the tag has served: today's from the first day any record saw it, and the one a move lists at.
+      const key = waitKey({ ...group, held }, today);
+      const last = contents.get(key) ?? [];
+      const text = targetText(today);
+      const first = Math.min(
+        now,
+        asked.seen?.get(digest) ?? now,
+        ...last.filter((seen) => seen.target === text).map((seen) => Date.parse(seen.seen)),
+      );
+      const content = settle(
+        last,
+        { target: text, seen: dayText(first) },
+        (seen) => Date.parse(seen.seen) + policy.contentDays * DAY <= now,
+      );
+      const due = content.due && readTarget(content.due.target);
+      const target = due?.kind === 'image' ? due : today;
+      // The wait is from the first day the scan saw the pin behind this tag, whatever digest the tag served then: the
+      // day an image says it was made is its publisher's to write. A newer tag that waits still leaves the older ones.
+      waiting = true;
+      if (!waited(group, target, Number.NaN, policy.days, 0, content.kept)) continue;
+      // The newest tag that has waited: it lists at a digest that has waited its own day, or not yet.
+      if (!due) return 'waiting';
+      const at = target.digest === digest ? `${name}:${each}` : `${name}@${target.digest}`;
+      if (target.digest !== digest && !(await served(at).catch(() => undefined))) {
+        // A digest the tag has moved on from and the registry no longer has: forgotten, and the next is waited for.
+        waited(
+          group,
+          today,
+          Number.NaN,
+          policy.days,
+          0,
+          content.kept.filter((seen) => seen !== content.due),
+        );
+        return 'waiting';
+      }
+      // An image that runs Node brings its Node, which waits for mise as Node's own move does.
+      const ready = await lookups.nodeReady(at);
+      return ready !== undefined && ready <= now ? list(group, target) : 'waiting';
+    }
+    return waiting ? 'waiting' : 'current';
   };
 
   const chart = async (group: Pinned): Promise<Outcome> => {
@@ -397,8 +468,10 @@ export async function routine(asked: Asked): Promise<Listing> {
     for (const candidate of candidates) {
       const target: Target = { kind: 'chart', chart: pin.chart, version: candidate.version, major };
       if (!usable(target)) continue;
-      // From the first day the scan saw the version: the index's `created` is its publisher's to write.
-      if (!waited(group, target, Number.NaN, major ? policy.majorDays : policy.days)) continue;
+      // From the first day the scan saw the version: the index's `created` is its publisher's to write. That day is
+      // its content's too, so the wait is never less than the content's.
+      const days = Math.max(major ? policy.majorDays : policy.days, policy.contentDays);
+      if (!waited(group, target, Number.NaN, days)) continue;
       // The newest that has waited and renders with our values, a few tried: one that does not is passed over.
       if (++tried > CANDIDATES) break;
       if (await lookups.rendered({ ...pin, version: candidate.version })) return list(group, target);
@@ -465,8 +538,6 @@ export async function routine(asked: Asked): Promise<Listing> {
   const reads = { image, chart, k3s, npm };
   // The pins not read today, whose records of the last run stand: a day's fault restarts no release's wait.
   const unread = new Set<string>();
-  const pinOf = (each: { name: string; from: string; held?: string[] | undefined }) =>
-    JSON.stringify([each.name, each.from, each.held ?? []]);
   await pool(
     groups.map((group) => async () => {
       if (asked.taken?.has(pinKey(group))) {

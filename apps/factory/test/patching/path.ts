@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { codeOwners, type FileChange, tagsOf } from '../../../../scripts/review-routing.ts';
 import { PinsHeld, PinsRefused, writePins } from '../../../runner/src/pins.ts';
 import { filesIn } from '../../src/github/patches.ts';
@@ -235,7 +236,11 @@ export async function carry(
     targets,
   };
   const sources = sourcesOf(world);
-  const judged = await assess(handoff, sources, NOW);
+  // With no day for an image's content to wait, which no one scan can show: the path is from a fix that is listed.
+  const judged = await assess(handoff, sources, NOW, undefined, {
+    ...POLICY,
+    ROUTINE: { ...POLICY.ROUTINE, contentDays: 0 },
+  });
   const context: Context = {
     repository: APP,
     app: true,

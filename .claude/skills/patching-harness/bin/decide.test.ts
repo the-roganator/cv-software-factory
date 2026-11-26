@@ -10,6 +10,7 @@ import {
   type DuplicateFacts,
   dependabotMissing,
   duplicateVerdict,
+  extraSpoils,
   factoryBusy,
   type HoldFacts,
   holdBroken,
@@ -593,6 +594,23 @@ describe("the pull requests of Dependabot's a run needs open as it starts", () =
     // One of the title that is ready is enough, whatever another of it is.
     const two = [pull(4, node), pull(7, syft, '2026-11-24T08:00:00Z'), pull(9, syft)];
     expect(dependabotMissing(needs, two, BASELINE)).toEqual([]);
+  });
+});
+
+describe('a staged extra no test of the run asks for', () => {
+  it("leaves a factory run alone when it serves the app's tests only", () => {
+    expect(extraSpoils('factory', ['app'])).toBe(false);
+  });
+
+  it('spoils a factory run when a factory test asks for it, or none does', () => {
+    expect(extraSpoils('factory', ['factory'])).toBe(true);
+    expect(extraSpoils('factory', ['app', 'factory'])).toBe(true);
+    expect(extraSpoils('factory', [])).toBe(true);
+  });
+
+  it('spoils an app run, whoever it serves', () => {
+    expect(extraSpoils('app', ['app'])).toBe(true);
+    expect(extraSpoils('app', ['factory'])).toBe(true);
   });
 });
 

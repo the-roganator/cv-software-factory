@@ -37,6 +37,7 @@ import {
   type DuplicateFacts,
   dependabotMissing,
   duplicateVerdict,
+  extraSpoils,
   factoryBusy,
   holdBroken,
   holdDecided,
@@ -255,7 +256,11 @@ function preflight(state: State, appJustReset: boolean) {
       const on =
         patches.length > 0 &&
         patches.every((f) => built.includes(`chore(scratch): staged, ${f.replace(/\.patch$/, '')}`));
-      if (on && !asked.has(folder))
+      // One that serves the app's tests alone leaves a factory run as it was (decide.ts's `extraSpoils`).
+      const serves = TESTS.filter((t) => t.staged === folder.slice(side.length + 1)).map((t) => t.campaign);
+      if (on && !asked.has(folder) && !extraSpoils(state.campaign, serves))
+        say(state, `pre-flight: the ${side} baseline carries staged/${folder}/, for the app's tests alone`);
+      if (on && !asked.has(folder) && extraSpoils(state.campaign, serves))
         wrong.push(
           `the ${side} baseline carries staged/${folder}/, which no test of this run asks for: build one without it`,
         );

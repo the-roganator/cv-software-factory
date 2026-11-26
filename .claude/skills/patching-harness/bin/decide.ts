@@ -248,6 +248,15 @@ export function pinWatchLacks(told: string, needed: readonly string[]): string[]
   return needed.filter((name) => !names.includes(name));
 }
 
+/**
+ * Whether a baseline's staged extra that no test of a run asks for spoils the run. It does, as it changes what the
+ * others do, but for a factory run on a set-up that serves the app's tests alone (`serves`: the campaigns of the tests
+ * that ask for it): test 21's is a package in the app and an exception scoped to the app, which no factory test's
+ * scan, pull request or gate reads. An app run is spoiled by any, as the app's checks are the factory copy's code.
+ */
+export const extraSpoils = (campaign: 'factory' | 'app', serves: readonly string[]) =>
+  !(campaign === 'factory' && serves.length > 0 && serves.every((served) => served === 'app'));
+
 // ── The worker's word that it cannot read the scan ──────────────────────────────────────────────────────────────────
 
 /** How the GitHub worker begins its error when a scan's artifact does not read (apps/factory/src/github/scanning.ts). */

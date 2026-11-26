@@ -2,7 +2,9 @@
  * What the scan keeps between runs: each finding's first-seen day, its fix and the day that became installable, and its
  * move, in one sealed file on the run, the artifact `state` (ADR 0021). The next scan reads it for its clocks, and the
  * GitHub worker for what `moves.json` withholds, in place of paging every alert in code scanning for what the scan
- * itself wrote there.
+ * itself wrote there. It also keeps the day the scan first saw each image's digest and each chart's version a move
+ * could list at (`StateSeen`), which only it can: no move lists at content the scan has known for less than
+ * `ROUTINE.contentDays` (`settle`, `contentWaits`), and a run with no state to read starts that wait.
  *
  * The repository is public and so are its runs' artifacts, so the file is sealed with the repository's key (AES-256-GCM
  * over the gzipped JSON), which the scan's job takes from an environment only `main` may use, and the worker from its
@@ -21,7 +23,7 @@
  */
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { dayText, type Fix, readTarget, targetText } from './fixes.ts';
+import { dayText, type Fix, readTarget, type Target, targetText } from './fixes.ts';
 import { DIGEST } from './reference.ts';
 import { SEVERITIES, type Severity } from './sarif.ts';
 import { ZipError, zipEntry } from './zip.ts';
@@ -62,6 +64,12 @@ export interface StateFinding {
   /** Its move's place in the run's `moves.json`, from 1; absent for one with no fix, or excepted. */
   move?: number | undefined;
   /**
+   * For a fix that is an image or a chart: each target the scan found to fix it on this pin, the newest whose content
+   * has waited its day and those still waiting (`contentWaits`). A state written before these has none, and each
+   * such fix waits from the first run after.
+   */
+  waits?: StateWait[] | undefined;
+  /**
    * The rest of the finding as the scan read it (sarif.ts's `Finding`), which makes the same result again on a run
    * that cannot pull its image (deadlines.ts's `carried`): its item's key and the item as the list names it, the label
    * its message names, with the digest read, the publisher's rating, the CVSS score, where in the image it is, and the
@@ -92,6 +100,23 @@ export interface State {
   routine?: StateRoutine[] | undefined;
 }
 
+/**
+ * Content the scan saw: an image's tag with the digest it served, or a chart's version, as fixes.ts writes a target,
+ * and when the scan first saw it, UTC to the second.
+ */
+export interface StateSeen {
+  target: string;
+  seen: string;
+}
+
+/** A target the scan found to fix a finding, whose content waits its day or has waited it. */
+export interface StateWait extends StateSeen {
+  /** What the pin held when it was seen (moves.ts's `from`): a pin that holds another has moved, and the record is not its own. */
+  from: string;
+  /** The day it is installable, its content's day waited: what a fix's `day` is counted from. */
+  day: string;
+}
+
 /** A release a pin with no finding is behind (routine.ts), listed as a move or still waiting to be. */
 export interface StateRoutine {
   /** Its place in the run's `moves.json`, from 1; absent while the release waits, and for one passed over. */
@@ -114,6 +139,11 @@ export interface StateRoutine {
    * it, and a package's and k3s's from their registry's day, never taken to be later than it.
    */
   seen: string;
+  /**
+   * For an image, the digests its tag served while the pin was behind it: the newest that has waited its day, which
+   * is the one a move lists at, and those still waiting (`settle`). A state written before these has none.
+   */
+  content?: StateSeen[] | undefined;
 }
 
 /** A state that cannot be read: sealed with another key, for another run or repository, or not a state at all. */
@@ -199,6 +229,18 @@ const isText = (value: unknown): value is string =>
   // No control character: every string is one the scan wrote of a package, a path or a version.
   typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/\p{Cc}/u.test(value);
 
+/** Content seen, as the state lists it: each a target the grammar reads and the day it was first seen. */
+const isSeen = (list: unknown) =>
+  Array.isArray(list) &&
+  list.every(
+    (each: Record<string, unknown> | null) =>
+      typeof each === 'object' &&
+      each !== null &&
+      typeof each.target === 'string' &&
+      readTarget(each.target) !== undefined &&
+      isDay(each.seen),
+  );
+
 /** What is wrong with a state's shape, or undefined: the first thing, by the finding's place in the list alone. */
 function problemOf(state: unknown, repository: string, run: string): string | undefined {
   if (typeof state !== 'object' || state === null) return 'is not an object';
@@ -228,6 +270,11 @@ function problemOf(state: unknown, repository: string, run: string): string | un
     }
     if (f.move !== undefined && (!Number.isInteger(f.move) || (f.move as number) < 1 || f.fix === undefined))
       return `gives ${at} a move that is not one`;
+    if (f.waits !== undefined) {
+      if (!isSeen(f.waits)) return `gives ${at} waiting fixes that are not ones`;
+      for (const wait of f.waits as Record<string, unknown>[])
+        if (!isText(wait.from) || !isDay(wait.day)) return `gives ${at} waiting fixes that are not ones`;
+    }
     // What carries it on a run that cannot pull its image, each held to its shape where it is there.
     for (const name of ['item', 'listed', 'label'])
       if (f[name] !== undefined && !isText(f[name])) return `gives ${at} a value for ${name} that is not text`;
@@ -267,6 +314,7 @@ function problemOf(state: unknown, repository: string, run: string): string | un
       return `gives ${at} digests that are not ones`;
     if (r.major !== undefined && typeof r.major !== 'boolean') return `gives ${at} a major that is not one`;
     if (!isDay(r.seen)) return `gives ${at} no day it was first seen`;
+    if (r.content !== undefined && !isSeen(r.content)) return `gives ${at} digests seen that are not ones`;
   }
   return undefined;
 }
@@ -279,6 +327,108 @@ export function readStateFix(fix: { target: string; day: string }): Fix {
   const target = readTarget(fix.target);
   if (!target) throw new StateError('a fix the grammar does not read');
   return { target, day: Date.parse(fix.day) };
+}
+
+const DAY_MS = 86_400_000;
+
+/** The most sightings kept still waiting, of one tag's digests or one finding's fixes. */
+export const WAITING = 4;
+
+/** What a sighting is of: an image's digest, whatever tag or repository served it, or a chart's version. */
+export const contentOf = (target: Target) => (target.kind === 'image' ? target.digest : targetText(target));
+
+/**
+ * When the scan first saw each content the state has a day for, by `contentOf`: the digests a routine record's tag
+ * served, a chart's version a pin is behind, and each fix that waits. The day is the content's, whichever record has
+ * it: a digest a routine update has waited on is no newer to a fix of the same pin.
+ */
+export function sightings(state: Pick<State, 'findings' | 'routine'> | undefined): Map<string, number> {
+  const seen = new Map<string, number>();
+  const add = (each: StateSeen) => {
+    const target = readTarget(each.target);
+    const day = Date.parse(each.seen);
+    if (!target || Number.isNaN(day)) return;
+    const key = contentOf(target);
+    seen.set(key, Math.min(seen.get(key) ?? day, day));
+  };
+  for (const each of state?.routine ?? []) {
+    for (const content of each.content ?? []) add(content);
+    // A chart's version has no digest the scan reads: the day the pin was first seen behind it is its content's.
+    if (each.to.startsWith('chart ')) add({ target: each.to, seen: each.seen });
+  }
+  for (const each of state?.findings ?? []) for (const wait of each.waits ?? []) add(wait);
+  return seen;
+}
+
+/**
+ * Of the sightings of one tag's digests, or of one finding's fixes, which a move lists at and which are kept: today's
+ * where it has waited, and it alone is kept; otherwise the newest seen of the others that has waited, kept with those
+ * still waiting, oldest first, and today's while they are fewer than `WAITING`. So content pushed again and again
+ * comes due all the same, at the newest the scan has known a day, and the list stays short.
+ */
+export function settle<T extends StateSeen>(last: T[], today: T, ready: (each: T) => boolean) {
+  if (ready(today)) return { due: today, kept: [today] };
+  const bySeen = (a: T, b: T) => Date.parse(a.seen) - Date.parse(b.seen);
+  const others = last.filter((each) => each.target !== today.target).sort(bySeen);
+  const due = others.filter(ready).at(-1);
+  const waiting = others.filter((each) => !ready(each)).slice(0, WAITING);
+  if (waiting.length < WAITING) waiting.push(today);
+  return { due, kept: due ? [due, ...waiting] : waiting };
+}
+
+/**
+ * The content's day, for each fix that is an image or a chart: a fix is installable only once the scan has known its
+ * content for `days`, as an npm fix is only after pnpm's wait, so its deadline counts from then and the wait makes
+ * nothing overdue. Where today's target is too new, the newest target the last runs found for the same finding on
+ * the same pin that has waited stands in for it; with none, the fix is not yet installable. `found` is changed in
+ * place (deadlines.ts's `installable` made it), and each result's sightings are returned for the next state. `keys`
+ * names each result's place, and `last` the state read with the same key of each of its findings; with none, every
+ * such fix is first seen now. A policy of no days sets no wait, and nothing is changed or kept.
+ */
+export function contentWaits(
+  found: { at: (number | undefined)[]; fixes: (Target | undefined)[]; places: { from: string }[] },
+  keys: string[],
+  last: { state: State; keyOf(finding: StateFinding): string } | undefined,
+  days: number,
+  now: number,
+): (StateWait[] | undefined)[] {
+  if (!(days > 0)) return found.fixes.map(() => undefined);
+  const before = sightings(last?.state);
+  // Each place's sightings, each target once, with the earliest day it has: two results may share a place.
+  const byKey = new Map<string, Map<string, StateWait>>();
+  for (const each of last?.state.findings ?? []) {
+    if (!each.waits?.length) continue;
+    const key = last?.keyOf(each) ?? '';
+    const waits = byKey.get(key) ?? new Map<string, StateWait>();
+    for (const wait of each.waits) {
+      const had = waits.get(wait.target);
+      if (!had || had.from !== wait.from || wait.seen < had.seen) waits.set(wait.target, wait);
+    }
+    byKey.set(key, waits);
+  }
+  const dayOf = (each: StateWait) => Math.max(Date.parse(each.day), Date.parse(each.seen) + days * DAY_MS);
+  return found.fixes.map((target, index) => {
+    const own = found.at[index];
+    if (!target || own === undefined || (target.kind !== 'image' && target.kind !== 'chart')) return undefined;
+    const from = found.places[index]?.from ?? '';
+    const text = targetText(target);
+    // The pin's own records: one of the pin as it was before it moved would move it back.
+    const kept = [...(byKey.get(keys[index] ?? '')?.values() ?? [])].filter((each) => each.from === from);
+    const first = Math.min(
+      now,
+      before.get(contentOf(target)) ?? now,
+      ...kept.filter((each) => each.target === text).map((each) => Date.parse(each.seen)),
+    );
+    const day = Math.max(own, first + days * DAY_MS);
+    const today: StateWait = { from, target: text, seen: dayText(first), day: dayText(day) };
+    const { due, kept: next } = settle(kept, today, (each) => (each === today ? day : dayOf(each)) <= now);
+    const stands = due && due !== today ? readTarget(due.target) : undefined;
+    if (due && stands) {
+      found.fixes[index] = stands;
+      found.at[index] = dayOf(due);
+    } else found.at[index] = day;
+    return next;
+  });
 }
 
 /** GitHub's REST API as the state is found through it, so the tests give it recorded answers. */

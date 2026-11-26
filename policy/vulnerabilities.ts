@@ -69,6 +69,11 @@ export interface Routine {
   days: number;
   /** The same for a major: a chart's next major, or a release its manifest's range does not admit. */
   majorDays: number;
+  /**
+   * How long the scan must have known an image's digest, or a chart's version, before any move lists at it, a fix as
+   * much as a routine update: a tag pushed again is new content, whatever its release has waited.
+   */
+  contentDays: number;
   leave: Left[];
 }
 
@@ -76,11 +81,15 @@ export interface Routine {
  * The scan lists a pin that is behind, with no finding, as a routine move once the release it would move to has
  * waited: most malicious releases are pulled within hours, and the first release of a major is the one most often
  * followed by a fix (postgres.js 4.0.0 lost LISTEN after a failed reconnect, and 4.1.0 fixed it a week later). A fix
- * for a finding does not wait here: it has its own waits (pnpm's `minimumReleaseAge`, mise's `minimum_release_age`).
+ * for a finding does not wait those days: it has its own waits (pnpm's `minimumReleaseAge`, mise's
+ * `minimum_release_age`), and for an image or a chart, which have neither, `contentDays`: nothing lands whose content
+ * the scan first saw less than a day ago, since an image's digest and a chart's version are whatever their publisher,
+ * or whoever holds its account, pushed last.
  */
 export const ROUTINE: Routine = {
   days: 3,
   majorDays: 7,
+  contentDays: 1,
   leave: [
     {
       repository: 'all',

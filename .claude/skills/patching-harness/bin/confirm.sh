@@ -2,6 +2,8 @@
 # The confirming pass: every test on one code baseline, in batches of a few, with the two level checks.
 #   ./confirm.sh <a directory for its baseline logs>
 #   STEPS="C D" ./confirm.sh <dir> runs some of its steps (A B C D apps W; all by default; X, X4 and 21 by name).
+#   D is three phases on one reset: Supervised with the line stopped, Guarded with it stopped (26), Supervised with it
+#   running. It prints their lines itself; the summary has none for them.
 #   APP_TESTS="16 20" names the app tests the apps step runs, in that order (all eight by default).
 # It prints one section a step, and `harness.ts summary` at the end. One baseline (every staged set-up, no
 # STAGED_EXTRA) serves A, B, C, D, the apps and W: a batch differs only in the moves the pin watch takes, which the
@@ -52,7 +54,19 @@ red_off() {
     done
   done
 }
-trap red_off EXIT
+# The scratch line, stopped or running, written to the scratch store (stop.sh). Batch D stops it; it is put back
+# running, with new work off, on any exit, as a stopped line queues no move in whatever runs next.
+line() { # stopped|running
+  local out
+  out=$(cd "$H" && ./stop.sh "$1") || { broke "the line $1"; return 1; }
+  echo "the line: $out"
+}
+line_stopped=
+on_exit() {
+  red_off
+  if [ -n "$line_stopped" ]; then (cd "$H" && ./stop.sh running) || echo "BROKE: the line is still stopped: ./stop.sh running"; fi
+}
+trap on_exit EXIT
 
 # A batch: the moves the scratch pin watch takes, in batch.env. No baseline is built for it: the harness's own reset of
 # the factory copy writes them where the worker reads them as it starts (copies.sh's pin_watch).
@@ -156,10 +170,13 @@ if want A && [ -n "$based" ]; then
 # With them the Makefile's pin (17), the workflow's pin that stays an issue (N6) and its forgery (N7). Test 19, the image no registry serves, is on the baseline, so every factory batch's scan has it and
 # each batch judges it.
 # Beside test 1, at no time of its own: Dependabot's pull request for Postgres, which the run summons Dependabot for
-# and the worker closes once 1's move has merged (22).
-echo "##### A: 1,2,3,5,14a,17,N6,19,22 and the forgeries, Guarded $(date -u +%H:%MZ)"
+# and the worker closes once 1's move has merged (22); and the first scan after the reset, which must not list
+# Postgres's fix, first seen that day (28). Beside the batch's moves, k3d's, 14b's in B, with Martin's review asking
+# for changes on it (25). After the batch's own verdicts, k3s's move, 14a's, put back on main and scanned again (27),
+# a scan test 2's major is read from too.
+echo "##### A: 1,2,3,5,14a,17,N6,19,22,25,27,28 and the forgeries, Guarded $(date -u +%H:%MZ)"
 level guarded
-batch 1,2,3,5,14a,17,N6 && campaign --only 1,2,3,5,14a,17,N6,19,22,N3a,N3b,N4,N5,N7
+batch 1,2,3,5,14a,17,N6,25 && campaign --only 1,2,3,5,14a,17,N6,19,22,25,27,28,N3a,N3b,N4,N5,N7,N9,N10
 watches
 why
 fi
@@ -183,8 +200,13 @@ batch 2,4a,4b,18,N6 && {
 fi
 
 if want D && [ -n "$based" ]; then
-echo "##### D: Supervised, no move queued $(date -u +%H:%MZ)"
+# Three phases on one reset. First Supervised with the line stopped: the deploy pin merges, as neither governs it, and
+# every move waits. Then Guarded, auto-merge on, the line still stopped (26): the stop alone holds prometheus's move,
+# which Guarded would queue. Then Supervised with the line running: the level alone holds them.
+echo "##### D: Supervised and the line stopped, no move queued $(date -u +%H:%MZ)"
 level supervised show
+line_stopped=yes
+line stopped
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # C's moves, on the shared baseline; a build that failed part way leaves `work/` dirty and the reset refuses.
 batch 2,4a,4b
@@ -211,6 +233,13 @@ queued_base() {
         fileChanges: { additions: [{ path: "README.md", contents: $readme }] } }) { commit { oid } } }' >/dev/null || return 1
   n=$(gh pr create -R "$R" --head "$branch" --base main --title "docs(scratch): put main on a commit the merge queue ran" \
     --body "The patching harness's batch D: a reset pushes main, so a deploy pull request's base has no merge-queue run." | grep -o '[0-9]*$') || return 1
+  # The reset's own scan first, which has no state and lists no chart whose content it first saw today: the scan of
+  # this merge's push must find the state that one left, so it lists D's moves (staged/factory/28-…).
+  for _ in $(seq 1 60); do
+    [ "$(gh api "repos/$R/actions/workflows/vulnerabilities.yml/runs?branch=main&per_page=20" \
+      -q '[.workflow_runs[] | select(.status != "completed")] | length')" = 0 ] && break
+    sleep 20
+  done
   gh pr merge "$n" -R "$R" --squash --auto >/dev/null || return 1
   for _ in $(seq 1 60); do
     [ "$(gh pr view "$n" -R "$R" --json state -q .state)" = MERGED ] && { echo "queued base: #$n merged $(date -u +%H:%MZ)"; return 0; }
@@ -230,27 +259,33 @@ queued_base || broke "D: the queued base; the deploy pin's verdict below is no v
 (cd "$H" && ./copies.sh worker 1) || broke "D: the worker's start"
 k -n factory rollout restart deploy/patching >/dev/null
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# Done once the deploy pin's pull request has merged, and each move's pull request the App opened since has every check
-# completed and the worker's word, at its head, that it waits for the level ("waits":"level", "at Supervised a move
-# waits for Martin"). The worker says that only after the gate's verdict, the checks and mergeability are through, the
-# last step before it would queue (deploy-queue.ts's queueOne), so it is the pass where Supervised is exercised; its
-# earlier words at that head (`verdict`, `checks`, `conflict`) decide nothing. A move the gate held never gets that
-# word, and D then watches to 35 minutes, whatever stands then.
+# Whether every move's pull request the App opened since waits as <want> says (stopped, supervised or either), unqueued,
+# its checks in, by the worker's last word at its head (`harness.ts waits`, decide.ts's `waitsFault`). The worker says
+# that word only after the gate's verdict, the checks and mergeability are through, the last step before it would queue
+# (deploy-queue.ts's queueOne), so it is the pass where the stop or the level is asked; its earlier words at that head
+# (`verdict`, `checks`, `conflict`) decide nothing.
+moves_wait() { # <want>
+  (cd "$H" && mise exec -- node harness.ts waits "$since" "$1") 2>&1 | cut -c1-300
+  return "${PIPESTATUS[0]}"
+}
+# Done once the deploy pin's pull request has merged and every move waits for the stop or the level, both in force. A
+# move the gate held never gets that word, and D then watches to 35 minutes, whatever stands then.
 d_settled() {
-  local merged moves logs n head pending
+  local merged
   merged=$(gh pr list -R "$R" --state merged -L 20 --json title,createdAt \
     -q "[.[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(deploy): \"))]|length")
   [ "${merged:-0}" -gt 0 ] || return 1
-  moves=$(gh pr list -R "$R" --state open -L 50 --json number,title,headRefOid,createdAt \
-    -q ".[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(pin): \"))|\"\(.number) \(.headRefOid)\"")
-  [ -n "$moves" ] || return 1
-  logs=$(k -n factory logs deploy/github --since-time="$since")
-  while read -r n head; do
-    pending=$(gh pr checks "$n" -R "$R" --json bucket -q '[.[]|select(.bucket=="pending")]|length' 2>/dev/null || true)
-    [ "$pending" = 0 ] || return 1
-    grep -F "\"number\":$n," <<<"$logs" | grep -F "\"head\":\"$head\"" | grep -F '"waits":"level"' |
-      grep -qF 'pull request waits to be queued' || return 1
-  done <<<"$moves"
+  moves_wait either >/dev/null
+}
+# A phase after the first: watched until every move waits as <want> says, <minutes> at most, and then, for <hold>
+# seconds more, that none was queued meanwhile. One line: PASS or FAIL, and what the worker said.
+phase() { # <label> <want> <minutes> <hold seconds>
+  local until said
+  until=$(($(date +%s) + $3 * 60))
+  while ! moves_wait "$2" >/dev/null && [ "$(date +%s)" -lt "$until" ]; do sleep 20; done
+  sleep "$4"
+  if said=$(moves_wait "$2"); then echo "$1: PASS, $(tail -1 <<<"$said")"; else echo "$1: FAIL, $(tail -1 <<<"$said")"; fi
+  sed '$d' <<<"$said" | sed 's/^/  /'
 }
 until_d=$(($(date +%s) + 2100))
 while [ "$(date +%s)" -lt "$until_d" ]; do
@@ -260,9 +295,19 @@ done
 deploy=$(gh pr list -R "$R" --state all -L 20 --json number,title,mergedAt,createdAt \
   -q "[.[]|select(.createdAt>\"$since\")|select(.title|startswith(\"chore(deploy): \"))][0]|\"#\(.number) merged=\(.mergedAt)\"")
 case "$deploy" in
-  *merged=null|"") echo "deploy pin: FAIL, not merged at Supervised (${deploy:-no deploy pull request})" ;;
-  *) echo "deploy pin: PASS, merged at Supervised: $deploy" ;;
+  *merged=null|"") echo "deploy pin: FAIL, not merged at Supervised with the line stopped (${deploy:-no deploy pull request})" ;;
+  *) echo "deploy pin: PASS, merged at Supervised with the line stopped: $deploy" ;;
 esac
+phase "no move queued, Supervised and stopped" either 0 0
+# 26: Guarded, with auto-merge on, and the line still stopped. Watched for five of the worker's passes after the level
+# changed, each of which would queue prometheus's move were the line running.
+(cd "$H" && ./auto-merge.sh on >/dev/null) || broke "D: auto-merge on"
+level guarded show
+phase "26 a stopped line queues no move, Guarded" stopped 6 300
+# Supervised, and then the line running: the worker says of each move that it waits for the level.
+level supervised show
+line running
+phase "no move queued, Supervised and running" supervised 6 0
 gh pr list -R "$R" --state all -L 12 --json number,title,state,createdAt,mergedAt \
   -q ".[]|select(.createdAt>\"$since\")|\"#\(.number) \(.state) merged=\(.mergedAt) \(.title)\""
 echo "queue: $(gh api graphql -f owner="${R%%/*}" -f name="${R#*/}" -f query='query($owner: String!, $name: String!) {repository(owner:$owner,name:$name){mergeQueue(branch:"main"){entries(first:20){nodes{pullRequest{number}}}}}}' -q '.data.repository.mergeQueue.entries.nodes|map(.pullRequest.number)|join(",")')"
@@ -271,6 +316,7 @@ k -n factory logs deploy/github --since-time="$since" | grep -o '"why":"[^"]*"' 
 # builds' deploy pin would roll the factory under the app's tests. So the copy rests before the level goes back.
 at_rest "$LOGS/confirm-d.log"
 level guarded show
+line running && line_stopped=
 fi
 
 # The app's forgeries, X1a and X1b, ride beside test 13's scan, judged by the gate alone; the line works 13's ticket.

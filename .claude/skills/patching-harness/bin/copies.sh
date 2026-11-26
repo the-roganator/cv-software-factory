@@ -27,6 +27,10 @@
 #                            change would have made it (W3b; the harness calls it)
 #   ./copies.sh lift-exception <package> <advisory>…  the factory copy's exceptions of those advisories for a package
 #                            taken off its main, its others left (test 21; the harness calls it)
+#   ./copies.sh revert-move <merge>  a merged move's pins put back on the factory copy's main, as Martin reverting its
+#                            merge commit (test 27; the harness calls it)
+#   ./copies.sh pin-watch    the moves the scratch pin watch takes, from batch.env, written where the worker reads them
+#                            as it starts (the harness calls it, once the scan its run stands on is in)
 #   ./copies.sh down         delete the scratch cluster and its state
 #
 # The scratch cluster is the copies' alone: its own k3d name and kube context (k3d-software-factory-scratch), ports
@@ -185,8 +189,12 @@ pin_watch_from_cluster() { # <dir>
   grep -qx ' *name: scratch-pin-watch' "$file" || die "PIN_WATCH_ONLY in $file is not read from scratch-pin-watch"
 }
 
+# PIN_WATCH_HOLD=1 writes no move, whatever batch.env names: a run's reset holds the watch so, until the scan the run
+# stands on is in (the first scan after a reset has no state, and lists no content first seen that day), and then
+# writes batch.env's (`./copies.sh pin-watch`) and restarts the worker.
 pin_watch() {
   local only=${PIN_WATCH_ONLY-*}
+  [[ -z ${PIN_WATCH_HOLD:-} ]] || only=
   kubectl --context "$SCRATCH_CONTEXT" -n factory create configmap scratch-pin-watch --from-literal=only="$only" \
     --dry-run=client -o yaml | kubectl --context "$SCRATCH_CONTEXT" apply -f - >/dev/null
   echo "  the scratch pin watch takes: ${only:-no move}"
@@ -326,7 +334,9 @@ run_ok() { # <run> <repository>
   return 1
 }
 
-# Every branch ruleset on the copy (github-settings.ts makes one, "main"): off for a force-push to main, on again after.
+# Every branch ruleset on the copy (github-settings.ts makes "main", and "branches" for every branch outside the
+# prefixes the factory writes, which Martin's login, this script's, is exempt from): off for a push to main, on again
+# after. The tag ruleset ("tag main") is left on: no push here names that tag.
 ruleset() { # <copy> active|disabled
   local id
   for id in $(gh api "repos/$1/rulesets" --jq '.[] | select(.target == "branch") | .id'); do
@@ -642,7 +652,11 @@ reset_one() { # <copy> <dir>
   gh api --paginate "repos/$copy/tags" --jq '.[].name' | while read -r t; do
     gh api -X DELETE "repos/$copy/git/refs/tags/$t" >/dev/null || true
   done
-  # The scan's sealed state (the artifact `state`), so the next scan starts its clocks afresh.
+  # The scan's sealed state (the artifact `state`), so the next scan starts its clocks afresh: every image's digest
+  # and chart's version it finds is then first seen that day, and waits a day. The copy's scan puts the sightings in
+  # the state it writes this many days back (staged/factory/28-…, which reads the variable), so the scan after it
+  # lists them: a run reads both scans (test 28).
+  gh variable set SCRATCH_CONTENT_SEEN_DAYS_AGO -R "$copy" -b "${CONTENT_SEEN_DAYS_AGO:-2}" >/dev/null
   gh api --paginate "repos/$copy/actions/artifacts?name=state" --jq '.artifacts[].id' | while read -r id; do
     gh api -X DELETE "repos/$copy/actions/artifacts/$id" >/dev/null || true
   done
@@ -749,6 +763,30 @@ lift_exception() { # <package> <advisory>…
       die "the exception of $advisory is still in the factory copy's policy"
     fi
   done
+}
+
+# Test 27: a merged move's pins put back on the factory copy's main, as Martin reverting its merge: `git revert` of
+# the merge's one commit, signed, pushed with the ruleset off for the push alone. `[skip ci]` in the subject, as
+# lift_exception: no build and no deploy pin follow it, and the run dispatches the scan that reads it.
+revert_move() { # <merge commit>
+  local merge=${1:?the merge commit of the move to put back} dir="$WORK/factory" pushed=0
+  [[ $merge =~ ^[0-9a-f]{7,40}$ ]] || die "revert-move: $merge is no commit"
+  git -C "$dir" fetch -q "https://github.com/$FACTORY_COPY" main
+  git -C "$dir" checkout -q -f --detach FETCH_HEAD
+  git -C "$dir" merge-base --is-ancestor "$merge" HEAD || die "revert-move: $merge is not on $FACTORY_COPY's main"
+  git -C "$dir" revert --no-commit "$merge" >/dev/null || {
+    git -C "$dir" revert --abort 2>/dev/null || true
+    die "revert-move: $merge does not revert cleanly on main"
+  }
+  if git -C "$dir" diff --cached --quiet; then die "revert-move: main no longer has what $merge changed"; fi
+  git -C "$dir" -c commit.gpgsign=true commit -q -m "chore(scratch): put back what ${merge:0:7} moved [skip ci]" \
+    -m "This reverts commit $merge." -m "Scratch copy for the patching tests: not the real repository." ||
+    die "the commit was not made (is a signing key set?): revert-move"
+  ruleset "$FACTORY_COPY" disabled
+  git -C "$dir" push -q "https://github.com/$FACTORY_COPY" HEAD:refs/heads/main || pushed=1
+  ruleset "$FACTORY_COPY" active
+  [[ $pushed == 0 ]] || die "could not push the revert of $merge to $FACTORY_COPY"
+  say "on $FACTORY_COPY's main at $(git -C "$dir" rev-parse HEAD): put back what ${merge:0:7} moved"
 }
 
 # reset [factory|app] [--store]: both copies unless one is named; --store also puts the scratch store back to its clean
@@ -912,5 +950,7 @@ case "${1:-}" in
     esac ;;
   move-on-main) shift; move_on_main "$@" ;;
   lift-exception) shift; lift_exception "$@" ;;
-  *) sed -n '2,38p' "$0"; exit 2 ;;
+  revert-move) revert_move "${2:-}" ;;
+  pin-watch) pin_watch ;;
+  *) sed -n '2,42p' "$0"; exit 2 ;;
 esac

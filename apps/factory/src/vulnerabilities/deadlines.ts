@@ -37,6 +37,10 @@
  *   and none is better, there is no fix that day, the last run's is not kept, and the log names the pin. A fix kept
  *   from the last run whose release its registry no longer lists is dropped. While no fix is installable there is no
  *   deadline.
+ * - **An image's or a chart's fix waits for its content**: it is installable only once the scan has known the image's
+ *   digest, or the chart's version, for `ROUTINE.contentDays` (state.ts's `contentWaits`), since both are whatever
+ *   their publisher pushed last; where today's is too new, the newest the last runs found for the finding that has
+ *   waited stands in, and with no state to read the wait starts that day.
  * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
  *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
  *   first seen today. A rename keeps its clock: when an item is new to the list, and a finding of the same package and
@@ -120,6 +124,7 @@ import {
   trivyPin,
 } from './scan.ts';
 import {
+  contentWaits,
   fixOf,
   latest,
   openKept,
@@ -132,7 +137,9 @@ import {
   type State,
   StateError,
   type StateRoutine,
+  type StateWait,
   seal,
+  sightings,
 } from './state.ts';
 import { compareTags, compareVersions, isPrerelease, majorOf } from './versions.ts';
 
@@ -1758,6 +1765,10 @@ export async function assess(
   const seens = read.state
     ? seenIn(findings, handoff.targets, read.state, now)
     : seen(findings, handoff.targets, read.ours, now, time(handoff.started));
+  // An image's or a chart's fix is installable once its content has waited its day, which only the state can say.
+  const keys = findings.map((finding) => placeKey(placeOf(finding)));
+  const last = read.state && { state: read.state, keyOf: placeKey };
+  const waits = contentWaits(found, keys, last, policy.ROUTINE.contentDays, now);
   const fixes = fixesOf(found.at, found.fixes, states, now);
   // A fix's day where it has one; a fix still inside pnpm's wait keeps its time, so its row starts no clock yet.
   const installableAt = fixes.map((fix, index) =>
@@ -1784,6 +1795,7 @@ export async function assess(
     rows: judgedRows,
     fixes,
     judged,
+    waits,
     looked: found.looked,
     missed: found.missed,
     lookups: found.lookups,
@@ -2307,6 +2319,7 @@ export function stateOf(
   rows: Row[],
   findings: Finding[],
   routine: StateRoutine[] = [],
+  waits: (StateWait[] | undefined)[] = [],
 ): State {
   return {
     version: STATE_VERSION,
@@ -2326,6 +2339,7 @@ export function stateOf(
       seen: dayText(rows[index]?.own ?? rows[index]?.seen ?? Number.NaN),
       ...(finding.fix ? { fix: fixOf(finding.fix) } : {}),
       ...(finding.fix && finding.move ? { move: finding.move.index } : {}),
+      ...(waits[index]?.length ? { waits: waits[index] } : {}),
       // The rest of it, which makes the same result again on a run that cannot pull its image (`carried`).
       item: finding.item,
       ...(finding.listed === undefined ? {} : { listed: finding.listed }),
@@ -2488,6 +2502,7 @@ export async function main(args: string[]): Promise<number> {
       lookups: judged.lookups,
       policy,
       last: judged.state?.routine,
+      seen: sightings(judged.state),
       taken: pinsOf(moves(judged.judged, context)),
       minimumReleaseAge: handoff.minimumReleaseAge ?? PNPM_DEFAULT_MINUTES,
       now,
@@ -2576,7 +2591,8 @@ export async function main(args: string[]): Promise<number> {
     );
     // The state the next scan and the worker read, sealed: what was judged, as it is uploaded.
     if (keeps) {
-      const state = stateOf(handoff.repository, keeps.run, judged.rows, findings, recorded(listing.records, list));
+      const routines = recorded(listing.records, list);
+      const state = stateOf(handoff.repository, keeps.run, judged.rows, findings, routines, judged.waits);
       writeFileSync(join(dir, STATE_FILE), seal(state, keeps.key));
       console.log(
         `State kept for the next run: ${state.findings.length} findings${state.routine ? ` and ${state.routine.length} releases a pin is behind` : ''}, sealed.`,

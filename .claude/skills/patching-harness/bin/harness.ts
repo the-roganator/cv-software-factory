@@ -2472,7 +2472,10 @@ function run(state: State) {
       if (over || pull.state !== 'open') return;
       later.headAtOpen = pull.head;
       later.issueAtOpen = body();
-      const out = sh(join(BIN, 'copies.sh'), ['lift-exception', want.package], { cwd: BIN, timeout: 10 * 60_000 });
+      const out = sh(join(BIN, 'copies.sh'), ['lift-exception', want.package, ...want.lifts], {
+        cwd: BIN,
+        timeout: 10 * 60_000,
+      });
       later.liftedAt = new Date().toISOString();
       later.scan = dispatchScan(state, APP).id;
       say(

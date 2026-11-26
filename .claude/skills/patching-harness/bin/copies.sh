@@ -25,8 +25,8 @@
 #                            the harness calls it)
 #   ./copies.sh move-on-main <file> <image> <tag> <tag@digest>  an image's move put on the app copy's main, as another
 #                            change would have made it (W3b; the harness calls it)
-#   ./copies.sh lift-exception <package>  the factory copy's exception for a package taken off its main (test 21; the
-#                            harness calls it)
+#   ./copies.sh lift-exception <package> <advisory>…  the factory copy's exceptions of those advisories for a package
+#                            taken off its main, its others left (test 21; the harness calls it)
 #   ./copies.sh down         delete the scratch cluster and its state
 #
 # The scratch cluster is the copies' alone: its own k3d name and kube context (k3d-software-factory-scratch), ports
@@ -729,17 +729,26 @@ move_on_main() { # <file> <image> <tag> <tag@digest>
     perl -pi -e 's{\Q$ENV{IMAGE}\E:\Q$ENV{FROM}\E(\@sha256:[0-9a-f]{64})?(?!\S)}{$ENV{IMAGE}:$ENV{TO}}' "$file"
 }
 
-# Test 21: the exception its baseline stages (staged/factory-21/) taken off the factory copy's main, so the app's next
-# scan, which takes its exceptions from there, names the further target. `[skip ci]` in the subject: a push that
+# Test 21: of the exceptions its baseline stages (staged/factory-21/), those of the advisories named are taken off the
+# factory copy's main, and the package's others left, so the app's next scan, which takes its exceptions from there,
+# names the further target. `[skip ci]` in the subject: a push that
 # changes policy/ would otherwise build the factory's images, and their deploy pin would roll the factory mid-test.
-lift_exception() { # <package>
-  local package=${1:?the package the exception names}
+lift_exception() { # <package> <advisory>…
+  local package=${1:?the package the exceptions name} advisory; shift
+  [[ $# -gt 0 ]] || die "lift-exception: name the advisories to lift for $package"
+  for advisory in "$@"; do
+    [[ $advisory =~ ^[A-Za-z0-9-]+$ ]] || die "lift-exception: $advisory is no advisory's id"
+  done
+  # An entry's fields are in the policy's order: the advisory, then the package.
   # shellcheck disable=SC2016
-  PACKAGE=$package commit_on_main "$FACTORY_COPY" "$WORK/factory" "chore(scratch): lift the exception for $package [skip ci]" \
-    perl -0pi -e 's/  \{\n(?:    [^\n]*\n)*?    package: \x27\Q$ENV{PACKAGE}\E\x27,\n(?:    [^\n]*\n)*?  \},\n//g' policy/vulnerabilities.ts
-  if grep -qF "package: '$package'" "$WORK/factory/policy/vulnerabilities.ts"; then
-    die "an exception for $package is still in the factory copy's policy"
-  fi
+  PACKAGE=$package ADVISORIES=$(IFS='|'; echo "$*") commit_on_main "$FACTORY_COPY" "$WORK/factory" \
+    "chore(scratch): lift $# of the exceptions for $package [skip ci]" \
+    perl -0pi -e 's/  \{\n(?:    [^\n]*\n)*?    advisory: \x27(?:$ENV{ADVISORIES})\x27,\n    package: \x27\Q$ENV{PACKAGE}\E\x27,\n(?:    [^\n]*\n)*?  \},\n//g' policy/vulnerabilities.ts
+  for advisory in "$@"; do
+    if grep -qF "advisory: '$advisory'" "$WORK/factory/policy/vulnerabilities.ts"; then
+      die "the exception of $advisory is still in the factory copy's policy"
+    fi
+  done
 }
 
 # reset [factory|app] [--store]: both copies unless one is named; --store also puts the scratch store back to its clean

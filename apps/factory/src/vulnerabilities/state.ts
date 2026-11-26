@@ -331,6 +331,13 @@ export function readStateFix(fix: { target: string; day: string }): Fix {
 
 const DAY_MS = 86_400_000;
 
+/**
+ * A wait of so many days counted from the scan's own first sight, in milliseconds: the days less the slack
+ * (`ROUTINE.slackHours`), since a daily scan's runs are not exactly a day apart, and one that starts minutes earlier
+ * than the day before would find a day's wait a day longer. The one place a first sight's wait is worked out.
+ */
+export const waitMs = (days: number, slackHours = 0) => Math.max(0, days * DAY_MS - slackHours * 3_600_000);
+
 /** The most sightings kept still waiting, of one tag's digests or one finding's fixes. */
 export const WAITING = 4;
 
@@ -383,7 +390,8 @@ export function settle<T extends StateSeen>(last: T[], today: T, ready: (each: T
  * the same pin that has waited stands in for it; with none, the fix is not yet installable. `found` is changed in
  * place (deadlines.ts's `installable` made it), and each result's sightings are returned for the next state. `keys`
  * names each result's place, and `last` the state read with the same key of each of its findings; with none, every
- * such fix is first seen now. A policy of no days sets no wait, and nothing is changed or kept.
+ * such fix is first seen now. A policy of no days sets no wait, and nothing is changed or kept. The days are less
+ * `slackHours` (`waitMs`).
  */
 export function contentWaits(
   found: { at: (number | undefined)[]; fixes: (Target | undefined)[]; places: { from: string }[] },
@@ -391,8 +399,10 @@ export function contentWaits(
   last: { state: State; keyOf(finding: StateFinding): string } | undefined,
   days: number,
   now: number,
+  slackHours = 0,
 ): (StateWait[] | undefined)[] {
   if (!(days > 0)) return found.fixes.map(() => undefined);
+  const wait = waitMs(days, slackHours);
   const before = sightings(last?.state);
   // Each place's sightings, each target once, with the earliest day it has: two results may share a place.
   const byKey = new Map<string, Map<string, StateWait>>();
@@ -406,7 +416,7 @@ export function contentWaits(
     }
     byKey.set(key, waits);
   }
-  const dayOf = (each: StateWait) => Math.max(Date.parse(each.day), Date.parse(each.seen) + days * DAY_MS);
+  const dayOf = (each: StateWait) => Math.max(Date.parse(each.day), Date.parse(each.seen) + wait);
   return found.fixes.map((target, index) => {
     const own = found.at[index];
     if (!target || own === undefined || (target.kind !== 'image' && target.kind !== 'chart')) return undefined;
@@ -419,7 +429,7 @@ export function contentWaits(
       before.get(contentOf(target)) ?? now,
       ...kept.filter((each) => each.target === text).map((each) => Date.parse(each.seen)),
     );
-    const day = Math.max(own, first + days * DAY_MS);
+    const day = Math.max(own, first + wait);
     const today: StateWait = { from, target: text, seen: dayText(first), day: dayText(day) };
     const { due, kept: next } = settle(kept, today, (each) => (each === today ? day : dayOf(each)) <= now);
     const stands = due && due !== today ? readTarget(due.target) : undefined;

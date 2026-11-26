@@ -47,7 +47,9 @@
  * its records are dropped and the wait starts again. Where the newest release is too young and an older one is not,
  * the pin takes the newest that has waited: a package's, a chart's and k3s's from what their registries list, an
  * image's from the tags the state has waiting for the pin, at most `TAGS`, and while they are that many no newer tag
- * is taken up, so a line that tags faster than the wait still comes due.
+ * is taken up, so a line that tags faster than the wait still comes due. A wait counted from the scan's first sight
+ * (an image's, a chart's, and its content's day below) may be `ROUTINE.slackHours` less than its days (state.ts's
+ * `waitMs`): the daily scan starts minutes either side of its time, and a day by its own clock is not always 24 hours.
  *
  * **The content's day.** A tag is a name, and its publisher, or whoever holds the account, can push it again: so an
  * image's move lists only at a digest the scan first saw at least `ROUTINE.contentDays` ago, on top of the tag's
@@ -84,7 +86,7 @@ import { type Behind, isMajor, isRoutine, type Move, type Pin, pinKey } from './
 import { satisfies } from './node.ts';
 import { repositoryOf, splitReference } from './reference.ts';
 import { lockfileLine, type ReadTarget } from './scan.ts';
-import { type StateRoutine, type StateSeen, settle } from './state.ts';
+import { type StateRoutine, type StateSeen, settle, waitMs } from './state.ts';
 import { compareTags, compareVersions, majorOf } from './versions.ts';
 
 const DAY = 86_400_000;
@@ -375,7 +377,9 @@ export async function routine(asked: Asked): Promise<Listing> {
       seen: dayText(seen),
       ...(content?.length ? { content } : {}),
     });
-    return day + days * DAY <= now && also <= now;
+    // Counted from the scan's own first sight, the days are less the slack of a scan that starts a little early.
+    const wait = day === seen ? waitMs(days, policy.slackHours) : days * DAY;
+    return day + wait <= now && also <= now;
   };
   const pinsOf = (group: Pinned) =>
     [...group.pins.values()].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line));
@@ -420,7 +424,7 @@ export async function routine(asked: Asked): Promise<Listing> {
       const content = settle(
         last,
         { target: text, seen: dayText(first) },
-        (seen) => Date.parse(seen.seen) + policy.contentDays * DAY <= now,
+        (seen) => Date.parse(seen.seen) + waitMs(policy.contentDays, policy.slackHours) <= now,
       );
       const due = content.due && readTarget(content.due.target);
       const target = due?.kind === 'image' ? due : today;

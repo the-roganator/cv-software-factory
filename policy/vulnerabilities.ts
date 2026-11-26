@@ -74,6 +74,13 @@ export interface Routine {
    * much as a routine update: a tag pushed again is new content, whatever its release has waited.
    */
   contentDays: number;
+  /**
+   * How much less than its days a wait may be, in hours, where it counts from the scan's own first sight (an image's
+   * tag and digest, a chart's version): for a daily scan that starts a little early. GitHub starts a scheduled run
+   * minutes either side of its time, so content first seen at 06:05 has waited 23 hours 58 minutes at 06:03 the next
+   * day, and without the slack would wait a second day.
+   */
+  slackHours: number;
   leave: Left[];
 }
 
@@ -90,6 +97,7 @@ export const ROUTINE: Routine = {
   days: 3,
   majorDays: 7,
   contentDays: 1,
+  slackHours: 2,
   leave: [
     {
       repository: 'all',

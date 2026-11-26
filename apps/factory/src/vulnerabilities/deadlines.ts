@@ -1769,7 +1769,7 @@ export async function assess(
   const keys = findings.map((finding) => placeKey(placeOf(finding)));
   const last = read.state && { state: read.state, keyOf: placeKey };
   const own = [...found.fixes];
-  const waits = contentWaits(found, keys, last, policy.ROUTINE.contentDays, now);
+  const waits = contentWaits(found, keys, last, policy.ROUTINE.contentDays, now, policy.ROUTINE.slackHours);
   // A target that stands in from the state's sightings is held to its registry as a fix the state kept is (`listed`):
   // one no longer listed is no target, and the result is left with this run's own, on the day its content has waited.
   await Promise.all(

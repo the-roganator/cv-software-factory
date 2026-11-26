@@ -1096,6 +1096,8 @@ describe('an image’s fix, while the scan has known its digest less than a day'
   const finding = os({ severity: 'CRITICAL' });
   const NEWEST = 'node:24.23.0-trixie-slim';
   const digest = (letter: string) => `sha256:${letter.repeat(64)}`;
+  /** A day's wait from the scan's first sight, as the policy gives it: less its slack. */
+  const WAIT = DAY - policy.ROUTINE.slackHours * 3_600_000;
   const serving = (letter: string, state?: State): World => ({
     findings: [finding],
     ...(state ? { state } : { alerts: [alertOf(finding, '2026-10-01T00:00:00Z')] }),
@@ -1109,16 +1111,16 @@ describe('an image’s fix, while the scan has known its digest less than a day'
   it('is no fix the day it is first seen, with a state or none, and one the next day, its deadline counted from then', async () => {
     const first = await judge(serving('c'));
     expect(first.fixes).toEqual([undefined]);
-    expect(first.rows[0]).toMatchObject({ installable: NOW + DAY, bucket: 'none' });
+    expect(first.rows[0]).toMatchObject({ installable: NOW + WAIT, bucket: 'none' });
     // A Critical first seen long ago with its fix a day off fails nothing: no move could be made today.
     expect(first.verdict.passes).toBe(true);
     expect(moves(first.judged, { repository: REPOSITORY, app: false, now: NOW })).toEqual([]);
     const next = await judge(serving('c', first.kept()), NOW + DAY);
     expect(next.fixes).toEqual([
-      { target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') }, day: NOW + DAY },
+      { target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') }, day: NOW + WAIT },
     ]);
     // Two days for a Critical, from the day the fix could first be installed.
-    expect(next.rows[0]).toMatchObject({ installable: NOW + DAY, due: NOW + 3 * DAY, bucket: 'week' });
+    expect(next.rows[0]).toMatchObject({ installable: NOW + WAIT, due: NOW + WAIT + 2 * DAY, bucket: 'week' });
     // With the state lost the day after, the wait starts again, and the alert has nothing to keep.
     const lost = await judge(
       { ...serving('c'), alerts: [alertOf(first.judged[0]?.finding as Finding, '2026-10-01T00:00:00Z')] },
@@ -1132,13 +1134,13 @@ describe('an image’s fix, while the scan has known its digest less than a day'
     const day1 = await judge(serving('d', day0.kept()), NOW + DAY);
     expect(day1.fixes[0]).toEqual({
       target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') },
-      day: NOW + DAY,
+      day: NOW + WAIT,
     });
     // Rebuilt every day, it is fixed every day by the digest of the day before, and its day never moves.
     const day2 = await judge(serving('e', day1.kept()), NOW + 2 * DAY);
     expect(day2.fixes[0]).toEqual({
       target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('d') },
-      day: NOW + DAY,
+      day: NOW + WAIT,
     });
     // Its move names that digest.
     const [move] = moves(day2.judged, { repository: REPOSITORY, app: false, now: NOW + 2 * DAY });
@@ -1158,12 +1160,27 @@ describe('an image’s fix, while the scan has known its digest less than a day'
     expect(listed.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') });
     const pulled = await judge(later([]), NOW + DAY);
     expect(pulled.fixes).toEqual([undefined]);
-    expect(pulled.rows[0]).toMatchObject({ installable: NOW + 2 * DAY, bucket: 'none' });
+    expect(pulled.rows[0]).toMatchObject({ installable: NOW + DAY + WAIT, bucket: 'none' });
     expect(pulled.lines.join('\n')).toContain(`${NEWEST} is no longer listed by its registry`);
     expect(moves(pulled.judged, { repository: REPOSITORY, app: false, now: NOW + DAY })).toEqual([]);
     // Its own target comes due the day after, as if nothing had stood in.
     const due = await judge({ ...later([]), state: pulled.kept() }, NOW + 2 * DAY);
     expect(due.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.1-trixie-slim', digest: digest('d') });
+  });
+
+  it('is a fix the next day though that day’s scan starts a few minutes earlier than the first did', async () => {
+    const first = await judge(serving('c'));
+    // GitHub starts the daily scan minutes either side of its time: 23 hours 58 minutes is the day waited.
+    const early = await judge(serving('c', first.kept()), NOW + DAY - 2 * 60_000);
+    expect(early.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') });
+    // A scan run by hand that afternoon is no next day.
+    const sameDay = await judge(serving('c', first.kept()), NOW + 8 * 3_600_000);
+    expect(sameDay.fixes).toEqual([undefined]);
+    // With no slack in the policy, a day is 24 hours to the millisecond.
+    const exact = { ...policy, ROUTINE: { ...policy.ROUTINE, slackHours: 0 } };
+    const strict = await judge({ ...serving('c'), policy: exact });
+    const strictNext = await judge({ ...serving('c', strict.kept()), policy: exact }, NOW + DAY - 2 * 60_000);
+    expect(strictNext.fixes).toEqual([undefined]);
   });
 
   it('keeps the fix a state from before the wait lists, and moves it to a new digest only once that has waited', async () => {

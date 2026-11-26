@@ -26,7 +26,7 @@ const NOW = Date.parse('2026-11-10T04:30:00Z');
 const REPOSITORY = 'the-roganator/cv-software-factory';
 const ago = (days: number, now = NOW) => new Date(now - days * DAY).toISOString();
 const digest = (letter: string) => `sha256:${letter.repeat(64)}`;
-const POLICY: Routine = { days: 3, majorDays: 7, contentDays: 1, leave: [] };
+const POLICY: Routine = { days: 3, majorDays: 7, contentDays: 1, slackHours: 0, leave: [] };
 /** The tag a record's target names. */
 const readTag = (to: string) => {
   const target = readTarget(to);
@@ -457,6 +457,14 @@ describe('an image’s pin that is behind', () => {
     expect(young.routine).toEqual([]);
     expect(young.listing.counts).toMatchObject({ waiting: 1, listed: 0 });
     expect((await listed({ targets: [PINNED], ...newer(3) })).routine).toHaveLength(1);
+  });
+
+  it('counts the third day though that day’s scan starts minutes early, by the policy’s slack and no more', async () => {
+    const slack = { ...POLICY, slackHours: 2 };
+    // First seen at 04:32 three days ago and read at 04:30 today: three of the daily scan's days.
+    const early = await listed({ targets: [PINNED], ...newer(3 - 2 / 1440), policy: slack });
+    expect(early.routine).toHaveLength(1);
+    expect((await listed({ targets: [PINNED], ...newer(3 - 3 / 24), policy: slack })).routine).toEqual([]);
   });
 
   it('keeps the day it first saw a tag in the state, and lists nothing with no state to read', async () => {
@@ -989,6 +997,8 @@ describe('a lockfile’s package that is behind', () => {
     });
     expect((await listed(world(2.99))).routine).toEqual([]);
     expect((await listed(world(3))).routine).toHaveLength(1);
+    // npm's day is the registry's, not the scan's first sight: the slack of a scan that starts early is not taken off.
+    expect((await listed({ ...world(2.99), policy: { ...POLICY, slackHours: 2 } })).routine).toEqual([]);
     expect((await listed(world(4, 5 * 1440))).routine).toEqual([]);
     expect((await listed(world(5, 5 * 1440))).routine).toHaveLength(1);
   });
@@ -1278,6 +1288,11 @@ describe('the policy’s wait, and what it leaves alone', () => {
     const { days, majorDays, leave } = policy.ROUTINE;
     expect(Number.isInteger(days) && days >= 1).toBe(true);
     expect(Number.isInteger(majorDays) && majorDays >= days).toBe(true);
+    // The slack is for a scan that starts a little early: hours, and far less than the shortest wait.
+    const { contentDays, slackHours } = policy.ROUTINE;
+    expect(slackHours).toBeGreaterThanOrEqual(0);
+    expect(slackHours).toBeLessThanOrEqual(6);
+    expect(contentDays === 0 || slackHours < contentDays * 24).toBe(true);
     for (const entry of leave) {
       expect(['all', ...REPOSITORIES]).toContain(entry.repository);
       // A package, or an image's repository with neither tag nor digest: one or the other.

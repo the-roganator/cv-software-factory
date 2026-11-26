@@ -39,7 +39,7 @@
  *   as a branch the factory does not own and a pull request the App did not open). Once `main` has the version,
  *   Dependabot closes it itself when it next looks at it, or the worker's watch of such duplicates does
  *   (`duplicates.ts`).
- * - **A move in the `issue` lane** (a workflow's pin), a line no longer built, a move the watch cannot write on its pins' lines, one the pin step refused, one undone on `main`, and one whose branch is held or whose pull request GitHub refused, is
+ * - **A move in the `issue` lane** (a workflow's pin, or a fix that waits for a bench run, marked `bench`), a line no longer built, a move the watch cannot write on its pins' lines, one the pin step refused, one undone on `main`, and one whose branch is held or whose pull request GitHub refused, is
  *   one issue, labelled `pin`, that a session can take as it stands: its pins, its target, its counts and its
  *   deadline. It is found again by the mark in its body, and updated, never opened twice; one Martin closed is opened
  *   again only for a later target.
@@ -55,8 +55,10 @@
  *   scan refused as no better than the pin is gone, and the close says so. A scan that does not say what waits is
  *   read by its moves alone.
  * - **In the app's repository it keeps the issues alone** (`ISSUE_REPOS`): the app's moves are its line's, made from
- *   tickets, and no ticket is made for a move on a line no longer built (`none`), the one lane but `line` the scan
- *   gives an app's move (`laneOf`), so each is one issue there, opened, updated and closed as here. The watch reads
+ *   tickets, and no ticket is made for a move on a line no longer built (`none`), or for a fix of a package whose
+ *   bump waits for a bench run (`issue`, marked `bench`: `BENCHED`, policy/vulnerabilities.ts), the two lanes but
+ *   `line` the scan gives an app's move (`laneOf`, and `moves` for the bench), so each is one issue there, opened,
+ *   updated and closed as here. The watch reads
  *   no branch, file or pull request there and writes none: its pass there has the four actions on issues and no
  *   other (`issuesOnly`).
  *

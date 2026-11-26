@@ -131,10 +131,14 @@ export const dependabotOpened = (pr: PullRequest) => pr.user?.id === DEPENDABOT 
 
 /**
  * Whether Martin has had his say on a pull request at its head. A review that only comments says nothing; of the rest,
- * his latest counts: an approval, changes asked, or an approval dismissed. `reviews` is in the order GitHub gives them,
+ * his latest counts: an approval, changes asked, or a review dismissed. `reviews` is in the order GitHub gives them,
  * oldest first.
+ *
+ * `asked` says his latest is a request for changes, whatever commit he made it on: a push leaves it standing, and no
+ * rule passes the pull request while it does (`route`). His approval after it ends it, and so does its dismissal, which
+ * GitHub records as that review's state.
  */
-export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & { rule?: Rule } {
+export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & { rule?: Rule; asked?: true } {
   // From a branch in this repository: one Martin opens from someone else's fork would carry their pushes.
   if (pr.user?.id === MARTIN && fromHere(pr)) {
     return { pass: true, title: 'Martin opened it', rule: 'martin-opened' };
@@ -144,7 +148,7 @@ export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & 
     .at(-1);
   const head = short(pr.head.sha);
   if (!latest) return { pass: false, title: `Waits for Martin to approve ${head}` };
-  if (latest.state === 'CHANGES_REQUESTED') return { pass: false, title: 'Martin asked for changes' };
+  if (latest.state === 'CHANGES_REQUESTED') return { pass: false, title: 'Martin asked for changes', asked: true };
   if (latest.state === 'DISMISSED')
     return { pass: false, title: `His last review was dismissed: waits for him to approve ${head}` };
   if (latest.commit_id !== pr.head.sha) {
@@ -955,10 +959,13 @@ export interface WorkflowPinChecks {
    */
   compare: (base: string, head: string) => Promise<string>;
   /**
-   * Every line of the workflows at the pull request's head that names the factory's workflows, a comment's among them,
-   * with its file and its number there, from 1.
+   * Every line of the workflows that names the factory's workflows, a comment's among them, with its file and its
+   * number there, from 1: at the pull request's head, or, in the merge queue's run, at the queue's commit for it, which
+   * is what merges, and holds a call `main` has gained since the branch was made.
    */
   calls: () => Promise<{ file: string; number: number; line: string }[]>;
+  /** Where `calls` reads, as a reason says it: `at its head` unless given. */
+  at?: string;
   /** One of the factory's workflows, by its file's name, as a commit of the factory has it, or undefined if it has none. */
   declared: (workflow: string, commit: string) => Promise<string | undefined>;
 }
@@ -974,8 +981,9 @@ export interface WorkflowPinChecks {
  * - GitHub lists every file it changes, each a workflow under `.github/workflows/`, modified, whose every changed line
  *   is one call of the factory's workflows (`uses: <the factory>/.github/workflows/<name>.yml@<commit> # main`) that
  *   reads as the line it replaces but for the commit (`callMoves`);
- * - every call it moves goes from one commit to one commit, and no call at its head is left at another (`calls`): a
- *   repository calls every workflow of the factory's at one commit;
+ * - every call it moves goes from one commit to one commit, and no call at its head is left at another (`calls`), nor,
+ *   in the merge queue's run, any at the commit that merges: a repository calls every workflow of the factory's at one
+ *   commit;
  * - the new commit descends from the old (`compare(old, new)` is `ahead`), so the pin moves forward. That alone does
  *   not say whose commit it is: GitHub answers for any commit in the repository's network, a fork's among them;
  * - the new commit is on the factory's `main` (`compare(new, 'main')` is `ahead` or `identical`: `main` descends from
@@ -1020,16 +1028,17 @@ export async function workflowPin(
     };
   if (from === to) return { reason: `it leaves the calls at ${short(to)}, the same commit` };
   const called = new Set<string>();
+  const at = checks.at ?? 'at its head';
   for (const { file, number, line } of await checks.calls()) {
     const call = WORKFLOW_CALL.exec(line);
     // Any line that names them, a comment among it: said whole, with where it is, as it holds every such bump.
     if (!call)
       return {
-        reason: `${file}:${number} at its head names the factory's workflows in a line that is not a call of one at a commit of main (\`${line.trim().slice(0, 120)}\`), which holds every bump of them until it is one, or does not name them`,
+        reason: `${file}:${number} ${at} names the factory's workflows in a line that is not a call of one at a commit of main (\`${line.trim().slice(0, 120)}\`), which holds every bump of them until it is one, or does not name them`,
       };
     if (call[3] !== to)
       return {
-        reason: `${file} at its head still calls the factory at ${short(call[3] ?? '')}: every call moves together`,
+        reason: `${file} ${at} still calls the factory at ${short(call[3] ?? '')}: every call moves together`,
       };
     called.add(call[2] ?? '');
   }
@@ -1100,7 +1109,8 @@ export interface Facts {
    * Whether it is a move (scripts/move.ts), for a pull request from a branch here that Martin has not passed and is no
    * exact pin: `move` or `major` with its verdict's title; why a change that touches the scan's moves is refused, a
    * fact not read among them; why it is no move at all; or, `pending`, why it is not judged yet: the move job judged
-   * an earlier head, and the run the push started judges this one.
+   * an earlier head, and the run the push started judges this one; or it would pass by a scan too old to judge by,
+   * and waits for the next (scripts/moves.ts).
    */
   move?: MoveResult | { pending: string };
 }
@@ -1122,6 +1132,9 @@ export function route(facts: Facts): Decision {
   const { repo, pr, reviews, tags } = facts;
   const martin = verdict(pr, reviews);
   if (martin.pass && martin.rule) return { pass: true, title: martin.title, rule: martin.rule, tags };
+  // Changes Martin asked for hold it whatever it is, an exact pin and a move too: no rule below passes it without him,
+  // and it is no wait, as nothing but his next review ends it.
+  if (martin.asked) return { pass: false, title: martin.title, rule: 'held', tags };
   const held = (why: string): Decision => ({
     pass: false,
     title: `${why}: ${lower(martin.title)}`,
@@ -1238,8 +1251,8 @@ export function route(facts: Facts): Decision {
  * run and passes. `earlier` is the block of that check, read by `readVerdict`.
  *
  * An exact pin of the factory's workflows stands the same way. What its check read is as fixed at a head as an
- * image's signature: the lines the head changes and the calls it holds, and how two commits of the factory stand to
- * each other. Only `main` moves, and only forward, as its ruleset lets nobody rewrite it: a commit that was on it is.
+ * image's signature: the lines the head changes and the calls it holds, or those the merge queue's commit holds, which
+ * is the commit the earlier verdict is on, and how two commits of the factory stand to each other. Only `main` moves, and only forward, as its ruleset lets nobody rewrite it: a commit that was on it is.
  */
 export function stands(
   earlier: Block,

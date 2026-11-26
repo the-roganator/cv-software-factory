@@ -737,6 +737,7 @@ describe('judging a pull request through the API', () => {
         [`10@${EARLIER}`, { rule: 'major', title }],
         [`11@${HEAD}`, { reason: 'no' }],
         [`12@${HEAD}`, { none: 'none' }],
+        [`13@${HEAD}`, { pending: 'the scan of main it would pass by was judged 40 hours ago' }],
       ]);
       expect(readAnswers(writeAnswers(answers))).toEqual(answers);
       expect(readAnswers('{}')).toEqual(new Map());
@@ -830,6 +831,39 @@ describe('judging a pull request through the API', () => {
       expect(said).toMatchObject({ pass: false, rule: 'held' });
       expect(said.pending).toBeUndefined();
       expect(said.title).toContain("Not an exact pin of the factory's workflows: 2222222 is not on the factory's main");
+    });
+
+    it('reads the calls at what merges: a call main gained since the branch was made holds it in the merge queue', async () => {
+      // The head moves every call it has; main has since gained a third, at the old commit, which the queue's commit
+      // for it holds beside the two it moves.
+      const asked = bumped({
+        [`/contents/.github/workflows?ref=${EARLIER}`]: [
+          { name: 'codeql.yml', path: '.github/workflows/codeql.yml', type: 'file' },
+          { name: 'review.yml', path: '.github/workflows/review.yml', type: 'file' },
+          { name: 'gates.yml', path: '.github/workflows/gates.yml', type: 'file' },
+        ],
+        [`/contents/.github/workflows/gates.yml?ref=${EARLIER}`]: caller('gates', OLD),
+      });
+      expect(await judge(run, bump)).toMatchObject({ pass: true, rule: 'exact-pin' });
+      expect(asked.some((path) => path.endsWith('/gates.yml'))).toBe(false);
+      const queued = await judge({ ...run, queue: { number: 9, commit: EARLIER } }, bump);
+      expect(queued).toMatchObject({ pass: false, rule: 'held' });
+      expect(queued.title).toBe(
+        "Not an exact pin of the factory's workflows: .github/workflows/gates.yml on the merge queue's commit bbbbbbb still calls the factory at 1111111: every call moves together: waits for Martin to approve aaaaaaa",
+      );
+      // The queue's commit for another pull request, a stack's top, says nothing of this one's calls: its head does.
+      expect(await judge({ ...run, queue: { number: 10, commit: EARLIER } }, bump)).toMatchObject({ pass: true });
+      // Once the queue's commit has that call at the new commit too, it passes, the workflow it calls read with the rest.
+      bumped({
+        [`/contents/.github/workflows?ref=${EARLIER}`]: [
+          { name: 'gates.yml', path: '.github/workflows/gates.yml', type: 'file' },
+        ],
+        [`/contents/.github/workflows/gates.yml?ref=${EARLIER}`]: caller('gates', NEW),
+      });
+      expect(await judge({ ...run, queue: { number: 9, commit: EARLIER } }, bump)).toMatchObject({
+        pass: true,
+        rule: 'exact-pin',
+      });
     });
 
     it('holds one whose workflow declares otherwise to its caller at the new commit, or is gone there, for Martin', async () => {

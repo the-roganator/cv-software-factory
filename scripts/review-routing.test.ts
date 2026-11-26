@@ -388,6 +388,61 @@ describe('approval routing: the rule, the first that holds', () => {
     expect(route(facts({ unread: 'GET /files: 502', pr: pr(MARTIN) })).rule).toBe('martin-opened');
   });
 
+  describe('changes Martin asked for', () => {
+    const asked = (commit = HEAD) => ({ user: { id: MARTIN }, state: 'CHANGES_REQUESTED', commit_id: commit });
+    const image = 'ghcr.io/the-roganator/cv-software-factory/console';
+    const pin = {
+      pins: [{ file: 'deploy/overlays/local/image/kustomization.yaml', image, from: 'sha256:1', to: 'sha256:2' }],
+    };
+    const title = 'The scan’s move of postgres to 18.7-alpine3.24';
+    const workflows = { moved: { from: 'a'.repeat(40), to: 'b'.repeat(40), files: ['.github/workflows/ci.yml'] } };
+    /** Each rule that passes a pull request without Martin, as the facts that pass it. */
+    const passing: [string, Facts][] = [
+      ['low-risk', facts()],
+      ['lights-out', facts({ autonomy: 'lights-out', tags: [tag('dependency-change')] })],
+      ['exact-pin', facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), pin })],
+      ['exact-pin', facts({ pr: pr(DEPENDABOT), workflows })],
+      ['move', facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), move: { rule: 'move', title } })],
+      ['major', facts({ repo: FACTORY_REPO, pr: pr(42, FACTORY_REPO), move: { rule: 'major', title } })],
+    ];
+
+    it('hold every rule that passes without him, on the head he reviewed and on any pushed since', () => {
+      for (const [rule, each] of passing) {
+        expect(route(each), rule).toMatchObject({ pass: true, rule });
+        for (const commit of [HEAD, EARLIER]) {
+          const said = route({ ...each, reviews: [asked(commit)] });
+          expect(said, rule).toEqual({ pass: false, rule: 'held', title: 'Martin asked for changes', tags: each.tags });
+        }
+      }
+    });
+
+    it('are no wait, whatever else is one: only his next review ends them', () => {
+      const waiting = { read: false as const, reason: 'test integrity has not run', pending: true as const };
+      expect(route(facts({ reviews: [asked()], testIntegrity: waiting })).pending).toBeUndefined();
+      expect(
+        route(facts({ reviews: [asked()], pin: { unchecked: 'ghcr.io did not answer' } })).pending,
+      ).toBeUndefined();
+      expect(route(facts({ reviews: [asked()], move: { pending: 'not judged' } })).pending).toBeUndefined();
+    });
+
+    it('end with his approval of the head, or with their dismissal', () => {
+      const [, move] = passing[4] as [string, Facts];
+      expect(route({ ...move, reviews: [asked(EARLIER), approved()] })).toMatchObject({ rule: 'martin-approved-head' });
+      // His approval of an earlier head ends the request too: the rules decide again, as before he reviewed.
+      expect(route({ ...move, reviews: [asked(EARLIER), approved(EARLIER)] })).toMatchObject({ rule: 'move' });
+      // GitHub writes a dismissal as the review's own state.
+      expect(route({ ...move, reviews: [{ ...asked(), state: 'DISMISSED' }] })).toMatchObject({ rule: 'move' });
+      // An approval a push dismissed leaves a later request standing, and an earlier one ended.
+      const dismissed = { ...approved(EARLIER), state: 'DISMISSED' };
+      expect(route({ ...move, reviews: [dismissed, asked(EARLIER)] })).toMatchObject({ pass: false, rule: 'held' });
+      expect(route({ ...move, reviews: [asked(EARLIER), dismissed] })).toMatchObject({ rule: 'move' });
+      // A comment of his, and anyone else's review, say nothing.
+      const comment = { user: { id: MARTIN }, state: 'COMMENTED', commit_id: HEAD };
+      const theirs = { user: { id: 42 }, state: 'APPROVED', commit_id: HEAD };
+      expect(route({ ...move, reviews: [asked(EARLIER), comment, theirs] })).toMatchObject({ rule: 'held' });
+    });
+  });
+
   it('never takes a read that failed for a wait: nothing runs the gate again for it, and it may never succeed', () => {
     for (const author of [FACTORY_APP, 42]) {
       const said = route(

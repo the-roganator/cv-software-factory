@@ -271,12 +271,13 @@ export interface GitHub {
 /**
  * A move's answer for one pull request at one head: what it is (`move`, or `major`) and the verdict's title; the
  * reason a change that touches the scan's moves is refused; or why it is no move at all (scripts/move.ts). The `move`
- * job writes it as `{ "move": title }`, `{ "major": title }`, `{ "reason": why }` or `{ "none": why }`.
+ * job writes it as `{ "move": title }`, `{ "major": title }`, `{ "reason": why }` or `{ "none": why }`; or as
+ * `{ "pending": why }`, why it is not judged yet: it would pass by a scan too old to judge by (scripts/moves.ts).
  */
-export type MoveAnswer = MoveResult;
+export type MoveAnswer = MoveResult | { pending: string };
 
-/** A move's answer as the gate takes it: the job's, or a wait for a head the job did not judge (`answerOf`). */
-type Taken = MoveAnswer | { pending: string };
+/** A move's answer as the gate takes it: the job's, a wait for a head the job did not judge among them (`answerOf`). */
+type Taken = MoveAnswer;
 
 /** The answers the `move` job worked out, by `<number>@<head>`, which it writes for the gate. */
 const WORKED = new Map<string, MoveAnswer>();
@@ -298,8 +299,8 @@ export function writeAnswers(answers: ReadonlyMap<string, MoveAnswer>): string {
 
 /**
  * The `move` job's answers, as review.yml hands them to the gate, or undefined when they are not all well formed: an
- * object of `<number>@<head>` to `{ move }`, `{ major }`, `{ reason }` or `{ none }`, each a string of at most ANSWER_LIMIT
- * characters.
+ * object of `<number>@<head>` to `{ move }`, `{ major }`, `{ reason }`, `{ none }` or `{ pending }`, each a string of at
+ * most ANSWER_LIMIT characters.
  */
 export function readAnswers(text: string | undefined): Map<string, MoveAnswer> | undefined {
   if (!text?.trim()) return undefined;
@@ -316,7 +317,7 @@ export function readAnswers(text: string | undefined): Map<string, MoveAnswer> |
     const keys = Object.keys(value);
     const said = (value as Record<string, unknown>)[keys[0] ?? ''];
     const kind = keys[0] ?? '';
-    if (keys.length !== 1 || !['move', 'major', 'reason', 'none'].includes(kind) || typeof said !== 'string')
+    if (keys.length !== 1 || !['move', 'major', 'reason', 'none', 'pending'].includes(kind) || typeof said !== 'string')
       return undefined;
     if (!said || said.length > ANSWER_LIMIT) return undefined;
     answers.set(
@@ -325,7 +326,9 @@ export function readAnswers(text: string | undefined): Map<string, MoveAnswer> |
         ? { reason: said }
         : kind === 'none'
           ? { none: said }
-          : { rule: kind as 'move' | 'major', title: said },
+          : kind === 'pending'
+            ? { pending: said }
+            : { rule: kind as 'move' | 'major', title: said },
     );
   }
   return answers;
@@ -364,7 +367,9 @@ async function answerOf(each: Run, pr: PullRequest): Promise<Taken> {
         ? { rule: answer.rule, title: cutTo(answer.title) }
         : 'reason' in answer
           ? { reason: cutTo(answer.reason) }
-          : { none: cutTo(answer.none) },
+          : 'pending' in answer
+            ? { pending: cutTo(answer.pending) }
+            : { none: cutTo(answer.none) },
     );
   return answer;
 }
@@ -775,6 +780,9 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     // Anyone's but the App's, which writes no workflow, may be an exact pin of the factory's workflows: Dependabot's
     // bump of the commit they are called at. Nothing is read for a change that touches no call of them, nor for one
     // that fails on what the pull request itself says; the reads are GitHub's alone, tried again as an image's are.
+    // The calls are read at what merges: in the merge queue's run for it, the queue's commit, which has every call
+    // main gained since its branch was made, so none is left at the old commit beside those it moves.
+    const queued = each.queue?.number === pr.number ? each.queue.commit : undefined;
     const workflows: Facts['workflows'] =
       !appOpened(judged) && !verdict(judged, reviews).pass && !work
         ? await retrying(
@@ -786,7 +794,8 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
                 {
                   // The factory's repository is public, so the token of the repository that calls it reads it.
                   compare: (base, to) => compared(FACTORY_REPO, base, to, read),
-                  calls: () => factoryCalls(repo, head, read),
+                  calls: () => factoryCalls(repo, queued ?? head, read),
+                  ...(queued ? { at: `on the merge queue's commit ${short(queued)}` } : {}),
                   declared: (workflow, commit) => fileAt(FACTORY_REPO, `.github/workflows/${workflow}`, commit, read),
                 },
                 complete,

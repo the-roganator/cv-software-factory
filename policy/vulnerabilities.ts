@@ -160,5 +160,10 @@ export function dismissal(entry: Exception) {
   return text.length > 280 ? `${text.slice(0, 279)}…` : text;
 }
 
-/** How old the scan a move is judged by may be, in hours, before it is no judgement and Martin is told. */
+/**
+ * The longest ago, in hours, a scan of `main` may have been judged (`moves.json`'s `judged`) and still be judged by:
+ * the scan runs each day, so a day and a half is one run missed. The review gate takes an older one for no judgement,
+ * and a change that would pass by it as a move waits for the next scan (scripts/moves.ts); past it Martin is told
+ * the scan has stopped (`PatchingScanStale`).
+ */
 export const SCAN_MAX_AGE_HOURS = 36;

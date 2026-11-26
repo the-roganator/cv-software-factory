@@ -261,19 +261,29 @@ function versionOf(target: Target): string | undefined {
 /** A digest written after a pin's tag, as `@sha256:…`. */
 const DIGEST_AFTER = new RegExp(`^@${DIGEST_PATTERN}`);
 
+/** The repository a line writes before a tag, which follows its `:`; none where the tag stands alone (a values file's). */
+const REPOSITORY_BEFORE = /([A-Za-z0-9._/:-]+):$/;
+
 /**
  * The edit a move makes at one pin's line, or why it cannot be written there: what it pins now, as the line writes it
  * (a tag and its digest, or a version), replaced by the target, in the same shape.
+ *
+ * An image's line must be the move's own pin still, or main has moved since the scan and the edit would be written on
+ * another's: where `from` carries the digest the scan read there (`tag@sha256:…`), the line writes that digest after the
+ * tag; and with the move's `name`, the repository the line writes before the tag is the move's. A line that writes a tag
+ * alone (a chart's value) names no repository, and is known by its digest or not at all.
  */
 export function editAt(
   pin: { file: string; line: number },
   line: string,
   from: string,
   target: Target,
+  name?: string,
 ): PinEdit | { reason: string } {
   const at = `${pin.file}:${pin.line}`;
   const tries: { from: string; to: (digested: boolean) => string | undefined }[] = [];
-  const tag = splitReference(from).name;
+  const { name: tag, digest: read } = splitReference(from);
+  const moved = `${at} is not ${name ?? 'the move'}'s pin at ${from} now: main moved since the scan`;
   switch (target.kind) {
     case 'image':
       tries.push({ from: tag, to: (digested) => (digested ? `${target.tag}@${target.digest}` : target.tag) });
@@ -304,6 +314,14 @@ export function editAt(
     const written = `${each.from}${digest ?? ''}`;
     // What the guard reads as a word of its own, the same rule: the span with its digest, once on the line.
     if (spans(line, written).length !== 1) continue;
+    if (target.kind === 'image') {
+      if (read !== undefined && digest !== `@${read}`) return { reason: moved };
+      // A chart's image is named `<chart>: <repository>`, and pinned by a value that writes its tag alone.
+      const repository = REPOSITORY_BEFORE.exec(line.slice(0, start))?.[1];
+      const own = name?.slice(name.lastIndexOf(': ') + 1).trim();
+      if (own !== undefined && (repository === undefined ? read === undefined : repository !== own))
+        return { reason: moved };
+    }
     const to = each.to(digest !== undefined);
     if (to === undefined) return { reason: `${at} pins a digest the target does not name` };
     return { file: pin.file, line: pin.line, from: written, to };

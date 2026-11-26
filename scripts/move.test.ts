@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Move as PinStepMove } from '../apps/runner/src/pins.ts';
 import {
   type Changed,
+  chartPinAt,
   exactText,
   hunkLines,
   type MoveIO,
@@ -324,7 +325,7 @@ describe('a routine update: a move no finding asks for, made and compared as any
         name: 'tempo',
         pins: [{ file: PROMETHEUS, line: 6 }],
         from: '29.35.0',
-        to: 'chart tempo 30.0.0 (a major)',
+        to: 'chart prometheus 30.0.0 (a major)',
         major: true,
       }),
     ].filter((m) => m.name !== 'prometheus');
@@ -849,6 +850,161 @@ describe('what is not a move, and says what differs', () => {
     expect(reasonOf(await proveMove(changed, SCAN, { base: (path) => shifted[path], derive: step() }, false))).toBe(
       `${PROMETHEUS}:7 is no pin of a move the scan of main asked for`,
     );
+  });
+});
+
+describe('a move is written only on the pin the scan named', () => {
+  const FILE = 'deploy/a.yaml';
+  const D_BETA = digest('d');
+  const MOVED = /main moved since the scan/;
+  const one = (base: string, head: string, scan: ScanMove[], over: Partial<MoveIO> = {}, rewrites?: number[]) =>
+    proveMove(
+      [{ ...modified(FILE, base, head), rewrites }],
+      scan,
+      { base: (path) => (path === FILE ? base : undefined), derive: step(), ...over },
+      false,
+    );
+
+  it('refuses an image’s move where its line on main now holds another image at the same tag', async () => {
+    // The scan read alpha on line 2, under a comment main has since lost: its line 2 is beta's now.
+    const base = `image: docker.io/library/alpha:v1.2.3@${D_OLD}\nimage: docker.io/library/beta:v1.2.3@${D_BETA}\nreplicas: 1\n`;
+    const head = base.replace(`beta:v1.2.3@${D_BETA}`, `beta:v1.2.4@${D_NEW}`);
+    const alpha = move({
+      name: 'docker.io/library/alpha',
+      pins: [{ file: FILE, line: 2 }],
+      from: 'v1.2.3',
+      to: `image v1.2.4@${D_NEW}`,
+    });
+    const scanned = [{ image: `docker.io/library/alpha:v1.2.3@${D_OLD}`, pin: { file: FILE, line: 2 } }];
+    for (const over of [{}, { scanned }]) {
+      const said = reasonOf(await one(base, head, [alpha], over, [2]));
+      expect(said).toBe(
+        `the gate cannot make docker.io/library/alpha on main: ${FILE}:2 is not docker.io/library/alpha's pin at v1.2.3${'scanned' in over ? `@${D_OLD}` : ''} now: main moved since the scan`,
+      );
+    }
+    // On its own line still, it is the move.
+    const own = base.replace(`alpha:v1.2.3@${D_OLD}`, `alpha:v1.2.4@${D_NEW}`);
+    expect(await one(base, own, [{ ...alpha, pins: [{ file: FILE, line: 1 }] }], {}, [1])).toMatchObject({
+      rule: 'move',
+    });
+  });
+
+  it('refuses it where the line pins the image at another digest than the scan read there', async () => {
+    const base = `image: postgres:18.6-alpine3.24@${D_OTHER}\n`;
+    const head = `image: postgres:18.7-alpine3.24@${D_NEW}\n`;
+    const postgres = move({
+      name: 'postgres',
+      pins: [{ file: FILE, line: 1 }],
+      from: '18.6-alpine3.24',
+      to: `image 18.7-alpine3.24@${D_NEW}`,
+    });
+    const at = (image: string) => ({ scanned: [{ image, pin: { file: FILE, line: 1 } }] });
+    expect(reasonOf(await one(base, head, [postgres], at(`postgres:18.6-alpine3.24@${D_OLD}`)))).toMatch(MOVED);
+    expect(await one(base, head, [postgres], at(`postgres:18.6-alpine3.24@${D_OTHER}`))).toMatchObject({
+      rule: 'move',
+    });
+    // Another image the scan read at that pin says nothing of this one's digest.
+    expect(await one(base, head, [postgres], at(`redis:18.6-alpine3.24@${D_OLD}`))).toMatchObject({ rule: 'move' });
+  });
+
+  it('knows a chart’s image, whose value writes its tag alone, by the digest the scan read there', async () => {
+    // Kyverno's values: every image at one tag, each known by its digest alone.
+    const values = `a:\n  tag: v1.19.1@${D_OLD}\nb:\n  tag: v1.19.1@${D_BETA}\n`;
+    const kyverno = (line: number) =>
+      move({
+        name: 'kyverno: reg.kyverno.io/kyverno/kyverno',
+        pins: [{ file: FILE, line }],
+        from: 'v1.19.1',
+        to: `image v1.20.0@${D_NEW}`,
+      });
+    const scanned = (line: number) => ({
+      scanned: [{ image: `reg.kyverno.io/kyverno/kyverno:v1.19.1@${D_OLD}`, pin: { file: FILE, line } }],
+    });
+    const first = values.replace(`v1.19.1@${D_OLD}`, `v1.20.0@${D_NEW}`);
+    expect(await one(values, first, [kyverno(2)], scanned(2))).toMatchObject({ rule: 'move' });
+    // The scan read it on line 4, which main has since given the other image: not written there.
+    const second = values.replace(`v1.19.1@${D_BETA}`, `v1.20.0@${D_NEW}`);
+    expect(reasonOf(await one(values, second, [kyverno(4)], scanned(4)))).toMatch(MOVED);
+    // With no digest of the scan's to know it by, a tag alone is no one's pin.
+    expect(reasonOf(await one(values, first, [kyverno(2)]))).toMatch(MOVED);
+  });
+
+  it('refuses a chart’s move where its line is another chart’s `targetRevision`, at the same version', async () => {
+    const two = `${application('loki', '1.2.3')}---\n${application('tempo', '1.2.3')}`;
+    const lines = two.split('\n');
+    const [loki, tempo] = [lines.indexOf('      chart: loki') + 2, lines.indexOf('      chart: tempo') + 2];
+    const chart = (line: number) =>
+      move({ name: 'loki', pins: [{ file: FILE, line }], from: '1.2.3', to: 'chart loki 1.2.4' });
+    const at = (line: number) => lines.map((each, i) => (i === line - 1 ? each.replace('1.2.3', '1.2.4') : each));
+    expect(await one(two, at(loki).join('\n'), [chart(loki)])).toMatchObject({ rule: 'move' });
+    expect(reasonOf(await one(two, at(tempo).join('\n'), [chart(tempo)]))).toBe(
+      `the gate cannot make loki on main: ${FILE}:${tempo} is not loki's pin at 1.2.3 now: main moved since the scan`,
+    );
+    expect(chartPinAt(lines, loki, 'loki', '1.2.3')).toBe(true);
+    expect(chartPinAt(lines, loki, 'loki', '1.2.4')).toBe(false);
+    expect(chartPinAt(lines, tempo, 'loki', '1.2.3')).toBe(false);
+    // One Application with two charts at one version: each chart's pin is the revision nearest its own `chart:`.
+    const sources = [
+      '    - chart: loki',
+      '      targetRevision: 1.2.3',
+      '    - chart: tempo',
+      '      targetRevision: 1.2.3',
+    ];
+    expect(chartPinAt(sources, 2, 'loki', '1.2.3')).toBe(true);
+    expect(chartPinAt(sources, 4, 'loki', '1.2.3')).toBe(false);
+    // The Makefile installs one chart, at the version its variable holds.
+    expect(chartPinAt(['ARGOCD_CHART := 10.20.0'], 1, 'argo-cd', '10.20.0')).toBe(true);
+  });
+
+  it('refuses two moves that name one line: neither is the one move of that pin', async () => {
+    const base = `image: docker.io/library/alpha:v1.2.3@${D_OLD}\n`;
+    const head = `image: docker.io/library/alpha:v1.2.4@${D_NEW}\n`;
+    const alpha = move({
+      name: 'docker.io/library/alpha',
+      pins: [{ file: FILE, line: 1 }],
+      from: 'v1.2.3',
+      to: `image v1.2.4@${D_NEW}`,
+    });
+    expect(await one(base, head, [alpha])).toMatchObject({ rule: 'move' });
+    for (const other of [{ ...alpha, name: 'docker.io/library/beta' }, { ...alpha }])
+      expect(reasonOf(await one(base, head, [alpha, other]))).toBe(
+        `docker.io/library/alpha and ${other.name} both name ${FILE}:1, and neither is the one move of that pin`,
+      );
+  });
+
+  it('refuses a tool’s move where its line in mise.lock is another entry’s, or another version', async () => {
+    const lock = '[[tools.k3d]]\nversion = "5.8.3"\n\n[[tools.kubectl]]\nversion = "5.8.3"\n';
+    const made = lock.replace('"5.8.3"', '"5.9.0"');
+    const proxy = (line: number) =>
+      move({
+        name: 'ghcr.io/k3d-io/k3d-proxy',
+        pins: [{ file: 'mise.lock', line }],
+        from: '5.8.3',
+        to: `image 5.9.0@${D_NEW}`,
+      });
+    const tool = (name: string, line: number) =>
+      move({ name, pins: [{ file: 'mise.lock', line }], from: '5.8.3', to: `tool ${name} 5.9.0` });
+    const prove = (scan: ScanMove[], base = lock, head = made, rewrites = [2]) =>
+      proveMove(
+        [{ ...modified('mise.lock', base, head), rewrites }],
+        scan,
+        {
+          base: (path) => (path === 'mise.lock' ? base : undefined),
+          derive: async () => new Map([['mise.lock', made]]),
+        },
+        false,
+      );
+    expect(await prove([proxy(2)])).toMatchObject({ rule: 'move' });
+    expect(await prove([tool('k3d', 2)])).toMatchObject({ rule: 'move' });
+    // Line 5 is kubectl's version now: the step would move kubectl as if it were k3d.
+    const stray = lock.replace(/"5\.8\.3"\n$/, '"5.9.0"\n');
+    for (const scan of [[proxy(5)], [tool('k3d', 5)]])
+      expect(reasonOf(await prove(scan, lock, stray, [5]))).toBe(
+        `the gate cannot make ${scan[0]?.name}: mise.lock:5 is not ${scan[0]?.name}'s pin at 5.8.3 now: main moved since the scan`,
+      );
+    // The entry's own, at a version the scan did not read.
+    const later = lock.replace('"5.8.3"', '"5.8.4"');
+    expect(reasonOf(await prove([tool('k3d', 2)], later, made))).toMatch(MOVED);
   });
 });
 

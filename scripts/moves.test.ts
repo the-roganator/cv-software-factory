@@ -9,9 +9,10 @@ import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../apps/factory/src/reposito
 import { newKey, readKey, type StateApi } from '../apps/factory/src/vulnerabilities/state.ts';
 import { zipOf } from '../apps/factory/test/vulnerabilities/zip-of.ts';
 import type { Get, Move as PinStepMove } from '../apps/runner/src/pins.ts';
+import { SCAN_MAX_AGE_HOURS } from '../policy/vulnerabilities.ts';
 import { askedKey, type Derivation, deriveOn } from './derive.ts';
 import { type MoveIO, proveMove, type ScanMove } from './move.ts';
-import { askedOf, derivationOf, mergeOf, type ScanDay, sides } from './moves.ts';
+import { askedOf, byAge, derivationOf, mergeOf, type ScanDay, sides, tooOld } from './moves.ts';
 import type { GitHub, PullRequest, Run } from './review-gate.ts';
 
 // The gate's two sides of a merge, read from a repository of git's own as from GitHub's copy, and the move proved on
@@ -419,5 +420,33 @@ describe('the app’s moves, made from what its scan sealed (S2-M1)', () => {
     expect(await gate(forged)).toEqual({
       reason: `Dockerfile:1 is \`FROM ${BUILD}@${digest('9')} AS build\` where the scan's moves make \`FROM ${BUILD}@${digest('3')} AS build\``,
     });
+  });
+});
+
+describe('the scan the gate judges by has an age limit', () => {
+  const NOW = Date.parse('2026-11-26T12:00:00Z');
+  const ago = (hours: number) => NOW - hours * 3_600_000;
+  const title = 'The scan’s move of postgres to 18.7-alpine3.24';
+
+  it('judges by a scan up to a day and a half old, and by none older or undated', () => {
+    expect(SCAN_MAX_AGE_HOURS).toBe(36);
+    expect(tooOld(ago(1), NOW)).toBeUndefined();
+    expect(tooOld(ago(36), NOW)).toBeUndefined();
+    expect(tooOld(ago(36.5), NOW)).toBe(
+      "the scan of main it would pass by was judged 36 hours ago, and one judged more than 36 hours ago is no judgement: the next scan's moves settle it",
+    );
+    expect(tooOld(ago(24 * 9), NOW)).toContain('judged 216 hours ago');
+    expect(tooOld(Number.NaN, NOW)).toContain('judged at no time the gate can read');
+  });
+
+  it('makes what would pass by an old scan a wait, never a pass, and leaves a refusal a refusal', () => {
+    for (const rule of ['move', 'major'] as const) {
+      expect(byAge({ rule, title }, ago(35), NOW)).toEqual({ rule, title });
+      expect(byAge({ rule, title }, ago(37), NOW)).toEqual({ pending: tooOld(ago(37), NOW) });
+      expect(byAge({ rule, title }, Number.NaN, NOW)).toHaveProperty('pending');
+    }
+    // A change that is no move by the last scan is none whatever its age: a scan that stops holds up moves alone.
+    expect(byAge({ none: 'it changes no file' }, ago(100), NOW)).toEqual({ none: 'it changes no file' });
+    expect(byAge({ reason: 'deploy/a.yaml:2 changes' }, ago(100), NOW)).toEqual({ reason: 'deploy/a.yaml:2 changes' });
   });
 });

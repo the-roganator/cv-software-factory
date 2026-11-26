@@ -26,7 +26,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-fa
   && chmod -R a+rX,go-w /repo
 
 # The dependencies first, then the code over them, each copy a layer of its own, the code with the same modes.
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:39b0407357c9fadf1a9708d22088f02de21f0e1e8a688474eea2d8701e7d5693 AS runtime
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:675c532423b908f9e56f9d60a4e62309b63cd2a3175acb90a46b96f7ee68e121 AS runtime
 COPY --from=deps /repo /repo
 WORKDIR /repo
 COPY --chmod=a+rX,go-w apps/factory/src apps/factory/src

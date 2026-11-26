@@ -77,6 +77,8 @@ export interface PullRequest {
 export const RETARGETED: ReadonlySet<string> = new Set(['base_ref_changed', 'automatic_base_change_succeeded']);
 
 export interface Review {
+  /** The review's own number, which a `review_dismissed` event names. */
+  id?: number;
   user: { id: number } | null;
   state: string;
   commit_id: string | null;
@@ -132,13 +134,19 @@ export const dependabotOpened = (pr: PullRequest) => pr.user?.id === DEPENDABOT 
 /**
  * Whether Martin has had his say on a pull request at its head. A review that only comments says nothing; of the rest,
  * his latest counts: an approval, changes asked, or a review dismissed. `reviews` is in the order GitHub gives them,
- * oldest first.
+ * oldest first; `events` are the pull request's issue events, which say who dismissed a review and what it said.
  *
  * `asked` says his latest is a request for changes, whatever commit he made it on: a push leaves it standing, and no
- * rule passes the pull request while it does (`route`). His approval after it ends it, and so does its dismissal, which
- * GitHub records as that review's state.
+ * rule passes the pull request while it does (`route`). His approval after it ends it, and so does his own dismissal
+ * of it. Anyone with write access can dismiss a review, so a dismissal by anyone else ends nothing, and nor does one
+ * whose event was not read: GitHub leaves `DISMISSED` as the review's state, and only the event says by whom, and
+ * that it asked for changes. A dismissed approval is an approval gone, whoever dismissed it, as GitHub does on a push.
  */
-export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & { rule?: Rule; asked?: true } {
+export function verdict(
+  pr: PullRequest,
+  reviews: readonly Review[],
+  events: readonly IssueEvent[] = [],
+): Verdict & { rule?: Rule; asked?: true } {
   // From a branch in this repository: one Martin opens from someone else's fork would carry their pushes.
   if (pr.user?.id === MARTIN && fromHere(pr)) {
     return { pass: true, title: 'Martin opened it', rule: 'martin-opened' };
@@ -149,8 +157,25 @@ export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict & 
   const head = short(pr.head.sha);
   if (!latest) return { pass: false, title: `Waits for Martin to approve ${head}` };
   if (latest.state === 'CHANGES_REQUESTED') return { pass: false, title: 'Martin asked for changes', asked: true };
-  if (latest.state === 'DISMISSED')
+  if (latest.state === 'DISMISSED') {
+    const dismissal =
+      latest.id === undefined
+        ? undefined
+        : events.find((e) => e.event === 'review_dismissed' && e.dismissed_review?.review_id === latest.id);
+    if (!dismissal)
+      return {
+        pass: false,
+        title: 'Martin’s review was dismissed, and the gate could not read by whom: it holds as changes he asked for',
+        asked: true,
+      };
+    if (dismissal.dismissed_review?.state !== 'approved' && dismissal.actor?.id !== MARTIN)
+      return {
+        pass: false,
+        title: 'Martin asked for changes; his review was dismissed by someone else',
+        asked: true,
+      };
     return { pass: false, title: `His last review was dismissed: waits for him to approve ${head}` };
+  }
   if (latest.commit_id !== pr.head.sha) {
     const approved = latest.commit_id
       ? `Martin approved ${short(latest.commit_id)}`
@@ -464,6 +489,8 @@ export interface IssueEvent {
   event: string;
   actor: { id: number } | null;
   label?: { name: string };
+  /** On `review_dismissed`: the review, and what it said before (`approved`, `changes_requested`). */
+  dismissed_review?: { state: string; review_id: number };
 }
 
 /** The risk labels anyone but Martin removed from a pull request, each once. */
@@ -1090,6 +1117,8 @@ export interface Facts {
   testIntegrity: { read: true } | { read: false; reason: string; pending?: true };
   /** The risk labels someone other than Martin removed. */
   labelsRemoved: readonly string[];
+  /** Its issue events, for who dismissed a review of Martin's; absent when they were not read. */
+  events?: readonly IssueEvent[];
   /** What the gate could not read from GitHub, which holds the pull request unless Martin has had his say. */
   unread?: string;
   /** Whether its base has been changed since it opened: its pins are then not the same at the same head. */
@@ -1130,10 +1159,10 @@ const lower = (text: string) => text.replace(/^Waits/, 'waits');
 /** The verdict on one pull request at its head: the first rule that holds, or held, with why. */
 export function route(facts: Facts): Decision {
   const { repo, pr, reviews, tags } = facts;
-  const martin = verdict(pr, reviews);
+  const martin = verdict(pr, reviews, facts.events);
   if (martin.pass && martin.rule) return { pass: true, title: martin.title, rule: martin.rule, tags };
   // Changes Martin asked for hold it whatever it is, an exact pin and a move too: no rule below passes it without him,
-  // and it is no wait, as nothing but his next review ends it.
+  // and it is no wait, as nothing but his next review, or his own dismissal of this one, ends it.
   if (martin.asked) return { pass: false, title: martin.title, rule: 'held', tags };
   const held = (why: string): Decision => ({
     pass: false,

@@ -430,16 +430,50 @@ describe('approval routing: the rule, the first that holds', () => {
       expect(route({ ...move, reviews: [asked(EARLIER), approved()] })).toMatchObject({ rule: 'martin-approved-head' });
       // His approval of an earlier head ends the request too: the rules decide again, as before he reviewed.
       expect(route({ ...move, reviews: [asked(EARLIER), approved(EARLIER)] })).toMatchObject({ rule: 'move' });
-      // GitHub writes a dismissal as the review's own state.
-      expect(route({ ...move, reviews: [{ ...asked(), state: 'DISMISSED' }] })).toMatchObject({ rule: 'move' });
-      // An approval a push dismissed leaves a later request standing, and an earlier one ended.
-      const dismissed = { ...approved(EARLIER), state: 'DISMISSED' };
-      expect(route({ ...move, reviews: [dismissed, asked(EARLIER)] })).toMatchObject({ pass: false, rule: 'held' });
-      expect(route({ ...move, reviews: [asked(EARLIER), dismissed] })).toMatchObject({ rule: 'move' });
+      // GitHub writes a dismissal as the review's own state, and who dismissed it as an issue event.
+      const gone = { ...asked(), id: 7, state: 'DISMISSED' };
+      const by = (actor: number, state = 'changes_requested', review_id = 7) => ({
+        event: 'review_dismissed',
+        actor: { id: actor },
+        dismissed_review: { state, review_id },
+      });
+      expect(route({ ...move, reviews: [gone], events: [by(MARTIN)] })).toMatchObject({ rule: 'move' });
+      // An approval a push dismissed leaves a later request standing, and an earlier one ended, whoever pushed.
+      const dismissed = { ...approved(EARLIER), id: 8, state: 'DISMISSED' };
+      const pushed = [by(42, 'approved', 8)];
+      expect(route({ ...move, reviews: [dismissed, asked(EARLIER)], events: pushed })).toMatchObject({ rule: 'held' });
+      expect(route({ ...move, reviews: [asked(EARLIER), dismissed], events: pushed })).toMatchObject({ rule: 'move' });
       // A comment of his, and anyone else's review, say nothing.
       const comment = { user: { id: MARTIN }, state: 'COMMENTED', commit_id: HEAD };
       const theirs = { user: { id: 42 }, state: 'APPROVED', commit_id: HEAD };
       expect(route({ ...move, reviews: [asked(EARLIER), comment, theirs] })).toMatchObject({ rule: 'held' });
+    });
+
+    it('stand when anyone but Martin dismisses them, or the dismissal cannot be read', () => {
+      const gone = { ...asked(), id: 7, state: 'DISMISSED' };
+      const by = (actor: number | null, review_id = 7) => ({
+        event: 'review_dismissed',
+        actor: actor === null ? null : { id: actor },
+        dismissed_review: { state: 'changes_requested', review_id },
+      });
+      const someone = 'Martin asked for changes; his review was dismissed by someone else';
+      for (const [rule, each] of passing) {
+        for (const actor of [FACTORY_APP, 42, null]) {
+          const said = route({ ...each, reviews: [gone], events: [by(actor)] });
+          expect(said, rule).toEqual({ pass: false, rule: 'held', title: someone, tags: each.tags });
+        }
+        // No event for it, another review's event, events not read, a review with no number: none says Martin did.
+        for (const events of [[], [by(MARTIN, 9)], undefined]) {
+          const said = route({ ...each, reviews: [gone], ...(events ? { events } : {}) });
+          expect(said, rule).toMatchObject({ pass: false, rule: 'held' });
+          expect(said.title, rule).toContain('could not read by whom');
+        }
+        const unnumbered = route({ ...each, reviews: [{ ...asked(), state: 'DISMISSED' }], events: [by(MARTIN)] });
+        expect(unnumbered, rule).toMatchObject({ pass: false, rule: 'held' });
+        // His approval after it ends it all the same.
+        const after = route({ ...each, reviews: [gone, approved()], events: [by(42)] });
+        expect(after, rule).toMatchObject({ pass: true, rule: 'martin-approved-head' });
+      }
     });
   });
 

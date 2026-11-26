@@ -710,12 +710,15 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
   // His reviews are read inside the guard too: unread, they count as no say, and the pull request is held saying why,
   // rather than the run failing and leaving no verdict at all.
   let reviews: Review[] = [];
-  const facts = () => ({ repo, pr: judged, reviews, autonomy: each.autonomy });
+  // The issue events too: they say who dismissed a review of his, and one whose dismisser is unread still holds.
+  let events: IssueEvent[] | undefined;
+  const facts = () => ({ repo, pr: judged, reviews, autonomy: each.autonomy, ...(events ? { events } : {}) });
+  const martin = () => verdict(judged, reviews, events);
   try {
     if (!withoutMartin) reviews = await paged<Review>(`/repos/${repo}/pulls/${pr.number}/reviews`, read);
-    const [files, events, runs, rules] = await Promise.all([
+    events = await paged<IssueEvent>(`/repos/${repo}/issues/${pr.number}/events`, read);
+    const [files, runs, rules] = await Promise.all([
       paged<FileChange>(`/repos/${repo}/pulls/${pr.number}/files`, read),
-      paged<IssueEvent>(`/repos/${repo}/issues/${pr.number}/events`, read),
       paged<CheckRun>(
         `/repos/${repo}/commits/${head}/check-runs?filter=all&check_name=${encodeURIComponent(TEST_INTEGRITY_CHECK)}`,
         read,
@@ -752,7 +755,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     // The move job works out its answers alone: the gate checks the exact pin, with cosign, and decides.
     const work = working(each);
     const pin: Facts['pin'] =
-      appOpened(judged) && !verdict(judged, reviews).pass && !work
+      appOpened(judged) && !martin().pass && !work
         ? await retrying(
             () =>
               exactPin(
@@ -784,7 +787,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     // main gained since its branch was made, so none is left at the old commit beside those it moves.
     const queued = each.queue?.number === pr.number ? each.queue.commit : undefined;
     const workflows: Facts['workflows'] =
-      !appOpened(judged) && !verdict(judged, reviews).pass && !work
+      !appOpened(judged) && !martin().pass && !work
         ? await retrying(
             () =>
               workflowPin(
@@ -811,7 +814,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     // be made, which is a wait of its own, nor for an exact pin of the factory's workflows, which is none.
     const asked =
       fromHere(judged) &&
-      !verdict(judged, reviews).pass &&
+      !martin().pass &&
       (work || pin === undefined || 'reason' in pin) &&
       (workflows === undefined || 'reason' in workflows);
     const move = asked ? await answerOf(each, judged) : undefined;

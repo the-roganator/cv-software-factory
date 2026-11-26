@@ -1,4 +1,4 @@
-# Test 21, a move whose target moves on: follow-redirects as a development dependency at exactly 1.14.8, behind three advisories fixed in 1.15.4, 1.15.6 and 1.16.0, of which the scan is first told the first alone. An exact version in the manifest, so pnpm resolves exactly the target the scan names and the pull request's lockfile shows which target it took.
+# Test 21, a move whose target moves on: follow-redirects as a development dependency at exactly 1.14.8, behind three advisories fixed in 1.15.4, 1.15.6 and 1.16.0. An exact version in the manifest, so pnpm resolves exactly the target the scan names and the pull request's lockfile shows which target it took.
 diff --git a/package.json b/package.json
 index 7b93dfd..6cb1186 100644
 --- a/package.json

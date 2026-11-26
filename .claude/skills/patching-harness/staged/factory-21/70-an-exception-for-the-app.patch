@@ -1,9 +1,9 @@
-# Test 21, a move whose target moves on: the app's follow-redirects (staged/app-21/) is excepted from the advisory 1.15.6 fixes and from the one only 1.16.0 fixes, each under each id a scanner may give it, so the app's first scan names 1.15.4; the run takes the first pair off the factory copy's main once the pull request is open, and the next scan names 1.15.6, which has no finding but the one still excepted. 1.16.0 is no target: the scanner finds three High advisories in it that the earlier releases do not have. In force until 8 February 2027, which is within 90 days of the fixed day the factory's own drill tests check the policy on (11 November 2026) as well as of the scan's: the date can go no later until that day does.
+# Test 21, a move whose target moves on: the app's follow-redirects (staged/app-21/) is excepted from the advisory only 1.16.0 fixes, under each id a scanner may give it, so the app's first scan names 1.15.6, which every gate passes; the run takes the exception off the factory copy's main once the pull request is open, and the next scan names 1.16.0. The scan's gates then refuse 1.16.0 for three High advisories of its own, so the test is seen as far as the gates and no further. In force until 8 February 2027, which is within 90 days of the fixed day the factory's own drill tests check the policy on (11 November 2026) as well as of the scan's: the date can go no later until that day does.
 diff --git a/policy/vulnerabilities.ts b/policy/vulnerabilities.ts
 index 0ed8caa0..77c9e336 100644
 --- a/policy/vulnerabilities.ts
 +++ b/policy/vulnerabilities.ts
-@@ -37,7 +37,44 @@ export const MAX_DAYS = 90;
+@@ -37,7 +37,26 @@ export const MAX_DAYS = 90;
  /** An advisory id the scan's results carry. */
  export const ADVISORY = /^(CVE-\d{4}-\d{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})$/;
  
@@ -12,28 +12,10 @@ index 0ed8caa0..77c9e336 100644
 +  {
 +    repository: 'the-roganator/cv-worlds-worst-website',
 +    item: 'pnpm-lock.yaml',
-+    advisory: 'CVE-2024-28849',
-+    package: 'follow-redirects',
-+    reason:
-+      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.4 first, and lifts this for it to name 1.15.6.',
-+    expires: '2027-02-08',
-+  },
-+  {
-+    repository: 'the-roganator/cv-worlds-worst-website',
-+    item: 'pnpm-lock.yaml',
-+    advisory: 'GHSA-cxjh-pqwp-8mfp',
-+    package: 'follow-redirects',
-+    reason:
-+      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.4 first, and lifts this for it to name 1.15.6.',
-+    expires: '2027-02-08',
-+  },
-+  {
-+    repository: 'the-roganator/cv-worlds-worst-website',
-+    item: 'pnpm-lock.yaml',
 +    advisory: 'CVE-2026-40895',
 +    package: 'follow-redirects',
 +    reason:
-+      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.4 first, lifts the exception of the advisory 1.15.6 fixes for it to name 1.15.6, and keeps this one of the advisory only 1.16.0 fixes throughout.',
++      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.6 first, and lifts this for it to name 1.16.0.',
 +    expires: '2027-02-08',
 +  },
 +  {
@@ -42,7 +24,7 @@ index 0ed8caa0..77c9e336 100644
 +    advisory: 'GHSA-r4q5-vmmm-2653',
 +    package: 'follow-redirects',
 +    reason:
-+      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.4 first, lifts the exception of the advisory 1.15.6 fixes for it to name 1.15.6, and keeps this one of the advisory only 1.16.0 fixes throughout.',
++      'A scratch copy’s set-up, never the real policy: the patching harness’s test 21 has the scan name 1.15.6 first, and lifts this for it to name 1.16.0.',
 +    expires: '2027-02-08',
 +  },
 +];

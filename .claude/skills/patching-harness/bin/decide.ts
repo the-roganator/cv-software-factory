@@ -723,9 +723,10 @@ export function newerFault(o: {
   name: string;
 }): string | undefined {
   const tag = `#${o.number}`;
-  // A version as a word of its own, in code or not: `1.15.6`, never the middle of 11.15.60.
+  // A version as the move's target, which the line writes as a floor, in code or not: "`1.15.6` or later". The issue
+  // also lists each advisory with the release that fixes it, the earlier targets among them, which are no target.
   const names = (text: string, version: string) =>
-    new RegExp(`(?<![\\d.])${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\d.])`).test(text);
+    new RegExp(`(?<![\\d.])${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\`? or later`).test(text);
   if (o.issueAtOpen === undefined) return `${tag}: its issue was not read when it opened`;
   if (!names(o.issueAtOpen, o.first))
     return `no verdict: the issue did not name ${o.first} when ${tag} opened, so the first scan's target was not the staged one (is the exception in force?)`;
@@ -741,6 +742,28 @@ export function newerFault(o: {
   if (!names(o.issueNow, o.later)) return `${tag}'s issue does not name ${o.later}`;
   if (names(o.issueNow, o.first)) return `${tag}'s issue still names ${o.first}`;
   return undefined;
+}
+
+/**
+ * What a move whose target moved on shows when its later target has advisories of its own (test 21's staging): the
+ * words of a line that is neither a pass nor a failure, or nothing when it is not that. It is that when everything
+ * `newerFault` asks short of the merge holds (the first issue named the first target, the later scan reached the line,
+ * the same pull request has a new head whose lockfile has the later target alone, and the issue names it alone), and
+ * the pull request is open, untouched, with nothing pending, and red on the scan's gates alone (`gates`).
+ */
+export function seenToTheGates(
+  o: Parameters<typeof newerFault>[0] & {
+    state: string;
+    red: string[];
+    pending: string[];
+    touched: string[];
+    gates: readonly string[];
+  },
+): string | undefined {
+  if (o.state !== 'open' || o.mergedAt || o.pending.length || o.touched.length) return undefined;
+  if (!o.red.length || !o.red.every((check) => o.gates.includes(check))) return undefined;
+  if (newerFault(o)) return undefined;
+  return `the same pull request and issue took the new target; not merged: the scan gates refuse ${o.later} for advisories of its own, the staging's`;
 }
 
 // ── The store restarting under a report ─────────────────────────────────────────────────────────────────────────────

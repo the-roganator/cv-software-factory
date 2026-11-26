@@ -38,6 +38,7 @@ import {
   routineMajorBranch,
   type ScanRun,
   saysNotPulled,
+  seenToTheGates,
   settleMs,
   staleTarget,
   startingPods,
@@ -903,12 +904,36 @@ describe('a target that moves on after the pull request opened', () => {
     expect(newerFault({ ...facts, adds: [] })).toContain('no copy of it');
   });
 
+  it('is seen as far as the gates when all but the merge holds and only the scan gates are red', () => {
+    const gates = ['gates / dependency review', 'gates / lockfile scan'];
+    const open = { ...facts, mergedAt: undefined, state: 'open', red: gates, pending: [], touched: [], gates };
+    expect(seenToTheGates(open)).toBe(
+      "the same pull request and issue took the new target; not merged: the scan gates refuse 1.16.0 for advisories of its own, the staging's",
+    );
+    expect(seenToTheGates({ ...open, red: ['gates / lockfile scan'] })).toBeDefined();
+    // Anything else is a failure's to say: another check red, none red, something pending, a touch, a merge.
+    expect(seenToTheGates({ ...open, red: [...gates, 'lint, types, tests'] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, red: [] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, pending: ['image builds'] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, touched: ['labeled by mrogan'] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, state: 'closed' })).toBeUndefined();
+    expect(seenToTheGates({ ...open, mergedAt: '2026-11-25T10:30:00Z' })).toBeUndefined();
+    // Nor when the pull request or the issue did not take the new target.
+    expect(seenToTheGates({ ...open, headNow: open.headAtOpen })).toBeUndefined();
+    expect(seenToTheGates({ ...open, adds: [lockfileKey(name, '1.15.6')] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, issueNow: open.issueAtOpen })).toBeUndefined();
+    expect(seenToTheGates({ ...open, toldAt: undefined })).toBeUndefined();
+  });
+
   it('fails an issue that does not name the later target, or still names the first', () => {
     expect(newerFault({ ...facts, issueNow: facts.issueAtOpen })).toContain('does not name 1.16.0');
-    const both = 'Move `follow-redirects` to `1.16.0` or later (it was `1.15.6`).';
+    const both = 'Move `follow-redirects` to `1.16.0` or later (it was to `1.15.6` or later).';
     expect(newerFault({ ...facts, issueNow: both })).toContain('still names 1.15.6');
     expect(newerFault({ ...facts, issueNow: 'Move follow-redirects to 1.16.0 or later.' })).toBeUndefined();
-    expect(newerFault({ ...facts, issueNow: 'Move it to 1.16.0, from 11.15.60.' })).toBeUndefined();
+    expect(newerFault({ ...facts, issueNow: 'Move it to 11.16.0 or later.' })).toContain('does not name 1.16.0');
+    // The advisories it lists, each with the release that fixes it, name no target.
+    const listed = 'Move `follow-redirects` from `1.14.8` to `1.16.0` or later.\n- `CVE-2024-28849`: fixed in `1.15.6`';
+    expect(newerFault({ ...facts, issueNow: listed })).toBeUndefined();
   });
 });
 

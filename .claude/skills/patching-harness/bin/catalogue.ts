@@ -148,9 +148,11 @@ export interface Test {
    * Its target moves on once its pull request is open: the first scan names `first` for `package`, as the factory
    * copy's main excepts the advisories later releases fix (staged/factory-<staged>/); the run lifts those of
    * `lifts`, which `later` fixes, and no other (`./copies.sh lift-exception`), and scans again, and the same pull
-   * request and issue must take `later`.
+   * request and issue must take `later`. `gates` names the required checks that refuse `later` for advisories of
+   * its own, where the staging's later target has them: red on those alone, with the issue and the pull request at
+   * `later`, the test is seen as far as the gates, which is neither a pass nor a failure.
    */
-  newer?: { package: string; first: string; later: string; lifts: string[] };
+  newer?: { package: string; first: string; later: string; lifts: string[]; gates?: string[] };
   /** The store restarted under a report left through the app's widget: no scan, no reset, a step of its own. */
   restart?: boolean;
 }
@@ -441,9 +443,11 @@ export const TESTS: Test[] = [
   },
   {
     // follow-redirects, a development dependency staged at exactly 1.14.8 (staged/app-21/), so pnpm resolves exactly
-    // the scan's target. The factory copy excepts, for the app, the advisory 1.15.6 fixes and the one only 1.16.0
-    // fixes (staged/factory-21/), so the first scan names 1.15.4; with the first lifted the next names 1.15.6, which
-    // the gates pass with the other still excepted. 1.16.0 has three High advisories of its own, and is no target.
+    // the scan's target. The factory copy excepts, for the app, the advisory only 1.16.0 fixes (staged/factory-21/),
+    // so the first scan names 1.15.6, which every gate passes; with the exception lifted the next names 1.16.0. That
+    // release has three High advisories of its own, which the scan's gates refuse, so the test is seen as far as the
+    // gates: no real pair of this package's releases gives a first target dependency review passes (it knows nothing
+    // of the factory's exceptions) and a second with no advisory of its own.
     id: '21',
     title: 'app move whose target moves on (follow-redirects)',
     repo: APP,
@@ -453,9 +457,10 @@ export const TESTS: Test[] = [
     dependency: 'follow-redirects',
     newer: {
       package: 'follow-redirects',
-      first: '1.15.4',
-      later: '1.15.6',
-      lifts: ['CVE-2024-28849', 'GHSA-cxjh-pqwp-8mfp'],
+      first: '1.15.6',
+      later: '1.16.0',
+      lifts: ['CVE-2026-40895', 'GHSA-r4q5-vmmm-2653'],
+      gates: ['gates / dependency review', 'gates / lockfile scan'],
     },
     staged: '21',
     deployed: { kind: 'app-deploy' },

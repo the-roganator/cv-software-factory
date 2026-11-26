@@ -59,6 +59,7 @@ import {
   rolloutProgressing,
   routineBranch,
   saysNotPulled,
+  seenToTheGates,
   settleMs,
   startingPods,
   stillListed,
@@ -1782,7 +1783,9 @@ function unreadVerdict(state: State, test: Test): { pass: boolean; why: string }
   return { pass: true, why: `${so}; ${seen.alertsAfter} alerts open at its file, ${seen.alertsBefore ?? 0} before` };
 }
 
-function verdict(state: State, test: Test): { pass: boolean; why: string } {
+/** The mark of a line that is neither a pass nor a failure: what the staging can show, seen, and the rest said. */
+const TO_THE_GATES = 'SEEN TO THE GATES';
+function verdict(state: State, test: Test): { pass: boolean; why: string; mark?: string } {
   const seen = state.seen[test.id];
   const fail = (why: string) => ({ pass: false, why });
   const dropped = state.dropped?.[test.id];
@@ -1928,6 +1931,30 @@ function verdict(state: State, test: Test): { pass: boolean; why: string } {
   const pull = seen.pulls[0] as Pull;
   const tag = `#${pull.number}`;
   if (state.line?.strays.length) return fail(`the run is spoiled: the line worked ${state.line.strays.join(', ')} too`);
+  // A later target with advisories of its own (21's staging) ends at the scan's gates, with the line's part done.
+  if (test.newer?.gates && !pull.mergedAt) {
+    const later = state.later ?? {};
+    const seenSoFar = seenToTheGates({
+      number: pull.number,
+      first: test.newer.first,
+      later: test.newer.later,
+      name: test.newer.package,
+      issueAtOpen: later.issueAtOpen,
+      issueNow: later.issueNow,
+      headAtOpen: later.headAtOpen,
+      headNow: pull.head,
+      mergedAt: pull.mergedAt,
+      toldAt: later.toldAt,
+      adds: later.adds ?? [],
+      state: pull.state,
+      red: pull.red,
+      pending: pull.pending,
+      touched: pull.touched,
+      gates: test.newer.gates,
+    });
+    if (seenSoFar)
+      return { pass: false, mark: TO_THE_GATES, why: `${tag}, issue #${later.issue ?? '?'}: ${seenSoFar}` };
+  }
   if (state.line?.stalled && !pull.mergedAt)
     return fail(`${tag} stuck on the line: ${state.line.stalled}`.slice(0, 420));
   if (state.line?.held && !pull.mergedAt) return fail(`${tag} held on the line: ${state.line.held}`.slice(0, 420));
@@ -1994,8 +2021,8 @@ function report(state: State) {
     `scan ${state.scan1?.id ?? '-'} at ${t0 ?? '-'} (${state.scan1?.conclusion ?? 'running'}); next scan ${state.scan2?.id ?? 'not run'}\n`,
   );
   for (const test of TESTS.filter((t) => inRun(state, t))) {
-    const { pass, why } = verdict(state, test);
-    const mark = state.dropped?.[test.id] ? 'NOT RUN ' : pass ? 'PASS    ' : 'FAIL    ';
+    const { pass, why, mark: other } = verdict(state, test);
+    const mark = other ?? (state.dropped?.[test.id] ? 'NOT RUN ' : pass ? 'PASS    ' : 'FAIL    ');
     console.log(`${test.id.padEnd(3)} ${mark} ${test.title.padEnd(46)} ${why}`);
   }
   if (state.line?.events.length) console.log(`\nthe work item's events: ${state.line.events.join(' ')}`);
@@ -2052,8 +2079,8 @@ function summary() {
     if (test.notRun) console.log(`${id} NOT RUN  ${title} ${test.notRun}`);
     else if (!run) console.log(`${id} NOT RUN  ${title} no finished run yet`);
     else {
-      const { pass, why } = verdict(run, test);
-      const mark = run.dropped?.[test.id] ? 'NOT RUN ' : pass ? 'PASS    ' : 'FAIL    ';
+      const { pass, why, mark: other } = verdict(run, test);
+      const mark = other ?? (run.dropped?.[test.id] ? 'NOT RUN ' : pass ? 'PASS    ' : 'FAIL    ');
       console.log(`${id} ${mark} ${title} ${why}  [${run.id}]`);
     }
   }

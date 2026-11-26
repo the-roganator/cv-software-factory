@@ -8,7 +8,8 @@
  *
  * - `move-fix`: a move first clears a High or a Critical, which a fix the scan found has given it;
  * - `move-waits`: a move a finding asks for first waits on him: its lane is his cluster's own command or an issue, or
- *   it is a row the sense made of what the cluster runs (a k3s the cluster has not moved to, a routine update's too);
+ *   it is a row the sense made of what the cluster runs (a k3s the cluster has not moved to, a routine update's too).
+ *   Each is a card in Needs you. A line no longer built (`none`) is none: its issue in its repository tells him;
  * - `move-due-soon`: a move still in the sense's last day comes within a day of its deadline. One first seen within a
  *   day of it, or past it, is told by `move-fix` alone, which says it is due; one that passes its deadline unjudged
  *   before (the line was down) is counted here as it is counted overdue, so a line that reads the store again counts

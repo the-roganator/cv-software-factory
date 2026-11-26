@@ -109,6 +109,46 @@ describe('the reviewer', () => {
     expect(suggested.safeParse({ ...approved, answered: [3] }).success).toBe(false);
   });
 
+  it('names a scoped package in code in its note and comments, which reach the pull request, and mentions nobody', () => {
+    const schema = reviewer.schema(input);
+    const read = schema.parse({
+      verdict: 'changes-requested',
+      note: 'The change moves @grpc/proto-loader too.',
+      findings: [{ ...unmet, comment: 'Only @grpc/grpc-js moves: take `@grpc/proto-loader` back.' }],
+    });
+    expect(read.note).toBe('The change moves `@grpc/proto-loader` too.');
+    expect(read.findings[0]?.comment).toBe('Only `@grpc/grpc-js` moves: take `@grpc/proto-loader` back.');
+    const noted = schema.safeParse({ verdict: 'approved', note: 'Fine, as @mrogan asked.', findings: [] });
+    expect(noted.error?.issues).toEqual([
+      expect.objectContaining({
+        path: ['note'],
+        message: 'no @mention outside code: @mrogan would notify someone from the App’s account',
+      }),
+    ]);
+    const commented = schema.safeParse({
+      verdict: 'changes-requested',
+      note: 'One holds.',
+      findings: [{ ...unmet, comment: 'Ask @the-roganator/owners first.' }],
+    });
+    // A team's name is a scoped package's to the line: in code it notifies nobody.
+    expect(commented.data?.findings[0]?.comment).toBe('Ask `@the-roganator/owners` first.');
+    expect(schema.safeParse({ ...read, findings: [{ ...unmet, comment: 'cc @mrogan' }] }).success).toBe(false);
+    // A comment that is code alone, a fence's info string, and a mention after the line's own words on its line.
+    const fenced = schema.safeParse({ ...read, findings: [{ ...unmet, comment: '``` @mrogan must see this' }] });
+    expect(fenced.error?.issues).toEqual([
+      expect.objectContaining({
+        path: ['findings', 0, 'comment'],
+        message: 'no @mention outside code: @mrogan would notify someone from the App’s account',
+      }),
+    ]);
+    // A path has no code mark, which would close the code the line writes it in.
+    const pathed = schema.safeParse({ ...read, findings: [{ ...unmet, path: 'a` @mrogan `b' }] });
+    expect(pathed.error?.issues[0]).toMatchObject({
+      path: ['findings', 0, 'path'],
+      message: 'a plain path in the repository',
+    });
+  });
+
   it('hands back a verdict that agrees with its findings, each short, cited and anchored', () => {
     const schema = reviewer.schema(input);
     const fits = (result: unknown) => schema.safeParse(result).success;
@@ -481,19 +521,19 @@ describe('the reviewer of a dependency’s move', () => {
     const prompt = reviewer.prompt(moved);
     expect(prompt).toContain('Scope, the only files the coder may change: src/log.ts, test/logging.test.ts.');
     expect(prompt).toContain(
-      'This change is a dependency’s move: pino (npm), from 10.4.0 to 10.4.1 or later. The line’s pin step writes its pins before the coder, in the change: the range package.json gives pino, and every lockfile (pnpm-lock.yaml). Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone',
+      'This change is a dependency’s move: pino (npm), from `10.4.0` to `10.4.1` or later. The line’s pin step writes its pins before the coder, in the change: the range package.json gives pino, and every lockfile (pnpm-lock.yaml). Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone',
     );
   });
 
   it('is told a version above the floor is the move as it should be', () => {
     expect(reviewer.prompt(moved)).toContain(
-      'The pin step takes the newest release of pino its range admits, past the app’s release age, at or above 10.4.1: a version above 10.4.1 is the move as it should be, not a finding.',
+      'The pin step takes the newest release of pino its range admits, past the app’s release age, at or above `10.4.1`: a version above `10.4.1` is the move as it should be, not a finding.',
     );
   });
 
   it('still escalates a version below the floor, another package moved, or a file neither the coder’s nor the pin step’s', () => {
     const prompt = reviewer.prompt(moved);
-    expect(prompt).toContain('Escalate, as only Martin can settle it: pino resolved below 10.4.1;');
+    expect(prompt).toContain('Escalate, as only Martin can settle it: pino resolved below `10.4.1`;');
     expect(prompt).toContain('another package moved that pino’s new version does not require;');
     expect(prompt).toContain('or a file changed that is neither in the scope nor one of the pin step’s.');
   });

@@ -233,9 +233,14 @@ export class Watcher {
         if (signal) {
           try {
             await outbox.send(signal, reportSignalId(record));
-          } catch {
-            // Not the cause: a refusal can quote the signal, and the signal holds the visitor's words.
-            throw new Error('A report could not be left in the inbox');
+          } catch (error) {
+            // Not the cause: a refusal can quote the signal, and the signal holds the visitor's words. Its code
+            // alone, which tells a store away for a restart from a fault.
+            const code = (error as { code?: unknown } | null)?.code;
+            throw Object.assign(
+              new Error('A report could not be left in the inbox'),
+              typeof code === 'string' ? { code } : {},
+            );
           }
           sent += 1;
         } else {

@@ -198,6 +198,98 @@ describe('a fix whose branch was brought up to date while the reviewer had it', 
   });
 });
 
+describe('a move that waits for the merge when its issue is written again', () => {
+  const issue = (minute: number, to: string) =>
+    [
+      minute,
+      'issue.opened',
+      'factory',
+      {
+        repository: 'the-roganator/cv-worlds-worst-website',
+        number: 40,
+        move: { name: 'invented-pkg', ecosystem: 'npm', from: '2.0.0', to },
+      },
+    ] as const;
+  const waiting = () =>
+    work('1')
+      .open()
+      .add(...issue(0, '2.0.1'))
+      .add(1, 'pull-request.pushed', 'factory', {
+        number: 7,
+        title: 'fix(deps): move invented-pkg to 2.0.1',
+        branch: 'factory/1-move-invented-pkg',
+        attempt: 1,
+        testsFirst: false,
+        files: [{ path: 'pnpm-lock.yaml', added: 1, removed: 1 }],
+        whole: [{ path: 'pnpm-lock.yaml', added: 1, removed: 1 }],
+      })
+      .add(2, 'gates.started', 'actions', payloads.gatesStarted)
+      .add(3, 'gates.finished', 'actions', payloads.gatesPassed)
+      .add(4, 'review.submitted', 'reviewer', { pullRequest: 7, verdict: 'approved', note: 'Fine', findings: [] })
+      .add(5, 'hold.started', 'factory', { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits' });
+
+  it('stops waiting for the merge once the issue names another target, as the line does', () => {
+    expect(foldItem(waiting().events)?.hold).toMatchObject({ cause: 'merge' });
+    expect(foldItem(waiting().add(...issue(6, '2.0.3')).events)?.hold).toBeUndefined();
+  });
+
+  it('stops waiting too when the record before named no target, as of an issue opened before any signal', () => {
+    const bare = waiting().events.map((event) =>
+      event.type === 'issue.opened'
+        ? { ...event, payload: { ...event.payload, move: { name: 'invented-pkg', ecosystem: 'npm' as const } } }
+        : event,
+    );
+    expect(foldItem(bare)?.hold).toMatchObject({ cause: 'merge' });
+    const [written] = work('1')
+      .add(...issue(6, '2.0.3'))
+      .events.slice(-1);
+    expect(foldItem([...bare, ...(written ? [written] : [])])?.hold).toBeUndefined();
+  });
+
+  it('still waits when the issue is written again for the same target, or the hold is of another cause', () => {
+    // Only its findings differ: the pull request's pins are the issue's still.
+    expect(foldItem(waiting().add(...issue(6, '2.0.1')).events)?.hold).toMatchObject({ cause: 'merge' });
+    const escalated = waiting()
+      .add(6, 'hold.started', 'factory', { stage: 'review', kind: 'held', cause: 'review', reason: 'Escalated' })
+      .add(...issue(7, '2.0.3'));
+    expect(foldItem(escalated.events)?.hold).toMatchObject({ cause: 'review' });
+  });
+});
+
+describe('a fix held at the gates whose check is run again to green on the same commit', () => {
+  const updated = 'd'.repeat(40);
+  const held = (cause: 'gates' | 'failures') =>
+    work('1')
+      .open()
+      .add(0, 'pull-request.pushed', 'coder', {
+        number: 7,
+        title: 'fix(products): load them all',
+        branch: 'factory/1-products',
+        attempt: 1,
+        testsFirst: true,
+        files: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+        whole: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+      })
+      .add(1, 'gates.started', 'actions', payloads.gatesStarted)
+      .add(3, 'gates.finished', 'actions', payloads.gatesFailed)
+      .add(4, 'hold.started', 'factory', { stage: 'gates', kind: 'held', cause, reason: 'Held for Martin' });
+
+  it('stops waiting for Martin once the gates pass on the head it was held at, as the line does', () => {
+    expect(foldItem(held('gates').events)).toMatchObject({ outcome: 'held', hold: { cause: 'gates' } });
+    const passed = held('gates').add(6, 'gates.finished', 'actions', payloads.gatesPassed);
+    expect(foldItem(passed.events)).toMatchObject({ stage: 'gates', hold: undefined, outcome: 'in-progress' });
+  });
+
+  it('still waits for him when they pass on another head, or under a hold of another cause', () => {
+    const elsewhere = held('gates')
+      .add(5, 'gates.started', 'actions', { ...payloads.gatesStarted, commit: updated })
+      .add(7, 'gates.finished', 'actions', { ...payloads.gatesPassed, commit: updated });
+    expect(foldItem(elsewhere.events)?.hold).toMatchObject({ cause: 'gates' });
+    const other = held('failures').add(6, 'gates.finished', 'actions', payloads.gatesPassed);
+    expect(foldItem(other.events)?.hold).toMatchObject({ cause: 'failures' });
+  });
+});
+
 describe('a fix whose gates fail on a branch brought up to date while it waited for the merge', () => {
   const updated = 'd'.repeat(40);
   const story = work('1')
@@ -231,6 +323,30 @@ describe('a fix whose gates fail on a branch brought up to date while it waited 
     expect(failed).toMatchObject({ stage: 'gates', hold: undefined, outcome: 'in-progress' });
     expect(failed?.failure?.stage).toBe('gates');
     expect(foldItem(story.events)).toMatchObject({ stage: 'build', hold: undefined, outcome: 'in-progress' });
+  });
+
+  it('goes back the same way when a check run again on the same head fails, with no run started on a newer one', () => {
+    const again = work('1')
+      .open()
+      .add(0, 'pull-request.pushed', 'coder', {
+        number: 7,
+        title: 'fix(products): load them all',
+        branch: 'factory/1-products',
+        attempt: 1,
+        testsFirst: true,
+        files: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+        whole: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+      })
+      .add(1, 'gates.started', 'actions', payloads.gatesStarted)
+      .add(3, 'gates.finished', 'actions', payloads.gatesPassed)
+      .add(4, 'review.submitted', 'reviewer', { pullRequest: 7, verdict: 'approved', note: 'Fine', findings: [] })
+      .add(5, 'hold.started', 'factory', { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits' })
+      .add(9, 'gates.finished', 'actions', payloads.gatesFailed);
+    expect(foldItem(again.events.slice(0, -1))).toMatchObject({ stage: 'review', outcome: 'needs-you' });
+    const failed = foldItem(again.events);
+    expect(failed).toMatchObject({ stage: 'gates', hold: undefined, outcome: 'in-progress' });
+    expect(failed?.failure?.stage).toBe('gates');
+    expect(failed && attempts(failed)).toMatchObject([{ attempt: 1, gates: { state: 'failed' } }]);
   });
 
   it('stays at Build when the work already went back there before the run failed', () => {

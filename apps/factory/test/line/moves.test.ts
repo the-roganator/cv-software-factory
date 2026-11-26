@@ -10,7 +10,9 @@ import { describe, expect, it } from 'vitest';
 import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
+import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { commitTitle, titleFor } from '../../src/line/agents/agent.ts';
+import { TARGET_MOVED } from '../../src/line/machine.ts';
 import {
   disclosedMove,
   moveIssue,
@@ -22,19 +24,24 @@ import {
   replacedPull,
   targetWords,
   UnreadMove,
+  versionsWords,
   writtenVersion,
 } from '../../src/line/moves.ts';
+import { MAIN } from './fakes.ts';
 import {
+  AGENTS,
   CODED,
   database,
   event,
   events,
+  failures,
   handback,
   justOne,
   line,
   PATCH,
   payloads,
   SPEC,
+  stage,
   types,
   withLineStore,
 } from './harness.ts';
@@ -201,7 +208,7 @@ describe('a move that needs no coder', () => {
     // Below the floor, or nothing the line can read: it never titles a guess.
     expect(() => writtenVersion(GRPC, grpcPins('1.14.4'))).toThrow(UnreadMove);
     expect(() => writtenVersion(GRPC, grpcPins('1.14.4'))).toThrow(
-      /resolves @grpc\/grpc-js to 1\.14\.4, below the move’s 1\.14\.5/,
+      /resolves @grpc\/grpc-js to `1\.14\.4`, below the move’s `1\.14\.5`/,
     );
     expect(() =>
       writtenVersion(
@@ -215,7 +222,7 @@ describe('a move that needs no coder', () => {
       `diff --git a/mise.toml b/mise.toml\n--- a/mise.toml\n+++ b/mise.toml\n@@ -1 +1 @@\n-node = "24.11.0"\n+node = "${to}"\n`;
     expect(writtenVersion(node, mise('24.11.1'))).toBe('24.11.1');
     // One the patch does not add is not one it wrote.
-    expect(() => writtenVersion(node, mise('24.11.2'))).toThrow('The pin step’s patch does not write node 24.11.1');
+    expect(() => writtenVersion(node, mise('24.11.2'))).toThrow('The pin step’s patch does not write node `24.11.1`');
   });
 
   it('leaves out an importer the move left as it was, shown only as context', () => {
@@ -275,17 +282,17 @@ describe('a move that needs no coder', () => {
   });
 
   it('says a package’s target as a floor, and Node’s or an image’s as it is, before the pins exist', () => {
-    expect(targetWords({ ecosystem: 'npm', to: '1.14.5' })).toBe('1.14.5 or later');
-    expect(targetWords({ ecosystem: 'node', to: '24.11.1' })).toBe('24.11.1');
+    expect(targetWords({ ecosystem: 'npm', to: '1.14.5' })).toBe('`1.14.5` or later');
+    expect(targetWords({ ecosystem: 'node', to: '24.11.1' })).toBe('`24.11.1`');
   });
 
   it('is noted by the line with what moved, to the version written against its floor, and no advisory', () => {
     const pins = grpcPins('1.14.7');
     expect(moveNote(GRPC, '1.14.7', pins, false)).toBe(
-      'The pin step moved @grpc/grpc-js (npm) from 1.14.4 to 1.14.7, the newest release its range admits at or above 1.14.5, in package.json, pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
+      'The pin step moved @grpc/grpc-js (npm) from `1.14.4` to `1.14.7`, the newest release its range admits at or above `1.14.5`, in package.json, pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
     );
     expect(moveNote(GRPC, '1.14.5', pins, true)).toBe(
-      'The pin step moved @grpc/grpc-js (npm) from 1.14.4 to 1.14.5 in package.json, pnpm-lock.yaml. The coder found nothing more the criteria need of it: the move is the whole change.',
+      'The pin step moved @grpc/grpc-js (npm) from `1.14.4` to `1.14.5` in package.json, pnpm-lock.yaml. The coder found nothing more the criteria need of it: the move is the whole change.',
     );
   });
 });
@@ -305,7 +312,7 @@ describe('a move’s newest target', () => {
     await pass();
     await pass();
     const [planned, coded] = steps.requests;
-    expect(planned?.prompt).toContain('from 2.0.0 to 2.0.3');
+    expect(planned?.prompt).toContain('from `2.0.0` to `2.0.3`');
     expect(planned?.prompt).not.toContain('to 2.0.1');
     expect(planned?.prompt).toContain('GHSA-0000-0000-0002');
     expect(coded).toMatchObject({ agent: 'coder', move: { ...MOVE, to: '2.0.3' } });
@@ -474,7 +481,7 @@ describe('a move’s disclosure, as its issue opens', () => {
     expect((await payloads(workItem, 'issue.opened'))[0]).toMatchObject({ number: 41, move: { name: 'invented-pkg' } });
   });
 
-  it('records what the issue named on a later pass, though a newer scan came in since', async () => {
+  it('records what the issue named on a later pass, though a newer scan came in since, and then writes it again', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
     const failing = refusingTheRecordOnce();
     const { pass, github } = line({ planner }, failing);
@@ -489,6 +496,12 @@ describe('a move’s disclosure, as its issue opens', () => {
       to: '2.0.1',
       findings: [expect.objectContaining({ advisory: 'GHSA-0000-0000-0001' })],
     });
+    // Then the issue is written again for the newer scan, and its record follows it.
+    const { body: again } = (github.acts.find((a) => a.action === 'updateIssue')?.args ?? { body: '' }) as {
+      body: string;
+    };
+    expect(again).toContain('`GHSA-0000-0000-0002`');
+    expect((await payloads(workItem, 'issue.opened'))[1]?.move).toMatchObject({ to: '2.0.2' });
   });
 
   it('records the package alone on a later pass when its issue had no signal, though one is joined since', async () => {
@@ -520,6 +533,373 @@ describe('a move’s disclosure, as its issue opens', () => {
     expect(github.acts.map((a) => a.action)).toContain('openIssue');
     expect(await types(workItem)).not.toContain('issue.opened');
     expect(await types(workItem)).toContain('spec.written');
+  });
+});
+
+describe('a newer target for a move the line has open', () => {
+  /** The pin step's patch for the move, to a target. */
+  const pinsTo = (to: string) =>
+    `diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -41 +41 @@\n-  invented-pkg@2.0.0:\n+  invented-pkg@${to}:\n`;
+  /** A spec for the move that asks for nothing but the move: Build is the pin step alone. */
+  const alone = () => {
+    const spec = (planner().result as { spec: typeof SPEC }).spec;
+    return handback({
+      verdict: 'spec',
+      spec: {
+        ...spec,
+        criteria: spec.criteria.map((c) => ({
+          ...c,
+          from: 'the ticket',
+          quote: 'Move invented-pkg, in npm',
+          shownBy: 'gates',
+        })),
+      },
+    });
+  };
+  /** The pin step, writing the newest target it was given. */
+  const pinStep = (request: { move?: { to: string } | undefined }) => ({
+    kind: 'handed-back' as const,
+    handback: handback(CODED, PATCH),
+    pins: pinsTo(request.move?.to ?? ''),
+  });
+  const newer = (workItem: string, to = '2.0.3', advisory = 'GHSA-0000-0000-0002') =>
+    events.append([event(workItem, 'signal.received', signal(to, advisory), 'triage')]);
+
+  it('writes the issue again in place, and records what it names, before any agent runs on the newer signal', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, steps, github } = line({ planner, coder: () => handback(CODED, PATCH) });
+    await pass(); // the issue, and the planner
+    await newer(workItem);
+    await pass(); // the issue again, then the coder
+    expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
+    const written = github.acts.filter((a) => a.action === 'updateIssue');
+    expect(written).toHaveLength(1);
+    const { number, body, ...rest } = (written[0]?.args ?? {}) as { number: number; body: string };
+    expect([number, rest]).toEqual([41, {}]);
+    expect(body).toContain('from `2.0.0` to `2.0.3` or later');
+    expect(body).toContain('`GHSA-0000-0000-0002`');
+    expect(body).not.toContain('2.0.1');
+    expect(body).not.toContain('GHSA-0000-0000-0001');
+    const records = await payloads(workItem, 'issue.opened');
+    expect(records).toHaveLength(2);
+    expect(records[1]).toMatchObject({
+      number: 41,
+      move: { to: '2.0.3', findings: [expect.objectContaining({ advisory: 'GHSA-0000-0000-0002' })] },
+    });
+    // Its public view is the event whole, as the first's is: it is what the issue discloses now.
+    const [row] = await database.owner<{ public: { payload: unknown }; summary: string }[]>`
+      select public, summary from events where work_item = ${workItem} and type = 'issue.opened' order by seq desc limit 1`;
+    expect(row?.public.payload).toEqual(records[1]);
+    expect(row?.summary).toBe(`Wrote issue #41 in ${REPO} again, for the scan’s newer move`);
+    // The coder ran after it, on the move the issue names.
+    const recorded = await types(workItem);
+    expect(recorded.lastIndexOf('issue.opened')).toBeLessThan(recorded.indexOf('pull-request.pushed'));
+    expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', move: { to: '2.0.3' } });
+    const [row2] = await database.owner<{ issue_signal: string }[]>`
+      select issue_signal from line where work_item = ${workItem}`;
+    const [newest] = await database.owner<{ seq: string }[]>`
+      select seq from events where work_item = ${workItem} and type = 'signal.received' order by seq desc limit 1`;
+    expect(row2?.issue_signal).toBe(newest?.seq);
+  });
+
+  it('starts no agent on a signal triage joined after the line decided, until the issue names it', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, steps, github } = line({ planner });
+    // The newer scan arrives as the planner's step reads main's head: after the line decided, before the agent starts.
+    const read = github.read.bind(github);
+    let joined = false;
+    github.read = (async (name: Parameters<typeof read>[0], repo: string, args: never) => {
+      if (name === 'head' && !joined) {
+        joined = true;
+        await newer(workItem, '2.0.3', 'GHSA-0000-0000-0001');
+      }
+      return read(name, repo, args);
+    }) as typeof github.read;
+    await pass();
+    expect(joined).toBe(true);
+    expect(steps.requests).toEqual([]);
+    expect(github.acts.some((a) => a.action === 'updateIssue')).toBe(false);
+    await pass(); // the issue again, then the planner, told the newest alone
+    expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
+    expect(steps.requests).toHaveLength(1);
+    expect(steps.requests[0]?.prompt).toContain('from `2.0.0` to `2.0.3`');
+    const recorded = await types(workItem);
+    expect(recorded.lastIndexOf('issue.opened')).toBeLessThan(recorded.indexOf('spec.written'));
+  });
+
+  it('leaves an issue it cannot write as it was: nothing recorded, no agent may name the newer advisory, and it asks once', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    // A coder whose note names the newer scan's advisory, which the issue never came to list.
+    const naming = { ...CODED, note: `${CODED.note} It clears GHSA-0000-0000-0002.` };
+    const { pass, steps, github } = line({ planner, coder: () => handback(naming, PATCH) });
+    await pass();
+    await newer(workItem);
+    const gone = () => new GitHubWorkerError(404, 'not-found', 'No such issue');
+    github.refusing.set('updateIssue', gone());
+    await pass();
+    // The issue names what it named: the record is not written again, and the move goes on to the coder.
+    expect(await payloads(workItem, 'issue.opened')).toHaveLength(1);
+    expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', move: { to: '2.0.3' } });
+    expect((await failures(workItem))?.failure).toMatch(/names GHSA-0000-0000-0002, which the ticket's issue does not/);
+    expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
+    // Not asked again on a later pass, until triage joins another signal.
+    await pass();
+    expect(github.acts.some((a) => a.action === 'updateIssue')).toBe(false);
+    await newer(workItem, '2.0.4', 'GHSA-0000-0000-0003');
+    await pass();
+    expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
+    expect((await payloads(workItem, 'issue.opened')).at(-1)?.move).toMatchObject({ to: '2.0.4' });
+  });
+
+  it('writes the issue again when only the counts of the rest differ, which its description prints', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, github } = line({ planner });
+    await pass();
+    const more = signal('2.0.1');
+    const [scan] = more.evidence ?? [];
+    if (scan?.kind !== 'scan') throw new Error('not a scan');
+    const rest = { ...scan.rest, high: 2 };
+    await events.append([event(workItem, 'signal.received', { ...more, evidence: [{ ...scan, rest }] }, 'triage')]);
+    await pass();
+    const written = github.acts.filter((a) => a.action === 'updateIssue');
+    expect(written).toHaveLength(1);
+    expect(written[0]?.args).toMatchObject({ body: expect.stringContaining('and more: 2 high, 1 low') });
+    // Written for it, the line writes nothing again.
+    await pass();
+    expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
+  });
+
+  it('runs the pin step again from main into the same pull request, whose branch goes straight to the new head', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, steps, github } = line({ planner: alone, coder: pinStep });
+    await pass(); // the issue, and the planner
+    await pass(); // Build: the pin step alone, and pull request #12
+    const first = github.pulls.get(12)?.head.sha;
+    const branch = github.pulls.get(12)?.head.ref;
+    expect((await payloads(workItem, 'pull-request.pushed'))[0]).toMatchObject({
+      number: 12,
+      title: 'fix(deps): move invented-pkg to 2.0.1',
+    });
+    await newer(workItem);
+    github.acts.length = 0;
+    await pass(); // the issue again, Build afresh, and the pin step from main
+    expect((await payloads(workItem, 'work.returned'))[0]).toEqual({
+      from: 'review',
+      to: 'build',
+      reason: TARGET_MOVED,
+      round: 2,
+    });
+    expect(steps.requests.at(-1)).toMatchObject({
+      agent: 'coder',
+      round: 2,
+      commit: MAIN,
+      move: { ...MOVE, to: '2.0.3' },
+      pinsOnly: true,
+    });
+    // Off to the side, then the branch straight to it: never set back to main, where GitHub would close the pull request.
+    const aside = `${branch}-afresh`;
+    const head = github.pulls.get(12)?.head.sha;
+    expect(head).not.toBe(first);
+    expect(github.acts.filter((a) => a.action !== 'updateIssue')).toEqual([
+      // The description is a draft's again as the push is made: the spec, and nothing of the older head.
+      {
+        action: 'updatePullRequest',
+        args: { number: 12, body: expect.stringMatching(/^The factory’s fix for ticket #\d+\./), contradicts: [] },
+      },
+      { action: 'setBranch', args: { branch: aside, sha: MAIN, force: true } },
+      {
+        action: 'applyPatch',
+        args: expect.objectContaining({ branch: aside, expectedHead: MAIN, patch: '', pins: pinsTo('2.0.3') }),
+      },
+      { action: 'setBranch', args: { branch, sha: head, force: true } },
+      { action: 'deleteBranch', args: { branch: aside } },
+      { action: 'updatePullRequest', args: { number: 12, title: 'fix(deps): move invented-pkg to 2.0.3' } },
+    ]);
+    expect(github.pulls.get(12)).toMatchObject({ state: 'open', head: { ref: branch, sha: head } });
+    expect(await payloads(workItem, 'pull-request.pushed')).toEqual([
+      expect.objectContaining({ number: 12 }),
+      expect.objectContaining({ number: 12, branch, attempt: 2, title: 'fix(deps): move invented-pkg to 2.0.3' }),
+    ]);
+    // The issue was written before it.
+    const recorded = await types(workItem);
+    expect(recorded.lastIndexOf('issue.opened')).toBeLessThan(recorded.lastIndexOf('pull-request.pushed'));
+  });
+
+  it('gates, reviews and writes up the new head as any new head, though the older one had passed and waited to merge', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const describer = () =>
+      handback({
+        title: 'fix(deps): move invented-pkg',
+        body: 'Moves invented-pkg past its advisory.',
+        summary: {
+          title: 'invented-pkg moved',
+          description: 'invented-pkg moved past its advisory.',
+          story: 'The factory moved invented-pkg.',
+        },
+      });
+    const { pass, steps, github } = line({ ...AGENTS, planner: alone, coder: pinStep, describer });
+    await pass(); // the issue, and the planner
+    await pass(); // the pin step
+    const opened = github.bodies.get(12);
+    github.pass(12);
+    await pass(); // the gates, and the reviewer
+    await pass(); // the describer, and the wait for the merge
+    await pass();
+    const before = await types(workItem);
+    expect(before.filter((t) => t === 'review.submitted')).toHaveLength(1);
+    expect(github.pulls.get(12)?.draft).toBe(false);
+    const older = github.pulls.get(12)?.head.sha;
+    expect(github.bodies.get(12)).toContain('Moves invented-pkg past its advisory.');
+    await newer(workItem);
+    await pass(); // the issue again, Build afresh
+    expect(github.pulls.get(12)?.draft).toBe(true);
+    // Its description is the draft's a first push writes, at the push: no word of the older head's is left in it.
+    expect(github.bodies.get(12)).toBe(opened);
+    expect(github.bodies.get(12)).toContain('_A draft until its gates and review have passed');
+    expect(github.acts.filter((a) => a.action === 'enqueuePullRequest')).toEqual([]);
+    github.pass(12);
+    await pass();
+    await pass();
+    await pass();
+    const after = await types(workItem);
+    expect(after.filter((t) => t === 'review.submitted')).toHaveLength(2);
+    expect(after.filter((t) => t === 'gates.started')).toHaveLength(2);
+    expect(steps.requests.filter((r) => r.agent === 'describer')).toHaveLength(2);
+    expect(github.pulls.get(12)?.draft).toBe(false);
+    expect(github.acts.filter((a) => a.action === 'openPullRequest')).toHaveLength(1);
+    // The wait for Martin's merge is of the new head: the older head's ended with its target.
+    const holds = await payloads(workItem, 'hold.started');
+    expect(holds.map((hold) => [hold.cause, hold.merge?.head])).toEqual([
+      ['merge', older],
+      ['merge', github.pulls.get(12)?.head.sha],
+    ]);
+    expect(github.pulls.get(12)?.head.sha).not.toBe(older);
+  });
+
+  it('builds afresh with a coder where a criterion asks for a test: from main, on the new pins, with no session of the rounds before', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, steps, github } = line({
+      planner,
+      coder: (request) => ({ ...pinStep(request), handback: handback(CODED, PATCH) }),
+    });
+    await pass();
+    await pass();
+    expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', round: 1 });
+    await newer(workItem);
+    github.acts.length = 0;
+    await pass();
+    const again = steps.requests.at(-1);
+    expect(again).toMatchObject({ agent: 'coder', round: 2, commit: MAIN, move: { to: '2.0.3' } });
+    expect(again).not.toHaveProperty('pinsOnly');
+    expect(again?.resume).toBeUndefined();
+    expect(again?.prompt).toContain(TARGET_MOVED);
+    // The checkout is main with the move made afresh, and the coder is told so: nothing it pushed before is in it.
+    expect(again?.prompt).toContain(
+      'The checkout is main, with the line’s move made on it afresh: nothing of the rounds before is in it.',
+    );
+    expect(again?.prompt).not.toContain('The checkout is the pull request’s head');
+    const applied = github.acts.filter((a) => a.action === 'applyPatch');
+    expect(applied).toEqual([
+      {
+        action: 'applyPatch',
+        args: expect.objectContaining({
+          branch: `${github.pulls.get(12)?.head.ref}-afresh`,
+          patch: PATCH,
+          pins: pinsTo('2.0.3'),
+        }),
+      },
+    ]);
+    expect(github.acts.some((a) => a.action === 'openPullRequest')).toBe(false);
+    expect((await payloads(workItem, 'pull-request.pushed'))[1]).toMatchObject({ number: 12, attempt: 2 });
+  });
+
+  it('writes the issue again and leaves the pull request as it is when only the findings differ', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, steps, github } = line({ planner: alone, coder: pinStep });
+    await pass();
+    await pass();
+    const head = github.pulls.get(12)?.head.sha;
+    const ran = steps.requests.length;
+    await newer(workItem, '2.0.1');
+    await pass();
+    expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
+    expect(await payloads(workItem, 'work.returned')).toEqual([]);
+    expect(steps.requests).toHaveLength(ran);
+    expect(github.pulls.get(12)?.head.sha).toBe(head);
+  });
+
+  it('takes a routine update’s newer release the same way', async () => {
+    const routine = (to: string): PayloadOf<'signal.received'> => {
+      const { evidence: _evidence, ...rest } = signal(to);
+      return { ...rest, symptom: 'outdated-dependency' };
+    };
+    const workItem = await moveTicket(routine('2.0.1'));
+    const { pass, steps, github } = line({ planner: alone, coder: pinStep });
+    await pass();
+    await pass();
+    await events.append([event(workItem, 'signal.received', routine('2.0.3'), 'triage')]);
+    await pass();
+    const { body } = (github.acts.find((a) => a.action === 'updateIssue')?.args ?? { body: '' }) as { body: string };
+    expect(body).toContain('to `2.0.3`');
+    expect(body).toContain('A routine update');
+    expect(steps.requests.at(-1)).toMatchObject({ move: { to: '2.0.3', routine: true }, pinsOnly: true, commit: MAIN });
+    expect((await payloads(workItem, 'pull-request.pushed'))[1]).toMatchObject({
+      number: 12,
+      title: 'chore(deps): move invented-pkg to 2.0.3',
+    });
+  });
+
+  it.each([
+    ['nothing fails', undefined],
+    ['GitHub fails once as the issue closes', 'closeIssue'],
+    ['GitHub fails once as the pull request closes', 'closePullRequest'],
+  ] as const)(
+    'closes the work item as done, and its pull request with it, when main already has the newer target and %s',
+    async (_what, fails) => {
+      const workItem = await moveTicket(signal('2.0.1'));
+      let built = 0;
+      const { pass, github } = line({
+        planner: alone,
+        coder: (request) => (built++ ? { kind: 'pinned', pins: '' } : pinStep(request)),
+      });
+      await pass();
+      await pass();
+      await newer(workItem);
+      if (fails) github.failing.set(fails, 1);
+      for (let passes = 0; passes < 4; passes++) await pass();
+      expect(await payloads(workItem, 'work-item.closed')).toEqual([
+        { outcome: 'no-change', reason: expect.stringMatching(/^Main already has its move, at /) },
+      ]);
+      expect(github.acts.filter((a) => a.action === 'closeIssue')).toEqual([
+        { action: 'closeIssue', args: expect.objectContaining({ number: 41, reason: 'completed' }) },
+      ]);
+      expect(github.pulls.get(12)?.state).toBe('closed');
+      expect(github.acts.filter((a) => a.action === 'closePullRequest')).toEqual([
+        {
+          action: 'closePullRequest',
+          args: {
+            number: 12,
+            comment: expect.stringMatching(/^Main already has its move, at .+ closed with no change/s),
+          },
+        },
+      ]);
+      expect(await stage(workItem)).toBe('ended');
+    },
+  );
+
+  it('leaves a merged change’s newer signal to Verify: no issue written, nothing built', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, steps, github } = line({ planner: alone, coder: pinStep });
+    await pass();
+    await pass();
+    github.merge(12);
+    await pass();
+    const ran = steps.requests.length;
+    await newer(workItem);
+    await pass();
+    expect(github.acts.some((a) => a.action === 'updateIssue')).toBe(false);
+    expect(await payloads(workItem, 'work.returned')).toEqual([]);
+    expect(steps.requests).toHaveLength(ran);
   });
 });
 
@@ -708,6 +1088,51 @@ describe('what the line says of a move', () => {
     expect(section).not.toMatch(/\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #\d/i);
   });
 
+  it('says the gates’ counts of no routine update, which no advisory asked for: it says why it moves', () => {
+    const pins = [{ file: 'pnpm-lock.yaml', before: 'invented-pkg@2.0.0:', after: 'invented-pkg@2.0.1:' }];
+    const counted = { critical: 0, high: 0, medium: 0, low: 1, unknown: 0 };
+    const counts = [{ check: 'gates / lockfile scan', findings: { before: counted, after: counted } }];
+    const section = moveSection(SPEC, pins, counts, undefined, true);
+    expect(section).toContain(
+      '**Why it moves.** A routine update: the scan lists a newer release, with no advisory behind it.',
+    );
+    expect(section).not.toContain('What the scans counted');
+    expect(section).not.toContain('gates / lockfile scan');
+    expect(section).toContain('| `pnpm-lock.yaml` | `invented-pkg@2.0.0:` | `invented-pkg@2.0.1:` |');
+    // A move a finding asked for keeps its counts.
+    expect(moveSection(SPEC, pins, counts, undefined)).toContain('**What the scans counted**');
+  });
+
+  it('says a package locked at two versions as each of them, in code, wherever a person reads the move', () => {
+    expect(versionsWords('5.7.2')).toBe('`5.7.2`');
+    expect(versionsWords('5.7.2,7.5.2')).toBe('`5.7.2` and `7.5.2`');
+    expect(versionsWords('4.0.1,5.7.2,7.5.2')).toBe('`4.0.1`, `5.7.2` and `7.5.2`');
+    const twice = { ecosystem: 'npm' as const, name: 'invented-twice', from: '5.7.1,7.5.1', to: '5.7.2,7.5.2' };
+    expect(targetWords(twice)).toBe('`5.7.2` and `7.5.2` or later');
+    const sent = { ...signal('5.7.2,7.5.2'), move: { repository: REPO, ...twice, pins: PINS } };
+    expect(moveIssue('7', TICKET, TICKET, sent).body).toContain(
+      'the move of `invented-twice`, in npm, from `5.7.1` and `7.5.1` to `5.7.2` and `7.5.2` or later, in',
+    );
+    const pins = [
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml',
+      '--- a/pnpm-lock.yaml',
+      '+++ b/pnpm-lock.yaml',
+      '@@ -1,2 +1,2 @@',
+      ' packages:',
+      '-  invented-twice@5.7.1:',
+      '+  invented-twice@5.7.3:',
+      '',
+    ].join('\n');
+    expect(moveNote(twice, '5.7.3', pins, false)).toContain(
+      'from `5.7.1` and `7.5.1` to `5.7.3`, the newest release its range admits at or above `5.7.2` and `7.5.2`, in pnpm-lock.yaml.',
+    );
+    expect(() => writtenVersion(twice, pins.replace('5.7.3', '5.7.0'))).toThrow(
+      'resolves invented-twice to `5.7.0`, below the move’s `5.7.2` and `7.5.2`',
+    );
+    // The versions as data stay one word: what `issue.opened` records is the move's own.
+    expect(disclosedMove(twice, sent)).toMatchObject({ from: '5.7.1,7.5.1', to: '5.7.2,7.5.2' });
+  });
+
   it('builds the issue from fixed fields alone', () => {
     const { body } = moveIssue('7', TICKET, TICKET, signal('2.0.1'));
     expect(body).toContain('- Pinned at: `pnpm-lock.yaml:41`');
@@ -764,7 +1189,8 @@ describe('what the line says of a move', () => {
 });
 
 describe('a move’s description', () => {
-  it('is the describer’s words, then the factory’s section from the diff and the gates’ counts, then the issue', async () => {
+  /** The description the line publishes for the move its newest signal names, and the commits its counts were asked of. */
+  async function published(sent: PayloadOf<'signal.received'>): Promise<{ body: string; counted: string[] }> {
     const acts: { action: string; args: Record<string, unknown> }[] = [];
     const reads: Record<string, unknown> = {
       pullRequest: { draft: false, nodeId: 'PR_1', head: { sha: 'f'.repeat(40) }, base: { ref: 'main' } },
@@ -786,7 +1212,7 @@ describe('a move’s description', () => {
       workItem: '7',
       issue: 12,
       state: { ticket: TICKET },
-      signals: async () => [signal('2.0.1')],
+      signals: async () => [sent],
       read: async (read: string) => reads[read],
       scanCounts: async (commit: string) => {
         counted.push(commit);
@@ -818,7 +1244,7 @@ describe('a move’s description', () => {
       {
         workItem: '7',
         asked: { kind: 'ticket', ticket: TICKET },
-        signals: [signal('2.0.1')],
+        signals: [sent],
         spec: SPEC,
         pullRequest: 3,
         title: 'x',
@@ -829,13 +1255,26 @@ describe('a move’s description', () => {
       } as never,
       context as never,
     );
-    const body = acts.find((a) => a.action === 'updatePullRequest')?.args.body as string;
+    return { body: acts.find((a) => a.action === 'updatePullRequest')?.args.body as string, counted };
+  }
+
+  it('is the describer’s words, then the factory’s section from the diff and the gates’ counts, then the issue', async () => {
+    const { body, counted } = await published(signal('2.0.1'));
     expect(body.startsWith('The move of a package the shop builds with')).toBe(true);
     expect(body).toContain('## The move');
     expect(body).toContain('| `pnpm-lock.yaml` | `invented-pkg@2.0.0:` | `invented-pkg@2.0.1:` |');
     expect(body).toContain('before 0 critical, 1 high');
     expect(body.endsWith('Refers to #12.')).toBe(true);
     expect(counted).toEqual(['f'.repeat(40)]);
+  });
+
+  it('says of a routine update why it moves, in place of counts no advisory gave it', async () => {
+    const { evidence: _, ...bare } = signal('2.0.1');
+    const { body } = await published({ ...bare, symptom: 'outdated-dependency' });
+    expect(body).toContain('| `pnpm-lock.yaml` | `invented-pkg@2.0.0:` | `invented-pkg@2.0.1:` |');
+    expect(body).toContain('**Why it moves.** A routine update');
+    expect(body).not.toContain('What the scans counted');
+    expect(body).not.toContain('before 0 critical');
   });
 });
 

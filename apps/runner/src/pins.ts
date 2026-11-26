@@ -750,6 +750,11 @@ export async function moveNode(
  * An image that runs Node brings its Node with it, where `mise.toml` pins one release for every image of Node: when the
  * image at `to` runs another, Node moves to it first (`moveNode`), and the image is pinned at `to`. A Node behind the
  * one pinned is refused: a move goes forward.
+ *
+ * A checkout with no `FROM` of the image at `from` and at least one at `to`, its tag and its digest, has the move
+ * already, and nothing is written; one with none at `from` and none at `to` is refused. A `FROM` of the image at any
+ * other tag is another pin, with a move of its own (the scan lists pins by line): it is not this move's to make, and
+ * is left alone here as it is when the move is made.
  */
 export async function moveImage(
   dir: string,
@@ -774,16 +779,19 @@ export async function moveImage(
       throw new PinsRefused(`${move.name}@${toDigest} runs Node ${runs}, behind the ${pinned} mise.toml pins.`);
     await moveNode(dir, { ecosystem: 'node', name: 'node', from: pinned, to: runs }, get, now, move.name, digest);
   }
+  let there = false;
   const moved = await moveFroms(
     dir,
     // The digest the registry was just asked for, and agreed was the move's: never a second answer.
-    (image, tag, pinned) =>
-      image === move.name && (move.from.includes('@') ? `${tag}@${pinned}` : tag) === move.from
-        ? { tag: toTag, digest: toDigest }
-        : undefined,
+    (image, tag, pinned) => {
+      if (image !== move.name) return undefined;
+      if ((move.from.includes('@') ? `${tag}@${pinned}` : tag) === move.from) return { tag: toTag, digest: toDigest };
+      if (tag === toTag && pinned === toDigest) there = true;
+      return undefined;
+    },
     digest,
   );
-  if (!moved) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
+  if (!moved && !there) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
 }
 
 /**

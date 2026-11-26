@@ -46,18 +46,30 @@
  */
 import { cutTo, MAX_FINDINGS, PATH_CHARS, type PayloadOf } from '@software-factory/events';
 import { z } from 'zod';
+import { plainPath } from '../../github/paths.ts';
 import { type Answer, LIMITS, suggestionsGoBack, type WorkItemState } from '../machine.ts';
-import { type PinnedMove, targetWords } from '../moves.ts';
+import { type PinnedMove, targetWords, versionsWords } from '../moves.ts';
 import {
   answerThreads,
   cites,
   type Finding,
   lineage,
+  listed,
   reviewInGitHub,
   suggestionsLeft,
   threadAnswers,
 } from '../review.ts';
-import { askedOf, defineAgent, FLAG_NAMES_FILE, heAnswered, need, words } from './agent.ts';
+import {
+  askedOf,
+  defineAgent,
+  FLAG_NAMES_FILE,
+  heAnswered,
+  mentions,
+  need,
+  publicWords,
+  refuseMentions,
+  words,
+} from './agent.ts';
 import { contradictedList, flagLine, side } from './coder.ts';
 import { type Asked, askedLines, askedName, askedTitle, numbered, reported, type Signal } from './evidence.ts';
 
@@ -97,8 +109,11 @@ export interface ReviewerInput {
 }
 
 const finding = z.strictObject({
-  /** A file the change changes, from the repository's root. */
-  path: words(PATH_CHARS),
+  /**
+   * A file the change changes, from the repository's root: a plain path, with no code mark, which would close the
+   * code the line writes it in.
+   */
+  path: words(PATH_CHARS).refine((path) => plainPath(path) && !path.includes('`'), 'a plain path in the repository'),
   /** A line in the change's version of the file, that the diff shows. */
   line: z.number().int().positive(),
   blocking: z.boolean(),
@@ -118,8 +133,11 @@ const finding = z.strictObject({
    * answering this one later answers that one's thread too.
    */
   holds: z.number().int().min(1).max(MAX_FINDINGS).optional(),
-  /** What is wrong and what would put it right. Each finding reaches the events whole, so it is short. */
-  comment: words(300),
+  /**
+   * What is wrong and what would put it right. Each finding reaches the events whole, so it is short, and the pull
+   * request as its comment (`publicWords`).
+   */
+  comment: publicWords(300),
 });
 
 const VERDICTS = ['approved', 'changes-requested', 'escalated'] as const;
@@ -133,8 +151,8 @@ export function reviewerResult(criteria = 12, earlier = 0) {
   return z
     .strictObject({
       verdict: z.enum(VERDICTS),
-      /** The review's summary, which the events, the console and the pull request carry. */
-      note: words(300),
+      /** The review's summary, which the events, the console and the pull request carry (`publicWords`). */
+      note: publicWords(300),
       findings: z.array(finding).max(MAX_FINDINGS),
       /**
        * In a later review, the numbers of the findings of the review before that the change now answers: one it blocked
@@ -162,6 +180,8 @@ export function reviewerResult(criteria = 12, earlier = 0) {
         ctx.addIssue({ code: 'custom', path: ['verdict'], message: 'changes requested with nothing blocking' });
       }
       findings.forEach((f, i) => {
+        // As the review's body and the check's summary list it, on one line after its path and its mark.
+        if (!mentions(f.comment)) refuseMentions(listed(f), ctx, ['findings', i, 'comment']);
         if (f.holds !== undefined && f.holds > earlier) {
           const message = earlier
             ? `the review before left ${earlier} findings to answer, not ${f.holds}`
@@ -268,13 +288,13 @@ export function movedLines(move: ReviewerInput['move']): string[] {
       ? 'Node’s version in mise.toml and mise.lock, and each FROM of a Node image'
       : `each FROM of ${move.name}`;
   return [
-    `This change is a dependency’s move: ${move.name} (${move.ecosystem}), from ${move.from} to ${targetWords(move)}. The line’s pin step writes its pins before the coder, in the change: ${files}. Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone, and never ask for a pin to be moved by hand.`,
+    `This change is a dependency’s move: ${move.name} (${move.ecosystem}), from ${versionsWords(move.from)} to ${targetWords(move)}. The line’s pin step writes its pins before the coder, in the change: ${files}. Those are in scope by rule and never the coder’s, so judge the scope by the coder’s own files alone, and never ask for a pin to be moved by hand.`,
     ...(npm
       ? [
-          `The pin step takes the newest release of ${move.name} its range admits, past the app’s release age, at or above ${move.to}: a version above ${move.to} is the move as it should be, not a finding. A title or note that names the version written is right.`,
+          `The pin step takes the newest release of ${move.name} its range admits, past the app’s release age, at or above ${versionsWords(move.to)}: a version above ${versionsWords(move.to)} is the move as it should be, not a finding. A title or note that names the version written is right.`,
         ]
       : []),
-    `Escalate, as only Martin can settle it: ${npm ? `${move.name} resolved below ${move.to}; ` : ''}another package moved that ${move.name}’s new version does not require; or a file changed that is neither in the scope nor one of the pin step’s.`,
+    `Escalate, as only Martin can settle it: ${npm ? `${move.name} resolved below ${versionsWords(move.to)}; ` : ''}another package moved that ${move.name}’s new version does not require; or a file changed that is neither in the scope nor one of the pin step’s.`,
   ];
 }
 

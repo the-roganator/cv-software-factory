@@ -67,6 +67,28 @@ which is the test's pass; were the push to land, the gate must hold its pull req
 (a pull request anyone but Dependabot opened), and its three changes under Dependabot's own name by the gate's unit
 tests alone, as nobody can open a pull request as Dependabot.
 
+## What else must hold
+
+Accepted by Martin on 25 November 2026.
+
+| # | Move | Must |
+|---|---|---|
+| 21 | App: a move whose target moves on after its pull request opened | the same pull request and issue take the new target; it merges and deploys, nobody touching it |
+| 22 | Factory: Dependabot's pull request for a pin the App moved | be closed by the worker, with a comment naming the merge, once `main` has every version it moves; one `main` has not is left alone |
+| 23 | Factory: a routine update pnpm refuses (lefthook 2.2.2) | be an issue that says why; the day's other routine updates merge without it |
+| 24 | App: a move nobody can make (the devcontainer's base) | be an issue in the app's repository, and no pull request |
+| W3b | App: an image move `main` already has | close its ticket as done, as W3 |
+| W5 | The store restarting under the log watcher's send | no worker logs an error, and the report arrives once |
+
+21's target moves on because the run lifts an exception the baseline stages: the first scan names the release that
+fixes every advisory but the excepted one, and the next the release that fixes that too. 21 is proven live as far as the
+gates, the issue and the same pull request taking the new target, and its merge by the line's unit tests alone, as no
+real package gives a second target without advisories of its own. 23's issue gives whichever reason holds that day: weaker provenance
+for 2.2.2, or a release younger than the minimum age for a day after a later one is published. 22 is Dependabot's pull request for Postgres's image beside
+test 1, and the one left alone its pull request for Playwright on a base from before the baseline, some two hundred
+files `main` never has every line of. Dependabot may close its own pull request before the worker's pass does, or move
+to another line than the App did: the run then says which and gives no verdict, as that shows nothing of the worker.
+
 N2, a move that makes the findings worse, is dropped (Martin, 17 November 2026): a fix does not normally make things
 worse, and the next daily scan picks up whatever a move brought, as it would any finding.
 

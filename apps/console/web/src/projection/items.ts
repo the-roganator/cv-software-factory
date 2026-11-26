@@ -439,12 +439,16 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
    * refuse.
    */
   const gates: { commit: string | undefined; passed: boolean } = { commit: undefined, passed: false };
+  /** The head whose gates a hold of the gates' was started for, as the line's `fold` reads it. */
+  let gatesHeldAt: string | undefined;
   /** Whether the work went back to Build and the coder has not pushed since: gates then leave it at Build. */
   let rebuilding = false;
   /** Whether the change has merged since the work item last went back to Plan: a release before it carries nothing. */
   let merged = false;
   // The move's name as its issue disclosed it, which the events after it are read with.
   let disclosed: string | undefined;
+  // The target its issue last named, as the line's `fold` keeps it.
+  let issueTo: string | undefined;
   for (const event of events) {
     // A look of a canary's background analysis lands every minute and changes nothing of the work item's: its time is
     // not the work item's latest.
@@ -481,6 +485,16 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
       gates.passed = event.payload.conclusion === 'passed';
     }
     if (failed && state.hold?.cause === 'merge') state.hold = undefined;
+    // Gates that pass on the head a hold of theirs was started for end it, a check run again there, as the line reads
+    // it: the change goes on to review with nobody's answer.
+    if (
+      event.type === 'gates.finished' &&
+      gates.passed &&
+      state.hold?.cause === 'gates' &&
+      event.payload.commit === gatesHeldAt
+    ) {
+      state.hold = undefined;
+    }
     const rerun =
       passedBefore &&
       (!failed || rebuilding) &&
@@ -575,6 +589,19 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
       case 'issue.opened': {
         const { repository, number, move } = event.payload;
         state.issue = { repository, number };
+        // Written again for another target while a pull request is open: the wait for the merge was the older
+        // target's, and ends as the line reads it, while Build starts afresh on the pull request. A record that named
+        // no target named none the pull request is known to have.
+        if (
+          state.pullRequest !== undefined &&
+          !merged &&
+          move?.to !== undefined &&
+          move.to !== issueTo &&
+          state.hold?.cause === 'merge'
+        ) {
+          state.hold = undefined;
+        }
+        issueTo = move?.to;
         if (!move) break;
         if (state.dependency) {
           const { from = state.dependency.from, to = state.dependency.to } = move;
@@ -678,6 +705,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         // A canary's hold is of the release in flight that carries the item, as the line reads it: one of any other,
         // or one that has ended, holds nothing.
         if (event.payload.cause === 'canary' && (event.payload.release !== release || !state.canary)) break;
+        if (event.payload.cause === 'gates') gatesHeldAt = gates.commit;
         state.sentBack = undefined;
         state.cleared = undefined;
         // A hold that starts again waits for a deploy pull request of its own, and a build of its own.

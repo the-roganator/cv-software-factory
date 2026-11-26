@@ -28,22 +28,30 @@
  *   Dockerfiles', each made on what the one before it wrote. The watch commits what the scan made, whole, once each file it wrote is the same at
  *   `main`'s head as there, through the same guard, which holds where it writes; the review gate makes the same moves
  *   again on main and compares. A move the step refused (pnpm's guards: a release younger than a day, a weaker
- *   provenance; a copy only an override would move) waits, with an issue that says so by its mark, and the step's own
- *   words in the worker's log; the rest of its group go on.
+ *   provenance; a copy only an override would move) waits, with an issue that says so by its mark and says which kind
+ *   of refusal it was (`refusalKind`), in the watch's own words for the kind, and the step's own words in the
+ *   worker's log; the rest of its group go on.
  * - **It makes every move of its lanes, whoever else proposes one.** A pull request of Dependabot's for the same pin is
  *   left as it is: the watch never pushes to Dependabot's branch or closes its pull request (the actions refuse both,
- *   as a branch the factory does not own and a pull request the App did not open), and Dependabot closes it itself
- *   once `main` has the version, when it next looks at it.
+ *   as a branch the factory does not own and a pull request the App did not open). Once `main` has the version,
+ *   Dependabot closes it itself when it next looks at it, or the worker's watch of such duplicates does
+ *   (`duplicates.ts`).
  * - **A move in the `issue` lane** (a workflow's pin), a line no longer built, a move the watch cannot write on its pins' lines, and one the pin step refused, is
  *   one issue, labelled `pin`, that a session can take as it stands: its pins, its target, its counts and its
  *   deadline. It is found again by the mark in its body, and updated, never opened twice; one Martin closed is opened
  *   again only for a later target.
  * - **A pull request with no move left** is closed, with a sentence, and so is the issue of a move that is gone.
+ * - **In the app's repository it keeps the issues alone** (`ISSUE_REPOS`): the app's moves are its line's, made from
+ *   tickets, and no ticket is made for a move on a line no longer built (`none`), the one lane but `line` the scan
+ *   gives an app's move (`laneOf`), so each is one issue there, opened, updated and closed as here. The watch reads
+ *   no branch, file or pull request there and writes none: its pass there has the four actions on issues and no
+ *   other (`issuesOnly`).
  *
  * What it writes names the move and its counts, never an advisory of an open finding, and never more of a lockfile's
  * move than its diff shows: its pull request names the package and the versions the lockfile resolves it at, before
  * and after, and none of what the scan found there; its issue, which has no diff, names it by its file and its mark
- * (scanning.ts's `ReadMove.mark`).
+ * (scanning.ts's `ReadMove.mark`). A routine update has no finding behind it: the issue of one the pin step refused
+ * names its package and the release too, as its pull request would have, and then none of what its pins have open.
  *
  * Nothing acts on a day it could not read whole: a moves read that fails, or a run that uploaded no `moves.json`, opens
  * and closes nothing. A `moves.json` that lists no move, its count held to the scan's state as every day's is, is a day
@@ -53,7 +61,7 @@
 import { createHash } from 'node:crypto';
 import type { Logger } from 'pino';
 import { z } from 'zod';
-import { FACTORY_REPOSITORY } from '../repositories.ts';
+import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../repositories.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
 import { isRoutine } from '../vulnerabilities/moves.ts';
 import { DIGEST_PATTERN, splitReference } from '../vulnerabilities/reference.ts';
@@ -82,6 +90,13 @@ import type { Moves, ReadMove } from './scanning.ts';
 
 /** The repositories whose pins the watch moves: this one. The app's moves are its line's. */
 export const PIN_REPOS: readonly string[] = [FACTORY_REPOSITORY];
+
+/**
+ * The repositories where the watch keeps issues and nothing else: the app's, whose line makes its moves. A move there
+ * that no ticket is made for, on a line no longer built, is an issue, as it is here: `laneOf` gives every other move
+ * of the app's `line`.
+ */
+export const ISSUE_REPOS: readonly string[] = [APP_REPOSITORY];
 
 /** The label on every pull request and issue the watch opens. */
 export const PIN_LABEL = 'pin';
@@ -401,10 +416,56 @@ export function pullBody(carried: readonly Carried[], moves: Moves): string {
 /** Why a move the pin step makes is an issue: the step refused it, in the scan's run. */
 const STEP_REFUSED = 'the pin step could not make it on the commit the scan read';
 
+/**
+ * The kinds of refusal the pin step gives a move (apps/runner/src/pins.ts), by what will make the move go: a release
+ * younger than the minimum age, one published with weaker provenance than the release before, an install script not
+ * allowed, a copy only an override would move, a release mise could not lock; and anything else.
+ */
+export type RefusalKind = 'young' | 'provenance' | 'script' | 'override' | 'lock' | 'other';
+
+/**
+ * The kind of a refusal, from the step's one line of it (`MadeGroup.refused`), which carries pnpm's or mise's own
+ * reason or the step's: read for the words each tool and the step use, and never repeated where the public reads.
+ *
+ * - `provenance`: pnpm's `High-risk trust downgrade … (possible package takeover)`, its `trustPolicy`.
+ * - `override`: the step's own, of a copy its parents hold below the target: `… so it needs an override in
+ *   pnpm-workspace.yaml`.
+ * - `script`: pnpm's `… has to be built but the build scripts were ignored`, and its `allowBuilds`.
+ * - `young`: pnpm's `… does not meet the minimumReleaseAge constraint: … within the minimumReleaseAge cutoff`, and
+ *   the step's own of Node and of a tool, `… within mise.toml's minimum_release_age`.
+ * - `lock`: anything else `mise lock` refused, which the step says as `mise refused …`.
+ *
+ * Each is a phrase with a space in it or a setting's name in capitals, which no package's name can be, so a package
+ * named for one of them reads as `other`, which claims nothing.
+ */
+export function refusalKind(reason: string): RefusalKind {
+  if (/\btrust downgrade\b|\bERR_PNPM_TRUST_DOWNGRADE\b/.test(reason)) return 'provenance';
+  if (/ needs an override in pnpm-workspace\.yaml/.test(reason)) return 'override';
+  if (/ build scripts were ignored\b| under allowBuilds\b|\bERR_PNPM_IGNORED_BUILDS\b/.test(reason)) return 'script';
+  if (/\bminimumReleaseAge (?:constraint|cutoff)\b| within mise\.toml's minimum_release_age\b/.test(reason))
+    return 'young';
+  if (/^mise refused /.test(reason)) return 'lock';
+  return 'other';
+}
+
+/** What the scan's pin step could not do, and what will make the move go, by the kind of its refusal. */
+const REFUSED: Record<RefusalKind, string> = {
+  young:
+    'The scan’s pin step could not make it on the commit it read: the release is younger than the minimum age this repository gives a release before it takes one. Nothing is asked of you: the watch makes the move on a later day’s scan, once the release is old enough.',
+  provenance:
+    'The scan’s pin step could not make it on the commit it read: pnpm refuses the release, which was published with weaker provenance than the release before it. The watch makes the move once a later release is published with the provenance the earlier ones had. This release goes only with an exception for it in `pnpm-workspace.yaml`, with its reason, and that file is yours.',
+  script:
+    'The scan’s pin step could not make it on the commit it read: the release has an install script this repository does not allow. It goes only with an entry for it in `pnpm-workspace.yaml`, with its reason, and that file is yours; or with a later release that needs none.',
+  override:
+    'The scan’s pin step could not make it on the commit it read: a copy of it stays below the target, because what depends on it admits nothing newer. It goes with a later release of what depends on it, which the watch then makes; or with an override for that copy in `pnpm-workspace.yaml`, with its reason, and that file is yours.',
+  lock: 'The scan’s pin step could not make it on the commit it read: mise could not lock the release. The watch makes the move once a scan can, on a later run or a later release; or move it by hand, and the scan’s next run sees it.',
+  other:
+    'The scan’s pin step could not make it on the commit it read. The watch makes the move once a scan can; or move it by hand, and the scan’s next run sees it.',
+};
+
 /** Why the App cannot write a move, and what to do instead, for its issue. */
-function cannotWrite(move: ReadMove, why?: string): string {
-  if (why === STEP_REFUSED)
-    return 'The scan’s pin step could not make it on the commit it read: pnpm’s guards (a release younger than a day, a weaker provenance than the release before, an install script) or a copy only an override in `pnpm-workspace.yaml` would move, or mise could not lock the release. The worker’s log says which, and the watch makes it once a scan can: or move it by hand, and the scan’s next run sees it.';
+function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other'): string {
+  if (why === STEP_REFUSED) return REFUSED[kind];
   if (why)
     return `The watch cannot write it on its pins' lines (${why}): move it by hand, and the scan's next run sees it.`;
   if (move.lane === 'none')
@@ -422,8 +483,17 @@ function issueKey(move: ReadMove): string {
   return segmentOf(move.name);
 }
 
-/** An issue's title and description. */
-export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: string; body: string; key: string } {
+/**
+ * An issue's title and description, and the target it is written for (`pin-target`): for a lockfile's move none, which
+ * the public list withholds, but for a routine update the pin step refused, whose issue names its release, so one
+ * Martin closed opens again for a later release.
+ */
+export function issueOf(
+  move: ReadMove,
+  moves: Moves,
+  why?: string,
+  kind?: RefusalKind,
+): { title: string; body: string; key: string; target: string } {
   const key = issueKey(move);
   const name = move.lockfile ? `${move.name} (${key.slice('lockfile-'.length)})` : move.name;
   const routine = isRoutine(move);
@@ -440,12 +510,20 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
   const pins = move.lockfile
     ? [...new Set(move.pins.map((pin) => pin.file))].map((file) => `- ${code(file)}`)
     : move.pins.map((pin) => `- ${code(`${pin.file}:${pin.line}`)}, pinning ${code(move.from)}`);
+  // A routine update the step refused is named, its package and the release: no finding is behind it to give away, as
+  // its pull request's title would have named it. What its pins have open is then left out: that is a finding's.
+  const named = routine && move.lockfile && why === STEP_REFUSED ? move.withheld : undefined;
+  const release = named && readTarget(named.to);
+  const releases = (release?.kind === 'version' ? release.versions : [named?.to ?? '']).map(code).join(' and ');
+  const target = named ? named.to : move.to;
+  // Where the watch makes pull requests it is the watch that cannot make this one; where it makes none, the factory.
+  const maker = ISSUE_REPOS.includes(moves.repository) ? 'the factory' : "the factory's pin watch";
   const body = [
     `<!-- factory: pin-issue ${key} -->`,
-    `<!-- factory: pin-target ${targetMark(move.to)} -->`,
-    `${RunText(moves)} lists a move the factory's pin watch cannot make with a pull request of its own: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
+    `<!-- factory: pin-target ${targetMark(target)} -->`,
+    `${RunText(moves)} lists a move ${maker} cannot make with a pull request of its own: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
     '',
-    cannotWrite(move, why),
+    cannotWrite(move, why, kind),
     '',
     '**Pins**',
     '',
@@ -453,7 +531,9 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
     '',
     ...(routine
       ? [
-          `**A routine update** A newer release, with no advisory behind it and no deadline${SEVERITIES.some((s) => move.leaves[s]) ? `; its pins have ${counted(move.leaves)} open that it leaves` : ''}.`,
+          named
+            ? `**A routine update** ${code(named.package)} to ${releases}: a newer release, with no advisory behind it and no deadline.`
+            : `**A routine update** A newer release, with no advisory behind it and no deadline${SEVERITIES.some((s) => move.leaves[s]) ? `; its pins have ${counted(move.leaves)} open that it leaves` : ''}.`,
         ]
       : [
           `**Clears** ${counted(move.clears)}; leaves ${counted(move.leaves)} on the same pins.`,
@@ -464,7 +544,7 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
     'The watch keeps this issue to the scan: it updates it as the move changes, and closes it once the scan no longer lists the move.',
     '',
   ].join('\n');
-  return { title: title.slice(0, 256), body, key };
+  return { title: title.slice(0, 256), body, key, target };
 }
 
 /**
@@ -572,10 +652,41 @@ function brought(made: MadeGroup): string[] {
 export const pinTitle = (name: string, to: string): string =>
   `chore(pin): move ${name.replace(/[`\r\n]/g, '')} to ${to}`.slice(0, 256);
 
-/** Watches this repository's moves, and keeps one pull request for each file's, or one issue for a move. */
+/**
+ * The watch's actions where it keeps issues alone: the four on issues, and each that would make or change a branch,
+ * a commit or a pull request replaced by one that throws, so a pass there can ask GitHub for none, whatever it does.
+ */
+function issuesOnly(actions: PinWatchDependencies['actions'], repo: string): PinWatchDependencies['actions'] {
+  const never = (what: string) => async (): Promise<never> => {
+    throw new Error(`The pin watch keeps issues alone in ${repo}: it does not ${what} there.`);
+  };
+  return {
+    dryRun: actions.dryRun,
+    openIssue: (...args) => actions.openIssue(...args),
+    updateIssue: (...args) => actions.updateIssue(...args),
+    closeIssue: (...args) => actions.closeIssue(...args),
+    reopenIssue: (...args) => actions.reopenIssue(...args),
+    commitPins: never('commit'),
+    openPullRequest: never('open a pull request'),
+    updatePullRequest: never('update a pull request'),
+    addLabels: never('label a pull request'),
+    closePullRequest: never('close a pull request'),
+  };
+}
+
+/**
+ * Watches a repository's moves. In this one (`PIN_REPOS`) it keeps one pull request for each file's, or one issue for a
+ * move. In the app's (`ISSUE_REPOS`), whose line makes its moves, it keeps the issues alone: no move is its to write
+ * there, so it reads no branch, file or pull request, and its actions are the four on issues (`issuesOnly`). Any
+ * other repository is refused.
+ */
 export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
-  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github), only = [], heads } = deps;
-  if (!PIN_REPOS.includes(repo)) throw new Error(`The pin watch does not move ${repo}'s pins: its line does.`);
+  const { github, reads, recorder, log, now = Date.now, source = treeSource(github), only = [], heads } = deps;
+  /** Whether the watch makes this repository's moves: decided here, from the lists above, and by nothing passed in. */
+  const makes = PIN_REPOS.includes(repo);
+  if (!makes && !ISSUE_REPOS.includes(repo))
+    throw new Error(`The pin watch does not move ${repo}'s pins, or keep its issues.`);
+  const actions = makes ? deps.actions : issuesOnly(deps.actions, repo);
   let last: number | undefined;
   /** The refusals kept, by the branch and the words, so each is recorded once a run; emptied as the run changes. */
   const kept = new Set<string>();
@@ -747,8 +858,9 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       last = now();
       return;
     }
-    const [open, issues] = await Promise.all([openPulls(), pinIssues()]);
-    const head = await source.head(repo);
+    const [open, issues] = await Promise.all([makes ? openPulls() : [], pinIssues()]);
+    // Where it keeps issues alone no move is written, so nothing is read of main.
+    const head = makes ? await source.head(repo) : '';
     const scanned = day.run.headSha;
     const run = day.run.id;
     if (keptFor !== run) {
@@ -771,7 +883,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
 
     // Two moves that name one line are both refused: neither is the one move of that pin. Read over every move of the
     // day, taken or not: a move named alone is still refused beside a rival it was not told.
-    const writable = (m: ReadMove) => PULL_LANES.has(m.lane);
+    const writable = (m: ReadMove) => makes && PULL_LANES.has(m.lane);
     // A move the pin step makes is made as one step on its files, whatever line its pin names (two of the scan's
     // moves at one tool's entry are one tool's move): it is never one of two edits at a line.
     const byPlace = new Map<string, ReadMove[]>();
@@ -785,9 +897,9 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     const keep = new Set<string>();
     /** The issues today's moves keep, each with what it says. */
     const wanted = new Map<string, { title: string; body: string; target: string }>();
-    const want = (move: ReadMove, why?: string) => {
-      const issue = issueOf(move, day, why);
-      wanted.set(issue.key, { title: issue.title, body: issue.body, target: move.to });
+    const want = (move: ReadMove, why?: string, kind?: RefusalKind) => {
+      const issue = issueOf(move, day, why, kind);
+      wanted.set(issue.key, { title: issue.title, body: issue.body, target: issue.target });
     };
 
     for (const move of day.moves) if (ISSUE_LANES.has(move.lane)) want(move);
@@ -864,7 +976,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
 
     // The moves the pin step makes: what the scan made of each group, on the commit it read, committed whole once each
     // file it wrote is the same at main's head. A move the step refused is the one thing of its group that waits, with
-    // an issue that says so and names no package; the step's own words are logged here, where the public cannot read.
+    // an issue that says so, and which kind of refusal it was, in the watch's words; the step's own are logged here,
+    // where the public cannot read.
     // A group is made whole, its files written for every move in it, so a move told takes its group's others with it:
     // the scan's pins job makes every group, whatever the watch is told, and the gate makes the group again whole.
     const writtenOf = new Map<string, Written>();
@@ -886,7 +999,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         const move = moves.find((each) => each.index === index);
         if (!move) continue;
         // Its issue only for a move told: the issue of one not told is never opened, updated or closed.
-        if (told.includes(move)) want(move, STEP_REFUSED);
+        if (told.includes(move)) want(move, STEP_REFUSED, refusalKind(reason));
         if (!said.has(`refused ${run} ${index}`)) {
           said.add(`refused ${run} ${index}`);
           log.warn(

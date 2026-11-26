@@ -58,6 +58,8 @@ describe('the files a release changes', () => {
       'apps/factory/src/line/bench/fixtures.ts',
       // A move's pins before and after, which take the package's range in package.json from the diff.
       'apps/factory/src/line/moves.ts',
+      // The duplicate watch's tests, whose pull requests of Dependabot's move a range in a manifest.
+      'apps/factory/test/github/duplicates.test.ts',
       // The pin guard's tests, which give it a manifest the scan's pin step wrote, whole.
       'apps/factory/test/github/pin-guard.test.ts',
       // The moves the scan made, Playwright's image with its library among them, and the ranges it moved in a manifest.

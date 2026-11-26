@@ -2,7 +2,7 @@ import type { PayloadOf } from '@software-factory/events';
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import type { Moves } from '../../src/github/scanning.ts';
-import { commitTitle } from '../../src/line/agents/agent.ts';
+import { commitTitle, mentionsIn } from '../../src/line/agents/agent.ts';
 import { MOVED_UNCHANGED, MOVED_UNTESTED } from '../../src/line/agents/coder.ts';
 import {
   CODED,
@@ -29,7 +29,7 @@ const PINS =
 const LOCKFILE = PINS.replaceAll('vitest', 'pino');
 
 /** A dependency's work item and its ticket, as triage opens them for a move. */
-async function moveTicket(): Promise<string> {
+async function moveTicket(move: typeof MOVE = MOVE): Promise<string> {
   const workItem = await nextWorkItem(database.as.triage);
   await events.append([
     event(
@@ -40,7 +40,7 @@ async function moveTicket(): Promise<string> {
         title: 'Move vitest',
         sample: false,
         category: 'dependency',
-        dependency: { ...MOVE, security: false },
+        dependency: { ...move, security: false },
       },
       'triage',
     ),
@@ -301,12 +301,21 @@ describe('a dependency’s move on the line', () => {
     expect(title).toBe('fix(deps): move @grpc/grpc-js to 1.14.7');
     expect(commitTitle.safeParse(title).success).toBe(true);
     expect(note).toContain(
-      'from 1.14.4 to 1.14.7, the newest release its range admits at or above 1.14.5, in package.json, pnpm-lock.yaml.',
+      'from `1.14.4` to `1.14.7`, the newest release its range admits at or above `1.14.5`, in package.json, pnpm-lock.yaml.',
     );
     expect(note).not.toMatch(/CVE|GHSA/);
     expect(await payloads(workItem, 'pull-request.pushed')).toEqual([
       expect.objectContaining({ title: 'fix(deps): move @grpc/grpc-js to 1.14.7', testsFirst: false }),
     ]);
+    // The draft holds the planner's words, which name the package: in code, so GitHub mentions no team.
+    const opened = github.acts.find((a) => a.action === 'openPullRequest')?.args as { body: string };
+    expect(opened.body.split('\n')[0]).toMatch(/^The factory’s fix for ticket #\d+\./);
+    expect(opened.body).toContain('**Outcome.** `@grpc/grpc-js` resolves to 1.14.5');
+    expect(opened.body).toContain('then each check passes with `@grpc/grpc-js` moved.');
+    expect(mentionsIn(opened.body)).toEqual([]);
+    expect((await payloads(workItem, 'spec.written'))[0]).toMatchObject({
+      outcome: '`@grpc/grpc-js` resolves to 1.14.5, so the scans no longer report its findings.',
+    });
     const [pushed] = await database.as.line<{ actor: string }[]>`
       select actor from events where work_item = ${workItem} and type = 'pull-request.pushed'`;
     expect(pushed?.actor).toBe('factory');
@@ -332,15 +341,21 @@ describe('a dependency’s move on the line', () => {
     expect(await payloads(workItem, 'pull-request.pushed')).toEqual([
       expect.objectContaining({ title: 'chore(deps): move @grpc/grpc-js to 1.14.7' }),
     ]);
+    // Its draft claims no fix either: no advisory asked for the move.
+    const opened = github.acts.find((a) => a.action === 'openPullRequest')?.args as { body: string };
+    expect(opened.body.split('\n')[0]).toMatch(/^The factory’s routine update for ticket #\d+\.( Refers to #\d+\.)?$/);
+    expect(opened.body).not.toContain('fix for ticket');
     expect((await failures(workItem))?.failures ?? 0).toBe(0);
     expect(await payloads(workItem, 'hold.started')).toEqual([]);
   });
 
   it('closes a move main already has as done, not failed, with no coder, and its issue as completed', async () => {
     // The second of two moves that overlap, once the first merged: Node's move brought the runtime image's.
-    for (const [opened, spec] of [
-      [grpcTicket, gatesOnly],
-      [moveTicket, planner],
+    // The last is a package locked at two versions, whose move names both in one word.
+    for (const [opened, spec, versions] of [
+      [grpcTicket, gatesOnly, '`1.14.5`'],
+      [moveTicket, planner, '`5.1.0`'],
+      [() => moveTicket({ ...MOVE, from: '5.0.5,6.0.2', to: '5.1.0,6.1.0' }), planner, '`5.1.0` and `6.1.0`'],
     ] as const) {
       const workItem = await opened();
       const { pass, github } = line({ planner: spec, coder: () => ({ kind: 'pinned', pins: '' }) });
@@ -353,8 +368,10 @@ describe('a dependency’s move on the line', () => {
       const [closed] = await payloads(workItem, 'work-item.closed');
       expect(closed).toEqual({
         outcome: 'no-change',
-        reason: expect.stringMatching(/^Main already has its move, at /),
+        reason: expect.stringMatching(/^Main already has its move, at [0-9a-f]{7}: /),
       });
+      // Each version is in code, once, in the reason and in the comment alike.
+      expect((closed as { reason: string }).reason.endsWith(` at ${versions}`)).toBe(true);
       const closing = github.acts.filter((a) => a.action === 'closeIssue');
       expect(closing).toEqual([
         {
@@ -365,6 +382,9 @@ describe('a dependency’s move on the line', () => {
           }),
         },
       ]);
+      expect((closing[0]?.args as { comment?: string } | undefined)?.comment).toContain(
+        ` at ${versions}. Another change made it.`,
+      );
       await pass();
       expect(await stage(workItem)).toBe('ended');
       github.acts.length = 0;
@@ -441,7 +461,7 @@ describe('a dependency’s move on the line', () => {
     expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
     const { failures } = await import('./harness.ts');
     expect((await failures(workItem))?.failure).toBe(
-      'The pin step’s patch resolves @grpc/grpc-js to 1.14.4, below the move’s 1.14.5',
+      'The pin step’s patch resolves @grpc/grpc-js to `1.14.4`, below the move’s `1.14.5`',
     );
   });
 });

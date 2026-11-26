@@ -83,6 +83,14 @@ export interface Release {
      * backend that does not answer) before the work item holds for Martin, with the last reason.
      */
     waitHours: number;
+    /**
+     * How long after the promotion a routine update may wait for a scan whose routine listing is whole (one that made
+     * a listing, and read every pin for it) before the work item holds for Martin. Two days, so two daily scans each
+     * have their turn, wherever in the day the release fell: one scan that could not read a registry holds nothing.
+     * From the promotion, never from the scan: a clock that started again at every scan that was not whole, those a
+     * push starts among them, could wait for ever.
+     */
+    listingWaitHours: number;
   };
   /**
    * The pictures of a release (every page on the stable version and on the canary, and their diffs) are kept for the
@@ -124,6 +132,7 @@ export const release = {
     logs: { windowMinutes: 30, minRequests: objectives.minRequests },
     everyMinutes: 5,
     waitHours: 24,
+    listingWaitHours: 48,
   },
   // A release's pictures take about 12 MB, and at most about 26 MB (sixty pages, every one changed), on a volume of
   // 1 Gi the senses' screenshots share. Five cover a canary retried after a rollback, and take at most an eighth.

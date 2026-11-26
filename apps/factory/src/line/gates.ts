@@ -15,7 +15,13 @@
  * `gateEvents` is the decision, a pure function of what GitHub says and what the work item has already recorded, so
  * reading the same state again appends nothing. The gates are done when every check the ruleset requires has
  * finished on the commit, and every other check that started there, or at a merge, on the checks that have finished;
- * they pass when every required one that finished passed. The factory's own check runs (the reviewer's) are not
+ * they pass when every required one that finished passed. A check run again on the same commit is recorded again
+ * when it concludes otherwise than it was last recorded, and so is the round: the branch has not moved, and nothing
+ * else would say a failure is over, or that a check that passed now fails. So a round that fails after it passed
+ * sends the work back as any failed round does. Not while the pull request is in the merge queue at that commit: there
+ * the queue's own checks decide, and the line leaves the change to it. Merged, the round is recorded with the merge;
+ * taken out, on the read that records it.
+ * The factory's own check runs (the reviewer's) are not
  * gates, and are left out; nor is the review gate's (ADR 0014), which is Martin's say, not a gate a change can pass:
  * it waits for his approval, which comes after the gates.
  */
@@ -50,9 +56,12 @@ const gatesIn = (required: readonly string[]) => required.filter((name) => name 
 /** What a work item has recorded about its pull request's gates and merge. */
 export interface GateRecord {
   started: Set<string>;
-  /** `commit check` for each check recorded as finished. */
-  finished: Set<string>;
-  done: Set<string>;
+  /** `commit check` for each check recorded as finished, with the conclusion last recorded for it. */
+  finished: Map<string, PayloadOf<'gate.finished'>['conclusion'] | undefined>;
+  /** Each commit whose round was recorded as finished, with the conclusion last recorded for it. */
+  done: Map<string, PayloadOf<'gates.finished'>['conclusion'] | undefined>;
+  /** The pull request the line added to the merge queue and the commit it added it at, while it is there. */
+  queued: { number: number; commit: string } | undefined;
   merged: boolean;
   closed: boolean;
 }
@@ -60,16 +69,27 @@ export interface GateRecord {
 export function gateRecord(events: readonly { type: string; payload: unknown }[]): GateRecord {
   const record: GateRecord = {
     started: new Set(),
-    finished: new Set(),
-    done: new Set(),
+    finished: new Map(),
+    done: new Map(),
+    queued: undefined,
     merged: false,
     closed: false,
   };
   for (const { type, payload } of events) {
-    const p = payload as { commit?: string; check?: string };
+    const p = payload as { commit?: string; check?: string; conclusion?: string; number?: number };
     if (type === 'gates.started') record.started.add(p.commit ?? '');
-    if (type === 'gate.finished') record.finished.add(`${p.commit} ${p.check}`);
-    if (type === 'gates.finished') record.done.add(p.commit ?? '');
+    if (type === 'gate.finished') {
+      record.finished.set(`${p.commit} ${p.check}`, p.conclusion as PayloadOf<'gate.finished'>['conclusion']);
+    }
+    if (type === 'gates.finished') {
+      record.done.set(p.commit ?? '', p.conclusion as PayloadOf<'gates.finished'>['conclusion']);
+    }
+    if (type === 'pull-request.enqueued') record.queued = { number: p.number ?? 0, commit: p.commit ?? '' };
+    // Only the commit it was added at: a late word on an older one leaves the newer in the queue. A push takes it out.
+    if (type === 'pull-request.dequeued' && record.queued?.number === p.number && record.queued?.commit === p.commit) {
+      record.queued = undefined;
+    }
+    if (type === 'pull-request.pushed') record.queued = undefined;
     if (type === 'pull-request.merged') record.merged = true;
     // Work sent back to Plan comes round again with a pull request of its own, which has not merged.
     if (type === 'work.returned' && (payload as { to?: string }).to === 'plan') record.merged = false;
@@ -175,6 +195,9 @@ export function gateEvents(
   return gateRun(pr, runs, required, record);
 }
 
+/** Whether a conclusion is another than the one recorded: a record that kept none says nothing against it. */
+const differs = (recorded: string | undefined, now: string) => recorded !== undefined && recorded !== now;
+
 /**
  * The events the checks on the pull request's head call for that the work item has not had yet, in order. At a
  * merge, the round ends with it, judged on the checks that have finished: nothing reads the rest after it.
@@ -202,9 +225,14 @@ function gateRun(
       payload: { pullRequest, commit, checks },
     });
   }
+  // In the merge queue at this commit, what is recorded of it stands: the queue's checks decide, until it merges.
+  const queued = !merged && record.queued?.number === pullRequest && record.queued.commit === commit;
   for (const run of latest.values()) {
-    if (!finished(run) || record.finished.has(`${commit} ${cutAt(run.name, 80)}`)) continue;
+    if (!finished(run)) continue;
     const conclusion = outcome(run.conclusion);
+    // Recorded once, and again when the check, run again on the commit, concludes otherwise than it last did.
+    const key = `${commit} ${cutAt(run.name, 80)}`;
+    if (record.finished.has(key) && (queued || !differs(record.finished.get(key), conclusion))) continue;
     const title = run.title?.trim();
     const summary = title === undefined ? undefined : cutTo(title, 200);
     const annotations = annotationsOf(run);
@@ -228,7 +256,9 @@ function gateRun(
   }
 
   const { waiting, judged, unfinished, failed, passed } = judge(latest, required, merged);
-  if (!waiting && !record.done.has(commit)) {
+  // A round is recorded once, and again when its checks, run again on the commit, conclude otherwise than it last did.
+  const conclusion = failed.length ? 'failed' : 'passed';
+  if (!waiting && (!record.done.has(commit) || (!queued && differs(record.done.get(commit), conclusion)))) {
     drafts.push({
       type: 'gates.finished',
       actor: 'actions',
@@ -240,7 +270,7 @@ function gateRun(
       payload: {
         pullRequest,
         commit,
-        conclusion: failed.length ? 'failed' : 'passed',
+        conclusion,
         passed,
         failed: failed.slice(0, 40),
       },

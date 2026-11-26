@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { BackendAnswered, getJson, TELEMETRY_AWAY_MS, telemetryAway } from '../src/clients/http.ts';
 import { checkTurns } from '../src/commands/logs.ts';
-import { PassLog, STORE_AWAY_MS } from '../src/store-absence.ts';
+import { PassLog, STORE, STORE_AWAY_MS } from '../src/store-absence.ts';
 
 /** A pass log on a clock the test moves, and the level and message of each line it logs. */
 function passLog() {
@@ -68,6 +68,69 @@ describe('a pass at the store', () => {
     passes.failed(Object.assign(new Error('relation "events" does not exist'), { code: '42P01' }));
     passes.failed(new TypeError('cannot read properties of undefined'));
     expect(lines).toEqual(['error: a pass failed', 'error: a pass failed']);
+  });
+});
+
+describe('a pass at several dependencies', () => {
+  const telemetry = { away: (error: unknown) => error === 'loki', awayMs: 120_000 };
+  const store = {
+    ...STORE,
+    words: {
+      away: 'a pass could not reach the store',
+      stillAway: 'a pass failed: the store is still away',
+      back: (seconds: number) => `the store is back, after ${seconds} s`,
+    },
+  };
+  function passLog() {
+    let at = 0;
+    const lines: string[] = [];
+    const say = (level: string) => (_: unknown, message: string) => lines.push(`${level}: ${message}`);
+    const log = { info: say('info'), warn: say('warn'), error: say('error') } as unknown as Logger;
+    const words = {
+      away: 'a pass could not reach Loki',
+      stillAway: 'a pass failed: Loki is still away',
+      failed: 'a pass failed',
+      back: (seconds: number) => `Loki is back, after ${seconds} s`,
+    };
+    const passes = new PassLog(log, () => new Date(at), words, [telemetry, store]);
+    return { passes, lines, after: (ms: number) => (at += ms) };
+  }
+
+  it('says which one is away in its own words, and for its own time', () => {
+    const { passes, lines, after } = passLog();
+    passes.failed(restarting);
+    after(STORE_AWAY_MS);
+    passes.failed('loki');
+    passes.failed(refused);
+    after(telemetry.awayMs - 1);
+    passes.failed('loki');
+    after(1);
+    passes.failed('loki');
+    expect(lines).toEqual([
+      'warn: a pass could not reach the store',
+      'warn: a pass could not reach Loki',
+      'error: a pass failed: the store is still away',
+      'warn: a pass could not reach Loki',
+      'error: a pass failed: Loki is still away',
+    ]);
+  });
+
+  it('says each one is back at the pass that fails nowhere, and fails loudly for anything else', () => {
+    const { passes, lines, after } = passLog();
+    passes.failed('loki');
+    after(20_000);
+    passes.failed(refused);
+    after(10_000);
+    passes.passed();
+    passes.passed();
+    passes.failed(new TypeError('cannot read properties of undefined'));
+    expect(lines).toEqual([
+      'warn: a pass could not reach Loki',
+      'warn: a pass could not reach the store',
+      'info: Loki is back, after 30 s',
+      'info: the store is back, after 10 s',
+      'error: a pass failed',
+    ]);
   });
 });
 
@@ -148,6 +211,32 @@ describe('a turn of a log watcher’s check', () => {
         level: 'error',
         message: 'check failed: the telemetry it reads has been away for over two minutes',
       }),
+      { level: 'error', check: 'reports', message: 'check failed' },
+    ]);
+  });
+
+  it('warns while the store restarts, says when it is back, and fails loudly once it has been away a minute', () => {
+    const { turns: reports, lines, after } = turns();
+    const unsent = Object.assign(new Error('A report could not be left in the inbox'), { code: 'CONNECTION_CLOSED' });
+    reports.failed(unsent);
+    after(10_000);
+    reports.failed(restarting);
+    after(10_000);
+    reports.passed();
+    reports.failed(refused);
+    after(STORE_AWAY_MS);
+    reports.failed(refused);
+    reports.failed(Object.assign(new Error('permission denied for table inbox'), { code: '42501' }));
+    expect(lines).toEqual([
+      {
+        level: 'warn',
+        check: 'reports',
+        message: 'a check could not reach the store, as for a restart: its next turn tries again',
+      },
+      expect.objectContaining({ level: 'warn', check: 'reports' }),
+      { level: 'info', check: 'reports', message: 'the check reached the store again, after 20 s' },
+      expect.objectContaining({ level: 'warn' }),
+      { level: 'error', check: 'reports', message: 'check failed: the store has been away for over a minute' },
       { level: 'error', check: 'reports', message: 'check failed' },
     ]);
   });

@@ -27,6 +27,15 @@ export const scanOf = (signal: Signal | undefined): Scan | undefined =>
 
 const code = (word: string) => `\`${word}\``;
 
+/**
+ * A move's versions as a sentence says them, each in code: `5.7.2` alone, or, for a package locked at two versions,
+ * whose move names both in one word (`5.7.2,7.5.2`), `5.7.2` and `7.5.2`.
+ */
+export function versionsWords(versions: string): string {
+  const each = versions.split(',').filter(Boolean).map(code);
+  return each.length > 1 ? `${each.slice(0, -1).join(', ')} and ${each.at(-1)}` : (each[0] ?? '');
+}
+
 /** One finding of the scan, as a line of Markdown: its advisory and package, its ratings, its fix and its deadline. */
 export function findingLine(finding: Scan['findings'][number]): string {
   const publisher = finding.severity.publisher ? ` (${finding.severity.publisher} by its publisher)` : '';
@@ -59,7 +68,7 @@ export function moveIssue(
   const named = 'ecosystem' in own.fingerprint ? own.fingerprint : undefined;
   const move = signal?.move;
   const what = move
-    ? `the move of ${code(move.name)}, in ${move.ecosystem}, from ${code(move.from)} to ${targetWords(move, code)}, in ${move.repository}`
+    ? `the move of ${code(move.name)}, in ${move.ecosystem}, from ${versionsWords(move.from)} to ${targetWords(move)}, in ${move.repository}`
     : `the move of ${code(named?.name ?? own.title)}${named ? `, in ${named.ecosystem}` : ''}`;
   const scan = scanOf(signal);
   const rest = scan ? restWords(scan) : '';
@@ -95,11 +104,11 @@ export const movesAlone = (spec: PayloadOf<'spec.written'>): boolean =>
 
 /**
  * A move's target, as the line says it before the pins exist: a package's is a floor, since the pin step takes the
- * newest release its range admits at or above it (`pnpm update`, under the app's release age), so "1.14.5 or later";
- * Node's and an image's are what the pin step writes.
+ * newest release its range admits at or above it (`pnpm update`, under the app's release age), so "`1.14.5` or later";
+ * Node's and an image's are what the pin step writes. Each version is in code (`versionsWords`).
  */
-export const targetWords = (move: Pick<PinnedMove, 'ecosystem' | 'to'>, as = (word: string) => word): string =>
-  move.ecosystem === 'npm' ? `${as(move.to)} or later` : as(move.to);
+export const targetWords = (move: Pick<PinnedMove, 'ecosystem' | 'to'>): string =>
+  move.ecosystem === 'npm' ? `${versionsWords(move.to)} or later` : versionsWords(move.to);
 
 /** Why the line will not title a move: the pins say no version it can name, or one below the move's floor. */
 export class UnreadMove extends Error {
@@ -118,7 +127,7 @@ export function writtenVersion(move: PinnedMove, pins: string): string {
   if (move.ecosystem !== 'npm') {
     const added = pins.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++'));
     if (!added.some((line) => line.includes(move.to))) {
-      throw new UnreadMove(`The pin step’s patch does not write ${move.name} ${move.to}`);
+      throw new UnreadMove(`The pin step’s patch does not write ${move.name} ${versionsWords(move.to)}`);
     }
     return move.to;
   }
@@ -159,7 +168,9 @@ export function writtenVersion(move: PinnedMove, pins: string): string {
   // A package at two versions moves to a floor for each (`6.11.5,7.6.6`): the lowest copy is held to the lowest.
   const [floor = move.to] = move.to.split(',').sort(compareVersions);
   if (compareVersions(lowest, floor) < 0) {
-    throw new UnreadMove(`The pin step’s patch resolves ${move.name} to ${lowest}, below the move’s ${move.to}`);
+    throw new UnreadMove(
+      `The pin step’s patch resolves ${move.name} to ${code(lowest)}, below the move’s ${versionsWords(move.to)}`,
+    );
   }
   return lowest;
 }
@@ -195,11 +206,11 @@ export function moveNote(move: PinnedMove, version: string, pins: string, coder:
   const shown = files.length > 6 ? [...files.slice(0, 5), `${files.length - 5} more files`] : files;
   const floor =
     move.ecosystem === 'npm' && version !== move.to
-      ? `, the newest release its range admits at or above ${move.to},`
+      ? `, the newest release its range admits at or above ${versionsWords(move.to)},`
       : '';
   return cutTo(
     [
-      `The pin step moved ${move.name} (${move.ecosystem}) from ${move.from} to ${version}${floor} in ${shown.join(', ')}.`,
+      `The pin step moved ${move.name} (${move.ecosystem}) from ${versionsWords(move.from)} to ${code(version)}${floor} in ${shown.join(', ')}.`,
       coder
         ? 'The coder found nothing more the criteria need of it: the move is the whole change.'
         : 'The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
@@ -370,13 +381,15 @@ const cell = (text: string) => inline(text).replaceAll('|', '\\|');
 /**
  * The factory's part of a move's description, after the describer's words: the spec it was held to, each pin before
  * and after, and what the scan gates counted on the base and on the change. The line writes it whole, from the spec,
- * the pull request's diff and `gate.finished`, so no figure in it is a model's.
+ * the pull request's diff and `gate.finished`, so no figure in it is a model's. A routine update's says why it moves
+ * in place of the counts: no advisory asked for it, so the scans counted nothing it clears.
  */
 export function moveSection(
   spec: PayloadOf<'spec.written'>,
   pins: readonly PinChange[],
   counts: readonly GateCounts[],
   replaces: number | undefined,
+  routine = false,
 ): string {
   const shown = pins.slice(0, MOST_PINS);
   return [
@@ -399,14 +412,18 @@ export function moveSection(
         ]
       : ['The pull request’s diff shows no pin of the move’s.']),
     '',
-    '**What the scans counted**, on `main` and on this change, as the gates’ own notices give them:',
-    '',
-    ...(counts.length
-      ? counts.map(
-          ({ check, findings }) =>
-            `- ${check}: before ${countsWords(findings.before)}; after ${countsWords(findings.after)}`,
-        )
-      : ['- No scan gate gave its counts at this head.']),
+    ...(routine
+      ? ['**Why it moves.** A routine update: the scan lists a newer release, with no advisory behind it.']
+      : [
+          '**What the scans counted**, on `main` and on this change, as the gates’ own notices give them:',
+          '',
+          ...(counts.length
+            ? counts.map(
+                ({ check, findings }) =>
+                  `- ${check}: before ${countsWords(findings.before)}; after ${countsWords(findings.after)}`,
+              )
+            : ['- No scan gate gave its counts at this head.']),
+        ]),
     '',
     'No package is named runtime-critical in the app, so no proof of one ran before the gates counted.',
     ...(replaces ? ['', replacesLine(replaces)] : []),

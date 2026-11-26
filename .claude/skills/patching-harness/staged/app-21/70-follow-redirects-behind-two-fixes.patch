@@ -1,0 +1,54 @@
+# Test 21, a move whose target moves on: follow-redirects as a development dependency at exactly 1.14.8, behind three advisories fixed in 1.15.4, 1.15.6 and 1.16.0. An exact version in the manifest, so pnpm resolves exactly the target the scan names and the pull request's lockfile shows which target it took.
+diff --git a/package.json b/package.json
+index 7b93dfd..6cb1186 100644
+--- a/package.json
++++ b/package.json
+@@ -31,6 +31,7 @@
+   "devDependencies": {
+     "@biomejs/biome": "^2.6.6",
+     "@types/node": "^24.19.2",
++    "follow-redirects": "1.14.8",
+     "lefthook": "^2.1.17",
+     "make-dir": "2.1.0",
+     "node-abi": "3.99.0",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index a4c84d8..79a6575 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -206,6 +206,9 @@ importers:
+       '@types/node':
+         specifier: ^24.19.2
+         version: 24.19.2
++      follow-redirects:
++        specifier: 1.14.8
++        version: 1.14.8(debug@4.4.3)
+       lefthook:
+         specifier: ^2.1.17
+         version: 2.1.17
+@@ -860,6 +863,15 @@ packages:
+       picomatch:
+         optional: true
+ 
++  follow-redirects@1.14.8:
++    resolution: {integrity: sha512-1x0S9UVJHsQprFcEC/qnNzBLcIxsjAV905f/UkQxbclCsoTWlacCNOpQa/anodLl2uaEKFhfWOvM2Qg77+15zA==}
++    engines: {node: '>=4.0'}
++    peerDependencies:
++      debug: '*'
++    peerDependenciesMeta:
++      debug:
++        optional: true
++
+   forwarded-parse@2.2.0:
+     resolution: {integrity: sha512-jYQDJm+NayL3VZVE+tydz/Ja3dy8xurckRr9R1mmVkpdOdQlTqJktv4ZVDThu2iZj3mLZL/qpL3CKfJe1eS7Cw==}
+ 
+@@ -1805,6 +1817,10 @@ snapshots:
+     optionalDependencies:
+       picomatch: 4.0.7
+ 
++  follow-redirects@1.14.8(debug@4.4.3):
++    optionalDependencies:
++      debug: 4.4.3
++
+   forwarded-parse@2.2.0: {}
+ 
+   fsevents@2.3.3:

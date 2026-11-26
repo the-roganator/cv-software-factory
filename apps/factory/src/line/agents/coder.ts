@@ -82,6 +82,7 @@ import {
   replacesLine,
   targetWords,
   UnreadMove,
+  versionsWords,
   writtenVersion,
 } from '../moves.ts';
 import { answerThreads, cites, type Finding, lineage, threadAnswers } from '../review.ts';
@@ -97,6 +98,7 @@ import {
   holdDraft,
   need,
   oneLine,
+  publicWords,
   routineUpdate,
   StepFailed,
   StepStale,
@@ -177,9 +179,17 @@ const pressed = (input: CoderInput) =>
 /** The most a coder may say of why it changed nothing: it is the hold's reason, after the line's own words. */
 export const UNCHANGED_MAX = 200;
 
-/** The suggestions the coder declines, each by its number as it was given them, with its reason. */
+/** The reply a declined suggestion's thread is answered with. */
+const declinedReply = (reason: string) => `Declined by the factory’s coder: ${reason}`;
+
+/**
+ * The suggestions the coder declines, each by its number as it was given them, with its reason, which answers the
+ * suggestion's thread on the pull request (`publicWords`).
+ */
 const declined = z
-  .array(z.strictObject({ suggestion: z.number().int().min(1).max(MAX_FINDINGS), reason: words(300) }))
+  .array(
+    z.strictObject({ suggestion: z.number().int().min(1).max(MAX_FINDINGS), reason: publicWords(300, declinedReply) }),
+  )
   .max(MAX_FINDINGS);
 
 /** The files outside the scope the coder needs to change and may not, each with why. */
@@ -616,7 +626,7 @@ const LOCKFILE =
 const movedLines = ({ move }: CoderInput) =>
   move
     ? [
-        `The line moved ${move.name} (${move.ecosystem}) from ${move.from} to ${targetWords(move)} before your step, in a commit of its own under the checkout: build on it, and never move it back or further.`,
+        `The line moved ${move.name} (${move.ecosystem}) from ${versionsWords(move.from)} to ${targetWords(move)} before your step, in a commit of its own under the checkout: build on it, and never move it back or further.`,
       ]
     : [];
 
@@ -645,7 +655,11 @@ function again(input: CoderInput): string[] {
                 ),
               ]
             : []),
-          'The checkout is the pull request’s head, with the change you pushed before in it.',
+          // A round the pin step writes the move for starts from main, as a first round does: before any push, or
+          // on a pull request built afresh for a newer target, whose head is not under it.
+          input.move
+            ? 'The checkout is main, with the line’s move made on it afresh: nothing of the rounds before is in it.'
+            : 'The checkout is the pull request’s head, with the change you pushed before in it.',
         ]
       : [];
   // A round for suggestions alone that may decline them all is asked for one result or the other, never both at once.
@@ -856,11 +870,22 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     const branch = state.pullRequest?.branch ?? branchFor(workItem, named);
     const message = cutTo(`${title}\n\n${note}`, 9_000);
     const contradicts = spec.contradicts ?? [];
+    // A draft's description, until the describer writes it: a first round's, and a pull request's built afresh for a
+    // newer target, which would else go on describing the older head until the new one is written up.
+    const draftBody = async () =>
+      pullRequestBody(
+        workItem,
+        issue,
+        spec,
+        state.request !== undefined ? 'improvement' : routineUpdate(input.signals) ? 'update' : 'fix',
+        await replacedFor(context, state.ticket),
+      );
     const head = await context.once('push', async (again) => {
       // The tests the spec in force contradicts go into the description before the commit, since a gate's run reads
       // the description as it starts: the push starts it. A first round's pull request opens with them, below.
       if (state.pullRequest) {
-        await context.act('updatePullRequest', { number: state.pullRequest.number, contradicts });
+        const afresh = state.behind ? { body: await draftBody() } : {};
+        await context.act('updatePullRequest', { number: state.pullRequest.number, ...afresh, contradicts });
       }
       // A first round starts the branch at the commit; so does a push that was begun and may have been made, so
       // the patch is never applied on top of itself.
@@ -886,13 +911,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
               head: branch,
               base: 'main',
               title,
-              body: pullRequestBody(
-                workItem,
-                issue,
-                spec,
-                state.request !== undefined,
-                await replacedFor(context, state.ticket),
-              ),
+              body: await draftBody(),
               contradicts,
               draft: true,
             })
@@ -963,7 +982,7 @@ async function answerDeclined(
 ) {
   const answers = declined.flatMap(({ suggestion, reason }) => {
     const finding = suggestions[suggestion - 1];
-    const reply = `Declined by the factory’s coder: ${reason}`;
+    const reply = declinedReply(reason);
     return finding ? lineage(context.state.reviews, finding).map((f) => ({ finding: f, reply })) : [];
   });
   await answerThreads(context, 'declined', pullRequest, threadAnswers(answers));
@@ -1024,19 +1043,21 @@ export const refersTo = (issue: number | null) => (issue ? `Refers to #${issue}.
 
 /**
  * A fix's pull request until the describer writes its description: the ticket's issue and the spec the fix is held
- * to. It stays a draft until then, so nobody reviews it before the gates and the reviewer have.
+ * to. It stays a draft until then, so nobody reviews it before the gates and the reviewer have. A routine update's
+ * claims no fix: no advisory asked for it.
  */
-function pullRequestBody(
+export function pullRequestBody(
   workItem: string,
   issue: number | null,
   spec: PayloadOf<'spec.written'>,
-  improvement: boolean,
+  kind: 'fix' | 'update' | 'improvement',
   replaces?: number,
 ): string {
+  const improvement = kind === 'improvement';
   return [
     improvement
       ? `The factory’s improvement #${workItem}, behind the flag \`${spec.flag ?? 'its-flag'}\`, off until Martin turns it on. ${refersTo(issue)}`.trim()
-      : `The factory’s fix for ticket #${workItem}. ${refersTo(issue)}`.trim(),
+      : `The factory’s ${kind === 'update' ? 'routine update' : 'fix'} for ticket #${workItem}. ${refersTo(issue)}`.trim(),
     '',
     `**Outcome.** ${spec.outcome}`,
     ...(improvement && spec.pages ? ['', `**Pages.** ${spec.pages.map((page) => `\`${page}\``).join(', ')}`] : []),

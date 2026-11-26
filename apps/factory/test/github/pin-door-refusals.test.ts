@@ -107,6 +107,7 @@ describe('the door’s guard, and the shapes a number can take', () => {
       ['updatePullRequest', `{"repo":"${REPO}","number":1040,"title":"t"}`],
       ['describeDeploy', `{"repo":"${REPO}","number":1040,"commit":"${SHA}","carries":[]}`],
       ['closeIssue', `{"repo":"${REPO}","number":1040,"reason":"not_planned"}`],
+      ['updateIssue', `{"repo":"${REPO}","number":1040,"body":"b"}`],
       ['review', `{"repo":"${REPO}","number":1040,"commit":"${SHA}","body":"b","comments":[]}`],
       ['resolveThreads', `{"repo":"${REPO}","number":1040,"threads":[{"path":"a","line":1,"body":"b","reply":"r"}]}`],
     ] as const;
@@ -147,7 +148,7 @@ describe('the door’s guard, and the shapes a number can take', () => {
       ['comment', `{"repo":"${REPO}/","number":1040,"body":"x"}`],
       ['comment', `{"repo":["${REPO}"],"number":1040,"body":"x"}`],
       ['comment', `[{"repo":"${REPO}","number":1040,"body":"x"}]`],
-      // No action the door serves writes a pin branch's commit, or an issue's body.
+      // No action the door serves writes a pin branch's commit, or an issue's title.
       [
         'commitPins',
         `{"repo":"${REPO}","branch":"factory/pin/zap","base":"${SHA}","scanned":"${SHA}","message":"m","pins":[]}`,

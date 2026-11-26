@@ -79,7 +79,10 @@ export interface QueueItem {
   failures: number;
   failure: string | null;
   issue: number | null;
-  /** The dependency signal (its seq) a move's issue was written from, which the issue's record discloses; 0 for none. */
+  /**
+   * The dependency signal (its seq) a move's issue was last written from, which the issue's record discloses, or
+   * could not be written again for; 0 for none.
+   */
   issueSignal: number | null;
   session: string | null;
   effects: Pending | null;

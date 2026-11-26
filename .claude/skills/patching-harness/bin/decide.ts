@@ -1,8 +1,9 @@
 /**
  * What the harness decides from what it has read, apart from the reading, so each decision is tested
  * (decide.test.ts): whether a scan's move is a routine one, whether a pull request must be read again, when a test's
- * failure is certain before its limit, how long "nothing after" is, and what the app's pins of the factory's workflows
- * say. Nothing here reads GitHub, the cluster or a file.
+ * failure is certain before its limit, how long "nothing after" is, what the app's pins of the factory's workflows
+ * say, whether a hold still stands, and what an issue, a ticket or Dependabot's pull request must show. Nothing here
+ * reads GitHub, the cluster or a file.
  */
 import { createHash } from 'node:crypto';
 
@@ -11,6 +12,8 @@ import { createHash } from 'node:crypto';
 export interface ListedMove {
   name: string;
   lane: string;
+  /** The version its pins hold; '' for a lockfile's move, which withholds it. */
+  from: string;
   to: string;
   clears?: Record<string, number>;
 }
@@ -46,6 +49,17 @@ export const moveFits = (
   move: Pick<ListedMove, 'clears' | 'lane'> & { major?: boolean },
   test: { routine?: boolean; major?: boolean },
 ) => (test.routine ? isRoutine(move) && Boolean(move.major) === Boolean(test.major) : !isRoutine(move));
+
+/**
+ * The moves of the next scan that a merged move should have ended: those with the name and the pinned version of a
+ * move the first scan listed. A move of the same name from another version is a new one (a chart moved to 29.49.0,
+ * then listed from 29.49.0 to its next release), and is not the first still there. A lockfile's moves withhold their
+ * versions, so every one of a name is kept, and they are told apart by what they clear, or counted.
+ */
+export const stillListed = <M extends Pick<ListedMove, 'name' | 'from'>>(
+  before: readonly Pick<ListedMove, 'name' | 'from'>[],
+  after: readonly M[],
+): M[] => after.filter((a) => before.some((b) => b.name === a.name && b.from === a.from));
 
 /** The version a move's target names, as a pin pull request's title writes it: a chart's, an image's tag, k3s's. */
 export function targetOf(to: string): string | undefined {
@@ -224,6 +238,25 @@ export function withSetting(text: string, key: string, line: string | undefined)
   return [...kept, ...(line === undefined ? [] : [line])].map((l) => `${l}\n`).join('');
 }
 
+/**
+ * The moves a run's tests stand on that the pin watch was not told to take: none when it takes every move (`*`), every
+ * one when it was told nothing. `told` is `PIN_WATCH_ONLY` as the worker reads it, names comma-separated.
+ */
+export function pinWatchLacks(told: string, needed: readonly string[]): string[] {
+  if (told.trim() === '*') return [];
+  const names = told.split(',').map((name) => name.trim());
+  return needed.filter((name) => !names.includes(name));
+}
+
+/**
+ * Whether a baseline's staged extra that no test of a run asks for spoils the run. It does, as it changes what the
+ * others do, but for a factory run on a set-up that serves the app's tests alone (`serves`: the campaigns of the tests
+ * that ask for it): test 21's is a package in the app and an exception scoped to the app, which no factory test's
+ * scan, pull request or gate reads. An app run is spoiled by any, as the app's checks are the factory copy's code.
+ */
+export const extraSpoils = (campaign: 'factory' | 'app', serves: readonly string[]) =>
+  !(campaign === 'factory' && serves.length > 0 && serves.every((served) => served === 'app'));
+
 // ── The worker's word that it cannot read the scan ──────────────────────────────────────────────────────────────────
 
 /** How the GitHub worker begins its error when a scan's artifact does not read (apps/factory/src/github/scanning.ts). */
@@ -292,4 +325,506 @@ export function pinsFault(
   return off.length
     ? `${off.map((pin) => `${pin.path} at ${pin.commit.slice(0, 7)}`).join(', ')}, not ${commit.slice(0, 7)}`
     : undefined;
+}
+
+// ── Whether the factory copy is at rest, for an app run ─────────────────────────────────────────────────────────────
+
+/**
+ * Why an app run may not start: what on the factory copy would roll the scratch cluster's factory while the app's test
+ * is judged clean. An open pin pull request of the App's merges at Guarded, and its build makes a deploy pin; an open
+ * deploy pin merges at every level. One deploy pin is no such thing: the one a reset leaves on a `main` that is still
+ * the baseline, red by design, as its base reached `main` by a force-push and no merge queue ran it.
+ */
+export function factoryBusy(o: {
+  /** The factory copy's open pull requests. */
+  pulls: readonly { number: number; title: string; author: string }[];
+  app: string;
+  main: string;
+  baseline: string;
+}): string | undefined {
+  const own = o.pulls.filter((p) => p.author === o.app);
+  const pins = own.filter((p) => p.title.startsWith('chore(pin)'));
+  const deploys = o.main === o.baseline ? [] : own.filter((p) => p.title.startsWith('chore(deploy)'));
+  const open = [...pins, ...deploys];
+  if (!open.length) return undefined;
+  return `the factory copy has ${open.map((p) => `#${p.number}`).join(', ')} of the App's open (${[
+    pins.length ? 'pin moves, which merge and are built' : '',
+    deploys.length ? 'a deploy pin on a main past the baseline, which merges' : '',
+  ]
+    .filter(Boolean)
+    .join('; ')}), and each would roll the factory under the app's test`;
+}
+
+// ── A hold, decided at one head and kept ────────────────────────────────────────────────────────────────────────────
+
+export interface HoldFacts {
+  number: number;
+  /** `open`, `closed` (unmerged) or `merged`. */
+  state: string;
+  head: string;
+  red: string[];
+  pending: string[];
+  /** The gate's rule at the head, once it has judged it; `held` with `gatePending` while it waits. */
+  rule?: string | undefined;
+  gatePending?: string | undefined;
+  queuedBy?: string | undefined;
+  touched: string[];
+}
+/**
+ * Whether a pull request that must not merge is decided at its head: unmerged and never queued, with every required
+ * check and the gate's verdict in. A forgery's is then final: no watch owns its branch. Any other's needs its checks
+ * green too, and the worker's last word at that head (`said`) to be the one that ends its pass: `verdict` for a head
+ * the gate held, `level` for one it passed, which the worker says only once the verdict, the checks and mergeability
+ * are through.
+ */
+export function holdDecided(pull: HoldFacts, said: string | undefined, forged: boolean): boolean {
+  if (pull.state === 'merged' || pull.queuedBy || pull.pending.length || pull.gatePending) return false;
+  if (forged) return true;
+  if (pull.red.length || pull.rule === undefined) return false;
+  return pull.rule === 'held' ? said === 'verdict' : said === 'level';
+}
+/**
+ * Why a hold decided at an earlier head no longer stands, or nothing while it does. The pin watch rightly writes a held
+ * pull request's head again when `main` moves under it, and the checks and the worker's word at the new head may come
+ * after the watch ends: pending checks there undo nothing. A merge does, a queue entry, anyone touching it, and a
+ * verdict of the gate at the later head by another rule than the one it was held under (`rule`, for a major).
+ */
+export function holdBroken(pulls: readonly HoldFacts[], rule?: string): string | undefined {
+  for (const p of pulls) {
+    const tag = `#${p.number}`;
+    if (p.state === 'merged') return `${tag} merged, and must not`;
+    if (p.queuedBy) return `${tag} queued by ${p.queuedBy} after its hold was decided`;
+    if (p.touched.length) return `${tag} touched: ${p.touched.join('; ')}`;
+    if (rule && p.state === 'open' && p.rule !== undefined && !p.gatePending && p.rule !== rule)
+      return `${tag}: the gate's rule at ${p.head.slice(0, 7)} is ${p.rule}, not ${rule}`;
+  }
+  return undefined;
+}
+
+/**
+ * Why a pull request that must not merge fails though it has not merged: it was added to the merge queue, which is the
+ * one thing a held move must never be, whether or not the queue has merged it yet.
+ */
+export function queuedFault(pulls: readonly Pick<HoldFacts, 'number' | 'queuedBy'>[]): string | undefined {
+  const queued = pulls.find((p) => p.queuedBy);
+  return queued ? `#${queued.number} was added to the merge queue by ${queued.queuedBy}, and must never be` : undefined;
+}
+
+/** One of Dependabot's open pull requests, as a run reads it before it starts. */
+export interface DependabotOpen {
+  number: number;
+  title: string;
+  /** When its head commit was made. */
+  headAt: string;
+  /** Whether it conflicts with `main`; undefined while GitHub has not worked it out. */
+  conflicting: boolean | undefined;
+}
+
+/**
+ * The pull requests of Dependabot's a run's tests need as it starts, and do not have: each as its test and the title
+ * it must match. One counts once it is open, its head was made since `main` was last put at the baseline
+ * (`baselineAt`) and it does not conflict with `main`: one a reset opened again stands on a `main` from before the
+ * baseline until Dependabot has made it again. A test judged on such a pull request proves nothing without it. One
+ * needed as it is (`asIs`: a pull request the worker must leave alone, on whatever base it has) counts once it is open.
+ * One Dependabot opened itself and no reset closes (`anyAge`: a patch of one line against `main`) counts at any age,
+ * so long as it does not conflict.
+ */
+export function dependabotMissing(
+  needs: readonly { test: string; title: RegExp; asIs?: boolean; anyAge?: boolean }[],
+  open: readonly DependabotOpen[],
+  baselineAt: string,
+): string[] {
+  return needs.flatMap((need) => {
+    const titled = open.filter((pull) => need.title.test(pull.title));
+    const since = (pull: DependabotOpen) => need.anyAge || Date.parse(pull.headAt) > Date.parse(baselineAt);
+    if (need.asIs && titled.length) return [];
+    if (titled.some((pull) => since(pull) && pull.conflicting === false)) return [];
+    const needs = `test ${need.test} needs Dependabot's pull request titled ${need.title.source}`;
+    const [first] = titled;
+    if (!first) return [`${needs} open, and none is`];
+    if (!since(first)) return [`${needs} made again on the baseline, and #${first.number}'s head is from before it`];
+    return [
+      first.conflicting
+        ? `${needs} without a conflict, and #${first.number} conflicts with main`
+        : `${needs} without a conflict, and GitHub has not said whether #${first.number} has one`,
+    ];
+  });
+}
+
+/**
+ * What a run does about tests whose pull request of Dependabot's could not be had: each is dropped from the run, with
+ * no verdict, while a test of the run is left to judge; when none would be, the run stops, as there is nothing to run.
+ * One test's missing set-up never costs the others their verdicts.
+ */
+export function withoutDependabot(
+  missing: readonly { test: string; why: string }[],
+  run: readonly string[],
+): { dropped: Record<string, string>; stop: string[] } {
+  const lacking = new Set(missing.map((m) => m.test));
+  if (run.every((id) => lacking.has(id))) return { dropped: {}, stop: missing.map((m) => m.why) };
+  const dropped: Record<string, string> = {};
+  for (const m of missing) dropped[m.test] = dropped[m.test] ? `${dropped[m.test]}; ${m.why}` : m.why;
+  return { dropped, stop: [] };
+}
+
+// ── An issue that must say why ──────────────────────────────────────────────────────────────────────────────────────
+
+export interface IssueFacts {
+  number: number;
+  author: string;
+  title: string;
+  body: string;
+}
+/**
+ * What an issue must show: words in code (a package), words it says, words it never does, and, where it must give one
+ * of several reasons, each by its kind (`kinds`): the issue gives the first whose words it has.
+ */
+export interface IssueWants {
+  names: string[];
+  says: RegExp[];
+  never?: RegExp[];
+  kinds?: Record<string, RegExp>;
+}
+/**
+ * Why the pin step refused a move, as the worker's issue says each kind (apps/factory/src/github/pins.ts's `REFUSED`),
+ * but its catch-all, which says no reason: a release too young, one with weaker provenance, an install script not
+ * allowed, a copy only an override would move, a release mise could not lock.
+ */
+export const REFUSAL_KINDS: Record<string, RegExp> = {
+  young: /younger than the minimum age/,
+  provenance: /weaker provenance/,
+  script: /an install script/,
+  override: /an override/,
+  lock: /mise could not lock/,
+};
+/**
+ * The App's issue that names every one of `names` in code, and why it falls short of what it must say, if it does.
+ * With no such issue, the fault says so.
+ */
+export function issueFault(
+  issues: readonly IssueFacts[],
+  app: string,
+  wants: IssueWants,
+): { number?: number; kind?: string; fault?: string } {
+  const named = wants.names.map((name) => `\`${name}\``).join(' and ');
+  const issue = issues.find((i) => i.author === app && wants.names.every((name) => i.body.includes(`\`${name}\``)));
+  if (!issue) return { fault: `no issue of the App's names ${named}` };
+  const lacks = wants.says.filter((words) => !words.test(issue.body));
+  if (lacks.length)
+    return {
+      number: issue.number,
+      fault: `issue #${issue.number} does not say ${lacks.map((w) => w.source).join(', ')}`,
+    };
+  const has = (wants.never ?? []).filter((words) => words.test(issue.body));
+  if (has.length)
+    return { number: issue.number, fault: `issue #${issue.number} says ${has.map((w) => w.source).join(', ')}` };
+  if (!wants.kinds) return { number: issue.number };
+  const kind = Object.entries(wants.kinds).find(([, words]) => words.test(issue.body))?.[0];
+  return kind
+    ? { number: issue.number, kind }
+    : {
+        number: issue.number,
+        fault: `issue #${issue.number} gives none of the reasons it may (${Object.keys(wants.kinds).join(', ')})`,
+      };
+}
+/** Whether an issue's title is the pin watch's for a move of this name: to a target, or off a line no longer built. */
+export const issueOfMove = (title: string, name: string) =>
+  title.startsWith(`Move ${name} to `) || title.startsWith(`Move ${name} off `);
+
+// ── A pod still starting, before the cluster is judged clean ────────────────────────────────────────────────────────
+
+export interface PodFacts {
+  /** `<namespace>/<name>`. */
+  name: string;
+  phase: string;
+  ready: boolean;
+  restarts: number;
+  /** Why each of its containers that waits does, as the kubelet says it (`ContainerCreating`, `CrashLoopBackOff`). */
+  waiting: string[];
+  /** The Deployment its ReplicaSet is of, `<namespace>/<name>`, when it has one. */
+  deployment?: string | undefined;
+}
+/** A container's waiting that is a start, and no fault: its image is being pulled or its sandbox made. */
+const STARTING = new Set(['ContainerCreating', 'PodInitializing']);
+/**
+ * The pods a run waits for before it takes its one look at the cluster: those of a rollout still in flight, which are
+ * starting and have shown no fault. A deploy that merged as the watch ended rolls every Deployment of the image, and a
+ * pod with a long pull, or one Ready only after its first pass, is Running and not Ready for minutes. Such a pod is
+ * waited for while its Deployment's rollout is progressing (`progressing`), it has not restarted, and none of its
+ * containers waits for anything but its start. Any other pod is judged at once, and one waited for is judged as it
+ * stands when the wait is over: the look itself is no weaker.
+ */
+export function startingPods(pods: readonly PodFacts[], progressing: readonly string[]): string[] {
+  return pods
+    .filter((pod) => ['Pending', 'Running'].includes(pod.phase) && !pod.ready)
+    .filter((pod) => pod.restarts === 0 && pod.waiting.every((why) => STARTING.has(why)))
+    .filter((pod) => pod.deployment !== undefined && progressing.includes(pod.deployment))
+    .map((pod) => pod.name);
+}
+/**
+ * Whether a Deployment's rollout is in flight, from its `Progressing` condition: true and not yet for a new ReplicaSet
+ * that is available. One past its progress deadline is not: its condition is false.
+ */
+export const rolloutProgressing = (conditions: readonly { type: string; status: string; reason?: string }[]) =>
+  conditions.some((c) => c.type === 'Progressing' && c.status === 'True' && c.reason !== 'NewReplicaSetAvailable');
+
+// ── Dependabot's pull request for a pin the App moved ───────────────────────────────────────────────────────────────
+
+/** How the worker's comment begins as it closes Dependabot's pull request for versions `main` already has. */
+export const DUPLICATE_CLOSED = '`main` already has every version this moves';
+export interface DuplicateFacts {
+  number: number;
+  /** `open`, `closed` (unmerged) or `merged`. */
+  state: string;
+  closedAt?: string | undefined;
+  closedBy?: string | undefined;
+  /** When it was last opened: its creation, or a later reopening. */
+  openedAt: string;
+  comments: { author: string; body: string; at: string }[];
+}
+/**
+ * Dependabot's pull request for a pin the App's move also makes (test 22): open when that move merged, then closed by
+ * the App, with a comment that begins as the worker's does and names the merge, by its pull request or its commit.
+ * Dependabot closes its own once it sees `main` has the version, and may get there first: that is no fault of the
+ * worker's, and no proof of it either, so the line says which happened and does not pass. Nor is there a verdict when
+ * Dependabot's pull request writes a line the App's move did not (`lines`: what each diff adds): `main` never has what
+ * it moves, the worker rightly leaves it, and the line quotes both. Closed by the App all the same, it fails.
+ */
+export function duplicateVerdict(o: {
+  pull: DuplicateFacts | undefined;
+  app: string;
+  /** The App's move that put the versions on `main`, once it has merged. */
+  merge: { number: number; commit: string; at: string } | undefined;
+  /** The lines Dependabot's diff adds (`theirs`) and those the App's merged move added (`ours`), once both are read. */
+  lines?: { theirs: string[]; ours: string[] } | undefined;
+}): { pass: boolean; why: string } {
+  const fail = (why: string) => ({ pass: false, why });
+  const { pull, merge } = o;
+  if (!pull)
+    return fail(
+      "no pull request of Dependabot's for it: nothing for the worker to close (the set-up's, not the code's)",
+    );
+  const tag = `Dependabot's #${pull.number}`;
+  if (pull.state === 'merged') return fail(`${tag} merged, and the App's move was to make it`);
+  if (!merge) return fail(`${tag} is ${pull.state}; the App's move has not merged`);
+  if (pull.openedAt > merge.at || (pull.closedAt && pull.closedAt < merge.at))
+    return fail(`${tag} was not open when #${merge.number} merged: nothing for the worker to close (the set-up's)`);
+  const other = o.lines?.theirs.find((line) => !o.lines?.ours.includes(line));
+  if (other !== undefined) {
+    const both = `it moves to \`${other}\`, and #${merge.number} moved to \`${o.lines?.ours.join('`, `') ?? ''}\``;
+    if (pull.closedBy === o.app) return fail(`${tag} closed by the App, though main lacks its line: ${both}`);
+    return fail(`no verdict: ${tag} is not a duplicate of #${merge.number}, so the worker rightly leaves it: ${both}`);
+  }
+  if (pull.state === 'open') return fail(`${tag} still open after #${merge.number} merged`);
+  if (pull.closedBy !== o.app)
+    return fail(
+      `no verdict: ${tag} was closed by ${pull.closedBy ?? 'nobody known'}, before the worker closed it; no fault of the worker's, and no proof of it`,
+    );
+  const said = pull.comments.find((c) => c.author === o.app && c.body.trimStart().startsWith(DUPLICATE_CLOSED));
+  if (!said) return fail(`${tag} closed by the App with no comment that begins "${DUPLICATE_CLOSED}"`);
+  if (!said.body.includes(`#${merge.number}`) && !said.body.includes(merge.commit.slice(0, 7)))
+    return fail(
+      `${tag} closed by the App, and its comment names neither #${merge.number} nor ${merge.commit.slice(0, 7)}`,
+    );
+  return { pass: true, why: `${tag} closed by the App once #${merge.number} merged, its comment naming the merge` };
+}
+/**
+ * Why a pull request of Dependabot's that `main` does not have every line of was not left alone, if it was not: it
+ * must still be open. Closed by the App is the worker's fault; closed by anyone else shows nothing of the worker.
+ */
+export function leftAloneFault(pulls: readonly DuplicateFacts[], app: string): string | undefined {
+  if (!pulls.length)
+    return "no pull request of Dependabot's that main lacks the lines of, to be left alone (the set-up's)";
+  const closed = pulls.find((p) => p.state !== 'open');
+  if (!closed) return undefined;
+  return closed.closedBy === app
+    ? `Dependabot's #${closed.number}, whose lines main lacks, was closed by the App`
+    : `no verdict: Dependabot's #${closed.number}, whose lines main lacks, was closed by ${closed.closedBy ?? 'nobody known'}, not left open`;
+}
+
+/**
+ * What a move's line says of Dependabot's pull request for the same pin beside it, which is no part of the move's own
+ * verdict: that there was none, or what became of it once the move merged. Closed by the App with the worker's
+ * comment, it is the duplicate watch seen at work in that repository.
+ */
+export function besideWords(pull: DuplicateFacts | undefined, app: string, mergedAt: string | undefined): string {
+  if (!pull) return "no pull request of Dependabot's beside it";
+  const tag = `Dependabot's #${pull.number} beside it`;
+  if (pull.state === 'merged') return `${tag} merged`;
+  if (pull.state === 'open') return `${tag} is still open`;
+  const after = mergedAt && pull.closedAt && pull.closedAt >= mergedAt ? ' after the merge' : '';
+  const said = pull.comments.some((c) => c.author === app && c.body.trimStart().startsWith(DUPLICATE_CLOSED));
+  if (pull.closedBy === app)
+    return said
+      ? `${tag} closed by the App as a duplicate${after}`
+      : `${tag} closed by the App${after}, with no comment that says why`;
+  return `${tag} closed by ${pull.closedBy ?? 'nobody known'}${after}`;
+}
+
+// ── A ticket that must close with no change of its own ──────────────────────────────────────────────────────────────
+
+export interface TicketFacts {
+  workItem: string;
+  takenAt?: string | undefined;
+  held?: string | undefined;
+  closed?: { outcome: string; reason: string } | undefined;
+  failures?: number | undefined;
+  events: string[];
+  issue?: { number: number; state?: string; reason?: string; by?: string } | undefined;
+}
+/**
+ * Why a ticket for a move `main` already has did not end as it must (W3's second, W3b's own): taken, never held,
+ * closed with the outcome and the reason asked, no step failed, and its issue closed as completed by the App.
+ */
+export function ticketFault(
+  ticket: TicketFacts,
+  wants: { closes: string; reason: RegExp },
+  app: string,
+): string | undefined {
+  const tag = `#${ticket.workItem}`;
+  if (!ticket.takenAt) return `${tag} never taken`;
+  if (ticket.held) return `${tag} held for Martin: ${ticket.held}`.slice(0, 420);
+  if (!ticket.closed) return `${tag} not closed: ${ticket.events.join(' ') || 'no event'}`.slice(0, 420);
+  if (ticket.closed.outcome !== wants.closes || !wants.reason.test(ticket.closed.reason))
+    return `${tag} closed ${ticket.closed.outcome}: ${ticket.closed.reason}`.slice(0, 420);
+  if (ticket.failures) return `${tag} closed ${ticket.closed.outcome} after ${ticket.failures} failed steps`;
+  const issue = ticket.issue;
+  if (!issue) return `${tag} closed ${ticket.closed.outcome} with no issue of its own`;
+  if (issue.state !== 'closed' || issue.reason !== 'completed' || issue.by !== app)
+    return `${tag}'s issue #${issue.number} is ${issue.state} (${issue.reason ?? 'no reason'}, by ${issue.by ?? 'nobody'}), not closed as completed by the App`;
+  return undefined;
+}
+
+// ── A target that moves on after the pull request opened ────────────────────────────────────────────────────────────
+
+/** A pinned copy of a package in pnpm's lockfile, as its `packages:` key line: two spaces, `<name>@<version>:`. */
+export const lockfileKey = (name: string, version: string) => `  ${name}@${version}:`;
+/**
+ * Why a move whose target the scan raised after its pull request opened (test 21) did not take the new target into
+ * the same pull request and issue, or nothing when it did. `first` is the target the first scan named and `later` the
+ * next one's. A first issue that never named `first` is the set-up's fault (the staged exception was not in force), and
+ * a pull request that merged before the later scan reached the line shows nothing either way.
+ */
+export function newerFault(o: {
+  number: number;
+  first: string;
+  later: string;
+  /** The issue's body when the pull request opened, and now. */
+  issueAtOpen: string | undefined;
+  issueNow: string | undefined;
+  /** The pull request's head when the later scan was given to the line, and now. */
+  headAtOpen: string | undefined;
+  headNow: string;
+  mergedAt?: string | undefined;
+  /** When the later scan's target reached the line: the sense restarted on it. */
+  toldAt: string | undefined;
+  /** The lockfile's key lines the pull request's diff adds. */
+  adds: string[];
+  name: string;
+}): string | undefined {
+  const tag = `#${o.number}`;
+  // A version as the move's target, which the line writes as a floor, in code or not: "`1.15.6` or later". The issue
+  // also lists each advisory with the release that fixes it, the earlier targets among them, which are no target.
+  const names = (text: string, version: string) =>
+    new RegExp(`(?<![\\d.])${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\`? or later`).test(text);
+  if (o.issueAtOpen === undefined) return `${tag}: its issue was not read when it opened`;
+  if (!names(o.issueAtOpen, o.first))
+    return `no verdict: the issue did not name ${o.first} when ${tag} opened, so the first scan's target was not the staged one (is the exception in force?)`;
+  if (!o.toldAt) return `${tag}: the later scan never reached the line`;
+  if (o.mergedAt && o.mergedAt < o.toldAt)
+    return `no verdict: ${tag} merged at ${o.first} before the later scan reached the line`;
+  if (o.headNow === o.headAtOpen)
+    return `${tag} is still at ${o.headNow.slice(0, 7)}, its head before the target moved`;
+  if (!o.adds.includes(lockfileKey(o.name, o.later)))
+    return `${tag} does not move ${o.name} to ${o.later} (it adds ${o.adds.map((l) => l.trim()).join(', ') || 'no copy of it'})`;
+  if (o.adds.includes(lockfileKey(o.name, o.first))) return `${tag} still moves a copy of ${o.name} to ${o.first}`;
+  if (o.issueNow === undefined) return `${tag}: its issue was not read at the end`;
+  if (!names(o.issueNow, o.later)) return `${tag}'s issue does not name ${o.later}`;
+  if (names(o.issueNow, o.first)) return `${tag}'s issue still names ${o.first}`;
+  return undefined;
+}
+
+/**
+ * What a move whose target moved on shows when its later target has advisories of its own (test 21's staging): the
+ * words of a line that is neither a pass nor a failure, or nothing when it is not that. It is that when everything
+ * `newerFault` asks short of the merge holds (the first issue named the first target, the later scan reached the line,
+ * the same pull request has a new head whose lockfile has the later target alone, and the issue names it alone), and
+ * the pull request is open, untouched, with nothing pending, and red on the scan's gates alone (`gates`).
+ */
+export function seenToTheGates(
+  o: Parameters<typeof newerFault>[0] & {
+    state: string;
+    red: string[];
+    pending: string[];
+    touched: string[];
+    gates: readonly string[];
+  },
+): string | undefined {
+  if (o.state !== 'open' || o.mergedAt || o.pending.length || o.touched.length) return undefined;
+  if (!o.red.length || !o.red.every((check) => o.gates.includes(check))) return undefined;
+  if (newerFault(o)) return undefined;
+  return `the same pull request and issue took the new target; not merged: the scan gates refuse ${o.later} for advisories of its own, the staging's`;
+}
+
+// ── The store restarting under a report ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What the log watcher's own log says of a store that went away under it: its warning that a check could not reach the
+ * store (`away`, level 40, commands/logs.ts's words), and after it its word that the check reached the store again
+ * (`back`).
+ */
+export function watcherRode(log: string): { away: boolean; back: boolean } {
+  let away = false;
+  let back = false;
+  for (const line of log.split('\n')) {
+    let entry: { level?: unknown; msg?: unknown };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const msg = typeof entry.msg === 'string' ? entry.msg : '';
+    if (entry.level === 40 && msg.includes('could not reach the store')) away = true;
+    else if (away && msg.includes('reached the store again')) back = true;
+  }
+  return { away, back };
+}
+
+/**
+ * A report left through the app's widget as the store goes away (W5): the store was back, no worker logged an error
+ * from the report on, the report is in the inbox once, and the log watcher met the outage: it warned that a check
+ * could not reach the store, and then said it reached it again. With no such warning the restart fell between the
+ * watcher's turns and nothing was shown of it: no verdict, never a pass.
+ */
+export function restartVerdict(o: {
+  /** The app's answer to the report: 202 when it took it. */
+  posted: number;
+  /** Whether the store's pod was deleted and came back Ready. */
+  restarted: boolean;
+  /** Each worker's error lines since the report, as `<pod>: <count> (<first>)`. */
+  errors: string[];
+  /** The inbox's rows for the report, at the end of the watch. */
+  inbox: number;
+  /** How long the report took to reach the inbox, in seconds. */
+  arrivedS?: number | undefined;
+  /** What the log watcher's log says of the outage (`watcherRode`). */
+  watcher?: { away: boolean; back: boolean } | undefined;
+}): { pass: boolean; why: string } {
+  const fail = (why: string) => ({ pass: false, why });
+  if (o.posted !== 202) return fail(`the app answered the report ${o.posted}, not 202: no report to wait for`);
+  if (!o.restarted) return fail('the store did not restart under it, or did not come back');
+  if (o.inbox === 0) return fail('the report never reached the inbox');
+  if (o.inbox > 1) return fail(`the report is in the inbox ${o.inbox} times, not once`);
+  if (o.errors.length)
+    return fail(`the report arrived once, but a worker logged an error: ${o.errors.join('; ')}`.slice(0, 420));
+  if (!o.watcher?.away)
+    return fail(
+      "no verdict: the restart fell between the watcher's turns (its log has no warning that a check could not reach the store)",
+    );
+  if (!o.watcher.back)
+    return fail('the log watcher warned it could not reach the store, and never said it reached it again');
+  return {
+    pass: true,
+    why: `the store was away under the report; the log watcher warned, and reached it again; in the inbox once, after ${o.arrivedS ?? '?'} s; no worker logged an error`,
+  };
 }

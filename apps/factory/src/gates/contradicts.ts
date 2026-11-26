@@ -13,7 +13,9 @@
  *     <!-- /factory:contradicts -->
  *
  * Only what lies between the markers is read. Each line there is a test file's path in backticks, `: `, then the
- * test's full name, its `describe` names and its own joined with " > ", as `tests.ts` names it. A line in any other
+ * test's full name, its `describe` names and its own joined with " > ", as `tests.ts` names it. A name that holds a
+ * scoped package's (`@grpc/proto-loader`), which GitHub would read as a team's mention, is written whole as inline
+ * code, where it is only text, and read back as the name inside. A line in any other
  * form, more than one pair of markers, or more than `MOST_CONTRADICTED` tests is malformed, and the gate fails on it
  * rather than guess. Node alone: the gates run from a sparse checkout, and the line imports this.
  */
@@ -45,6 +47,32 @@ const END_MARK = /<!--\s*\/\s*factory:contradicts\s*--!?>/gi;
 /** What starts or ends a comment in HTML. */
 const COMMENT_MARK = /<!--|--!?>/;
 const ENTRY = /^- `([^`]+)`: (.+)$/;
+/** A scoped package's name as npm writes it, with a version after it or none: `@grpc/proto-loader`, `@types/node@24`. */
+const SCOPED = /@[a-z\d][\w.~-]*\/[a-z\d][\w.~-]*(?:@[\w.~-]+)?/gi;
+
+/** A name as inline code that holds any text: fenced by more backticks than it has in a row. */
+function coded(name: string): string {
+  const longest = Math.max(0, ...(name.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = name.startsWith('`') || name.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${name}${pad}${fence}`;
+}
+
+/** The name inside, when what is written is one span of inline code and nothing else; undefined when it is not. */
+function codeOf(written: string): string | undefined {
+  const match = /^(`+)([^`].*[^`]|[^`])\1$/.exec(written);
+  if (!match) return undefined;
+  const [, fence = '', inside = ''] = match;
+  // A run of backticks as long as the fence would have closed the span before its end.
+  if ((inside.match(/`+/g) ?? []).some((run) => run.length === fence.length)) return undefined;
+  return inside.length > 2 && inside.startsWith(' ') && inside.endsWith(' ') ? inside.slice(1, -1) : inside;
+}
+
+/**
+ * A test's name as the section writes it: as it is, or whole as inline code when it names a scoped package, and when
+ * it is itself one span of code, which would otherwise be read back as the name inside.
+ */
+const written = (test: string) => (test.search(SCOPED) >= 0 || codeOf(test) !== undefined ? coded(test) : test);
 
 /** Why an entry cannot be written or read, or undefined when it can. */
 export function entryProblem({ file, test }: Contradicted): string | undefined {
@@ -62,9 +90,9 @@ export function entryProblem({ file, test }: Contradicted): string | undefined {
   if (/[\r\n]/.test(test)) return "its test's name is on more than one line";
   // Nothing that reads as a comment's start or end, so an entry can never make or break a marker.
   if (COMMENT_MARK.test(file) || COMMENT_MARK.test(test)) return 'it has "<!--", "-->" or "--!>" in it';
-  // A name is written as plain Markdown, where GitHub would turn these into a mention or a link.
-  if (/@\w/.test(test) || /#\d/.test(test)) {
-    return "its test's name has an @ before a word or a # before a digit, which GitHub would make a mention or a link";
+  // A scoped package's name is written in code (`written`); any other @ before a word would be someone's mention.
+  if (/@\w/.test(test.replace(SCOPED, '')) || /#\d/.test(test)) {
+    return "its test's name has an @ before a word that is no scoped package's name, or a # before a digit, which GitHub would make a mention or a link";
   }
   return undefined;
 }
@@ -79,7 +107,7 @@ export function render(tests: readonly Contradicted[]): string {
   const lines = tests.map((t) => {
     const problem = entryProblem(t);
     if (problem) throw new Error(`Cannot name ${JSON.stringify(t)}: ${problem}`);
-    return `- \`${t.file}\`: ${t.test}`;
+    return `- \`${t.file}\`: ${written(t.test)}`;
   });
   return [HEADING, '', ...INTRO, '', START, ...lines, END].join('\n');
 }
@@ -133,7 +161,8 @@ export function parse(description: string | null | undefined): { tests: Contradi
     .filter(Boolean);
   for (const [i, line] of lines.entries()) {
     const match = ENTRY.exec(line);
-    const entry = match && { file: match[1] as string, test: (match[2] as string).trim() };
+    const name = match && (match[2] as string).trim();
+    const entry = match && name ? { file: match[1] as string, test: codeOf(name) ?? name } : null;
     const problem = entry ? entryProblem(entry) : 'it is not "- `<file>`: <test>"';
     if (!entry || problem) {
       const quoted = [...line].length > 80 ? `${[...line].slice(0, 79).join('')}…` : line;

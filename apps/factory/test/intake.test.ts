@@ -5,11 +5,13 @@ import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { objectives } from '../../../policy/objectives.ts';
+import { BackendAnswered } from '../src/clients/http.ts';
 import { Loki } from '../src/clients/loki.ts';
 import { Prometheus } from '../src/clients/prometheus.ts';
 import { type Backends, parse, signalFor } from '../src/intake/alerts.ts';
 import { createIntake } from '../src/intake/server.ts';
 import type { Outbox } from '../src/outbox.ts';
+import { STORE_AWAY_MS } from '../src/store-absence.ts';
 import { fakeFetch, matrix, ns, streams, VERSION, vector } from './fakes.ts';
 
 const NOW = new Date('2026-10-03T21:00:00Z');
@@ -180,6 +182,94 @@ describe('the intake, over HTTP', () => {
   it('answers 503 when a backend fails, so that Alertmanager tries again', async () => {
     const answer = await post(webhook(errorAlert), { backends: backends([], { failPrometheus: true }) });
     expect(answer).toEqual({ status: 503, body: { accepted: 0, refused: 0, failed: 1 } });
+  });
+
+  describe('while what it depends on restarts', () => {
+    const cut = () => Object.assign(new Error('write CONNECTION_CLOSED postgres:5432'), { code: 'CONNECTION_CLOSED' });
+
+    /** An intake on a clock the test moves, whose sends end as `ends` says, and each line it logs. */
+    async function intake(ends: { send?: () => void; prometheus?: () => void }) {
+      let at = NOW.getTime();
+      const lines: { level: number; msg: string }[] = [];
+      const log = pino({ level: 'trace' }, { write: (line: string) => void lines.push(JSON.parse(line)) });
+      const reads = backends();
+      const range = reads.prometheus.range.bind(reads.prometheus);
+      reads.prometheus.range = async (...args) => {
+        ends.prometheus?.();
+        return range(...args);
+      };
+      const sent: InboxSignal[] = [];
+      const outbox: Outbox = {
+        send: async (signal) => {
+          ends.send?.();
+          sent.push(signal);
+        },
+      };
+      server = createServer(createIntake({ backends: { ...reads, now: () => new Date(at) }, outbox, log }));
+      const { url } = await listenLocal(server);
+      const alert = async () => {
+        const response = await fetch(`${url}/v1/alerts`, { method: 'POST', body: JSON.stringify(webhook(errorAlert)) });
+        return response.status;
+      };
+      const logged = () => lines.map(({ level, msg }) => `${pino.levels.labels[level]}: ${msg}`);
+      return { alert, logged, sent, after: (ms: number) => (at += ms) };
+    }
+
+    it('warns while the store restarts, still answering 503, and says when the alert sent again reaches it', async () => {
+      let away = true;
+      const { alert, logged, sent, after } = await intake({
+        send: () => {
+          if (away) throw cut();
+        },
+      });
+      expect(await alert()).toBe(503);
+      after(10_000);
+      away = false;
+      expect(await alert()).toBe(200);
+      expect(sent).toHaveLength(1);
+      expect(logged()).toEqual([
+        'warn: an alert could not reach the store, as for a restart; Alertmanager will send it again',
+        'info: an alert reached the store again, after 10 s',
+        'info: alert became a signal',
+      ]);
+    });
+
+    it('warns while Prometheus restarts, and says when the alert sent again reaches it', async () => {
+      let away = true;
+      const { alert, logged, after } = await intake({
+        prometheus: () => {
+          if (away) throw new BackendAnswered('query:9090/api/v1/query_range answered 502', 502);
+        },
+      });
+      expect(await alert()).toBe(503);
+      after(30_000);
+      away = false;
+      expect(await alert()).toBe(200);
+      expect(logged()).toEqual([
+        'warn: an alert could not reach the telemetry it reads, as for a restart; Alertmanager will send it again',
+        'info: an alert reached the telemetry it reads again, after 30 s',
+        'info: alert became a signal',
+      ]);
+    });
+
+    it('fails loudly once the store has been away a minute, and at once for anything else', async () => {
+      let failure = cut;
+      const { alert, logged, after } = await intake({
+        send: () => {
+          throw failure();
+        },
+      });
+      expect(await alert()).toBe(503);
+      after(STORE_AWAY_MS);
+      expect(await alert()).toBe(503);
+      failure = () => Object.assign(new Error('permission denied for table inbox'), { code: '42501' });
+      expect(await alert()).toBe(503);
+      expect(logged()).toEqual([
+        'warn: an alert could not reach the store, as for a restart; Alertmanager will send it again',
+        'error: alert failed: the store has been away for over a minute; Alertmanager will send it again',
+        'error: alert failed; Alertmanager will send it again',
+      ]);
+    });
   });
 
   it('answers a health check', async () => {

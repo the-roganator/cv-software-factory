@@ -4,24 +4,51 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  besideWords,
   branchFits,
   certainFail,
+  type DuplicateFacts,
+  dependabotMissing,
+  duplicateVerdict,
+  extraSpoils,
+  factoryBusy,
+  type HoldFacts,
+  holdBroken,
+  holdDecided,
   isRoutine,
+  issueFault,
+  issueOfMove,
+  leftAloneFault,
+  lockfileKey,
   moveFits,
+  newerFault,
+  type PodFacts,
   type PullFacts,
   pickScan,
   pinsFault,
+  pinWatchLacks,
   pinWatchLine,
   printOf,
   probeQuery,
+  queuedFault,
+  REFUSAL_KINDS,
+  restartVerdict,
+  rolloutProgressing,
   routineBranch,
   routineMajorBranch,
   type ScanRun,
   saysNotPulled,
+  seenToTheGates,
   settleMs,
   staleTarget,
+  startingPods,
+  stillListed,
+  type TicketFacts,
   targetOf,
+  ticketFault,
   unreadMoves,
+  watcherRode,
+  withoutDependabot,
   withSetting,
   workflowPins,
 } from './decide.ts';
@@ -382,5 +409,580 @@ describe("the app's pins of the factory's workflows", () => {
     const files = { 'x.yml': caller(a, 'review.yml'), 'y.yml': caller(b, 'codeql.yml') };
     expect(pinsFault(files, repo, a, 2)).toBe('y.yml at bbbbbbb, not aaaaaaa');
     expect(pinsFault(files, repo, a, 6)).toMatch(/^2 pins of .*, not 6$/);
+  });
+});
+
+describe('a move the next scan still lists', () => {
+  const lockfile = 'a package in `pnpm-lock.yaml`';
+
+  it('is one of the first scan, by its name and the version its pins held', () => {
+    const before = [{ name: 'prometheus', from: '29.35.0' }];
+    expect(stillListed(before, [{ name: 'prometheus', from: '29.35.0' }])).toHaveLength(1);
+  });
+
+  it('is not the next move of the same pin, from the version the first moved to', () => {
+    const before = [{ name: 'prometheus', from: '29.35.0' }];
+    expect(stillListed(before, [{ name: 'prometheus', from: '29.49.0' }])).toEqual([]);
+  });
+
+  it('is not a move of another name from the same version', () => {
+    expect(stillListed([{ name: 'loki', from: '1.0.0' }], [{ name: 'grafana', from: '1.0.0' }])).toEqual([]);
+  });
+
+  it('keeps every lockfile move of the name, as none says its version, so they are counted as before', () => {
+    const before = [1, 2, 3].map(() => ({ name: lockfile, from: '' }));
+    const after = [1, 2].map(() => ({ name: lockfile, from: '' }));
+    expect(stillListed(before, after)).toHaveLength(2);
+    expect(stillListed([], after)).toEqual([]);
+  });
+});
+
+describe('the factory copy at rest, for an app run', () => {
+  const app = 'scratch[bot]';
+  const pin = { number: 885, title: 'chore(pin): move prometheus to 29.49.0', author: app };
+  const deploy = { number: 884, title: 'chore(deploy): run console 108575d and the factory 108575d', author: app };
+  const at = { app, main: 'aaa', baseline: 'aaa' };
+
+  it("rests with nothing open, or only others' pull requests", () => {
+    expect(factoryBusy({ ...at, pulls: [] })).toBeUndefined();
+    const others = [
+      { number: 3, title: 'chore(deps): Bump the "playwright" group', author: 'dependabot[bot]' },
+      { number: 9, title: 'chore(pin): move postgres to 18.7', author: 'mrogan' },
+      { number: 10, title: 'chore(main): release 1.2.0', author: app },
+    ];
+    expect(factoryBusy({ ...at, pulls: others })).toBeUndefined();
+  });
+
+  it("does not rest while a pin move of the App's is open, at the baseline or past it", () => {
+    expect(factoryBusy({ ...at, pulls: [pin] })).toContain('#885');
+    expect(factoryBusy({ ...at, main: 'bbb', pulls: [pin] })).toContain('#885');
+  });
+
+  it('passes over the deploy pin a reset leaves on the baseline, red by design', () => {
+    expect(factoryBusy({ ...at, pulls: [deploy] })).toBeUndefined();
+  });
+
+  it('does not rest while a deploy pin is open on a main past the baseline', () => {
+    const why = factoryBusy({ ...at, main: 'bbb', pulls: [deploy, pin] });
+    expect(why).toContain('#885, #884');
+    expect(why).toContain('deploy pin');
+  });
+});
+
+describe('a hold, decided at one head and kept', () => {
+  const held: HoldFacts = { number: 18, state: 'open', head: 'a'.repeat(40), red: [], pending: [], touched: [] };
+  const major = { ...held, rule: 'major' };
+
+  it('is decided for a head the gate passed once the worker says it waits for the level', () => {
+    expect(holdDecided(major, 'level', false)).toBe(true);
+    expect(holdDecided(major, 'verdict', false)).toBe(false);
+    expect(holdDecided(major, undefined, false)).toBe(false);
+  });
+
+  it('is decided for a head the gate held once the worker says it waits for the verdict', () => {
+    expect(holdDecided({ ...held, rule: 'held' }, 'verdict', false)).toBe(true);
+    expect(holdDecided({ ...held, rule: 'held' }, 'level', false)).toBe(false);
+  });
+
+  it('is not decided while anything is pending, red, queued, merged or unjudged', () => {
+    expect(holdDecided({ ...major, pending: ['platform'] }, 'level', false)).toBe(false);
+    expect(holdDecided({ ...major, gatePending: 'checks' }, 'level', false)).toBe(false);
+    expect(holdDecided({ ...major, red: ['title'] }, 'level', false)).toBe(false);
+    expect(holdDecided({ ...major, queuedBy: 'scratch[bot]' }, 'level', false)).toBe(false);
+    expect(holdDecided({ ...major, state: 'merged' }, 'level', false)).toBe(false);
+    expect(holdDecided(held, 'level', false)).toBe(false);
+  });
+
+  it("is decided for a forgery by its checks and the gate's verdict alone", () => {
+    expect(holdDecided({ ...held, rule: 'held', red: ['title'] }, undefined, true)).toBe(true);
+    expect(holdDecided({ ...held, pending: ['review'] }, undefined, true)).toBe(false);
+  });
+
+  it('stands at a later head whose checks are pending or red, or which the gate has not judged', () => {
+    const later = { ...held, head: 'b'.repeat(40), pending: ['platform', 'review'] };
+    expect(holdBroken([later], 'major')).toBeUndefined();
+    expect(holdBroken([{ ...later, pending: [], red: ['platform'], rule: 'major' }], 'major')).toBeUndefined();
+    expect(holdBroken([{ ...later, rule: 'held', gatePending: 'checks' }], 'major')).toBeUndefined();
+    expect(holdBroken([{ ...later, state: 'closed' }], 'major')).toBeUndefined();
+  });
+
+  it('is broken by a merge, a queue entry, or anyone touching it', () => {
+    expect(holdBroken([{ ...major, state: 'merged' }], 'major')).toBe('#18 merged, and must not');
+    expect(holdBroken([{ ...major, queuedBy: 'scratch[bot]' }], 'major')).toContain('queued by scratch[bot]');
+    expect(holdBroken([{ ...major, touched: ['labeled by mrogan'] }], 'major')).toContain('labeled by mrogan');
+  });
+
+  it('is broken by a later verdict of the gate by another rule, where a rule is asked', () => {
+    expect(holdBroken([{ ...major, rule: 'move' }], 'major')).toContain('is move, not major');
+    expect(holdBroken([{ ...major, rule: 'held' }], 'major')).toContain('is held, not major');
+    expect(holdBroken([{ ...major, rule: 'move' }])).toBeUndefined();
+  });
+});
+
+describe('a move that must not merge, and the merge queue', () => {
+  it('fails once it was queued, merged yet or not', () => {
+    expect(queuedFault([{ number: 18, queuedBy: 'scratch[bot]' }])).toBe(
+      '#18 was added to the merge queue by scratch[bot], and must never be',
+    );
+    expect(queuedFault([{ number: 17 }, { number: 18, queuedBy: 'mrogan' }])).toContain('#18');
+  });
+
+  it('has no fault while none was ever queued', () => {
+    expect(queuedFault([{ number: 18 }, { number: 19, queuedBy: undefined }])).toBeUndefined();
+    expect(queuedFault([])).toBeUndefined();
+  });
+});
+
+describe("the pull requests of Dependabot's a run needs open as it starts", () => {
+  const needs = [
+    { test: 'N1', title: /bump node from/i },
+    { test: '12', title: /anchore\/syft/i },
+  ];
+
+  const BASELINE = '2026-11-25T10:00:00Z';
+  const pull = (number: number, title: string, headAt = '2026-11-25T10:04:00Z', conflicting?: boolean) => ({
+    number,
+    title,
+    headAt,
+    conflicting: conflicting ?? false,
+  });
+  const node = 'chore(deps): bump node from 24.22.0 to 24.22.3';
+  const syft = 'chore(deps): Bump anchore/syft from v1.54.0';
+
+  it('lacks none when each has an open one of its title, made since the baseline and without a conflict', () => {
+    expect(dependabotMissing(needs, [pull(4, node), pull(7, syft)], BASELINE)).toEqual([]);
+    expect(dependabotMissing([], [], BASELINE)).toEqual([]);
+    // One needed as it is counts on any base, conflicting or not, so long as it is open.
+    const asIs = [{ test: '22', title: /anchore\/syft/i, asIs: true }];
+    expect(dependabotMissing(asIs, [pull(7, syft, '2026-11-15T08:00:00Z', true)], BASELINE)).toEqual([]);
+    expect(dependabotMissing(asIs, [], BASELINE)[0]).toContain('none is');
+    // One Dependabot opened itself counts at any age, unless it conflicts or GitHub has not said.
+    const anyAge = [{ test: '22', title: /anchore\/syft/i, anyAge: true }];
+    expect(dependabotMissing(anyAge, [pull(7, syft, '2026-11-15T08:00:00Z', false)], BASELINE)).toEqual([]);
+    expect(dependabotMissing(anyAge, [pull(7, syft, '2026-11-15T08:00:00Z', true)], BASELINE)[0]).toContain(
+      'conflicts with main',
+    );
+    expect(dependabotMissing(anyAge, [], BASELINE)[0]).toContain('none is');
+  });
+
+  it('drops a test that lacks one while others are left to judge, and stops the run when none is', () => {
+    const missing = [{ test: '22', why: 'test 22 needs one' }];
+    expect(withoutDependabot(missing, ['1', '2', '22'])).toEqual({ dropped: { '22': 'test 22 needs one' }, stop: [] });
+    expect(withoutDependabot(missing, ['22'])).toEqual({ dropped: {}, stop: ['test 22 needs one'] });
+    expect(withoutDependabot([], ['1', '22'])).toEqual({ dropped: {}, stop: [] });
+    const two = [...missing, { test: '22', why: 'and another' }];
+    expect(withoutDependabot(two, ['1', '22']).dropped['22']).toBe('test 22 needs one; and another');
+  });
+
+  it('names each test whose pull request is not open', () => {
+    const missing = dependabotMissing(needs, [pull(4, node)], BASELINE);
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toContain('test 12');
+    expect(missing[0]).toContain('open, and none is');
+    expect(dependabotMissing(needs, [], BASELINE)).toHaveLength(2);
+  });
+
+  it('lacks one opened again whose branch Dependabot has not made again on the baseline, or that conflicts', () => {
+    // Reopened: its head is the one it was closed with, from before the baseline.
+    const stale = dependabotMissing(needs, [pull(4, node), pull(7, syft, '2026-11-24T08:00:00Z')], BASELINE);
+    expect(stale).toEqual([expect.stringContaining("test 12 needs Dependabot's pull request")]);
+    expect(stale[0]).toContain("#7's head is from before it");
+    const conflicting = dependabotMissing(needs, [pull(4, node), pull(7, syft, undefined, true)], BASELINE);
+    expect(conflicting[0]).toContain('#7 conflicts with main');
+    // GitHub works a conflict out after a push: until it has, the pull request is not yet the one the test needs.
+    const unknown = [pull(4, node), { ...pull(7, syft), conflicting: undefined }];
+    expect(dependabotMissing(needs, unknown, BASELINE)[0]).toContain('has not said whether #7 has one');
+    // One of the title that is ready is enough, whatever another of it is.
+    const two = [pull(4, node), pull(7, syft, '2026-11-24T08:00:00Z'), pull(9, syft)];
+    expect(dependabotMissing(needs, two, BASELINE)).toEqual([]);
+  });
+});
+
+describe('a staged extra no test of the run asks for', () => {
+  it("leaves a factory run alone when it serves the app's tests only", () => {
+    expect(extraSpoils('factory', ['app'])).toBe(false);
+  });
+
+  it('spoils a factory run when a factory test asks for it, or none does', () => {
+    expect(extraSpoils('factory', ['factory'])).toBe(true);
+    expect(extraSpoils('factory', ['app', 'factory'])).toBe(true);
+    expect(extraSpoils('factory', [])).toBe(true);
+  });
+
+  it('spoils an app run, whoever it serves', () => {
+    expect(extraSpoils('app', ['app'])).toBe(true);
+    expect(extraSpoils('app', ['factory'])).toBe(true);
+  });
+});
+
+describe('the moves the pin watch was not told to take', () => {
+  const base = 'mcr.microsoft.com/devcontainers/base';
+
+  it('lacks none when it takes every move, or each by name', () => {
+    expect(pinWatchLacks('*', [base, 'postgres'])).toEqual([]);
+    expect(pinWatchLacks(`postgres, ${base}`, [base, 'postgres'])).toEqual([]);
+    expect(pinWatchLacks('', [])).toEqual([]);
+  });
+
+  it('lacks every one when told nothing, and each one not named', () => {
+    expect(pinWatchLacks('', [base])).toEqual([base]);
+    expect(pinWatchLacks('postgres', [base, 'postgres'])).toEqual([base]);
+    expect(pinWatchLacks('postgres-exporter', ['postgres'])).toEqual(['postgres']);
+  });
+});
+
+describe('a pod still starting, before the cluster is judged clean', () => {
+  const probes: PodFacts = {
+    name: 'factory/probes-5f4cfb7d7d-mqvr5',
+    phase: 'Running',
+    ready: false,
+    restarts: 0,
+    waiting: [],
+    deployment: 'factory/probes',
+  };
+  const rolling = ['factory/probes'];
+
+  it("is waited for while its Deployment's rollout is in flight and it has shown no fault", () => {
+    expect(startingPods([probes], rolling)).toEqual([probes.name]);
+    expect(startingPods([{ ...probes, phase: 'Pending', waiting: ['ContainerCreating'] }], rolling)).toHaveLength(1);
+  });
+
+  it('is not waited for once ready, or when no rollout of its Deployment is in flight', () => {
+    expect(startingPods([{ ...probes, ready: true }], rolling)).toEqual([]);
+    expect(startingPods([probes], [])).toEqual([]);
+    expect(startingPods([probes], ['factory/line'])).toEqual([]);
+    expect(startingPods([{ ...probes, deployment: undefined }], rolling)).toEqual([]);
+  });
+
+  it('is judged at once after a restart, in a back-off, or failed', () => {
+    expect(startingPods([{ ...probes, restarts: 1 }], rolling)).toEqual([]);
+    expect(startingPods([{ ...probes, waiting: ['CrashLoopBackOff'] }], rolling)).toEqual([]);
+    expect(startingPods([{ ...probes, phase: 'Pending', waiting: ['ImagePullBackOff'] }], rolling)).toEqual([]);
+    expect(startingPods([{ ...probes, phase: 'Failed' }], rolling)).toEqual([]);
+  });
+
+  it("reads a rollout in flight from the Deployment's Progressing condition", () => {
+    const progressing = (reason: string, status = 'True') => [
+      { type: 'Available', status: 'True', reason: 'MinimumReplicasAvailable' },
+      { type: 'Progressing', status, reason },
+    ];
+    expect(rolloutProgressing(progressing('ReplicaSetUpdated'))).toBe(true);
+    expect(rolloutProgressing(progressing('NewReplicaSetAvailable'))).toBe(false);
+    expect(rolloutProgressing(progressing('ProgressDeadlineExceeded', 'False'))).toBe(false);
+    expect(rolloutProgressing([])).toBe(false);
+  });
+});
+
+describe('an issue that must say why', () => {
+  const app = 'scratch[bot]';
+  const wants = { names: ['lefthook', '2.2.2'], says: [/weaker provenance/], never: [/log says which/] };
+  const issue = (body: string, author = app) => ({ number: 891, author, title: 'Move a package', body });
+
+  it("passes when the App's issue names the package and release in code and says why", () => {
+    const body = 'pnpm refused `lefthook` at `2.2.2`: it has a weaker provenance than the release before.';
+    expect(issueFault([issue(body)], app, wants)).toEqual({ number: 891 });
+  });
+
+  it("finds no issue when none names both in code, or the one that does is not the App's", () => {
+    expect(issueFault([issue('lefthook 2.2.2, a weaker provenance')], app, wants).fault).toContain('no issue');
+    const body = '`lefthook` `2.2.2` weaker provenance';
+    expect(issueFault([issue(body, 'mrogan')], app, wants).fault).toContain('no issue');
+    expect(issueFault([], app, wants).number).toBeUndefined();
+  });
+
+  it('fails one that does not say why, or that sends the reader to a log', () => {
+    expect(issueFault([issue('`lefthook` `2.2.2` was refused')], app, wants).fault).toContain('does not say');
+    const body = '`lefthook` `2.2.2`: a weaker provenance, or an install script. The worker’s log says which.';
+    expect(issueFault([issue(body)], app, wants)).toEqual({ number: 891, fault: 'issue #891 says log says which' });
+  });
+
+  it("gives the kind of the worker's reason, whichever of them the issue has", () => {
+    const refused = { names: ['lefthook'], says: [/`\d+\.\d+\.\d+`/], never: [/log says which/], kinds: REFUSAL_KINDS };
+    const young =
+      'The pin step could not make `lefthook` `2.2.2`: the release is younger than the minimum age this repository gives a release.';
+    expect(issueFault([issue(young)], app, refused)).toEqual({ number: 891, kind: 'young' });
+    const provenance = '`lefthook` `2.2.2`: published with weaker provenance than the release before it.';
+    expect(issueFault([issue(provenance)], app, refused)).toEqual({ number: 891, kind: 'provenance' });
+    for (const [kind, words] of [
+      ['script', 'the release has an install script this repository does not allow'],
+      ['override', 'it goes with an override for that copy'],
+      ['lock', 'mise could not lock the release'],
+    ])
+      expect(issueFault([issue(`\`lefthook\` \`2.2.3\`: ${words}.`)], app, refused).kind).toBe(kind);
+  });
+
+  it('fails the catch-all, which gives no reason, and an issue that names no release in code', () => {
+    const refused = { names: ['lefthook'], says: [/`\d+\.\d+\.\d+`/], never: [/log says which/], kinds: REFUSAL_KINDS };
+    const other =
+      'The pin step could not make `lefthook` `2.2.2` on the commit it read. The watch makes it once a scan can.';
+    expect(issueFault([issue(other)], app, refused).fault).toContain('gives none of the reasons');
+    const unnamed = '`lefthook`: the release is younger than the minimum age.';
+    expect(issueFault([issue(unnamed)], app, refused).fault).toContain('does not say');
+  });
+
+  it("knows the pin watch's title for a move, to a target or off a line no longer built", () => {
+    const base = 'mcr.microsoft.com/devcontainers/base';
+    expect(issueOfMove(`Move ${base} off a line no longer built`, base)).toBe(true);
+    expect(issueOfMove('Move postgres to image 18.7', 'postgres')).toBe(true);
+    expect(issueOfMove('Move postgres-exporter to image 1', 'postgres')).toBe(false);
+  });
+});
+
+describe("Dependabot's pull request for a pin the App moved", () => {
+  const app = 'scratch[bot]';
+  const merge = { number: 900, commit: 'c0ffee1234', at: '2026-11-25T10:20:00Z' };
+  const said = {
+    author: app,
+    body: '`main` already has every version this moves, since #900.',
+    at: '2026-11-25T10:21:00Z',
+  };
+  const pull: DuplicateFacts = {
+    number: 3,
+    state: 'closed',
+    openedAt: '2026-11-25T10:00:00Z',
+    closedAt: '2026-11-25T10:21:00Z',
+    closedBy: app,
+    comments: [said],
+  };
+
+  it('passes when the App closed it after the merge, its comment naming the merge', () => {
+    expect(duplicateVerdict({ pull, app, merge }).pass).toBe(true);
+    const byCommit = { ...said, body: '`main` already has every version this moves, at c0ffee1.' };
+    expect(duplicateVerdict({ pull: { ...pull, comments: [byCommit] }, app, merge }).pass).toBe(true);
+  });
+
+  it('fails while it is open after the merge, or when it merged', () => {
+    const open = { ...pull, state: 'open', closedAt: undefined, closedBy: undefined, comments: [] };
+    expect(duplicateVerdict({ pull: open, app, merge }).why).toContain('still open');
+    expect(duplicateVerdict({ pull: open, app, merge: undefined }).why).toContain('has not merged');
+    expect(duplicateVerdict({ pull: { ...pull, state: 'merged' }, app, merge }).pass).toBe(false);
+  });
+
+  it('fails a close with no such comment, or one that names no merge', () => {
+    expect(duplicateVerdict({ pull: { ...pull, comments: [] }, app, merge }).why).toContain('no comment');
+    const elsewhere = { ...said, body: 'Closing: `main` already has every version this moves, since #900.' };
+    expect(duplicateVerdict({ pull: { ...pull, comments: [elsewhere] }, app, merge }).why).toContain('no comment');
+    const unnamed = { ...said, body: '`main` already has every version this moves.' };
+    expect(duplicateVerdict({ pull: { ...pull, comments: [unnamed] }, app, merge }).why).toContain('names neither');
+  });
+
+  it('gives no verdict when Dependabot closed its own first, and says so', () => {
+    const own = { ...pull, closedBy: 'dependabot[bot]', comments: [] };
+    const verdict = duplicateVerdict({ pull: own, app, merge });
+    expect(verdict.pass).toBe(false);
+    expect(verdict.why).toContain('no verdict');
+    expect(verdict.why).toContain('dependabot[bot]');
+  });
+
+  it("is the set-up's fault when there was none, or it was not open at the merge", () => {
+    expect(duplicateVerdict({ pull: undefined, app, merge }).why).toContain("set-up's");
+    const early = { ...pull, closedAt: '2026-11-25T10:10:00Z' };
+    expect(duplicateVerdict({ pull: early, app, merge }).why).toContain('was not open');
+    const late = { ...pull, openedAt: '2026-11-25T10:30:00Z', closedAt: '2026-11-25T10:31:00Z' };
+    expect(duplicateVerdict({ pull: late, app, merge }).why).toContain('was not open');
+  });
+
+  it("passes when both diffs add the same line, and gives no verdict when Dependabot's adds another", () => {
+    const ours = ['image: postgres:18.7-alpine3.24@sha256:0115'];
+    expect(duplicateVerdict({ pull, app, merge, lines: { theirs: ours, ours } }).pass).toBe(true);
+    const theirs = ['image: postgres:18.8-alpine3.24@sha256:9999'];
+    const open = { ...pull, state: 'open', closedAt: undefined, closedBy: undefined, comments: [] };
+    const left = duplicateVerdict({ pull: open, app, merge, lines: { theirs, ours } });
+    expect(left.pass).toBe(false);
+    expect(left.why).toContain('no verdict');
+    expect(left.why).toContain('`image: postgres:18.8-alpine3.24@sha256:9999`');
+    expect(left.why).toContain('`image: postgres:18.7-alpine3.24@sha256:0115`');
+  });
+
+  it('fails when the App closed one whose line main lacks', () => {
+    const lines = { theirs: ['image: postgres:18.8'], ours: ['image: postgres:18.7'] };
+    const closed = duplicateVerdict({ pull, app, merge, lines });
+    expect(closed.pass).toBe(false);
+    expect(closed.why).toContain('though main lacks its line');
+  });
+
+  it('says what became of one beside a move, and never judges the move by it', () => {
+    expect(besideWords(undefined, app, merge.at)).toBe("no pull request of Dependabot's beside it");
+    expect(besideWords(pull, app, merge.at)).toBe(
+      "Dependabot's #3 beside it closed by the App as a duplicate after the merge",
+    );
+    expect(besideWords({ ...pull, comments: [] }, app, merge.at)).toContain('with no comment that says why');
+    expect(besideWords({ ...pull, closedBy: 'dependabot[bot]' }, app, merge.at)).toContain('closed by dependabot[bot]');
+    const open = { ...pull, state: 'open', closedAt: undefined, closedBy: undefined };
+    expect(besideWords(open, app, merge.at)).toBe("Dependabot's #3 beside it is still open");
+    expect(besideWords({ ...pull, state: 'merged' }, app, merge.at)).toContain('merged');
+    expect(besideWords({ ...pull, closedAt: '2026-11-25T10:10:00Z' }, app, merge.at)).not.toContain('after the merge');
+  });
+
+  it('leaves alone one whose lines main lacks: it is still open', () => {
+    const other = { ...pull, number: 3, state: 'open', closedAt: undefined, closedBy: undefined, comments: [] };
+    expect(leftAloneFault([other], app)).toBeUndefined();
+    expect(leftAloneFault([{ ...other, state: 'closed', closedBy: 'dependabot[bot]' }], app)).toContain('no verdict');
+    expect(leftAloneFault([{ ...other, state: 'closed', closedBy: app }], app)).toBe(
+      "Dependabot's #3, whose lines main lacks, was closed by the App",
+    );
+    expect(leftAloneFault([], app)).toContain("set-up's");
+  });
+});
+
+describe('a ticket that must close with no change of its own', () => {
+  const app = 'scratch[bot]';
+  const wants = { closes: 'no-change', reason: /^Main already has its move/ };
+  const ticket: TicketFacts = {
+    workItem: '1201',
+    takenAt: '2026-11-25T10:00:00Z',
+    closed: { outcome: 'no-change', reason: 'Main already has its move, at 1a2b3c4: ghcr.io/anchore/syft at v1.57.2' },
+    failures: 0,
+    events: ['issue.opened', 'work-item.closed'],
+    issue: { number: 44, state: 'closed', reason: 'completed', by: app },
+  };
+
+  it('passes when it closed so, no step failed, and the App closed its issue as completed', () => {
+    expect(ticketFault(ticket, wants, app)).toBeUndefined();
+  });
+
+  it('fails when never taken, held, or not closed', () => {
+    expect(ticketFault({ ...ticket, takenAt: undefined }, wants, app)).toBe('#1201 never taken');
+    expect(ticketFault({ ...ticket, held: 'the gates failed' }, wants, app)).toContain('held for Martin');
+    expect(ticketFault({ ...ticket, closed: undefined }, wants, app)).toContain('not closed');
+  });
+
+  it('fails another outcome or reason, and a close after failed steps', () => {
+    const verified = { outcome: 'verified', reason: 'The scan no longer lists it' };
+    expect(ticketFault({ ...ticket, closed: verified }, wants, app)).toContain('closed verified');
+    const other = { outcome: 'no-change', reason: 'Nothing to do' };
+    expect(ticketFault({ ...ticket, closed: other }, wants, app)).toContain('Nothing to do');
+    expect(ticketFault({ ...ticket, failures: 2 }, wants, app)).toContain('2 failed steps');
+  });
+
+  it('fails with no issue, or one not closed as completed by the App', () => {
+    expect(ticketFault({ ...ticket, issue: undefined }, wants, app)).toContain('no issue');
+    const open = { number: 44, state: 'open' };
+    expect(ticketFault({ ...ticket, issue: open }, wants, app)).toContain('is open');
+    const byMartin = { number: 44, state: 'closed', reason: 'completed', by: 'mrogan' };
+    expect(ticketFault({ ...ticket, issue: byMartin }, wants, app)).toContain('by mrogan');
+  });
+});
+
+describe('a target that moves on after the pull request opened', () => {
+  const name = 'follow-redirects';
+  const facts = {
+    number: 430,
+    name,
+    first: '1.15.6',
+    later: '1.16.0',
+    issueAtOpen: 'Move `follow-redirects` to `1.15.6` or later.',
+    issueNow: 'Move `follow-redirects` to `1.16.0` or later.',
+    headAtOpen: 'a'.repeat(40),
+    headNow: 'b'.repeat(40),
+    toldAt: '2026-11-25T10:10:00Z',
+    mergedAt: '2026-11-25T10:30:00Z',
+    adds: [lockfileKey(name, '1.16.0')],
+  };
+
+  it('passes when the same pull request and its issue took the later target', () => {
+    expect(newerFault(facts)).toBeUndefined();
+  });
+
+  it('gives no verdict when the first scan did not name the first target', () => {
+    expect(newerFault({ ...facts, issueAtOpen: 'Move `follow-redirects` to `1.16.0` or later.' })).toContain(
+      'no verdict',
+    );
+    expect(newerFault({ ...facts, issueAtOpen: undefined })).toContain('not read');
+  });
+
+  it('gives no verdict when it merged before the later scan reached the line, and fails when none did', () => {
+    expect(newerFault({ ...facts, mergedAt: '2026-11-25T10:05:00Z' })).toContain('no verdict');
+    expect(newerFault({ ...facts, toldAt: undefined })).toContain('never reached the line');
+  });
+
+  it('fails a head that never moved, or a diff at the first target', () => {
+    expect(newerFault({ ...facts, headNow: facts.headAtOpen })).toContain('its head before the target moved');
+    expect(newerFault({ ...facts, adds: [lockfileKey(name, '1.15.6')] })).toContain('does not move');
+    const both = [lockfileKey(name, '1.15.6'), lockfileKey(name, '1.16.0')];
+    expect(newerFault({ ...facts, adds: both })).toContain('still moves a copy');
+    expect(newerFault({ ...facts, adds: [] })).toContain('no copy of it');
+  });
+
+  it('is seen as far as the gates when all but the merge holds and only the scan gates are red', () => {
+    const gates = ['gates / dependency review', 'gates / lockfile scan'];
+    const open = { ...facts, mergedAt: undefined, state: 'open', red: gates, pending: [], touched: [], gates };
+    expect(seenToTheGates(open)).toBe(
+      "the same pull request and issue took the new target; not merged: the scan gates refuse 1.16.0 for advisories of its own, the staging's",
+    );
+    expect(seenToTheGates({ ...open, red: ['gates / lockfile scan'] })).toBeDefined();
+    // Anything else is a failure's to say: another check red, none red, something pending, a touch, a merge.
+    expect(seenToTheGates({ ...open, red: [...gates, 'lint, types, tests'] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, red: [] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, pending: ['image builds'] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, touched: ['labeled by mrogan'] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, state: 'closed' })).toBeUndefined();
+    expect(seenToTheGates({ ...open, mergedAt: '2026-11-25T10:30:00Z' })).toBeUndefined();
+    // Nor when the pull request or the issue did not take the new target.
+    expect(seenToTheGates({ ...open, headNow: open.headAtOpen })).toBeUndefined();
+    expect(seenToTheGates({ ...open, adds: [lockfileKey(name, '1.15.6')] })).toBeUndefined();
+    expect(seenToTheGates({ ...open, issueNow: open.issueAtOpen })).toBeUndefined();
+    expect(seenToTheGates({ ...open, toldAt: undefined })).toBeUndefined();
+  });
+
+  it('fails an issue that does not name the later target, or still names the first', () => {
+    expect(newerFault({ ...facts, issueNow: facts.issueAtOpen })).toContain('does not name 1.16.0');
+    const both = 'Move `follow-redirects` to `1.16.0` or later (it was to `1.15.6` or later).';
+    expect(newerFault({ ...facts, issueNow: both })).toContain('still names 1.15.6');
+    expect(newerFault({ ...facts, issueNow: 'Move follow-redirects to 1.16.0 or later.' })).toBeUndefined();
+    expect(newerFault({ ...facts, issueNow: 'Move it to 11.16.0 or later.' })).toContain('does not name 1.16.0');
+    // The advisories it lists, each with the release that fixes it, name no target.
+    const listed = 'Move `follow-redirects` from `1.14.8` to `1.16.0` or later.\n- `CVE-2024-28849`: fixed in `1.15.6`';
+    expect(newerFault({ ...facts, issueNow: listed })).toBeUndefined();
+  });
+});
+
+describe('the store restarting under a report', () => {
+  const ok = { posted: 202, restarted: true, errors: [], inbox: 1, arrivedS: 95, watcher: { away: true, back: true } };
+  const away =
+    '{"level":40,"check":"reports","msg":"a check could not reach the store, as for a restart: its next turn tries again"}';
+  const back = '{"level":30,"check":"reports","msg":"the check reached the store again, after 31 s"}';
+
+  it('passes when the watcher met the outage, the report is in the inbox once and no worker logged an error', () => {
+    expect(restartVerdict(ok)).toEqual({
+      pass: true,
+      why: 'the store was away under the report; the log watcher warned, and reached it again; in the inbox once, after 95 s; no worker logged an error',
+    });
+  });
+
+  it("gives no verdict when the watcher's log has no warning, and fails when it never reached the store again", () => {
+    for (const watcher of [undefined, { away: false, back: false }]) {
+      const verdict = restartVerdict({ ...ok, watcher });
+      expect(verdict.pass).toBe(false);
+      expect(verdict.why).toContain("no verdict: the restart fell between the watcher's turns");
+    }
+    expect(restartVerdict({ ...ok, watcher: { away: true, back: false } }).why).toContain(
+      'never said it reached it again',
+    );
+  });
+
+  it("reads the watcher's warning and its return from its log, in that order", () => {
+    expect(watcherRode([away, away, back].join('\n'))).toEqual({ away: true, back: true });
+    expect(watcherRode(away)).toEqual({ away: true, back: false });
+    expect(watcherRode([back, away].join('\n'))).toEqual({ away: true, back: false });
+    expect(watcherRode('{"level":30,"msg":"reports checked"}\nnot json')).toEqual({ away: false, back: false });
+    // The same words at another level are not the warning.
+    expect(watcherRode(away.replace('"level":40', '"level":30'))).toEqual({ away: false, back: false });
+  });
+
+  it('fails a report the app did not take, and a store that did not restart', () => {
+    expect(restartVerdict({ ...ok, posted: 429 }).why).toContain('429');
+    expect(restartVerdict({ ...ok, restarted: false }).pass).toBe(false);
+  });
+
+  it('fails a report lost, or left twice', () => {
+    expect(restartVerdict({ ...ok, inbox: 0 }).why).toContain('never reached');
+    expect(restartVerdict({ ...ok, inbox: 2 }).why).toContain('2 times');
+  });
+
+  it("fails on a worker's error", () => {
+    const verdict = restartVerdict({ ...ok, errors: ['logs-7c9: 1 (check failed)'] });
+    expect(verdict.pass).toBe(false);
+    expect(verdict.why).toContain('logs-7c9');
   });
 });

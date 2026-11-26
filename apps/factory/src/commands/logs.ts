@@ -19,7 +19,7 @@ import { log } from '../log.ts';
 import { reportsFrom as readReportsFrom } from '../logs/cursor.ts';
 import { TIMING, Watcher } from '../logs/watcher.ts';
 import { inbox, printing } from '../outbox.ts';
-import { PassLog } from '../store-absence.ts';
+import { PassLog, STORE } from '../store-absence.ts';
 
 export const USAGE = '  factory logs [--dry-run] [--since <duration, such as 90m or 24h>]';
 
@@ -34,9 +34,10 @@ export function duration(text: string): number {
 }
 
 /**
- * Says how each turn of one check ended. Every check reads Loki, and agreement Prometheus and Tempo too, and patching
- * one restarts it: a turn that could not reach it, while it has been away under two minutes, is a warning, and its
- * next turn tries again. Once it has been away for longer, and for any other failure, the turn failed, as an error.
+ * Says how each turn of one check ended. Every check reads Loki, and agreement Prometheus and Tempo too, and leaves
+ * what it finds in the store, and patching one restarts it: a turn that could not reach it, while it has been away
+ * under its time (two minutes for telemetry, one for the store), is a warning, and its next turn tries again. Once it
+ * has been away for longer, and for any other failure, the turn failed, as an error.
  */
 export function checkTurns(log: Logger, now: () => Date, check: string): PassLog {
   return new PassLog(
@@ -48,8 +49,28 @@ export function checkTurns(log: Logger, now: () => Date, check: string): PassLog
       failed: 'check failed',
       back: (seconds) => `the check reached the telemetry it reads again, after ${seconds} s`,
     },
-    { away: telemetryAway, awayMs: TELEMETRY_AWAY_MS },
+    [
+      { away: telemetryAway, awayMs: TELEMETRY_AWAY_MS },
+      {
+        ...STORE,
+        words: {
+          away: 'a check could not reach the store, as for a restart: its next turn tries again',
+          stillAway: 'check failed: the store has been away for over a minute',
+          back: (seconds) => `the check reached the store again, after ${seconds} s`,
+        },
+      },
+    ],
   );
+}
+
+/** One turn of a check: it passed, or failed with what it threw. */
+export async function turn(turns: PassLog, check: () => Promise<unknown>): Promise<void> {
+  try {
+    await check();
+    turns.passed();
+  } catch (error) {
+    turns.failed(error);
+  }
 }
 
 export async function run(args: string[]): Promise<number> {
@@ -92,14 +113,8 @@ export async function run(args: string[]): Promise<number> {
     const tick = async () => {
       if (running) return;
       running = true;
-      try {
-        await check();
-        turns.passed();
-      } catch (error) {
-        turns.failed(error);
-      } finally {
-        running = false;
-      }
+      await turn(turns, check);
+      running = false;
     };
     void tick();
     return setInterval(tick, ms);

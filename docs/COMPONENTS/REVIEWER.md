@@ -33,7 +33,7 @@ Read with Zod:
 
 - **a verdict:** approved, changes requested, or escalated to Martin;
 - **a note;**
-- **up to 20 findings,** each anchored to a line, blocking or not, citing a rule's number, a criterion of the spec or the ticket, in at most 300 characters. In a later review, a finding that gives one of the review before again, in its words or new, names it (`holds`).
+- **up to 20 findings,** each anchored to a line of a plain path, with no code mark in it, blocking or not, citing a rule's number, a criterion of the spec or the ticket, in at most 300 characters. The note and each finding's comment reach the pull request, so they are held to the rule for words the line publishes ([steps](ORCHESTRATOR.md#steps)): a scoped package's name is put in code, and a mention is refused. In a later review, a finding that gives one of the review before again, in its words or new, names it (`holds`).
 - **in a later review, what is answered:** the numbers of the findings of the review before that the change now answers: one it blocked on put right, or a suggestion taken. One it still holds is left out, and given again as a finding of this review.
 
 A later review is told what the review before blocked on, then what it suggested, numbered after those, and apart from them the suggestions the coder declined, with its reasons.

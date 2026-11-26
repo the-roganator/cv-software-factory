@@ -11,7 +11,8 @@
  * before the merge. One it added that has since moved to another head is out of the queue, and merges only once added
  * again. A draft the line never added is never merged: GitHub cannot merge one, and Martin merges only what
  * the describer has readied. A merged one cannot be added to the queue (`DryRunActions`). Nothing ran: each check's title says so, and the gate's summary carries
- * it. A comparison of a commit the dry run made is taken against the real commit its first one went on, from the
+ * it. Each check reads as GitHub Actions' own, as the real ones are: the line takes a scan's check from no other app
+ * (`../line/gates.ts`), and one of the dry run's with no notice records no counts. A comparison of a commit the dry run made is taken against the real commit its first one went on, from the
  * files as they really are there and as the dry run left them. A step that starts from such a commit checks out that
  * real commit and makes the dry run's commits on it (`checkout`), so the reviewer, the describer and a later round of
  * the coder see the change as GitHub would have held it.
@@ -27,6 +28,7 @@
 import { createHash } from 'node:crypto';
 import { structuredPatch } from 'diff';
 import { verdictBlock } from '../../../../policy/review-verdict.ts';
+import { ACTIONS_APP } from '../gates/counts.ts';
 import { APP_LOGIN, type DryRunActions, type DryRunPull } from './actions.ts';
 import type { DependencyPull } from './dependabot.ts';
 import { DEPLOYS, type DeployBuild, type DeployProposal } from './deploys.ts';
@@ -98,7 +100,7 @@ export class DryRunReads implements Reads {
     return this.#passing(repo, sha, commit.at, new Date(commit.at.getTime() + this.#times.checksAfterMs));
   }
 
-  /** Every check main's ruleset requires on a commit, from `startedAt`, each passing at `passesAt`. */
+  /** Every check main's ruleset requires on a commit, from `startedAt`, each passing at `passesAt`, as GitHub Actions'. */
   async #passing(repo: string, sha: string, from: Date, passesAt: Date): Promise<CheckRun[]> {
     const required = await this.#live.requiredChecks(repo, 'main');
     const done = this.#now().getTime() >= passesAt.getTime();
@@ -109,7 +111,7 @@ export class DryRunReads implements Reads {
       name,
       status: done ? 'completed' : 'in_progress',
       conclusion: done ? 'success' : null,
-      app: 'dry-run',
+      app: ACTIONS_APP,
       startedAt,
       completedAt: done ? completedAt : null,
       title: DRY_RUN_CHECK_TITLE,

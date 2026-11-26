@@ -19,8 +19,8 @@ import {
   SECURITY_HEADER_ASKS,
 } from '@software-factory/events';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
-import { targetWords } from '../moves.ts';
-import { count } from './agent.ts';
+import { targetWords, versionsWords } from '../moves.ts';
+import { count, routineUpdate } from './agent.ts';
 
 /** A sense's signal as an agent sees it: everything but a visitor's report. */
 export type Signal = Omit<PayloadOf<'signal.received'>, 'report'>;
@@ -101,6 +101,7 @@ export function reported({ points, fingerprint }: PayloadOf<'ticket.opened'>): {
  * visitor's report points at (`pointsLines`). A ticket on
  * `*` is on every page the senses checked, but the canary's: triage gives a canary's `*` a ticket of its own, and it
  * says the analysis found the canary worse on routes it could not narrow to one, which its evidence names if it can.
+ * A move is to whatever version fixes it, but a routine update's, which fixes nothing: that one is to a newer release.
  */
 export function ticketLines(ticket: PayloadOf<'ticket.opened'>, signals: readonly Signal[] = []): string[] {
   const { fingerprint } = ticket;
@@ -111,7 +112,7 @@ export function ticketLines(ticket: PayloadOf<'ticket.opened'>, signals: readonl
     'class' in fingerprint
       ? `It is a ${fingerprint.class} on ${fingerprint.route === '*' ? anywhere : routeOf(fingerprint.route)}.`
       : 'ecosystem' in fingerprint
-        ? `It is the move of ${fingerprint.name}, in ${fingerprint.ecosystem}, to whatever version fixes it.`
+        ? `It is the move of ${fingerprint.name}, in ${fingerprint.ecosystem}, ${routineUpdate(signals) ? 'to a newer release: a routine update, which no advisory asked for' : 'to whatever version fixes it'}.`
         : `It is about the words "${fingerprint.text}" on ${routeOf(fingerprint.page)}, as the factory read the page.`;
   return [
     `${where} Category ${ticket.category}, severity ${ticket.severity}.`,
@@ -223,7 +224,7 @@ export function seen(signal: Signal): string[] {
   const symptom = signal.symptom ? `, ${signal.symptom}` : '';
   const { move } = signal;
   const where = move
-    ? `${move.name} (${move.ecosystem}) in ${move.repository}, from ${move.from} to ${targetWords(move)}, on ${move.pins.map((pin) => `${pin.file}:${pin.line}`).join(', ')}`
+    ? `${move.name} (${move.ecosystem}) in ${move.repository}, from ${versionsWords(move.from)} to ${targetWords(move)}, on ${move.pins.map((pin) => `${pin.file}:${pin.line}`).join(', ')}`
     : signal.route === undefined || signal.route === '*'
       ? signal.sense === 'canary'
         ? CANARY_ANY_ROUTE

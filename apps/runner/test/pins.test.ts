@@ -964,13 +964,43 @@ describe('a base image’s move', () => {
       'older.Dockerfile': `FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`,
     });
     const move = { ecosystem: 'docker' as const, name: 'ghcr.io/anchore/syft', from: 'v1.54.0', to: `v1.57.1@${to}` };
-    await writePins(dir, move, { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir });
-    expect(read(dir, 'Dockerfile')).toBe(`FROM ghcr.io/anchore/syft:v1.57.1@${to}\n`);
-    expect(read(dir, 'older.Dockerfile')).toBe(`FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`);
-    // A tag no FROM has is refused, as a tag and digest no FROM has is.
+    // A tag no FROM has is refused, as a tag and digest no FROM has is, while none is at the target.
     await expect(
       writePins(dir, { ...move, from: 'v1.50.0' }, { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir }),
     ).rejects.toThrow('No FROM pins ghcr.io/anchore/syft at v1.50.0.');
+    await writePins(dir, move, { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir });
+    expect(read(dir, 'Dockerfile')).toBe(`FROM ghcr.io/anchore/syft:v1.57.1@${to}\n`);
+    expect(read(dir, 'older.Dockerfile')).toBe(`FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`);
+  });
+
+  it('writes nothing for a move the checkout already has: no FROM at the old pin, and one at the target', async () => {
+    const to = `sha256:${'5'.repeat(64)}`;
+    const get: Get = async () => new Response(null, { headers: { 'docker-content-digest': to } });
+    const files = {
+      Dockerfile: `FROM ghcr.io/anchore/syft:v1.57.1@${to}\n`,
+      // Another pin of the image, at a third tag: a move of its own, and nothing of this one's.
+      'older.Dockerfile': `FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`,
+    };
+    const dir = checkout(files);
+    const tools = { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir };
+    const move = { ecosystem: 'docker' as const, name: 'ghcr.io/anchore/syft', from: 'v1.54.0', to: `v1.57.1@${to}` };
+    // Named by its tag alone, as the scan names a pin, or by its tag and digest.
+    await writePins(dir, move, tools);
+    await writePins(dir, { ...move, from: `v1.54.0@sha256:${'2'.repeat(64)}` }, tools);
+    // A digest's move under one tag, too.
+    await writePins(dir, { ...move, from: `v1.57.1@sha256:${'2'.repeat(64)}` }, tools);
+    expect(read(dir, 'Dockerfile')).toBe(files.Dockerfile);
+    expect(read(dir, 'older.Dockerfile')).toBe(files['older.Dockerfile']);
+    // The target's tag at another digest is not the target: the move is not there, and nothing is at its old pin.
+    const other = checkout({ Dockerfile: `FROM ghcr.io/anchore/syft:v1.57.1@sha256:${'4'.repeat(64)}\n` });
+    await expect(writePins(other, move, { ...tools, aside: other })).rejects.toThrow(
+      'No FROM pins ghcr.io/anchore/syft at v1.54.0.',
+    );
+    // Nor is another image at the target's tag and digest.
+    const another = checkout({ Dockerfile: `FROM ghcr.io/anchore/grype:v1.57.1@${to}\n` });
+    await expect(writePins(another, move, { ...tools, aside: another })).rejects.toThrow(
+      'No FROM pins ghcr.io/anchore/syft at v1.54.0.',
+    );
   });
 
   it('refuses a registry digest that is not a SHA-256’s', async () => {

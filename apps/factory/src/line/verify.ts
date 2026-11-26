@@ -112,11 +112,15 @@ export interface Target {
 
 type Measure = PayloadOf<'canary.stepped'>['analysis']['measures'][number];
 
-/** What a look found: the verification, a hold for Martin when no sense can tell, or a reason to look again later. */
+/**
+ * What a look found: the verification, a hold for Martin when no sense can tell, or a reason to look again later.
+ * A wait for a scan whose routine listing is whole says so (`listing`): its limit is the policy's longer one
+ * (`listingWaitHours`), and every other wait's is `waitHours`.
+ */
 export type Look =
   | { kind: 'finished'; verification: PayloadOf<'verification.finished'> }
   | { kind: 'hold'; reason: string }
-  | { kind: 'wait'; why: string };
+  | { kind: 'wait'; why: string; listing?: true };
 
 /** The probes worker, as Verify uses it: a ticket's check run again against the stable Service. */
 export interface ProbesPort {
@@ -271,8 +275,9 @@ function countedBefore(scan: SignalScan): Required<ScanCounts> {
  * same scan, waited for the same way, no longer listing the move: no move of the signal's name and ecosystem from a
  * version the signal moved from (`stillListed`), with the journeys passed. Still listed there, it persists. Only a
  * whole routine listing shows a move gone: a scan that made none (`totals.routine` or `routineUnread` absent), or
- * could not read some pin for it (`routineUnread` above none), is waited past as one that has not read the release
- * is, and held for Martin by the same wait, told why. A
+ * could not read some pin for it (`routineUnread` above none), is waited past for the next scan: the wait says so
+ * (`listing`), and the line holds for Martin, told why, only once the policy's longer wait has passed from the release
+ * (`listingWaitHours`), so the scan of the day after has its turn. A
  * vulnerable dependency's signal that lists no finding with a fix has nothing for the scan to show closed, and holds
  * for Martin.
  */
@@ -325,6 +330,7 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
     if (totals.routine === undefined || totals.routineUnread === undefined) {
       return {
         kind: 'wait',
+        listing: true,
         why: `the scan of ${of} listed no routine updates at all, so it cannot show this one made (${read.run.url})`,
       };
     }
@@ -332,6 +338,7 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
       const pins = `${totals.routineUnread} ${totals.routineUnread === 1 ? 'pin' : 'pins'}`;
       return {
         kind: 'wait',
+        listing: true,
         why: `the scan of ${of} could not read ${pins} for its routine updates, so a move it does not list may be one it could not read (${read.run.url})`,
       };
     }
@@ -808,10 +815,17 @@ export function closingComment(
   ].join('\n');
 }
 
-/** The comment on a held or waiting work item's pull request as the factory closes it unmerged, its defect gone. */
+/**
+ * The comment on a held or waiting work item's pull request as the factory closes it unmerged, its defect gone. A
+ * look no sense of the app made is a move's, by the scan: a routine update's fixes no defect, so its words are of the
+ * change, true of a finding's move and of a routine update alike, as the look does not say which it is.
+ */
 export function closingPullComment(rechecked: PayloadOf<'signal.rechecked'>, workItem: string): string {
+  const gone = rechecked.sense
+    ? 'the defect this fixes is gone from production'
+    : 'production no longer needs the change this makes';
   return [
-    `Closed unmerged: the defect this fixes is gone from production. ${whatClearedOnLook(rechecked)}.`,
+    `Closed unmerged: ${gone}. ${whatClearedOnLook(rechecked)}.`,
     '',
     `The factory’s work item #${workItem} is closed as verified.`,
   ].join('\n');
@@ -819,7 +833,8 @@ export function closingPullComment(rechecked: PayloadOf<'signal.rechecked'>, wor
 
 /**
  * The comment on the issue as the factory opens it again: what came back, as the sense saw it, or that the dry run's
- * fix it was verified on never shipped.
+ * fix it was verified on never shipped. A move's speaks of its move, never of a fix: the scan lists the pin again, for
+ * a finding or, a routine update's, for a newer release alone, and the reopening does not say which.
  */
 export function reopeningComment(reopened: PayloadOf<'work-item.reopened'>, workItem: string): string {
   if (reopened.dryRun) {
@@ -829,14 +844,16 @@ export function reopeningComment(reopened: PayloadOf<'work-item.reopened'>, work
       `The factory’s work item #${workItem} is open again, and goes back to Plan for a fix that ships.`,
     ].join('\n');
   }
-  // A move's reopening names its move in place of a route.
-  const where = reopened.move
-    ? `the move of \`${reopened.move.name}\`, in ${reopened.move.ecosystem}`
-    : reopened.route !== '*'
-      ? `\`${reopened.route}\``
-      : reopened.sense === 'canary'
-        ? CANARY_ANY_ROUTE
-        : 'every page';
+  if (reopened.move) {
+    const { name, ecosystem } = reopened.move;
+    return [
+      `It came back after its move was verified: the dependency sense saw “${reopened.check}” again on the move of \`${name}\`, in ${ecosystem}, in version ${short(reopened.version)}.`,
+      '',
+      `The factory’s work item #${workItem} is open again, and goes back to Plan for the move now listed.`,
+    ].join('\n');
+  }
+  const where =
+    reopened.route !== '*' ? `\`${reopened.route}\`` : reopened.sense === 'canary' ? CANARY_ANY_ROUTE : 'every page';
   return [
     `It came back after its fix was verified: the ${reopened.sense} saw “${reopened.check}” again on ${where}, in version ${short(reopened.version)}.`,
     '',

@@ -336,7 +336,7 @@ describe('the moves the scan made with the pin step', () => {
     });
   });
 
-  it('opens an issue for a move the step refused, naming no package, logs the step’s words, and makes the rest', async () => {
+  it('opens an issue for a move the step refused, saying the kind and naming no package, logs the step’s words, and makes the rest', async () => {
     const repo = new FakeRepo(files());
     const scanned = repo.main;
     const group = lockGroup({
@@ -350,7 +350,12 @@ describe('the moves the scan made with the pin step', () => {
     expect(openPins(repo).map((p) => p.title)).toEqual(['chore(pin): move example-a in pnpm-lock.yaml']);
     expect(repo.issues.map((i) => i.title)).toEqual([expect.stringMatching(/^Move a package in `?deploy.*\(mark2/)]);
     expect(repo.issues[0]?.body).toContain('could not make it on the commit it read');
-    expect(repo.issues[0]?.body).not.toMatch(/example-b|TRUST_DOWNGRADE/);
+    // The kind of refusal, in the watch's own words, and what will make the move go.
+    expect(repo.issues[0]?.body).toContain('published with weaker provenance than the release before it');
+    expect(repo.issues[0]?.body).toContain('an exception for it in `pnpm-workspace.yaml`, with its reason');
+    // A move a finding asks for: neither its package nor its version, and nothing the tool said.
+    expect(repo.issues[0]?.body).not.toMatch(/example-b|2\.0\.3|TRUST_DOWNGRADE|log says which/);
+    expect(repo.issues[0]?.body).toContain('<!-- factory: pin-target  -->');
     expect(w.lines.find((line) => line.reason)).toMatchObject({
       level: 40,
       move: 2,
@@ -358,17 +363,19 @@ describe('the moves the scan made with the pin step', () => {
     });
   });
 
-  it('keeps one issue for a routine major pnpm refused, day after day, naming the move by its mark and no package', async () => {
+  it('keeps one issue for a routine major pnpm refused, day after day and release after release, naming its package and release', async () => {
     const repo = new FakeRepo(files());
     const scanned = repo.main;
     const reason = 'pnpm refused example-b@3.0.0: High-risk trust downgrade (possible package takeover)';
     /** The routine major, at a place in the day's list, and what the scan made of its group: nothing, and why. */
-    const day = (index: number, run: number, others: ReadMove[] = []): Moves => {
+    const day = (index: number, run: number, others: ReadMove[] = [], to = '3.0.0'): Moves => {
       const major: ReadMove = {
-        ...npm(index, 'example-b', '2.0.0', '3.0.0', 8),
+        ...npm(index, 'example-b', '2.0.0', to, 8),
         mark: 'markb0000000',
         major: true,
         clears: NONE,
+        // What its pins have open is a finding's, and no part of an issue that names the package.
+        leaves: { ...NONE, HIGH: 2 },
         deadline: undefined,
       };
       const group = lockGroup({
@@ -394,10 +401,18 @@ describe('the moves the scan made with the pin step', () => {
     expect(issue?.title).toMatch(/^Move a package in .*pnpm-lock\.yaml \(markb0000000\) to a newer release$/);
     expect(issue?.labels).toEqual([PIN_LABEL]);
     expect(issue?.body).toContain('<!-- factory: pin-issue lockfile-markb0000000 -->');
-    expect(issue?.body).toContain('The scan’s pin step could not make it on the commit it read: pnpm’s guards');
-    expect(issue?.body).toContain('**A routine update** A newer release, with no advisory behind it and no deadline.');
-    // What pnpm said names the package: it is the worker's log's, and never the public issue's.
-    expect(issue?.body).not.toMatch(/example-b|3\.0\.0|trust downgrade|its alerts/);
+    expect(issue?.body).toContain(
+      'The scan’s pin step could not make it on the commit it read: pnpm refuses the release, which was published with weaker provenance than the release before it.',
+    );
+    // A routine update has no finding behind it: its issue names the package and the release, in code.
+    expect(issue?.body).toContain(
+      '**A routine update** `example-b` to `3.0.0`: a newer release, with no advisory behind it and no deadline.',
+    );
+    expect(issue?.body).toContain('<!-- factory: pin-target version%203.0.0 -->');
+    // What pnpm said is the worker's log's, and never the public issue's; nor is what the package's pins have open.
+    expect(issue?.body).not.toMatch(
+      /trust downgrade|package takeover|log says which|its alerts|2 high|open that it leaves/,
+    );
     expect(w.lines.find((line) => line.reason)).toMatchObject({ level: 40, move: 1, mark: 'markb0000000', reason });
 
     // The next day's scan: another run, the move at another place in its list, the release refused still.
@@ -411,6 +426,23 @@ describe('the moves the scan made with the pin step', () => {
     expect(repo.issues[0]?.body).toContain('<!-- factory: pin-issue lockfile-markb0000000 -->');
     expect(repo.issues[0]?.body).toContain('runs/42000000202');
     expect(repo.issues[0]?.comments).toEqual([]);
+    // A later release of the same package, refused too: the same issue, by its mark, now naming that release alone.
+    moves = day(1, 42_000_000_250, [], '3.0.1');
+    await w.pass();
+    expect(repo.issues).toHaveLength(1);
+    expect(repo.issues[0]).toMatchObject({ number: first.number, title: first.title, state: 'open' });
+    expect(repo.issues[0]?.body).toContain('`example-b` to `3.0.1`');
+    expect(repo.issues[0]?.body).not.toContain('3.0.0');
+    // One Martin closed is opened again for a release later still, as any issue of the watch's is for a later target.
+    if (repo.issues[0]) repo.issues[0].state = 'closed';
+    await w.pass();
+    expect(repo.issues[0]?.state).toBe('closed');
+    moves = day(1, 42_000_000_260, [], '3.0.2');
+    await w.pass();
+    expect(repo.issues[0]).toMatchObject({ number: first.number, state: 'open' });
+    expect(repo.issues[0]?.body).toContain('`example-b` to `3.0.2`');
+    moves = day(2, 42_000_000_202, [k3d(1, 'k3d-tools')]);
+    await w.pass();
     // Once pnpm takes the release and the scan makes the move, its pull request opens and the issue closes.
     const read = today(scanned, [{ ...(day(1, 1).moves[0] as ReadMove) }], 42_000_000_303);
     const UPDATED = LOCK.replace('example-b@2.0.0', 'example-b@3.0.0');

@@ -103,6 +103,33 @@ describe('the section of tests the spec contradicts', () => {
     expect(entryProblem({ file: 'test/a.test.ts', test: 'sends mail to a @ sign and # signs' })).toBeUndefined();
   });
 
+  it('names a test that holds a scoped package’s name whole in code, where GitHub mentions no team, and reads it back', () => {
+    const scoped = [
+      { file: 'test/proto.test.ts', test: 'loads definitions with @grpc/proto-loader' },
+      { file: 'test/proto.test.ts', test: 'proto > loads `@grpc/proto-loader` definitions' },
+      { file: 'test/proto.test.ts', test: 'types > reads @types/node@24 as it is' },
+      { file: 'test/proto.test.ts', test: '`@grpc/proto-loader`' },
+    ];
+    for (const entry of scoped) expect(entryProblem(entry)).toBeUndefined();
+    const section = render(scoped);
+    expect(section).toContain('- `test/proto.test.ts`: `loads definitions with @grpc/proto-loader`');
+    // A name with code of its own takes a longer fence, so the package's name is never outside code.
+    expect(section).toContain('- `test/proto.test.ts`: ``proto > loads `@grpc/proto-loader` definitions``');
+    expect(section).toContain('- `test/proto.test.ts`: `` `@grpc/proto-loader` ``');
+    expect(parse(section)).toEqual({ tests: scoped });
+    // A name with no package's in it is written as it is, unless it is one span of code, which would be read as the
+    // name inside.
+    const plain = [
+      { file: 'test/a.test.ts', test: 'renders `price` and `total`' },
+      { file: 'test/a.test.ts', test: '`formatPrice`' },
+    ];
+    expect(render(plain)).toContain('- `test/a.test.ts`: renders `price` and `total`');
+    expect(render(plain)).toContain('- `test/a.test.ts`: `` `formatPrice` ``');
+    expect(parse(render(plain))).toEqual({ tests: plain });
+    // Someone's name is refused still, beside a package's too.
+    expect(entryProblem({ file: 'test/a.test.ts', test: 'tells @martin of @grpc/proto-loader' })).toBeDefined();
+  });
+
   it('takes a marker ended as HTML may end a comment, with --!>, as any other', () => {
     const bang = `Text\n\n<!-- factory:contradicts --!>\n- \`test/a.test.ts\`: a\n<!-- /factory:contradicts --!>\n\nMore`;
     expect(parse(bang)).toEqual({ tests: [{ file: 'test/a.test.ts', test: 'a' }] });

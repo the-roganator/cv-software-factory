@@ -188,17 +188,22 @@ const ARGS = {
     comment: text(65_535).min(1).optional(),
   }),
   reopenIssue: z.strictObject({ number, comment: text(65_535).min(1) }),
+  /**
+   * An issue's description alone, as the line writes a move's again for a newer scan: never its title, never a pull
+   * request's, and never an issue of the pin watch's (`guardIssueAsked`).
+   */
+  updateIssue: z.strictObject({ number, body: text(65_535).min(1) }),
   closePullRequest: z.strictObject({ number, comment: text(65_535).min(1) }),
   comment: z.strictObject({ number, body: text(65_535).min(1) }),
   enqueuePullRequest: z.strictObject({ number, expectedHead: sha }),
 } satisfies Record<Exclude<keyof Actions, 'dryRun' | WatchOnly>, z.ZodType>;
 
 /**
- * The actions only the worker's own watches take, never served: the pin watch's commit and its issues' rewrite
- * (`pins.ts`), and the queues' writing of a watch's commit again (`deploy-queue.ts`). No worker that asks can write a
- * pin branch, even within the pin guard.
+ * The actions only the worker's own watches take, never served: the pin watch's commit (`pins.ts`), and the queues'
+ * writing of a watch's commit again (`deploy-queue.ts`). No worker that asks can write a pin branch, even within the
+ * pin guard.
  */
-export type WatchOnly = 'commitPins' | 'updateIssue' | 'commitAgain';
+export type WatchOnly = 'commitPins' | 'commitAgain';
 
 export type Name = keyof typeof ARGS;
 
@@ -270,6 +275,24 @@ function guardPinPull({ head, labels }: { head?: string; labels?: readonly strin
     throw new BranchRefused(`Only the pin watch gives a pull request or issue the ${PIN_LABEL} label.`);
   }
 }
+
+/**
+ * What an issue a worker asks to write again is held to (`updateIssue`): an issue, and none of the pin watch's. A pull
+ * request's description is written through `updatePullRequest`, which keeps its section for test integrity, and the
+ * pin watch's issues, which it finds again by their label and their mark, are its own to keep to the scan.
+ */
+const guardIssueAsked =
+  (number: number) =>
+  ({ pullRequest, labels }: { pullRequest: boolean; labels: string[] }): void => {
+    if (pullRequest) {
+      throw new BranchRefused(`#${number} is a pull request: only an issue's description is written again this way.`);
+    }
+    if (labels.some(isPinLabel)) {
+      throw new BranchRefused(
+        `#${number} is the pin watch's issue, by its ${PIN_LABEL} label: only the pin watch writes it.`,
+      );
+    }
+  };
 
 /**
  * Throws `BranchRefused` for any action a worker asks on one of the pin watch's pull requests, or here the deploy
@@ -428,6 +451,7 @@ const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(type
   },
   closeIssue: (x, repo, { number, reason, comment }) => x.closeIssue(repo, number, reason, comment),
   reopenIssue: (x, repo, { number, comment }) => x.reopenIssue(repo, number, comment),
+  updateIssue: (x, repo, { number, body }) => x.updateIssue(repo, number, { body }, guardIssueAsked(number)),
   closePullRequest: (x, repo, { number, comment }) => x.closePullRequest(repo, number, comment),
   comment: (x, repo, { number, body }) => x.comment(repo, number, body),
   enqueuePullRequest: (x, repo, { number, expectedHead }) => x.enqueuePullRequest(repo, number, expectedHead),

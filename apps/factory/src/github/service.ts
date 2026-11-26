@@ -22,10 +22,11 @@ import {
 } from './deploy-queue.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
+import { duplicateWatch } from './duplicates.ts';
 import { IssueGuard, openedBy, outsideIssuesWatch } from './issues.ts';
 import { noLevel, storeLevel } from './level.ts';
 import { treeSource } from './pin-guard.ts';
-import { PIN_REPOS, pinWatch } from './pins.ts';
+import { ISSUE_REPOS, PIN_REPOS, pinWatch } from './pins.ts';
 import { Poller } from './poller.ts';
 import { LiveReads } from './reads.ts';
 import { RefusalRecorder } from './refusals.ts';
@@ -125,6 +126,14 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
         pinQueueWatch({ github, reads: liveReads, actions, recorder, heads, log, level }, repo, only),
       );
     }
+    // The app's moves are its line's, from tickets: a move there that no ticket is made for (a line no longer built)
+    // is one issue, kept by the same watch, which makes no branch, commit or pull request there.
+    for (const repo of ISSUE_REPOS.filter((r) => config.repositories.includes(r))) {
+      poller.watch(
+        `pin issues in ${repo}`,
+        pinWatch({ github, reads: liveReads, actions, recorder, log, only: config.pinWatchOnly }, repo),
+      );
+    }
     // Dependabot's bump of the commit the app calls the factory's workflows at, which the App cannot write: added to
     // the merge queue once the gate passes it as an exact pin, the autonomy level queues one and its checks are green.
     // In a dry run the watch adds and records nothing.
@@ -138,6 +147,14 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     for (const repo of config.repositories)
       poller.watch(`issues in ${repo}`, outsideIssuesWatch(github, repo, actions, log));
     if (mode === 'live') {
+      // Dependabot's pull request for versions main already has is closed, with one comment: the one close of a pull
+      // request the App did not open, which the guard passes for this watch alone. A dry run makes none.
+      const source = treeSource(github);
+      for (const repo of config.repositories)
+        poller.watch(
+          `Dependabot's duplicates in ${repo}`,
+          duplicateWatch({ github, guard, source, recorder, log }, repo),
+        );
       quietReleasePlease(log);
       for (const repo of config.repositories) poller.watch(`releases in ${repo}`, releaseWatch(github, repo, log));
     }

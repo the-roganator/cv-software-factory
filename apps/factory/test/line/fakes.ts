@@ -231,6 +231,11 @@ export class FakeGitHub implements GitHubPort {
     switch (action) {
       case 'openIssue':
         return this.issueNumber;
+      case 'setBranch': {
+        // A pull request's branch moved takes its head with it.
+        for (const pr of this.pulls.values()) if (pr.head.ref === args.branch) pr.head.sha = String(args.sha);
+        return undefined;
+      }
       case 'describeDeploy':
         return true;
       case 'applyPatch': {

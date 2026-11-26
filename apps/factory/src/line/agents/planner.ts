@@ -100,8 +100,11 @@ import {
   failedAttemptLines,
   heAnswered,
   holdDraft,
+  mentions,
   plainWords as plain,
+  refuseMentions,
   StepFailed,
+  scopedNamesInCode,
   unquotedWords as unquoted,
   words,
 } from './agent.ts';
@@ -278,10 +281,13 @@ export const sourcesOf = ({
 /** No sources at all: every quote is refused. */
 const NOTHING: Sources = { kind: 'ticket', asked: '', signals: [], answers: '' };
 
-/** Whether words are in a source as whole words: never the inside of a word, which would let a few letters pass. */
+/**
+ * Whether words are in a source as whole words: never the inside of a word, which would let a few letters pass. Code
+ * marks count for nothing: a move's versions are told in code, and a quote of them may keep the marks or not.
+ */
 const within = (words: string, source: string) => {
-  const escaped = words.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u').test(plain(source));
+  const escaped = words.replaceAll('`', '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u').test(plain(source).replaceAll('`', ''));
 };
 
 /**
@@ -338,9 +344,49 @@ export function quoteProblem(from: string, quote: string, sources: Sources): str
   return undefined;
 }
 
+/** The words of a spec the line publishes in its pull request's description: each by its path in the spec. */
+const published = (spec: PayloadOf<'spec.written'>): { path: PropertyKey[]; text: string }[] => [
+  { path: ['outcome'], text: spec.outcome },
+  ...spec.criteria.flatMap((criterion, i) =>
+    (['given', 'when', 'expect'] as const).map((part) => ({ path: ['criteria', i, part], text: criterion[part] })),
+  ),
+  { path: ['rollout'], text: spec.rollout },
+];
+
+/**
+ * A spec as the planner handed it back, with each scoped package's name in the words the line publishes (`published`)
+ * put in code, before the spec's own rules count their characters (`publicWords`). Anything not shaped as a spec is
+ * left for the schema to refuse.
+ */
+function scopedInCode(spec: unknown): unknown {
+  if (typeof spec !== 'object' || spec === null) return spec;
+  const coded = (value: unknown) => (typeof value === 'string' ? scopedNamesInCode(value) : value);
+  const { outcome, rollout, criteria } = spec as { outcome?: unknown; rollout?: unknown; criteria?: unknown };
+  return {
+    ...spec,
+    ...('outcome' in spec ? { outcome: coded(outcome) } : {}),
+    ...('rollout' in spec ? { rollout: coded(rollout) } : {}),
+    ...(Array.isArray(criteria)
+      ? {
+          criteria: criteria.map((criterion: unknown) =>
+            typeof criterion === 'object' && criterion !== null
+              ? Object.fromEntries(
+                  Object.entries(criterion).map(([key, value]) => [
+                    key,
+                    key === 'given' || key === 'when' || key === 'expect' ? coded(value) : value,
+                  ]),
+                )
+              : criterion,
+          ),
+        }
+      : {}),
+  };
+}
+
 /**
  * The spec, with a scope of plain paths that keeps out of the protected paths, and every criterion naming what in the
- * ticket's evidence it comes from, and quoting the words there that ask for it.
+ * ticket's evidence it comes from, and quoting the words there that ask for it. Its outcome, criteria and rollout
+ * reach the pull request's description, so they mention nobody, and name a scoped package in code.
  */
 const specWithin = (
   protectedPaths: readonly string[],
@@ -350,8 +396,14 @@ const specWithin = (
   move: boolean,
 ) =>
   z.preprocess(
-    noneContradicted,
+    (spec) => scopedInCode(noneContradicted(spec)),
     PAYLOADS['spec.written'].superRefine((spec, ctx) => {
+      for (const { path, text } of published(spec)) refuseMentions(text, ctx, path);
+      // A criterion is published on one line, where a code mark one part leaves open closes at the next part's.
+      spec.criteria.forEach((c, i) => {
+        if ([c.given, c.when, c.expect].some(mentions)) return;
+        refuseMentions(`Given ${c.given}, when ${c.when}, then ${c.expect}.`, ctx, ['criteria', i]);
+      });
       if (improvement) improvementProblems(spec, improvement, ctx);
       if (shipped) repeatsShipped(spec, shipped, ctx);
       spec.scope.forEach((entry, i) => {

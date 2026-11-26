@@ -21,8 +21,8 @@
  *   mise pins, from the day the newest release in its range without the finding is that old. For anything else in an
  *   image (an operating system's package, a binary it ships), from the creation of the newest image on the line of the pin that brings it (the runtime stage of its Dockerfile, for an
  *   image of ours), found as `scripts/ci-images.sh`'s `newest` finds it, or the tag's current image for a tag that is
- *   not a version, once that image no longer has the finding and is better than the pin (`fewer`: fewer Criticals, or
- *   as many and fewer Highs, the excepted left out of both), or of the newest below it on the line that is, three
+ *   not a version, once that image no longer has the finding and is better than the pin (`fewer`: fewer at the worst
+ *   severity where their counts differ, the excepted left out of both), or of the newest below it on the line that is, three
  *   tried at most; an image that runs Node only once the Node it
  *   runs is one mise may install, the release `mise.toml` pins or a later one as old as its `minimum_release_age`, as
  *   the pin step moves Node with it. An image that arrives only with a k3s release is
@@ -468,15 +468,19 @@ export const CANDIDATES = 4;
 /** How many tags of an image's line are tried for a fix, newest first, at most: each is a scan. */
 export const TRIED = 3;
 
-/** An image's Criticals and Highs, each package and advisory once. */
-export interface Worth {
-  critical: number;
-  high: number;
-}
+/** How many findings an image has at each severity, each package and advisory once. */
+export type Worth = Record<Severity, number>;
 
-/** Whether a candidate is better than the pin, worst kind first: fewer Criticals, or as many and fewer Highs. */
-export const fewer = (candidate: Worth, pin: Worth) =>
-  candidate.critical < pin.critical || (candidate.critical === pin.critical && candidate.high < pin.high);
+/**
+ * Whether a candidate is better than the pin, worst kind first: at the first severity where their counts differ,
+ * Critical down to the last `SEVERITIES` lists, it has fewer. So a pin with no Critical and no High still moves for
+ * a Medium or a Low it clears, and one that only trades a finding for another as bad, equal at every severity, does
+ * not: nothing is gained.
+ */
+export const fewer = (candidate: Worth, pin: Worth) => {
+  const differs = SEVERITIES.find((severity) => candidate[severity] !== pin[severity]);
+  return differs !== undefined && candidate[differs] < pin[differs];
+};
 
 /** A tool in mise.toml whose release brings a package into an image of ours, from where Trivy found it (`opt/pnpm/…`). */
 export function toolOf(path: string | undefined, tools: string[]) {
@@ -596,12 +600,12 @@ export async function installable(
     if (!excepted.has(alertKey(finding))) continue;
     exceptedByImage.set(identity(image), (exceptedByImage.get(identity(image)) ?? new Set<string>()).add(key));
   }
-  /** An image's Criticals and Highs, from what Trivy rated in it, without those excepted at the pin given. */
+  /** An image's findings at each severity, from what Trivy rated in it, without those excepted at the pin given. */
   const worth = (rated: Map<string, Severity> | undefined, pin: string): Worth => {
     const left = exceptedByImage.get(identity(pin));
     const count = (severity: Severity) =>
       [...(rated ?? [])].filter(([key, its]) => its === severity && !left?.has(key)).length;
-    return { critical: count('CRITICAL'), high: count('HIGH') };
+    return Object.fromEntries(SEVERITIES.map((severity) => [severity, count(severity)])) as Worth;
   };
   /** Whether a candidate's image is better than the pin it would replace (`fewer`). */
   const betterThan = (pin: string, candidate: { rated: Map<string, Severity> }) =>
@@ -775,8 +779,8 @@ export async function installable(
   >();
   /**
    * The image a pin's fix is: the newest of its candidates that is better than the pin, each pin once. Where none is,
-   * the newest, marked so, with every image tried. A pin with neither a Critical nor a High has nothing a candidate
-   * could have fewer of, so only the newest is read.
+   * the newest, marked so, with every image tried. A pin with nothing counted (its findings all excepted, or Node's
+   * own) has nothing a candidate could have fewer of, so only the newest is read.
    */
   const pickOf = (pin: string) => {
     let once = picks.get(pin);
@@ -784,7 +788,7 @@ export async function installable(
       once = (async () => {
         const all = await candidatesOf(pin);
         const own = worth(ratedByImage.get(identity(pin)), pin);
-        const candidates = own.critical || own.high ? all : all.slice(0, 1);
+        const candidates = SEVERITIES.some((severity) => own[severity]) ? all : all.slice(0, 1);
         const tried: Scanned[] = [];
         for (const latest of candidates) {
           const image = await scanned(latest.reference, true);
@@ -1183,7 +1187,7 @@ export async function installable(
   }
   for (const name of [...worse].sort())
     log(
-      `::warning::No release read for ${name} is better than the pin, by its Criticals and then its Highs, though one no longer has a finding of it: its findings have no fix today.`,
+      `::warning::No release read for ${name} is better than the pin, by its findings at each severity, worst first, though one no longer has a finding of it: its findings have no fix today.`,
     );
   /**
    * Whether a fix the last run kept for a result names a release its registry still lists: an image's tag, or k3s's

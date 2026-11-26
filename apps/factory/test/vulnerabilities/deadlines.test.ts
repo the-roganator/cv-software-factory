@@ -12,6 +12,7 @@ import {
   main as deadlines,
   dockerfileOf,
   ending,
+  fewer,
   firstFixed,
   k3sLine,
   k3sReleaseOf,
@@ -32,6 +33,7 @@ import {
   toolUrl,
   UNBUILT_DAYS,
   verdict,
+  type Worth,
 } from '../../src/vulnerabilities/deadlines.ts';
 import type { Policy } from '../../src/vulnerabilities/exceptions.ts';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
@@ -595,17 +597,90 @@ describe('an image’s fix', () => {
       expect(clean.fixes[0]?.target.kind).toBe('image');
     });
 
-    it('gives a pin with neither a Critical nor a High no fix, and reads its newest alone', async () => {
+    it('moves a pin with neither a Critical nor a High for a Medium it clears', async () => {
       const medium = os({ severity: 'MEDIUM' });
-      const { fixes, asked, lines } = await judge({
+      const world = {
         findings: [medium],
         alerts: [alertOf(medium, '2026-10-01T00:00:00Z')],
-        tags: { node: [...tags.node, '24.22.5-trixie-slim'] },
-        images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') },
+        tags,
+      };
+      // One Medium against none: better.
+      const clean = await judge({ ...world, images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') } });
+      expect(clean.fixes[0]?.target).toMatchObject({ kind: 'image', tag: '24.23.0-trixie-slim' });
+      expect(clean.lines.join('\n')).not.toContain(NO_BETTER);
+      // For two Lows in its place too: the first severity that differs is the Medium.
+      const lows = await judge({
+        ...world,
+        images: {
+          [NEWEST]: rated('2026-11-01T00:00:00Z', [other('CVE-2099-29008', 'LOW'), other('CVE-2099-29009', 'LOW')]),
+        },
       });
-      expect(fixes[0]).toBeUndefined();
-      expect(asked).toEqual(['tags node', `image ${NEWEST}`]);
-      expect(lines.join('\n')).toContain(NO_BETTER);
+      expect(lows.fixes[0]?.target.kind).toBe('image');
+      // Another Medium in its place gains nothing, and a High in its place is worse.
+      for (const severity of ['MEDIUM', 'HIGH'] as const) {
+        const traded = await judge({
+          ...world,
+          images: { [NEWEST]: rated('2026-11-01T00:00:00Z', [other('CVE-2099-29010', severity)]) },
+        });
+        expect(traded.fixes[0]).toBeUndefined();
+        expect(traded.lines.join('\n')).toContain(NO_BETTER);
+      }
+    });
+
+    it('walks down from the newest for a pin whose worst is a Low', async () => {
+      const low = os({ severity: 'LOW' });
+      const { fixes, asked } = await judge({
+        findings: [low],
+        alerts: [alertOf(low, '2026-10-01T00:00:00Z')],
+        tags: { node: [...tags.node, '24.22.5-trixie-slim'] },
+        images: {
+          [NEWEST]: rated('2026-11-01T00:00:00Z', [other('CVE-2099-29011', 'LOW')]),
+          'node:24.22.5-trixie-slim': imageReport('2026-10-28T00:00:00Z'),
+        },
+      });
+      expect(asked.slice(0, 3)).toEqual(['tags node', `image ${NEWEST}`, 'image node:24.22.5-trixie-slim']);
+      expect(fixes[0]?.target).toMatchObject({ kind: 'image', tag: '24.22.5-trixie-slim' });
+    });
+  });
+
+  describe('fewer', () => {
+    const worth = (counts: Partial<Worth>): Worth => ({
+      CRITICAL: 0,
+      HIGH: 0,
+      MEDIUM: 0,
+      LOW: 0,
+      UNKNOWN: 0,
+      ...counts,
+    });
+
+    it('takes one Critical for two, whatever else the candidate has', () => {
+      expect(fewer(worth({ CRITICAL: 1, HIGH: 9, MEDIUM: 9, LOW: 9 }), worth({ CRITICAL: 2 }))).toBe(true);
+    });
+
+    it('takes at most three Highs and no Critical for four Highs', () => {
+      const pin = worth({ HIGH: 4 });
+      expect(fewer(worth({ HIGH: 3, MEDIUM: 20 }), pin)).toBe(true);
+      expect(fewer(worth({ HIGH: 4 }), pin)).toBe(false);
+      expect(fewer(worth({ CRITICAL: 1 }), pin)).toBe(false);
+    });
+
+    it('decides at the first severity that differs, down every one the scan has', () => {
+      expect(fewer(worth({ MEDIUM: 1 }), worth({ MEDIUM: 2 }))).toBe(true);
+      expect(fewer(worth({ LOW: 5 }), worth({ MEDIUM: 1 }))).toBe(true);
+      expect(fewer(worth({ MEDIUM: 1 }), worth({ LOW: 5 }))).toBe(false);
+      expect(fewer(worth({ HIGH: 1, LOW: 0 }), worth({ HIGH: 1, LOW: 1 }))).toBe(true);
+      expect(fewer(worth({ UNKNOWN: 0 }), worth({ UNKNOWN: 1 }))).toBe(true);
+      expect(fewer(worth({ HIGH: 1, MEDIUM: 3 }), worth({ HIGH: 1, MEDIUM: 2 }))).toBe(false);
+    });
+
+    it('takes nothing that is equal at every severity', () => {
+      expect(
+        fewer(
+          worth({ CRITICAL: 1, HIGH: 2, MEDIUM: 3, LOW: 4, UNKNOWN: 5 }),
+          worth({ CRITICAL: 1, HIGH: 2, MEDIUM: 3, LOW: 4, UNKNOWN: 5 }),
+        ),
+      ).toBe(false);
+      expect(fewer(worth({}), worth({}))).toBe(false);
     });
   });
 

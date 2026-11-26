@@ -108,10 +108,15 @@ export interface MergeQueue {
         reason: string | null;
         commit: string | null;
         /**
-         * How often the queue has taken it out for failed checks since its head was committed, of the times read: at
-         * this head, that is, as a head is committed before it is queued.
+         * How often the queue itself has taken it out (`queueOwn`: a failed check, a conflict, the queue cleared) since
+         * its head was committed, of the times read: at this head, that is, as a head is committed before it is queued.
          */
         failures: number;
+        /**
+         * Whether a person took it out: GitHub names who did, and it is no bot. False for the queue's own bot or the
+         * App; null where GitHub names nobody, or a bot that is neither.
+         */
+        person: boolean | null;
         /**
          * Whether it left the queue at the head it has now: it last went in after that head was committed, as a head
          * is committed before it is queued. True without the times to tell, which errs towards Martin. A removal that
@@ -125,6 +130,20 @@ export interface MergeQueue {
    */
   checks: CheckRun[];
 }
+
+/** GitHub's reasons for a removal the queue makes itself, which no person asked for. */
+const QUEUE_REASONS: readonly string[] = ['failed_checks', 'merge_conflict', 'queue_cleared'];
+
+/**
+ * Whether a removal is the queue's own, which says nothing of what Martin wants: made by the queue's bot or the App,
+ * whatever the reason; never one a person made; and where GitHub names nobody, or another bot, only for a reason
+ * known to be the queue's (`QUEUE_REASONS`), so an unknown hand with an unknown reason counts as a person's.
+ */
+export const queueOwn = (removed: { reason: string | null; person: boolean | null }): boolean =>
+  removed.person === null ? QUEUE_REASONS.includes(removed.reason?.toLowerCase() ?? '') : !removed.person;
+
+/** The login of the merge queue's own bot, without the `[bot]` REST adds. */
+export const QUEUE_BOTS: readonly string[] = ['github-merge-queue'];
 
 /** Whether a removal's reason, as GitHub gives it, is that a required check failed on the queue's commit. */
 export const failedChecks = (reason: string | null): boolean => reason?.toLowerCase() === 'failed_checks';

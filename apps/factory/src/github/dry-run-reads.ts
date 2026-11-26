@@ -275,6 +275,7 @@ export class DryRunReads implements Reads {
         reason: 'merged',
         commit,
         failures: 0,
+        person: false,
         atHead: true,
       };
       return { ...base, queued: null, removed, checks };
@@ -284,7 +285,7 @@ export class DryRunReads implements Reads {
       return {
         ...base,
         queued: null,
-        removed: { at: closed, by: APP_LOGIN, reason: 'dequeued', commit, failures: 0, atHead: true },
+        removed: { at: closed, by: APP_LOGIN, reason: 'dequeued', commit, failures: 0, person: false, atHead: true },
         checks,
       };
     }

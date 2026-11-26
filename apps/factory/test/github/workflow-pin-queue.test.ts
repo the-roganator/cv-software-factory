@@ -392,7 +392,7 @@ describe('the workflow pin queue watch', () => {
     }
   });
 
-  it('leaves out a head that left the queue for anything but failed checks, on a worker that has just started, and says so in its log', async () => {
+  it('leaves out a head a person took out of the queue, on a worker that has just started, and says so in its log', async () => {
     const said = capture();
     const taken = queue({
       removed: {
@@ -401,6 +401,7 @@ describe('the workflow pin queue watch', () => {
         reason: 'dequeued',
         commit: NEWER,
         failures: 0,
+        person: true,
         atHead: true,
       },
     });
@@ -410,7 +411,7 @@ describe('the workflow pin queue watch', () => {
     expect(enqueued).toEqual([]);
     expect(said.lines.filter((line) => line.level === 40)).toMatchObject([
       {
-        msg: 'the workflow pin pull request left the merge queue for a reason other than failed checks: it waits for Martin',
+        msg: 'someone took the workflow pin pull request out of the merge queue: it waits for Martin',
       },
     ]);
     // Nothing is said on Dependabot's pull request, and nothing read of its comments.
@@ -459,14 +460,15 @@ describe('the workflow pin queue watch', () => {
   });
 
   it(`adds a head the queue took out for failed checks again, ${QUEUE_TRIES} times in all, then leaves it for Martin with no comment`, async () => {
-    const out = (failures: number, reason = 'failed_checks') =>
+    const out = (failures: number, reason = 'failed_checks', person = false) =>
       queue({
         removed: {
           at: '2026-11-24T21:10:00Z',
-          by: 'github-merge-queue',
+          by: person ? 'mrogan' : 'github-merge-queue',
           reason,
           commit: NEWER,
           failures,
+          person,
           atHead: true,
         },
       });
@@ -485,13 +487,13 @@ describe('the workflow pin queue watch', () => {
     expect(enqueued).toHaveLength(QUEUE_TRIES);
     expect(said.lines.at(-1)).toMatchObject({
       level: 40,
-      msg: `the merge queue took the workflow pin pull request out for failed checks ${QUEUE_TRIES} times: it waits for Martin`,
+      msg: `the merge queue took the workflow pin pull request out itself ${QUEUE_TRIES} times: it waits for Martin`,
     });
     // Out any other way (Martin took it out), it is not added again.
     state = queue();
     const taken = harness({ queued: () => state });
     await taken.pass();
-    state = out(0, 'dequeued');
+    state = out(0, 'dequeued', true);
     await taken.pass();
     expect(taken.enqueued).toHaveLength(1);
   });

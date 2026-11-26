@@ -30,7 +30,7 @@ import {
 import { DEPLOYS, type DeployTarget } from '../../src/github/deploys.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import { type LevelReader, mergingWait, noLevel, storeLevel } from '../../src/github/level.ts';
-import type { MergeQueue, ReviewVerdict } from '../../src/github/merging.ts';
+import { type MergeQueue, queueOwn, type ReviewVerdict } from '../../src/github/merging.ts';
 import { PatchRefused } from '../../src/github/patches.ts';
 import type { PinScope } from '../../src/github/pins.ts';
 import type { CheckRun } from '../../src/github/reads.ts';
@@ -322,7 +322,11 @@ describe('the deploy queue watch', () => {
   });
 
   /** A queue that fails every head it is given: each pass after an enqueue finds it taken out for failed checks. */
-  const failing = (reason = 'failed_checks') => {
+  const failing = (
+    reason = 'failed_checks',
+    by: string | null = 'github-merge-queue',
+    person: boolean | null = false,
+  ) => {
     let outs = 0;
     const said: [number, string][] = [];
     const h = harness({
@@ -333,10 +337,11 @@ describe('the deploy queue watch', () => {
               added: { at: '2026-11-18T04:47:47Z', by: 'mrogan-software-factory' },
               removed: {
                 at: '2026-11-18T04:53:12Z',
-                by: 'github-merge-queue',
+                by,
                 reason,
                 commit: 'c'.repeat(40),
-                failures: reason === 'failed_checks' ? outs : 0,
+                failures: queueOwn({ reason, person }) ? outs : 0,
+                person,
                 atHead: true,
               },
               checks: [run('lint, types, tests', 'failure'), run('browser tests', 'skipped')],
@@ -379,6 +384,7 @@ describe('the deploy queue watch', () => {
           reason: 'FAILED_CHECKS',
           commit: 'c'.repeat(40),
           failures,
+          person: false,
           atHead: true,
         },
       });
@@ -406,6 +412,7 @@ describe('the deploy queue watch', () => {
           reason: 'failed_checks',
           commit: 'c'.repeat(40),
           failures: QUEUE_TRIES,
+          person: false,
           atHead: true,
         },
         checks,
@@ -447,6 +454,7 @@ describe('the deploy queue watch', () => {
             reason: 'failed_checks',
             commit: null,
             failures: QUEUE_TRIES,
+            person: false,
             atHead: true,
           },
         }),
@@ -468,13 +476,64 @@ describe('the deploy queue watch', () => {
     expect(enqueued).toEqual([]);
   });
 
-  it('never adds again a head that left the queue for any reason but failed checks, and says so once', async () => {
-    for (const reason of ['dequeued', 'merge_conflict', 'queue_cleared']) {
-      const { pass, enqueued, said } = failing(reason);
+  it('never adds again a head a person took out of the queue, whatever the reason, and says so once', async () => {
+    for (const reason of ['dequeued', 'merge_conflict', 'queue_cleared', 'failed_checks']) {
+      const { pass, enqueued, said } = failing(reason, 'mrogan', true);
       for (let i = 0; i < 4; i++) await pass();
       expect(enqueued, reason).toHaveLength(1);
-      expect(said, reason).toEqual([[973, removedComment(HEAD, { by: 'github-merge-queue', reason })]]);
+      expect(said, reason).toEqual([[973, removedComment(HEAD, { by: 'mrogan', reason })]]);
     }
+  });
+
+  it('adds again a head the queue itself took out for any reason of its own, QUEUE_TRIES times in all, then says so once', async () => {
+    // The queue's bot, whatever its reason; and nobody GitHub names, for a reason known to be the queue's.
+    for (const [reason, by, person] of [
+      ['merge_conflict', 'github-merge-queue', false],
+      ['queue_cleared', 'github-merge-queue', false],
+      ['a_reason_not_yet_known', 'github-merge-queue', false],
+      ['queue_cleared', null, null],
+      ['MERGE_CONFLICT', null, null],
+    ] as const) {
+      const { pass, enqueued, said } = failing(reason, by, person);
+      for (let i = 0; i < QUEUE_TRIES + 3; i++) await pass();
+      expect(enqueued, reason).toEqual(Array.from({ length: QUEUE_TRIES }, () => [973, HEAD]));
+      expect(said, reason).toHaveLength(1);
+      expect(said[0]?.[1], reason).toContain(`out ${QUEUE_TRIES} times at aaaaaaa`);
+      expect(said[0]?.[1], reason).toContain(`GitHub's reason the last time: \`${reason.toLowerCase()}\``);
+      expect(said[0]?.[1], reason).toContain(`<!-- factory: out of tries ${HEAD} -->`);
+    }
+  });
+
+  it('leaves out, with the comment, a head nobody GitHub names took out for a reason that is not the queue’s', async () => {
+    for (const reason of ['dequeued', 'a_reason_not_yet_known']) {
+      const { pass, enqueued, said } = failing(reason, null, null);
+      for (let i = 0; i < 4; i++) await pass();
+      expect(enqueued, reason).toHaveLength(1);
+      expect(said, reason).toEqual([[973, removedComment(HEAD, { by: null, reason })]]);
+    }
+  });
+
+  it('waits on a conflict with main before it adds again a head the queue took out for one', async () => {
+    const out = queue({
+      added: { at: '2026-11-18T04:47:47Z', by: 'mrogan-software-factory' },
+      removed: {
+        at: '2026-11-18T04:53:12Z',
+        by: 'github-merge-queue',
+        reason: 'merge_conflict',
+        commit: null,
+        failures: 1,
+        person: false,
+        atHead: true,
+      },
+    });
+    const conflicting = harness({ queued: () => out, conflicts: true });
+    await conflicting.pass();
+    await conflicting.pass();
+    expect(conflicting.enqueued).toEqual([]);
+    // A worker that has just started, the conflict gone (it was with a group ahead): it goes in again.
+    const clear = harness({ queued: () => out });
+    await clear.pass();
+    expect(clear.enqueued).toEqual([[973, HEAD]]);
   });
 
   it('leaves out a head Martin took out of the queue, across a restart, by GitHub’s record of the removal', async () => {
@@ -487,6 +546,7 @@ describe('the deploy queue watch', () => {
         reason: 'DEQUEUED',
         commit: null,
         failures: 0,
+        person: true,
         atHead: true,
       },
     });
@@ -533,6 +593,7 @@ describe('the deploy queue watch', () => {
         reason: 'dequeued',
         commit: null,
         failures: 0,
+        person: false,
         atHead: false,
       },
     });
@@ -556,6 +617,7 @@ describe('the deploy queue watch', () => {
                 reason: 'failed_checks',
                 commit: null,
                 failures: outs,
+                person: false,
                 atHead: true,
               },
             }),

@@ -49,9 +49,12 @@
  * it failed: a change that breaks main fails every time, and after `QUEUE_TRIES` failures at one head, counted from
  * GitHub's record of the pull request so a restart does not start the count again, the worker stops and says so in a
  * comment on the pull request, naming the checks that failed last. That head is then Martin's; a new head, as when the
- * next scan moves the pin further, starts again. A head that left the queue any other way (Martin took it out, GitHub
- * found a conflict, the queue was cleared) is not added again, by GitHub's own record of the removal, its reason and
- * who made it, so a worker that restarts does not add it either: only `failed_checks` goes in again. The worker says
+ * next scan moves the pin further, starts again. Any other removal the queue itself made (`queueOwn`, `merging.ts`:
+ * a group ahead of it failed, the queue was cleared, GitHub found a conflict) goes in again the same way and counts
+ * toward the same `QUEUE_TRIES`, so no move is stranded by a removal nobody chose and none loops; a head that
+ * conflicts with main waits on the conflict first, as any does. A head a person took out stays out: by GitHub's own
+ * record of the removal, who made it and its reason, so a worker that restarts does not add it either. Where GitHub
+ * names nobody and gives a reason that is not the queue's, it counts as a person's. The worker says
  * so once in a comment on its own pull request, and a new head starts again. A removal is of the head when the pull
  * request last went into the queue after that head was committed (`MergeQueue.removed.atHead`): the queue dropping
  * a pull request because its branch moved is a removal of the head before, and holds nothing.
@@ -111,6 +114,7 @@ import {
   failedChecks,
   listedReviews,
   type MergeQueue,
+  queueOwn,
   REVIEW_CHECK,
   REVIEW_RUNS,
   type ReviewVerdict,
@@ -326,7 +330,7 @@ export const MAX_TRIES = 5;
 
 /**
  * How often one head goes into the merge queue before the worker stops adding it: each time but the last, the queue
- * having taken it out for a failed check. Three, so one flake, or two, costs a pin minutes and not a day, and a move
+ * having taken it out itself, for a failed check or another reason of its own (`queueOwn`). Three, so one flake, or two, costs a pin minutes and not a day, and a move
  * that breaks main costs three runs of main's checks and no more.
  */
 export const QUEUE_TRIES = 3;
@@ -337,15 +341,20 @@ const failedOnQueue = (queue: Pick<MergeQueue, 'checks'>): string[] =>
 
 /**
  * What the worker, or the line for its own pull request, says on a pull request whose head the queue took out
- * `QUEUE_TRIES` times for failed checks, with the checks that failed the last time.
+ * `QUEUE_TRIES` times, with the checks that failed the last time: for failed checks each time, unless `reason` gives
+ * the last removal's, when it was another of the queue's own.
  */
-export function spentComment(head: string, failed: readonly string[]): string {
+export function spentComment(head: string, failed: readonly string[], reason?: string | null): string {
   const last = failed.length
     ? ` The last time, ${[...new Set(failed)].map((name) => `\`${name}\``).join(', ')} failed.`
     : '';
+  const why =
+    reason === undefined || failedChecks(reason)
+      ? "each time because a required check failed on the queue's commit."
+      : `each time by the queue itself and nobody's hand (GitHub's reason the last time: \`${word(reason).toLowerCase()}\`).`;
   return (
-    `The merge queue has taken this pull request out ${QUEUE_TRIES} times at ${head.slice(0, 7)}, each time ` +
-    `because a required check failed on the queue's commit.${last} The factory adds this head no more: it is Martin's ` +
+    `The merge queue has taken this pull request out ${QUEUE_TRIES} times at ${head.slice(0, 7)}, ` +
+    `${why}${last} The factory adds this head no more: it is Martin's ` +
     'to add to the queue again or close. A new head starts again.\n\n' +
     `<!-- factory: out of tries ${head} -->`
   );
@@ -358,14 +367,14 @@ const SPENT_MARK = /<!-- factory: out of tries ([0-9a-f]{40}) -->/;
 const word = (text: string | null) => (text ?? '').replace(/[^A-Za-z0-9_ [\]-]/g, '').slice(0, 60) || 'unknown';
 
 /**
- * What the worker says on its own pull request whose head left the merge queue for any reason but a failed check:
- * who took it out and GitHub's reason, and that the head stays out.
+ * What the worker says on its own pull request whose head a person took out of the merge queue (or nobody GitHub
+ * names, for no reason of the queue's): who took it out and GitHub's reason, and that the head stays out.
  */
 export function removedComment(head: string, removed: { by: string | null; reason: string | null }): string {
   return (
     `This pull request left the merge queue at ${head.slice(0, 7)}, taken out by \`${word(removed.by)}\` ` +
-    `(GitHub's reason: \`${word(removed.reason).toLowerCase()}\`). The factory adds a head again only when a required ` +
-    "check failed on the queue's commit, so it adds this head no more: it is Martin's to add to the queue again or " +
+    `(GitHub's reason: \`${word(removed.reason).toLowerCase()}\`). The factory adds a head again only when the queue ` +
+    "itself took it out, so it adds this head no more: it is Martin's to add to the queue again or " +
     'close. A new head starts again.\n\n' +
     `<!-- factory: out of the queue ${head} -->`
   );
@@ -550,7 +559,7 @@ export function headWait(
 interface Attempt {
   at: string;
   failures: number;
-  /** Once this worker added it, or found it in the queue: out of the queue with no removal read, it is not added again. */
+  /** Once this worker added it, or found it in the queue: out of the queue with no removal of the queue's own read, it is not added again. */
   queued: boolean;
   /** Once it is refused, out of tries, or out of the queue for good. */
   done: boolean;
@@ -640,35 +649,36 @@ async function queueOne(
     attempt.queued = true;
     return;
   }
-  // Out of the queue, or never in it. Taken out for failed checks, it goes in again, up to `QUEUE_TRIES` times.
+  // Out of the queue, or never in it. Taken out by the queue itself (a failed check, a group ahead that failed, the
+  // queue cleared, a conflict that has since gone: `queueOwn`), it goes in again, up to `QUEUE_TRIES` times.
   const out = queue.head === head ? queue.removed : null;
-  const failed = out !== null && failedChecks(out.reason);
+  const failed = out !== null && queueOwn(out);
   if (failed && out.failures >= QUEUE_TRIES) {
     // Said before the head is left, so a comment that could not be made is tried on the next pass, and only when the
     // pull request does not say it already: it is made once, across restarts.
     if (actions.comment && !(await spentSaid(github, repo, number, head)))
-      await actions.comment(repo, number, spentComment(head, failedOnQueue(queue)));
+      await actions.comment(repo, number, spentComment(head, failedOnQueue(queue), out.reason));
     attempt.done = true;
     log.warn(
-      { repo, number, head, failures: out.failures },
-      `the merge queue took the ${kind} pull request out for failed checks ${QUEUE_TRIES} times: it waits for Martin`,
+      { repo, number, head, failures: out.failures, reason: out.reason },
+      `the merge queue took the ${kind} pull request out itself ${QUEUE_TRIES} times: it waits for Martin`,
     );
     return;
   }
-  // Out of the queue at this head for anything else, by GitHub's record of it (Martin took it out, the queue found a
-  // conflict, the queue was cleared), it stays out, as a restart reads the same record. Said before the head is left,
-  // once across restarts, as above.
+  // Taken out at this head by a person, by GitHub's record of it (or by nobody it names, for no reason of the
+  // queue's), it stays out, as a restart reads the same record. Said before the head is left, once across restarts,
+  // as above.
   if (out?.atHead && !failed) {
     if (actions.comment && !(await spentSaid(github, repo, number, head, REMOVED_MARK)))
       await actions.comment(repo, number, removedComment(head, out));
     attempt.done = true;
     log.warn(
       { repo, number, head, reason: out.reason, by: out.by },
-      `the ${kind} pull request left the merge queue for a reason other than failed checks: it waits for Martin`,
+      `someone took the ${kind} pull request out of the merge queue: it waits for Martin`,
     );
     return;
   }
-  // Added by this worker and gone from the queue with no removal read: not added again.
+  // Added by this worker and gone from the queue with no removal of the queue's own read: not added again.
   if (attempt.queued && !failed) {
     attempt.done = true;
     return;

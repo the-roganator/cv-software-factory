@@ -288,7 +288,7 @@ describe('the prepare step, on a dependency’s work item', () => {
     expect(git('status', '--porcelain', '--', 'Dockerfile')).toBe('');
   });
 
-  it('makes the move with the digest the scan was given for a tag, though its registry answers another since (S2-M1)', async () => {
+  it('makes the move at the scan’s digest though its tag serves another since, while the registry still has it (S2-M1)', async () => {
     const { url, commit } = originWith({ Dockerfile: `FROM gcr.io/distroless/static:nonroot@${OLD}\n` });
     const move = {
       ecosystem: 'docker',
@@ -300,16 +300,23 @@ describe('the prepare step, on a dependency’s work item', () => {
       at: '2026-11-20T05:00:00Z',
       asked: [{ image: 'gcr.io/distroless/static', tag: 'nonroot', digest: NEW }],
     };
-    // The tag was pushed again after the scan.
-    const get = async () => new Response(null, { headers: { 'docker-content-digest': `sha256:${'3'.repeat(64)}` } });
+    // The tag was pushed again after the scan; the registry still has the scan's digest, asked for by itself.
+    const registry = (kept: string[]) => async (url: string) =>
+      url.endsWith('/manifests/nonroot')
+        ? new Response(null, { headers: { 'docker-content-digest': `sha256:${'3'.repeat(64)}` } })
+        : kept.some((digest) => url.endsWith(`/manifests/${digest}`))
+          ? new Response(null, { headers: { 'docker-content-digest': url.slice(url.lastIndexOf('/') + 1) } })
+          : new Response(null, { status: 404 });
+    const get = registry([NEW]);
     const lines: string[] = [];
     await prepare(envFor(url, commit, move, made).env, (line) => lines.push(line), { get });
     const pins = lines.map((line) => JSON.parse(line)).find((line) => line.msg === 'the pins');
     expect(pins.pins).toContain(`+FROM gcr.io/distroless/static:nonroot@${NEW}`);
-    // Asked of its registry now, as with no scan to make it from, the move is refused.
-    await expect(prepare(envFor(url, commit, move).env, () => {}, { get })).rejects.toThrow(
-      /is sha256:3{64} in its registry/,
-    );
+    // Once the registry no longer has that digest, the move is refused, with the scan's answers or none.
+    for (const env of [envFor(url, commit, move, made).env, envFor(url, commit, move).env])
+      await expect(prepare(env, () => {}, { get: registry([]) })).rejects.toThrow(
+        /Its registry no longer has gcr\.io\/distroless\/static at sha256:2{64}/,
+      );
   });
 
   it('takes a package at two versions as the dependency sense sends it, and moves each copy', async () => {

@@ -64,6 +64,7 @@ import {
   type TicketFacts,
   ticketFault,
   unreadMoves,
+  watcherRode,
   withoutDependabot,
   withSetting,
   workflowPins,
@@ -614,6 +615,9 @@ interface State {
     arrivedS?: number;
     errors: string[];
     unhealthy: string[];
+    /** How long the store's pod was kept away, in seconds, and what the log watcher's log says of it. */
+    awayS?: number;
+    watcher?: { away: boolean; back: boolean };
   };
   limitMin: number;
   flags: string[];
@@ -2002,7 +2006,7 @@ function report(state: State) {
   if (state.restart) {
     const r = state.restart;
     console.log(
-      `the report: left at ${r.at}, answered ${r.posted}; the store ${r.restarted ? 'restarted' : 'did not restart'}; in the inbox ${r.inbox} time${r.inbox === 1 ? '' : 's'}${r.arrivedS === undefined ? '' : `, after ${r.arrivedS} s`}`,
+      `the report: left at ${r.at}, answered ${r.posted}; the store away ${r.awayS ?? '?'} s, ${r.restarted ? 'and back' : 'and not back'}; the log watcher ${r.watcher?.away ? 'warned' : 'gave no warning'}${r.watcher?.back ? ' and reached it again' : ''}; in the inbox ${r.inbox} time${r.inbox === 1 ? '' : 's'}${r.arrivedS === undefined ? '' : `, after ${r.arrivedS} s`}`,
     );
     for (const line of r.errors) console.log(`  error lines  ${line}`);
     for (const line of r.unhealthy) console.log(`  unhealthy    ${line}`);
@@ -2761,15 +2765,28 @@ function runRestart(state: State) {
       `${APP_AT.url}/api/reports`,
     ]).trim(),
   );
-  kubectl(['-n', 'factory', 'delete', 'pod', 'postgres-0', '--wait=false']);
-  say(state, `left a report through the app (${posted}) and deleted the store's pod`);
-  state.restart = { at, posted, restarted: false, inbox: 0, errors: [], unhealthy: [] };
+  // Away for some 25 seconds, so at least two of the watcher's turns (every ten) fall inside: the StatefulSet puts the
+  // pod back within seconds, so it is deleted again each time it is there. Only ever the pod.
+  const awayFrom = Date.now();
+  const gone = new Set<string>([was]);
+  while (Date.now() - awayFrom < 25_000) {
+    try {
+      kubectl(['-n', 'factory', 'delete', 'pod', 'postgres-0', '--wait=false', '--ignore-not-found']);
+    } catch {}
+    sleep(2_000);
+    const now = uid().split(' ')[0] ?? '';
+    if (now) gone.add(now);
+  }
+  // The last one deleted may still be going: a pod met in the window is never the one that counts as back.
+  const awayS = Math.round((Date.now() - awayFrom) / 1000);
+  say(state, `left a report through the app (${posted}) and kept the store's pod away for ${awayS} s`);
+  state.restart = { at, posted, restarted: false, inbox: 0, errors: [], unhealthy: [], awayS };
   save(state);
-  // Back: a pod of another uid, ready.
+  // Back: a pod of another uid than any deleted, ready.
   for (let i = 0; i < 60 && !state.restart.restarted; i++) {
     sleep(5_000);
     const now = uid().split(' ')[0] ?? '';
-    state.restart.restarted = Boolean(now) && now !== was && ready() === 'true';
+    state.restart.restarted = Boolean(now) && !gone.has(now) && ready() === 'true';
   }
   say(state, state.restart.restarted ? 'the store is back' : 'the store did not come back in five minutes');
   for (let i = 0; state.restart.restarted && posted === 202 && i < 72; i++) {
@@ -2790,6 +2807,11 @@ function runRestart(state: State) {
   }
   const now = cluster();
   state.restart.errors = errorLines(state, now, at).errors;
+  try {
+    state.restart.watcher = watcherRode(
+      kubectl(['-n', 'factory', 'logs', 'deployment/logs', '--all-containers', `--since-time=${at}`], 300_000),
+    );
+  } catch {}
   state.restart.unhealthy = now.pods
     .filter(
       (p) => p.name.startsWith('factory/') && !['Succeeded'].includes(p.phase) && !(p.phase === 'Running' && p.ready),

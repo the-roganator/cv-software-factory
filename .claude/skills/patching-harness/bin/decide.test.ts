@@ -45,6 +45,7 @@ import {
   targetOf,
   ticketFault,
   unreadMoves,
+  watcherRode,
   withoutDependabot,
   withSetting,
   workflowPins,
@@ -894,13 +895,36 @@ describe('a target that moves on after the pull request opened', () => {
 });
 
 describe('the store restarting under a report', () => {
-  const ok = { posted: 202, restarted: true, errors: [], inbox: 1, arrivedS: 95 };
+  const ok = { posted: 202, restarted: true, errors: [], inbox: 1, arrivedS: 95, watcher: { away: true, back: true } };
+  const away =
+    '{"level":40,"check":"reports","msg":"a check could not reach the store, as for a restart: its next turn tries again"}';
+  const back = '{"level":30,"check":"reports","msg":"the check reached the store again, after 31 s"}';
 
-  it('passes when the report is in the inbox once and no worker logged an error', () => {
+  it('passes when the watcher met the outage, the report is in the inbox once and no worker logged an error', () => {
     expect(restartVerdict(ok)).toEqual({
       pass: true,
-      why: 'the store restarted under the report; in the inbox once, after 95 s; no worker logged an error',
+      why: 'the store was away under the report; the log watcher warned, and reached it again; in the inbox once, after 95 s; no worker logged an error',
     });
+  });
+
+  it("gives no verdict when the watcher's log has no warning, and fails when it never reached the store again", () => {
+    for (const watcher of [undefined, { away: false, back: false }]) {
+      const verdict = restartVerdict({ ...ok, watcher });
+      expect(verdict.pass).toBe(false);
+      expect(verdict.why).toContain("no verdict: the restart fell between the watcher's turns");
+    }
+    expect(restartVerdict({ ...ok, watcher: { away: true, back: false } }).why).toContain(
+      'never said it reached it again',
+    );
+  });
+
+  it("reads the watcher's warning and its return from its log, in that order", () => {
+    expect(watcherRode([away, away, back].join('\n'))).toEqual({ away: true, back: true });
+    expect(watcherRode(away)).toEqual({ away: true, back: false });
+    expect(watcherRode([back, away].join('\n'))).toEqual({ away: true, back: false });
+    expect(watcherRode('{"level":30,"msg":"reports checked"}\nnot json')).toEqual({ away: false, back: false });
+    // The same words at another level are not the warning.
+    expect(watcherRode(away.replace('"level":40', '"level":30'))).toEqual({ away: false, back: false });
   });
 
   it('fails a report the app did not take, and a store that did not restart', () => {

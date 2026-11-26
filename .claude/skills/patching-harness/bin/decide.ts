@@ -737,8 +737,32 @@ export function newerFault(o: {
 // ── The store restarting under a report ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * A report left through the app's widget as the store restarts (W5): the store was back, no worker logged an error
- * from the report on, and the report is in the inbox once.
+ * What the log watcher's own log says of a store that went away under it: its warning that a check could not reach the
+ * store (`away`, level 40, commands/logs.ts's words), and after it its word that the check reached the store again
+ * (`back`).
+ */
+export function watcherRode(log: string): { away: boolean; back: boolean } {
+  let away = false;
+  let back = false;
+  for (const line of log.split('\n')) {
+    let entry: { level?: unknown; msg?: unknown };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const msg = typeof entry.msg === 'string' ? entry.msg : '';
+    if (entry.level === 40 && msg.includes('could not reach the store')) away = true;
+    else if (away && msg.includes('reached the store again')) back = true;
+  }
+  return { away, back };
+}
+
+/**
+ * A report left through the app's widget as the store goes away (W5): the store was back, no worker logged an error
+ * from the report on, the report is in the inbox once, and the log watcher met the outage: it warned that a check
+ * could not reach the store, and then said it reached it again. With no such warning the restart fell between the
+ * watcher's turns and nothing was shown of it: no verdict, never a pass.
  */
 export function restartVerdict(o: {
   /** The app's answer to the report: 202 when it took it. */
@@ -751,6 +775,8 @@ export function restartVerdict(o: {
   inbox: number;
   /** How long the report took to reach the inbox, in seconds. */
   arrivedS?: number | undefined;
+  /** What the log watcher's log says of the outage (`watcherRode`). */
+  watcher?: { away: boolean; back: boolean } | undefined;
 }): { pass: boolean; why: string } {
   const fail = (why: string) => ({ pass: false, why });
   if (o.posted !== 202) return fail(`the app answered the report ${o.posted}, not 202: no report to wait for`);
@@ -759,8 +785,14 @@ export function restartVerdict(o: {
   if (o.inbox > 1) return fail(`the report is in the inbox ${o.inbox} times, not once`);
   if (o.errors.length)
     return fail(`the report arrived once, but a worker logged an error: ${o.errors.join('; ')}`.slice(0, 420));
+  if (!o.watcher?.away)
+    return fail(
+      "no verdict: the restart fell between the watcher's turns (its log has no warning that a check could not reach the store)",
+    );
+  if (!o.watcher.back)
+    return fail('the log watcher warned it could not reach the store, and never said it reached it again');
   return {
     pass: true,
-    why: `the store restarted under the report; in the inbox once, after ${o.arrivedS ?? '?'} s; no worker logged an error`,
+    why: `the store was away under the report; the log watcher warned, and reached it again; in the inbox once, after ${o.arrivedS ?? '?'} s; no worker logged an error`,
   };
 }

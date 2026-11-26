@@ -405,13 +405,15 @@ export function spentRunsComment(head: string, failed: readonly string[]): strin
 /** The mark of the comment that says a head's checks are out of tries, by the head it names. */
 const SPENT_RUNS_MARK = /<!-- factory: checks out of tries ([0-9a-f]{40}) -->/;
 
-/** How many pages of a hundred comments are read of a pull request before the read fails as not whole. */
+/** How many pages of a hundred comments are read of a pull request for the App's own. */
 const COMMENT_PAGES = 10;
 
 /**
  * Whether the App has already said on the pull request what a mark says of this head, by the mark its own comment
  * carries (the App's by its id, `APP_USER`): read from GitHub, so a worker that restarts says it no more than once,
- * whichever checks failed last when it reads. Every page, oldest first, up to `COMMENT_PAGES`.
+ * whichever checks failed last when it reads. Every page, oldest first, up to `COMMENT_PAGES`; past them it is taken
+ * as not said, since anyone may comment on a public repository: the App says it, perhaps again, and the head is left
+ * for Martin, where a read that failed would have the queue try the head for ever.
  */
 async function spentSaid(github: GitHub, repo: string, number: number, head: string, mark = SPENT_MARK) {
   for (let page = 1; page <= COMMENT_PAGES; page++) {
@@ -423,7 +425,7 @@ async function spentSaid(github: GitHub, repo: string, number: number, head: str
     if (comments.some((made) => made.user?.id === APP_USER && mark.exec(made.body ?? '')?.[1] === head)) return true;
     if (comments.length < 100) return false;
   }
-  throw new GitHubError('malformed', `#${number} in ${repo} has more comments than the queue reads.`);
+  return false;
 }
 
 /** A commit's message, as git's data API gives it. */
@@ -649,8 +651,9 @@ async function queueOne(
     attempt.queued = true;
     return;
   }
-  // Out of the queue, or never in it. Taken out by the queue itself (a failed check, a group ahead that failed, the
-  // queue cleared, a conflict that has since gone: `queueOwn`), it goes in again, up to `QUEUE_TRIES` times.
+  // Out of the queue, or never in it. Taken out by the queue itself (a failed check, a group ahead that failed, a
+  // stack below it that changed, a conflict that has since gone: `queueOwn`), it goes in again, up to `QUEUE_TRIES`
+  // times.
   const out = queue.head === head ? queue.removed : null;
   const failed = out !== null && queueOwn(out);
   if (failed && out.failures >= QUEUE_TRIES) {

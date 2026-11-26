@@ -33,6 +33,7 @@ import {
   dependabotGroup,
   digest,
   FACTORY,
+  type FakePull,
   FakeRepo,
   FILES,
   factoryMoves,
@@ -1455,6 +1456,55 @@ describe('a close that is not Martin’s', () => {
     Object.assign(second as object, { state: 'closed', closed_by: 'mrogan' });
     await w.pass();
     expect(openPins(repo)).toEqual([]);
+  });
+
+  it('remembers Martin’s close past a hundred later closed pull requests on the branch', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const w = harness(repo, () => day(scanned, dashboards()));
+    await w.pass();
+    const [first] = openPins(repo);
+    Object.assign(first as object, { state: 'closed', closed_by: 'mrogan' });
+    // Later pull requests from the branch, closed since: anyone's, each newer than his.
+    for (let i = 0; i < 150; i++)
+      repo.pulls.push({ ...(first as FakePull), number: 5000 + i, body: '', user: 'someone', closed_by: 'someone' });
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+  });
+
+  it('makes no move on a branch with more closed pull requests than it reads, and says so', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const said = capture();
+    const w = harness(repo, () => day(scanned, dashboards()), { log: said.log });
+    const branch = pinBranchOf('example-dashboards');
+    const closed: FakePull = {
+      number: 0,
+      title: 'Another',
+      body: '',
+      state: 'closed',
+      merged_at: null,
+      user: 'someone',
+      head: branch,
+      labels: [],
+      mergeable: null,
+      closed_by: 'someone',
+    };
+    for (let i = 0; i < 3000; i++) repo.pulls.push({ ...closed, number: 5000 + i });
+    await w.pass();
+    await w.pass();
+    // Held, not made again: what Martin closed or undid there may be past what was read.
+    expect(openPins(repo)).toEqual([]);
+    expect(
+      said.lines.filter((line) => line.msg.includes('more closed pull requests than the watch reads')),
+    ).toMatchObject([{ branch }]);
+    const issue = issueFor(repo, 'example-dashboards');
+    expect(issue?.state).toBe('open');
+    expect(issue?.body).toContain('more closed pull requests than the watch reads');
+    // One fewer page, and it is read whole: the move is made.
+    repo.pulls.splice(0, 100);
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([branch]);
   });
 
   it('holds no issue closed either: one anyone else closed is opened again for the same target', async () => {

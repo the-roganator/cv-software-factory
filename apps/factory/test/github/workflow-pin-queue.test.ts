@@ -398,7 +398,7 @@ describe('the workflow pin queue watch', () => {
       removed: {
         at: '2026-11-24T21:10:00Z',
         by: 'mrogan',
-        reason: 'dequeued',
+        reason: 'manual',
         commit: NEWER,
         failures: 0,
         person: true,
@@ -493,7 +493,7 @@ describe('the workflow pin queue watch', () => {
     state = queue();
     const taken = harness({ queued: () => state });
     await taken.pass();
-    state = out(0, 'dequeued', true);
+    state = out(0, 'manual', true);
     await taken.pass();
     expect(taken.enqueued).toHaveLength(1);
   });

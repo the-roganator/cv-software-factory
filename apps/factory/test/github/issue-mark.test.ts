@@ -71,6 +71,12 @@ describe('the mark that finds a work item’s issue again', () => {
     expect(workItemMarkOf('The factory’s ticket #1288.')).toBeUndefined();
     expect(workItemMarkOf(null)).toBeUndefined();
     expect(workItemMarkOf('<!-- factory: work-item 1288 forged -->')).toBeUndefined();
+    // As GitHub may keep a body: \r\n for its line endings, and space after its last line.
+    expect(workItemMarkOf(`Words.\r\n\r\n${workItemMark('1288')}\r\n`)).toBe(workItemMark('1288'));
+    // Anywhere but the last line it is text: a report quoted in the body, a line with more on it, a mark followed.
+    expect(workItemMarkOf(`${workItemMark('1287')}\n\nA visitor’s report.`)).toBeUndefined();
+    expect(workItemMarkOf(`A report quoting ${workItemMark('1287')}`)).toBeUndefined();
+    expect(workItemMarkOf(`Quoted: ${workItemMark('1287')}\n\n${workItemMark('1288')}`)).toBe(workItemMark('1288'));
   });
 });
 
@@ -105,6 +111,24 @@ describe('opening an issue for a work item', () => {
     // And then the App's own is the one found.
     expect(await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') })).toBe(made);
     expect(open).toHaveLength(3);
+  });
+
+  it('is not captured by an issue of the App’s that carries the mark anywhere but its last line', async () => {
+    // Another work item's issue, whose text quotes this one's mark: what a visitor wrote, say.
+    const quoting = {
+      number: 9,
+      title: 'Another ticket',
+      body: `A report: ${workItemMark('1288')}\n\n${workItemMark('1287')}`,
+      user: { login: APP_LOGIN },
+    };
+    const { actions, open, writes } = repository([quoting]);
+    const made = await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
+    expect(made).not.toBe(9);
+    expect(writes()).toEqual(['POST']);
+    expect(open.find((each) => each.number === 9)?.title).toBe('Another ticket');
+    // Asked with the mark quoted and no mark at the end, nothing is looked for: it is no work item's issue.
+    const quoted = `Quoting ${workItemMark('1287')} in passing.`;
+    expect(await actions.openIssue(REPO, { title: 'A note', body: quoted })).not.toBe(9);
   });
 
   it('finds one past the first page, and reads no further than a page that is not full', async () => {

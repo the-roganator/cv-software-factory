@@ -144,6 +144,9 @@ interface World {
   kubeVersion?: string;
   /** The Node release each image at `<repository>@<digest>` runs. */
   runs?: Record<string, string>;
+  /** The digests a registry no longer has, asked for by the digest, and those it does not answer for. */
+  gone?: string[];
+  silent?: string[];
   /** The exceptions a carried finding is judged by; the repository's own where none is given. */
   policy?: Policy;
 }
@@ -171,7 +174,11 @@ function sourcesOf(world: World) {
     },
     async digest(reference) {
       asked.push(`digest ${reference}`);
-      return world.digests?.[reference] ?? `sha256:${'d'.repeat(64)}`;
+      // Asked for by a digest, a registry serves that digest, says it has no such manifest, or does not answer.
+      const at = reference.split('@')[1];
+      if (at && world.gone?.includes(at)) throw new Error(`GET ${reference}: MANIFEST_UNKNOWN: manifest unknown`);
+      if (at && world.silent?.includes(at)) throw new Error(`HEAD ${reference}: context deadline exceeded`);
+      return world.digests?.[reference] ?? at ?? `sha256:${'d'.repeat(64)}`;
     },
     async manifests(reference) {
       asked.push(`manifests ${reference}`);
@@ -1181,6 +1188,48 @@ describe('an image’s fix, while the scan has known its digest less than a day'
     const strict = await judge({ ...serving('c'), policy: exact });
     const strictNext = await judge({ ...serving('c', strict.kept()), policy: exact }, NOW + DAY - 2 * 60_000);
     expect(strictNext.fixes).toEqual([undefined]);
+  });
+
+  it('takes none whose digest its registry no longer serves, though its tag is listed, and keeps one it does not answer for', async () => {
+    const day0 = await judge(serving('c'));
+    // The tag is pushed again the next day: the digest that has waited stands in while the registry has it.
+    const again = (over: Partial<World>): World => ({ ...serving('d', day0.kept()), ...over });
+    const stands = await judge(again({}), NOW + DAY);
+    expect(stands.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') });
+    expect(stands.asked).toContain(`digest node@${digest('c')}`);
+    // Gone: the pin step would refuse the move every day, so it is no target, and today's waits its day.
+    const gone = await judge(again({ gone: [digest('c')] }), NOW + DAY);
+    expect(gone.fixes).toEqual([undefined]);
+    // A day less the policy's slack for a scan that starts a little early.
+    expect(gone.rows[0]).toMatchObject({ installable: NOW + 2 * DAY - 2 * 3_600_000, bucket: 'none' });
+    expect(gone.lines.join('\n')).toContain(`node@${digest('c')} is no longer served by its registry`);
+    expect(moves(gone.judged, { repository: REPOSITORY, app: false, now: NOW + DAY })).toEqual([]);
+    // Forgotten in the state it keeps, and today's comes due the day after.
+    expect(JSON.stringify(gone.kept().findings.map((each) => each.waits))).not.toContain(digest('c'));
+    const due = await judge({ ...again({ gone: [digest('c')] }), state: gone.kept() }, NOW + 2 * DAY);
+    expect(due.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('d') });
+    // Unanswered is not gone: the stand-in stays, and the log says the registry was not read.
+    const silent = await judge(again({ silent: [digest('c')] }), NOW + DAY);
+    expect(silent.fixes[0]?.target).toEqual({ kind: 'image', tag: '24.23.0-trixie-slim', digest: digest('c') });
+    expect(silent.lines.join('\n')).toContain(`The digest of node@${digest('c')} could not be read`);
+  });
+
+  it('drops a fix the last state kept once its digest is gone, when this run’s own target still waits its day', async () => {
+    // The state lists the fix at one digest; the tag is pushed again, so today's own target waits and the state's is
+    // what would be listed: only while its registry still serves it.
+    const day0 = await judge(serving('c'));
+    const day1 = await judge(serving('c', day0.kept()), NOW + DAY);
+    expect(day1.fixes[0]?.target).toMatchObject({ digest: digest('c') });
+    // Two days on the state has no waiting record of it left to stand in: the fix itself is all that names it.
+    const state = { ...day1.kept() };
+    state.findings = state.findings.map((each) => ({ ...each, waits: [] }));
+    const kept = await judge(serving('d', state), NOW + 2 * DAY);
+    expect(kept.fixes[0]?.target).toMatchObject({ digest: digest('c') });
+    const gone = await judge({ ...serving('d', state), gone: [digest('c')] }, NOW + 2 * DAY);
+    expect(gone.fixes).toEqual([undefined]);
+    expect(gone.lines.join('\n')).toContain(`node@${digest('c')} is no longer served by its registry`);
+    const silent = await judge({ ...serving('d', state), silent: [digest('c')] }, NOW + 2 * DAY);
+    expect(silent.fixes[0]?.target).toMatchObject({ digest: digest('c') });
   });
 
   it('keeps the fix a state from before the wait lists, and moves it to a new digest only once that has waited', async () => {

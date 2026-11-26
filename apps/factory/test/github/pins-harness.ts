@@ -391,7 +391,7 @@ export class FakeRepo {
           );
           // GitHub lists them newest first unless asked otherwise.
           const ordered = q.get('direction') === 'asc' ? listed : [...listed].reverse();
-          return { body: page === 1 ? ordered.map(pullOf) : [] };
+          return { body: ordered.slice((page - 1) * 100, page * 100).map(pullOf) };
         },
       },
       {

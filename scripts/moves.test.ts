@@ -439,6 +439,16 @@ describe('the scan the gate judges by has an age limit', () => {
     expect(tooOld(Number.NaN, NOW)).toContain('judged at no time the gate can read');
   });
 
+  it('judges by none that says it was judged at a time still to come, past two clocks’ difference', () => {
+    // The seal does not hold the time: a day to come would never grow old.
+    expect(tooOld(ago(-2 / 60), NOW)).toBeUndefined();
+    expect(tooOld(ago(-0.5), NOW)).toContain('judged at a time still to come');
+    expect(tooOld(ago(-24 * 365), NOW)).toContain('judged at a time still to come');
+    for (const rule of ['move', 'major'] as const)
+      expect(byAge({ rule, title }, ago(-24), NOW)).toEqual({ pending: tooOld(ago(-24), NOW) });
+    expect(byAge({ reason: 'deploy/a.yaml:2 changes' }, ago(-24), NOW)).toEqual({ reason: 'deploy/a.yaml:2 changes' });
+  });
+
   it('makes what would pass by an old scan a wait, never a pass, and leaves a refusal a refusal', () => {
     for (const rule of ['move', 'major'] as const) {
       expect(byAge({ rule, title }, ago(35), NOW)).toEqual({ rule, title });

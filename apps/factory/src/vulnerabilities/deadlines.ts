@@ -35,12 +35,13 @@
  *   day the scan first saw it without the finding, which the state keeps. A chart's version is a fix on the same
  *   terms: the image it runs has not the finding and is better than the pin's. Where a release has not the finding
  *   and none is better, there is no fix that day, the last run's is not kept, and the log names the pin. A fix kept
- *   from the last run whose release its registry no longer lists is dropped. While no fix is installable there is no
- *   deadline.
+ *   from the last run whose release its registry no longer lists, or whose digest it no longer serves, asked for by
+ *   the digest, is dropped. While no fix is installable there is no deadline.
  * - **An image's or a chart's fix waits for its content**: it is installable only once the scan has known the image's
  *   digest, or the chart's version, for `ROUTINE.contentDays` (state.ts's `contentWaits`), since both are whatever
  *   their publisher pushed last; where today's is too new, the newest the last runs found for the finding that has
- *   waited stands in, and with no state to read the wait starts that day.
+ *   waited stands in, while its registry still lists its tag and serves its digest, or today's waits its day; and
+ *   with no state to read the wait starts that day.
  * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
  *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
  *   first seen today. A rename keeps its clock: when an item is new to the list, and a finding of the same package and
@@ -115,6 +116,7 @@ import {
   apiVersionsOf,
   type Handoff,
   imagesIn,
+  isAnswer,
   PULL_WAITS,
   publisherOf,
   type ReadTarget,
@@ -1197,22 +1199,50 @@ export async function installable(
       `::warning::No release read for ${name} is better than the pin, by its findings at each severity, worst first, though one no longer has a finding of it: its findings have no fix today.`,
     );
   /**
-   * Whether a fix the last run kept for a result names a release its registry still lists: an image's tag, or k3s's
-   * release, among its repository's tags, and a chart's version among the chart's. Any other target is; and so is one
-   * whose registry does not answer, which costs a result nothing it had. One no longer listed is named in the log,
-   * each once.
+   * Whether a fix the last run kept for a result, or a target the state's sightings stand in with, names a release its
+   * registry still has: an image's tag, or k3s's release, among its repository's tags, and a chart's version among the
+   * chart's; and for an image, its digest still served under that repository, asked for by the digest itself as the
+   * pin step asks (`servedAt`, apps/runner/src/pins.ts), which refuses a move to one that is gone. Any other target
+   * is; and so is one whose registry does not answer, which costs a result nothing it had. One that is gone is named
+   * in the log, each once.
    */
   const gone = new Set<string>();
+  const byDigest = new Map<string, Promise<boolean>>();
+  /** Whether a registry still serves a digest: false only on its answer that it does not, or with another. */
+  const servesDigest = (repository: string, digest: string) => {
+    const reference = `${repository}@${digest}`;
+    let once = byDigest.get(reference);
+    if (!once) {
+      once = (sources.served ?? sources.digest)(reference).then(
+        (served) => served === digest,
+        (error: unknown) => {
+          if (isAnswer(error)) return false;
+          log(
+            `::warning::The digest of ${reference} could not be read (${firstLine(error) ?? ''}): a fix kept there stands today.`,
+          );
+          return true;
+        },
+      );
+      byDigest.set(reference, once);
+    }
+    return once;
+  };
   const listed = async (index: number, kept: Target) => {
     const finding = findings[index];
     const target = finding ? kinds.get(finding.item) : undefined;
     if (!target) return true;
     let name: string;
+    let what = 'listed';
     try {
       if (kept.kind === 'image') {
         const { repository } = nameAndTag(pinOf(target) ?? '');
-        if (!repository || (await listTags(repository)).includes(kept.tag)) return true;
+        if (!repository) return true;
         name = `${repository}:${kept.tag}`;
+        if ((await listTags(repository)).includes(kept.tag)) {
+          if (await servesDigest(repository, kept.digest)) return true;
+          name = `${repository}@${kept.digest}`;
+          what = 'served';
+        }
       } else if (kept.kind === 'k3s') {
         if ((await listTags(K3S_IMAGE)).includes(kept.release.replace('+k3s', '-k3s'))) return true;
         name = `k3s ${kept.release}`;
@@ -1226,7 +1256,7 @@ export async function installable(
     }
     if (!gone.has(name)) {
       gone.add(name);
-      log(`::warning::${name} is no longer listed by its registry: the fix the last run kept there is dropped.`);
+      log(`::warning::${name} is no longer ${what} by its registry: the fix the last run kept there is dropped.`);
     }
     return false;
   };
@@ -1752,16 +1782,6 @@ export async function assess(
   if (read.state)
     log(`Each day read from the state run ${read.state.run} kept: ${read.state.findings.length} findings.`);
   const stood = read.state ? statedIn(findings, read.state) : stated(findings, read.ours, log);
-  // A fix the last run gave stands only where this run did not refuse the pin's releases as no better than the pin;
-  // and, where this run has none of its own to give, only while its registry still lists its release.
-  const states = await Promise.all(
-    stood.map(async (state, index) => {
-      if (!state || found.refused[index]) return undefined;
-      const day = found.at[index];
-      const own = found.fixes[index] !== undefined && day !== undefined && day <= now;
-      return own || (await found.listed(index, state.target)) ? state : undefined;
-    }),
-  );
   const seens = read.state
     ? seenIn(findings, handoff.targets, read.state, now)
     : seen(findings, handoff.targets, read.ours, now, time(handoff.started));
@@ -1771,7 +1791,8 @@ export async function assess(
   const own = [...found.fixes];
   const waits = contentWaits(found, keys, last, policy.ROUTINE.contentDays, now, policy.ROUTINE.slackHours);
   // A target that stands in from the state's sightings is held to its registry as a fix the state kept is (`listed`):
-  // one no longer listed is no target, and the result is left with this run's own, on the day its content has waited.
+  // one whose tag is no longer listed, or whose digest is no longer served, is no target and is forgotten, and the
+  // result is left with this run's own, on the day its content has waited.
   await Promise.all(
     found.fixes.map(async (target, index) => {
       const today = own[index];
@@ -1779,6 +1800,18 @@ export async function assess(
       const waiting = waits[index]?.find((each) => each.target === targetText(today));
       found.fixes[index] = waiting ? today : undefined;
       found.at[index] = waiting ? time(waiting.day) : undefined;
+      waits[index] = waits[index]?.filter((each) => each.target !== targetText(target));
+    }),
+  );
+  // A fix the last run gave stands only where this run did not refuse the pin's releases as no better than the pin;
+  // and, where this run has no target of its own that is installable today, the content's wait counted, only while
+  // its registry still has its release: asked after the wait, which may put this run's own off.
+  const states = await Promise.all(
+    stood.map(async (state, index) => {
+      if (!state || found.refused[index]) return undefined;
+      const day = found.at[index];
+      const own = found.fixes[index] !== undefined && day !== undefined && day <= now;
+      return own || (await found.listed(index, state.target)) ? state : undefined;
     }),
   );
   const fixes = fixesOf(found.at, found.fixes, states, now);

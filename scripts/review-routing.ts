@@ -1104,7 +1104,8 @@ export interface Facts {
    * Whether it is a move (scripts/move.ts), for a pull request from a branch here that Martin has not passed and is no
    * exact pin: `move` or `major` with its verdict's title; why a change that touches the scan's moves is refused, a
    * fact not read among them; why it is no move at all; or, `pending`, why it is not judged yet: the move job judged
-   * an earlier head, and the run the push started judges this one.
+   * an earlier head, and the run the push started judges this one; or it would pass by a scan too old to judge by,
+   * and waits for the next (scripts/moves.ts).
    */
   move?: MoveResult | { pending: string };
 }

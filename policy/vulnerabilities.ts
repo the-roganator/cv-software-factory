@@ -159,3 +159,10 @@ export function dismissal(entry: Exception) {
   const text = `Excepted in policy/vulnerabilities.ts until ${entry.expires}: ${entry.reason}`;
   return text.length > 280 ? `${text.slice(0, 279)}…` : text;
 }
+
+/**
+ * The longest ago, in hours, a scan of `main` may have been judged (`moves.json`'s `judged`) and still be judged by:
+ * the scan runs each day, so a day and a half is one run missed. The review gate takes an older one for no judgement,
+ * and a change that would pass by it as a move waits for the next scan (scripts/moves.ts).
+ */
+export const SCAN_MAX_AGE_HOURS = 36;

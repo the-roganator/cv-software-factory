@@ -271,12 +271,13 @@ export interface GitHub {
 /**
  * A move's answer for one pull request at one head: what it is (`move`, or `major`) and the verdict's title; the
  * reason a change that touches the scan's moves is refused; or why it is no move at all (scripts/move.ts). The `move`
- * job writes it as `{ "move": title }`, `{ "major": title }`, `{ "reason": why }` or `{ "none": why }`.
+ * job writes it as `{ "move": title }`, `{ "major": title }`, `{ "reason": why }` or `{ "none": why }`; or as
+ * `{ "pending": why }`, why it is not judged yet: it would pass by a scan too old to judge by (scripts/moves.ts).
  */
-export type MoveAnswer = MoveResult;
+export type MoveAnswer = MoveResult | { pending: string };
 
-/** A move's answer as the gate takes it: the job's, or a wait for a head the job did not judge (`answerOf`). */
-type Taken = MoveAnswer | { pending: string };
+/** A move's answer as the gate takes it: the job's, a wait for a head the job did not judge among them (`answerOf`). */
+type Taken = MoveAnswer;
 
 /** The answers the `move` job worked out, by `<number>@<head>`, which it writes for the gate. */
 const WORKED = new Map<string, MoveAnswer>();
@@ -298,8 +299,8 @@ export function writeAnswers(answers: ReadonlyMap<string, MoveAnswer>): string {
 
 /**
  * The `move` job's answers, as review.yml hands them to the gate, or undefined when they are not all well formed: an
- * object of `<number>@<head>` to `{ move }`, `{ major }`, `{ reason }` or `{ none }`, each a string of at most ANSWER_LIMIT
- * characters.
+ * object of `<number>@<head>` to `{ move }`, `{ major }`, `{ reason }`, `{ none }` or `{ pending }`, each a string of at
+ * most ANSWER_LIMIT characters.
  */
 export function readAnswers(text: string | undefined): Map<string, MoveAnswer> | undefined {
   if (!text?.trim()) return undefined;
@@ -316,7 +317,7 @@ export function readAnswers(text: string | undefined): Map<string, MoveAnswer> |
     const keys = Object.keys(value);
     const said = (value as Record<string, unknown>)[keys[0] ?? ''];
     const kind = keys[0] ?? '';
-    if (keys.length !== 1 || !['move', 'major', 'reason', 'none'].includes(kind) || typeof said !== 'string')
+    if (keys.length !== 1 || !['move', 'major', 'reason', 'none', 'pending'].includes(kind) || typeof said !== 'string')
       return undefined;
     if (!said || said.length > ANSWER_LIMIT) return undefined;
     answers.set(
@@ -325,7 +326,9 @@ export function readAnswers(text: string | undefined): Map<string, MoveAnswer> |
         ? { reason: said }
         : kind === 'none'
           ? { none: said }
-          : { rule: kind as 'move' | 'major', title: said },
+          : kind === 'pending'
+            ? { pending: said }
+            : { rule: kind as 'move' | 'major', title: said },
     );
   }
   return answers;
@@ -364,7 +367,9 @@ async function answerOf(each: Run, pr: PullRequest): Promise<Taken> {
         ? { rule: answer.rule, title: cutTo(answer.title) }
         : 'reason' in answer
           ? { reason: cutTo(answer.reason) }
-          : { none: cutTo(answer.none) },
+          : 'pending' in answer
+            ? { pending: cutTo(answer.pending) }
+            : { none: cutTo(answer.none) },
     );
   return answer;
 }

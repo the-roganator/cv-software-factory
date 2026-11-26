@@ -732,7 +732,8 @@ describe('one pull request for the day’s moves at one file', () => {
     ...FILES,
     [KYVERNO]: [
       ...IMAGES.flatMap((image) => [`${image}:`, `  tag: v1.19.1@${digest(`${image}/old`)}`]),
-      'chart: 3.5.0',
+      'targetRevision: 3.5.0',
+      'chart: kyverno',
       '',
     ].join('\n'),
   });
@@ -778,7 +779,12 @@ describe('one pull request for the day’s moves at one file', () => {
     const derive = async () => {
       throw new Error('no lockfile moves here');
     };
-    return proveMove(change, scan, { base: (path) => repo.file(repo.main, path), derive }, false);
+    // The images the scan read at the file's pins, each with its digest: a tag alone is known for a move's by it.
+    const scanned = IMAGES.map((image, i) => ({
+      image: `reg.example/kyverno/${image}:v1.19.1@${digest(`${image}/old`)}`,
+      pin: { file: KYVERNO, line: 2 * i + 2 },
+    }));
+    return proveMove(change, scan, { base: (path) => repo.file(repo.main, path), derive, scanned }, false);
   };
 
   it('carries Kyverno’s four images in one, which the gate passes as the scan’s four moves', async () => {
@@ -858,7 +864,7 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(held?.title).toBe('chore(pin): move kyverno to 4.0.0');
     expect(held?.body).toContain('the review gate passes it as `major`');
     expect(held?.body).toContain('at Lights-out; at any other level it waits for you');
-    expect(changed(repo, apart).map((line) => line.after)).toEqual(['chart: 4.0.0']);
+    expect(changed(repo, apart).map((line) => line.after)).toEqual(['targetRevision: 4.0.0']);
     expect(changed(repo, BRANCH)).toHaveLength(4);
     // The gate names each as the level reads it: the major alone is `major`, and the rest are a `move`.
     expect(await gate(repo, apart, moves)).toMatchObject({ rule: 'major' });
@@ -920,7 +926,7 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([2]);
     expect(changed(repo, apart).map((line) => [line.line, line.after])).toEqual([
       [4, `  tag: v1.20.0@${digest('kyvernopre/v1.20.0')}`],
-      [9, 'chart: 3.6.1'],
+      [9, 'targetRevision: 3.6.1'],
     ]);
     const updates = openPins(repo).find((p) => p.head === apart);
     expect(updates?.title).toBe(`chore(pin): move 2 pins in ${KYVERNO}`);

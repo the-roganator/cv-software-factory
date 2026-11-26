@@ -737,6 +737,7 @@ describe('judging a pull request through the API', () => {
         [`10@${EARLIER}`, { rule: 'major', title }],
         [`11@${HEAD}`, { reason: 'no' }],
         [`12@${HEAD}`, { none: 'none' }],
+        [`13@${HEAD}`, { pending: 'the scan of main it would pass by was judged 40 hours ago' }],
       ]);
       expect(readAnswers(writeAnswers(answers))).toEqual(answers);
       expect(readAnswers('{}')).toEqual(new Map());

@@ -9,7 +9,9 @@
  * commit, the commit it was made on), and compares the result with what the merge makes, file by file, byte for byte.
  * Each move is made as the one who makes it makes it:
  *
- * - a pin's line, by the pin watch's own edit (`editAt`): an image's tag and digest, a chart's version, k3s's release;
+ * - a pin's line, by the pin watch's own edit (`editAt`): an image's tag and digest, a chart's version, k3s's release.
+ *   The line the scan named must be the move's own pin on main's tip still (`edit`), and one line is one move's: a
+ *   line main has since given another pin, or that two moves name, is refused, never written;
  * - a lockfile's package, each image that brings another pin with it (the Node it runs, or its library: `bringsPins`),
  *   and in the factory anything mise pins, by the pin step (apps/runner/src/pins.ts's `writePins`), run on main's tip
  *   with this repository's pnpm and mise (scripts/derive.ts): the derivation, in `MoveIO.derive`. In the factory it is
@@ -34,7 +36,8 @@ import type { ReadMove } from '../apps/factory/src/github/scanning.ts';
 import { moveOf } from '../apps/factory/src/patching/sends.ts';
 import { repositoryOfImage } from '../apps/factory/src/repositories.ts';
 import { readTarget, type Target } from '../apps/factory/src/vulnerabilities/fixes.ts';
-import { isRoutine } from '../apps/factory/src/vulnerabilities/moves.ts';
+import { isRoutine, type ScannedImage } from '../apps/factory/src/vulnerabilities/moves.ts';
+import { splitReference } from '../apps/factory/src/vulnerabilities/reference.ts';
 import { importedVersions, type Move as PinStepMove } from '../apps/runner/src/pins.ts';
 import type { MoveResult } from './review-routing.ts';
 
@@ -67,6 +70,11 @@ export interface MoveIO {
    * when the step refuses or fails; the rule then says so without the step's words, which may name a package.
    */
   derive(moves: readonly PinStepMove[]): Promise<Map<string, string>>;
+  /**
+   * The images the scan read, each at its pin (`moves.json`'s `scanned`): the digest an image's move is from. Without
+   * them a pin that writes a tag alone is no one's, and its move is refused.
+   */
+  scanned?: readonly Pick<ScannedImage, 'image' | 'pin'>[] | undefined;
 }
 
 const REGULAR = /^100(644|755)$/;
@@ -131,12 +139,60 @@ function differing(a: string, b: string): number[] {
  * as its scan made it for the pin watch (github/made.ts).
  */
 function stepMove(move: ScanMove, app: boolean, base: MoveIO['base']): PinStepMove | string | undefined {
-  if (!app) return madeByStep(move) ? stepOf(move, base('mise.lock')) : undefined;
+  if (!app) {
+    if (!madeByStep(move)) return undefined;
+    const lock = base('mise.lock');
+    const step = stepOf(move, lock);
+    return typeof step === 'string' ? step : (strayedTool(move, step, lock) ?? step);
+  }
   if (!madeByLine(move)) return undefined;
   const made = moveOf(move.repository, move);
   if (typeof made === 'string') return made;
   // A routine update is made as the line's pin step makes it: to exactly its target.
   return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to, ...routineStep(move) };
+}
+
+const moved = (pin: { file: string; line: number }, move: ScanMove) =>
+  `${pin.file}:${pin.line} is not ${move.name}'s pin at ${move.from} now: main moved since the scan`;
+
+/**
+ * Why a tool's entry in main's `mise.lock` is not the move's own pin, or nothing when it is: the line the scan named is
+ * the entry's `version` at what the move is from, and the entry is the move's tool, or for an image a tool brings
+ * (k3d's `k3d-proxy`) the tool its name starts with.
+ */
+function strayedTool(move: ScanMove, step: PinStepMove, lock: string | undefined): string | undefined {
+  if (step.ecosystem !== 'tool') return undefined;
+  const pin = move.pins.find((each) => each.file === 'mise.lock');
+  if (!pin) return undefined;
+  const target = readTarget(move.to);
+  const image = splitReference(move.name).repository.split('/').at(-1) ?? '';
+  const own = target?.kind === 'tool' ? target.tool === step.name : image.startsWith(`${step.name}-`);
+  return own && lock?.split('\n')[pin.line - 1]?.trim() === `version = "${step.from}"` ? undefined : moved(pin, move);
+}
+
+/** A chart's `chart:` line, and its `targetRevision:` at a version, as an Application writes them (inventory.ts). */
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const keyLine = (key: string, value: string) =>
+  new RegExp(`^\\s*-?\\s*${key}:\\s*['"]?${literal(value)}['"]?\\s*(?:#.*)?$`);
+
+/**
+ * Whether a line is a chart's pin at a version, placed as the list places it (inventory.ts): in its YAML document, the
+ * `targetRevision` at that version nearest the chart's `chart:` line; or in the Makefile, which installs one chart,
+ * the line that sets `ARGOCD_CHART`.
+ */
+export function chartPinAt(lines: readonly string[], line: number, chart: string, version: string): boolean {
+  const text = lines[line - 1] ?? '';
+  if (/^ARGOCD_CHART\s*:?=/.test(text)) return true;
+  let [start, end] = [line - 1, line - 1];
+  while (start > 0 && lines[start - 1] !== '---') start--;
+  while (end < lines.length && lines[end] !== '---') end++;
+  const [named, revision] = [keyLine('chart', chart), keyLine('targetRevision', version)];
+  const at = lines.findIndex((each, index) => index >= start && index < end && named.test(each));
+  if (at < 0) return false;
+  const revisions = lines.flatMap((each, index) =>
+    index >= start && index < end && revision.test(each) ? [index] : [],
+  );
+  return revisions.sort((a, b) => Math.abs(a - at) - Math.abs(b - at))[0] === line - 1;
 }
 
 /** Why the gate will not make a move by an edit, or nothing when it will. */
@@ -150,16 +206,46 @@ function unedited(move: ScanMove, target: Target | undefined): string | undefine
   return undefined;
 }
 
-/** The text of the files the edits write, each made from main's: the pin watch's edit at each pin. */
+/**
+ * The text of the files the edits write, each made from main's: the pin watch's edit at each pin.
+ *
+ * Each is written only on the move's own pin: the line the scan named holds, on main's tip, an image's repository, its
+ * tag and the digest the scan read there (`scanned`); a chart's `targetRevision`, nearest its `chart:`; k3s's release,
+ * which names itself; a version, on a line that names what it is of. Anything else there, and main has moved since the
+ * scan: a refusal, which the next scan's line ends. Two moves that name one line are refused too: neither is the one
+ * move of that pin.
+ */
 export function edit(
   moves: readonly ScanMove[],
   base: (path: string) => string | undefined,
+  scanned: NonNullable<MoveIO['scanned']> = [],
 ): { files: Map<string, string> } | { reason: string } {
   const files = new Map<string, string[]>();
+  const named = new Map<string, ScanMove>();
+  for (const move of moves)
+    for (const pin of move.pins) {
+      const other = named.get(`${pin.file}:${pin.line}`);
+      if (other)
+        return {
+          reason: `${other.name} and ${move.name} both name ${pin.file}:${pin.line}, and neither is the one move of that pin`,
+        };
+      named.set(`${pin.file}:${pin.line}`, move);
+    }
   for (const move of moves) {
     const target = readTarget(move.to);
     const why = unedited(move, target);
     if (why || !target) return { reason: why ?? `no target for ${move.name}` };
+    // The image the scan read at the pin, by its repository and tag: the digest the move is from.
+    const repository = move.name.slice(move.name.lastIndexOf(': ') + 1).trim();
+    const fromAt = (pin: { file: string; line: number }) => {
+      if (target.kind !== 'image') return move.from;
+      const digests = scanned
+        .filter((each) => each.pin.file === pin.file && each.pin.line === pin.line)
+        .map((each) => splitReference(each.image))
+        .filter((each) => each.repository === repository && each.tag === move.from)
+        .flatMap((each) => each.digest ?? []);
+      return digests[0] ? `${move.from}@${digests[0]}` : move.from;
+    };
     for (const pin of move.pins) {
       let lines = files.get(pin.file);
       if (!lines) {
@@ -171,7 +257,12 @@ export function edit(
       const line = lines[pin.line - 1];
       if (line === undefined)
         return { reason: `${pin.file}:${pin.line}, a pin of ${move.name}, is past its end on main` };
-      const made = editAt(pin, line, move.from, target);
+      if (
+        (target.kind === 'chart' && !chartPinAt(lines, pin.line, target.chart, move.from)) ||
+        (target.kind === 'version' && !line.includes(move.name))
+      )
+        return { reason: `the gate cannot make ${move.name} on main: ${moved(pin, move)}` };
+      const made = editAt(pin, line, fromAt(pin), target, move.name);
       if ('reason' in made) return { reason: `the gate cannot make ${move.name} on main: ${made.reason}` };
       // The one span the pin watch's guard replaces: the same bytes as its commit.
       const at = spans(line, made.from)[0] as number;
@@ -263,7 +354,7 @@ export async function proveMove(
     }
   }
   // The edits on what the pin step wrote, each on a line the pin step leaves as main has it.
-  const edited = edit(edits, (path) => derived.get(path) ?? byPath.get(path)?.base ?? io.base(path));
+  const edited = edit(edits, (path) => derived.get(path) ?? byPath.get(path)?.base ?? io.base(path), io.scanned);
   if ('reason' in edited) return edited;
   const made = new Map([...derived, ...edited.files]);
   // What a lockfile's derivation writes may show the package its move withholds.

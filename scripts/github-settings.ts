@@ -31,6 +31,9 @@
  */
 import { execFileSync } from 'node:child_process';
 import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../apps/factory/src/repositories.ts';
+import { AUTOMATION_BRANCHES } from '../policy/branches.ts';
+
+export { AUTOMATION_BRANCHES };
 
 /** platform.yml's job that makes a cluster from the change, a required check here (check-kind.sh names it too). */
 export const PLATFORM_CHECK = 'cluster from the change';
@@ -212,24 +215,6 @@ export const MARTIN = 6206459;
 export const DEPENDABOT = 29110;
 
 /**
- * The branches the `branches` ruleset leaves alone, as ruleset patterns (`*` stops at a `/`, `**` does not): the
- * factory's App's, which it writes with its key (everything under `factory/`: a fix's branch, the pin watch's
- * `factory/pin/…` and `factory/pin-next/…`, the deploy watch's `factory/deploy/local`, the smoke run's and the red
- * team's; each repository's deploy branch; release-please's, which runs with the App's token), the merge queue's own,
- * which GitHub makes, and main, which the `main` ruleset holds. A test holds these to the names the code writes.
- *
- * Whoever holds the App's key can therefore still write the App's own branches, and only those: what is on one is
- * judged by the review gate as the App's change, never passed as Martin's.
- */
-export const AUTOMATION_BRANCHES = [
-  '~DEFAULT_BRANCH',
-  'refs/heads/factory/**/*',
-  'refs/heads/deploy/local',
-  'refs/heads/release-please--*',
-  'refs/heads/gh-readonly-queue/**/*',
-];
-
-/**
  * Who writes a branch that is not the automation's: Martin, and Dependabot, whose `dependabot/…` branches are so
  * its own. Each is exempt, so the ruleset is not run for their pushes and none is recorded as a bypass: any bypass
  * the record of pushes shows is still someone else's, and still drift.
@@ -240,10 +225,10 @@ export const BRANCH_WRITERS = [
 ];
 
 /**
- * The ruleset on every other branch: only Martin and Dependabot create, move or delete one. The review gate passes a
- * pull request Martin opened from a branch of the repository as his own (`martin-opened`), and the factory's App may
- * write contents, so without this whoever held the App's key could add a commit to a branch of his and have it merge
- * as his. A session at Martin's `gh` pushes as him.
+ * The ruleset on every branch but the automation's (`AUTOMATION_BRANCHES`, policy/branches.ts): only Martin and
+ * Dependabot create, move or delete one. The review gate passes a pull request Martin opened from such a branch as
+ * his own (`martin-opened`), and the factory's App may write contents, so without this whoever held the App's key
+ * could add a commit to a branch of his and have it merge as his. A session at Martin's `gh` pushes as him.
  */
 export const branches = () => ({
   name: 'branches',

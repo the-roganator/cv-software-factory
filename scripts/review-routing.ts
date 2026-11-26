@@ -21,6 +21,7 @@
  */
 
 import { APP_REPOSITORY, FACTORY_REPOSITORY, repositoryOfImage } from '../apps/factory/src/repositories.ts';
+import { automationBranch } from '../policy/branches.ts';
 import {
   type Verdict as Block,
   FLAG_NAMES_FILE,
@@ -147,8 +148,9 @@ export function verdict(
   reviews: readonly Review[],
   events: readonly IssueEvent[] = [],
 ): Verdict & { rule?: Rule; asked?: true } {
-  // From a branch in this repository: one Martin opens from someone else's fork would carry their pushes.
-  if (pr.user?.id === MARTIN && fromHere(pr)) {
+  // From a branch in this repository: one Martin opens from someone else's fork would carry their pushes. And from a
+  // branch only he writes: one of the automation's the App's key writes too, so there the rules below judge it.
+  if (pr.user?.id === MARTIN && fromHere(pr) && !automationBranch(pr.head.ref)) {
     return { pass: true, title: 'Martin opened it', rule: 'martin-opened' };
   }
   const latest = reviews

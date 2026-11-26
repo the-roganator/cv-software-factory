@@ -191,6 +191,7 @@ jobs:
             scripts/review-gate.ts
             scripts/review-routing.ts
             apps/factory/src/repositories.ts
+            policy/branches.ts
             policy/repositories.ts
             policy/review-verdict.ts
           sparse-checkout-cone-mode: false

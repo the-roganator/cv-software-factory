@@ -63,6 +63,9 @@ const pr = (author: number | null, repo = APP_REPO, over: Partial<PullRequest> =
   base: { ref: 'main', repo: { full_name: repo } },
   ...over,
 });
+/** One Martin opened, from a branch only he writes. */
+const his = (repo = APP_REPO): PullRequest =>
+  pr(MARTIN, repo, { head: { sha: HEAD, ref: 'fix/a-thing', repo: { full_name: repo } } });
 const approved = (commit = HEAD) => ({ user: { id: MARTIN }, state: 'APPROVED', commit_id: commit });
 const tag = (name: Found['tag'], ...because: string[]): Found => found(name, because.length ? because : ['x']);
 
@@ -81,7 +84,7 @@ const facts = (over: Partial<Facts> = {}): Facts => ({
 describe('approval routing: the rule, the first that holds', () => {
   it("passes Martin's own pull request, and his approval of the head, whatever its tags", () => {
     const tags = [tag('dependency-change'), tag('code-owned'), tag('release')];
-    expect(route(facts({ pr: pr(MARTIN), tags }))).toMatchObject({ pass: true, rule: 'martin-opened', tags });
+    expect(route(facts({ pr: his(), tags }))).toMatchObject({ pass: true, rule: 'martin-opened', tags });
     expect(route(facts({ reviews: [approved()], tags }))).toMatchObject({ pass: true, rule: 'martin-approved-head' });
     // In this repository too, and with test integrity unread or a label removed: his say is his.
     expect(
@@ -385,7 +388,7 @@ describe('approval routing: the rule, the first that holds', () => {
 
   it('holds what it could not read, unless Martin has had his say', () => {
     expect(route(facts({ unread: 'GET /files: 502' }))).toMatchObject({ pass: false, rule: 'held' });
-    expect(route(facts({ unread: 'GET /files: 502', pr: pr(MARTIN) })).rule).toBe('martin-opened');
+    expect(route(facts({ unread: 'GET /files: 502', pr: his() })).rule).toBe('martin-opened');
   });
 
   describe('changes Martin asked for', () => {
@@ -1663,7 +1666,7 @@ describe('an earlier pass that stands', () => {
   it('stands when this run could only fail it for a pin the earlier one checked at the same head', () => {
     expect(stands(earlier([PIN_ENTRY]), QUEUE, [now()])).toBe(true);
     // A stack: one below that passes now, the one above unchecked now and an exact pin then.
-    const below = route(facts({ pr: pr(MARTIN) }));
+    const below = route(facts({ pr: his() }));
     const both = earlier([{ number: 6, head: EARLIER, rule: 'martin-opened', tags: [] }, PIN_ENTRY]);
     expect(stands(both, QUEUE, [now(below, 6, EARLIER), now()])).toBe(true);
   });
@@ -1687,7 +1690,7 @@ describe('an earlier pass that stands', () => {
     expect(moved).toMatchObject({ rule: 'held', retargeted: true });
     expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(moved)])).toBe(false);
     // Nothing held now: there is nothing to stand for.
-    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(route(facts({ pr: pr(MARTIN) })))])).toBe(false);
+    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(route(facts({ pr: his() })))])).toBe(false);
   });
 });
 

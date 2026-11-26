@@ -84,6 +84,7 @@ import {
   PATCHING_KINDS,
   PATCHING_ROLE,
   type PatchingTally,
+  staleScans,
 } from './patching-alerts.ts';
 
 const meter = metrics.getMeter('factory-line');
@@ -505,6 +506,11 @@ const patchingMoves = meter.createObservableCounter('line.patching_moves', {
     'The moves Martin hears of, each once, by kind: a new High or Critical fix, waiting on him, due within a day, past its deadline, and the app’s vulnerable dependency fixed without him',
 });
 
+const scanStale = meter.createObservableGauge('line.patching.scan_stale', {
+  description:
+    'Whether a repository’s newest scan in the dependency sense’s days judged its moves too long ago to judge by: 1 if so, 0 if not',
+});
+
 const counting = meter.createObservableGauge('line.security_events.counting', {
   description: 'Whether the last read of Martin’s security events from the store succeeded: 1 if it did, 0 if not',
 });
@@ -539,8 +545,11 @@ export function observeSecurity(
     for (const kind of SECURITY_KINDS) result.observe(securityEvents, tally.kinds[kind], { kind });
     for (const cause of HOLD_CAUSES) result.observe(holdsStored, tally.holds[cause], { cause });
     for (const kind of PATCHING_KINDS) result.observe(patchingMoves, tally.patching.kinds[kind], { kind });
+    for (const { repository, stale } of staleScans(tally.patching, now())) {
+      result.observe(scanStale, stale ? 1 : 0, { repository });
+    }
   };
-  const observed = [securityEvents, holdsStored, patchingMoves, counting];
+  const observed = [securityEvents, holdsStored, patchingMoves, scanStale, counting];
   meter.addBatchObservableCallback(callback, observed);
   return () => meter.removeBatchObservableCallback(callback, observed);
 }

@@ -6,9 +6,10 @@
 import { readFileSync } from 'node:fs';
 import type { PayloadOf } from '@software-factory/events';
 import { nextWorkItem } from '@software-factory/store';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
+import { workItemMark } from '../../src/github/issue-mark.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { commitTitle, titleFor } from '../../src/line/agents/agent.ts';
@@ -27,6 +28,7 @@ import {
   versionsWords,
   writtenVersion,
 } from '../../src/line/moves.ts';
+import { Queue } from '../../src/line/queue.ts';
 import { MAIN } from './fakes.ts';
 import {
   AGENTS,
@@ -397,7 +399,7 @@ describe('a move’s issue and prompts, while its public views withhold the pack
       const { pass, github } = line({ planner });
       await pass();
       const args = github.acts.find((a) => a.action === 'openIssue')?.args as { body: string };
-      return args.body.replace(`#${workItem}`, '#N');
+      return args.body.replace(`#${workItem}`, '#N').replace(workItemMark(workItem), workItemMark('1'));
     };
     expect(await opened(true)).toBe(await opened(false));
   });
@@ -479,6 +481,48 @@ describe('a move’s disclosure, as its issue opens', () => {
     expect(recorded.indexOf('issue.opened')).toBeGreaterThan(0);
     expect(recorded.indexOf('issue.opened')).toBeLessThan(recorded.indexOf('spec.written'));
     expect((await payloads(workItem, 'issue.opened'))[0]).toMatchObject({ number: 41, move: { name: 'invented-pkg' } });
+  });
+
+  it('opens no second issue when the store fails before the row names the first, and the row then names it', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    // GitHub made the issue, and the store went away before the row named it, as it does while Postgres is patched.
+    const naming = vi.spyOn(Queue.prototype, 'setIssue').mockRejectedValueOnce(new Error('The store restarted'));
+    try {
+      const { pass, github } = line({ planner });
+      await pass().catch(() => {});
+      expect(naming).toHaveBeenCalledTimes(1);
+      expect((await new Queue(database.as.line, 'test').get(workItem))?.issue ?? null).toBeNull();
+      await pass();
+      // Asked twice, each time with the work item's mark as the body's last line, which is how the worker finds it.
+      const asked = github.acts.filter((a) => a.action === 'openIssue').map((a) => (a.args as { body: string }).body);
+      expect(asked).toHaveLength(2);
+      for (const body of asked) expect(body.split('\n').at(-1)).toBe(workItemMark(workItem));
+      expect(github.issues).toHaveLength(1);
+      expect((await new Queue(database.as.line, 'test').get(workItem))?.issue).toBe(41);
+      expect(await payloads(workItem, 'issue.opened')).toHaveLength(1);
+    } finally {
+      naming.mockRestore();
+    }
+  });
+
+  it('leaves the one issue saying what the row names, when a newer scan came in before the row named it', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const naming = vi.spyOn(Queue.prototype, 'setIssue').mockRejectedValueOnce(new Error('The store restarted'));
+    try {
+      const { pass, github } = line({ planner });
+      await pass().catch(() => {});
+      await events.append([event(workItem, 'signal.received', signal('2.0.2', 'GHSA-0000-0000-0002'), 'triage')]);
+      await pass();
+      expect(github.issues).toHaveLength(1);
+      expect(github.issues[0]?.body).toContain('GHSA-0000-0000-0002');
+      // The record is of what the issue says, and it is not written again for the same signal.
+      expect(await payloads(workItem, 'issue.opened')).toEqual([
+        expect.objectContaining({ move: expect.objectContaining({ to: '2.0.2' }) }),
+      ]);
+      expect(github.acts.some((a) => a.action === 'updateIssue')).toBe(false);
+    } finally {
+      naming.mockRestore();
+    }
   });
 
   it('records what the issue named on a later pass, though a newer scan came in since, and then writes it again', async () => {
@@ -627,7 +671,7 @@ describe('a newer target for a move the line has open', () => {
     expect(recorded.lastIndexOf('issue.opened')).toBeLessThan(recorded.indexOf('spec.written'));
   });
 
-  it('leaves an issue it cannot write as it was: nothing recorded, no agent may name the newer advisory, and it asks once', async () => {
+  it('leaves an issue it cannot write as it was: nothing recorded, the agents told only what it names, and it asks once', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
     // A coder whose note names the newer scan's advisory, which the issue never came to list.
     const naming = { ...CODED, note: `${CODED.note} It clears GHSA-0000-0000-0002.` };
@@ -637,9 +681,18 @@ describe('a newer target for a move the line has open', () => {
     const gone = () => new GitHubWorkerError(404, 'not-found', 'No such issue');
     github.refusing.set('updateIssue', gone());
     await pass();
-    // The issue names what it named: the record is not written again, and the move goes on to the coder.
+    // The issue names what it named: the record is not written again, and the move goes on to the coder, which is
+    // told the signal the issue was written from, and nothing of the newer scan: not its target, nor its advisory.
     expect(await payloads(workItem, 'issue.opened')).toHaveLength(1);
-    expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', move: { to: '2.0.3' } });
+    const coding = steps.requests.at(-1);
+    expect(coding).toMatchObject({ agent: 'coder', move: { to: '2.0.1' } });
+    expect(coding?.prompt).toContain('GHSA-0000-0000-0001');
+    expect(coding?.prompt).not.toContain('GHSA-0000-0000-0002');
+    expect(coding?.prompt).not.toContain('2.0.3');
+    // The row goes on naming the signal the issue was written from.
+    const [first] = await database.owner<{ seq: string }[]>`
+      select seq from events where work_item = ${workItem} and type = 'signal.received' order by seq limit 1`;
+    expect((await new Queue(database.as.line, 'test').get(workItem))?.issueSignal).toBe(Number(first?.seq));
     expect((await failures(workItem))?.failure).toMatch(/names GHSA-0000-0000-0002, which the ticket's issue does not/);
     expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
     // Not asked again on a later pass, until triage joins another signal.
@@ -649,6 +702,24 @@ describe('a newer target for a move the line has open', () => {
     await pass();
     expect(github.acts.filter((a) => a.action === 'updateIssue')).toHaveLength(1);
     expect((await payloads(workItem, 'issue.opened')).at(-1)?.move).toMatchObject({ to: '2.0.4' });
+  });
+
+  it('asks once of an issue the GitHub worker refuses to write, as one someone gave the pin watch’s label', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const { pass, steps, github } = line({ planner, coder: () => handback(CODED, PATCH) });
+    await pass();
+    await newer(workItem);
+    const refused = () => new GitHubWorkerError(422, 'branch-refused', '#41 is the pin watch’s issue');
+    github.refusing.set('updateIssue', refused());
+    await pass();
+    expect(await payloads(workItem, 'issue.opened')).toHaveLength(1);
+    expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', move: { to: '2.0.1' } });
+    // A refusal set again would be thrown again: none is asked for.
+    github.refusing.set('updateIssue', refused());
+    await pass();
+    await pass();
+    expect(github.refusing.has('updateIssue')).toBe(true);
+    expect(github.acts.some((a) => a.action === 'updateIssue')).toBe(false);
   });
 
   it('writes the issue again when only the counts of the rest differ, which its description prints', async () => {
@@ -1155,6 +1226,9 @@ describe('what the line says of a move', () => {
         '- A routine update: the scan lists a newer release, with no advisory behind it and no deadline.',
         '',
         'The factory is working on it: its move will come as a pull request that refers here. The issue closes when the move is verified in production, by the scan of the release.',
+        '',
+        // The work item's mark, which finds the issue again: the last line, and nothing the first does not say.
+        '<!-- factory: work-item 7 -->',
       ].join('\n'),
     );
     // A vulnerable dependency's says what the scan found, and nothing of a routine update.

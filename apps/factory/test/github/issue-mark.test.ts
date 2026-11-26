@@ -1,0 +1,136 @@
+/**
+ * One issue a work item: the GitHub worker, asked to open an issue whose body carries a work item's mark
+ * (github/issue-mark.ts), gives back the open issue of the App's that carries it, and opens a second only when there is
+ * none. The line asks again when its own record of the first was lost.
+ */
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DiskArtifacts } from '@software-factory/store';
+import { describe, expect, it } from 'vitest';
+import { APP_LOGIN, DryRunActions, LiveActions } from '../../src/github/actions.ts';
+import { workItemMark, workItemMarkOf } from '../../src/github/issue-mark.ts';
+import { calls, client, quiet, REPO, type Sent } from './fake.ts';
+
+interface Issue {
+  number: number;
+  title: string;
+  body: string | null;
+  user: { login: string } | null;
+  pull_request?: object;
+}
+
+/** GitHub's open issues, the newest first, a hundred to a page, and the issues it makes, as the App. */
+function repository(open: Issue[]) {
+  const sent: Sent[] = [];
+  let next = 100;
+  const { github } = client(
+    [
+      {
+        method: 'GET',
+        path: /^\/repos\/[^/]+\/[^/]+\/issues\?state=open&per_page=100&sort=created&direction=desc&page=\d+$/,
+        answer: ({ path }) => {
+          const page = Number(new URL(path, 'https://api.github.test').searchParams.get('page'));
+          return { body: open.slice((page - 1) * 100, page * 100) };
+        },
+      },
+      {
+        method: 'POST',
+        path: `/repos/${REPO}/issues`,
+        answer: ({ body }) => {
+          const made = { number: next++, ...(body as { title: string; body: string }), user: { login: APP_LOGIN } };
+          open.unshift(made);
+          return { status: 201, body: made };
+        },
+      },
+      {
+        method: 'PATCH',
+        path: /^\/repos\/[^/]+\/[^/]+\/issues\/\d+$/,
+        answer: ({ path, body }) => {
+          const issue = open.find((each) => each.number === Number(path.split('/').at(-1)));
+          Object.assign(issue ?? {}, body);
+          return { body: {} };
+        },
+      },
+    ],
+    sent,
+  );
+  const writes = () =>
+    calls(sent)
+      .filter((s) => s.method !== 'GET')
+      .map((s) => s.method);
+  return { actions: new LiveActions(github), open, sent, writes };
+}
+
+const body = (workItem: string, words = 'The factory’s ticket.') => `${words}\n\n${workItemMark(workItem)}`;
+
+describe('the mark that finds a work item’s issue again', () => {
+  it('is a comment naming the work item, read from a body’s end and from nothing else', () => {
+    expect(workItemMark('1288')).toBe('<!-- factory: work-item 1288 -->');
+    expect(workItemMarkOf(body('1288'))).toBe(workItemMark('1288'));
+    expect(workItemMarkOf('The factory’s ticket #1288.')).toBeUndefined();
+    expect(workItemMarkOf(null)).toBeUndefined();
+    expect(workItemMarkOf('<!-- factory: work-item 1288 forged -->')).toBeUndefined();
+  });
+});
+
+describe('opening an issue for a work item', () => {
+  it('opens one, and asked again gives the same issue back and opens no second', async () => {
+    const { actions, open, writes } = repository([]);
+    const first = await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
+    const again = await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
+    expect(again).toBe(first);
+    expect(open).toHaveLength(1);
+    expect(writes()).toEqual(['POST']);
+    // Another work item's is another issue.
+    expect(await actions.openIssue(REPO, { title: 'A broken link', body: body('1289') })).not.toBe(first);
+    expect(open).toHaveLength(2);
+  });
+
+  it('leaves the issue it finds saying what is asked now', async () => {
+    const { actions, open, writes } = repository([]);
+    const first = await actions.openIssue(REPO, { title: 'Move invented-pkg', body: body('1288', 'To 2.0.1.') });
+    expect(await actions.openIssue(REPO, { title: 'Move invented-pkg', body: body('1288', 'To 2.0.2.') })).toBe(first);
+    expect(open).toEqual([expect.objectContaining({ number: first, body: body('1288', 'To 2.0.2.') })]);
+    expect(writes()).toEqual(['POST', 'PATCH']);
+  });
+
+  it('is not captured by anyone else’s issue with the same mark, nor by a pull request', async () => {
+    const stranger = { number: 7, title: 'Mine', body: body('1288'), user: { login: 'someone-else' } };
+    const pull = { number: 8, title: 'A fix', body: body('1288'), user: { login: APP_LOGIN }, pull_request: {} };
+    const { actions, open, writes } = repository([stranger, pull]);
+    const made = await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
+    expect([7, 8]).not.toContain(made);
+    expect(writes()).toEqual(['POST']);
+    // And then the App's own is the one found.
+    expect(await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') })).toBe(made);
+    expect(open).toHaveLength(3);
+  });
+
+  it('finds one past the first page, and reads no further than a page that is not full', async () => {
+    const others = Array.from({ length: 100 }, (_, i) => ({
+      number: 1000 - i,
+      title: 'Another',
+      body: null,
+      user: { login: 'someone-else' },
+    }));
+    const own = { number: 41, title: 'Server errors on /search', body: body('1288'), user: { login: APP_LOGIN } };
+    const { actions, sent, writes } = repository([...others, own]);
+    expect(await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') })).toBe(41);
+    expect(writes()).toEqual([]);
+    expect(calls(sent)).toHaveLength(2);
+  });
+
+  it('looks for none when the body carries no mark, as the pin watch’s issues carry none', async () => {
+    const { actions, sent } = repository([]);
+    await actions.openIssue(REPO, { title: 'A broken link', body: '…' });
+    await actions.openIssue(REPO, { title: 'A broken link', body: '…' });
+    expect(calls(sent).map((s) => s.method)).toEqual(['POST', 'POST']);
+  });
+
+  it('gives a dry run a number of its own each time, as before: GitHub has none of its issues', async () => {
+    const dry = new DryRunActions(new DiskArtifacts(await mkdtemp(join(tmpdir(), 'dry-run-'))), quiet);
+    const first = await dry.openIssue(REPO, { title: 'A broken link', body: body('1288') });
+    expect(await dry.openIssue(REPO, { title: 'A broken link', body: body('1288') })).not.toBe(first);
+  });
+});

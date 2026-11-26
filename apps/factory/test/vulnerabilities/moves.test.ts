@@ -363,6 +363,21 @@ describe('one pin with several targets', () => {
     expect(list[0]?.results).toHaveLength(2);
   });
 
+  it('gives a move within the major the earliest deadline of what it clears and of what it leaves for the major', () => {
+    const critical = { ...chart('14.4.1', true), severity: 'CRITICAL' as const, due: NOW + DAY };
+    const list = moves([{ ...chart('13.7.0', false), due: NOW + 4 * DAY }, critical], context());
+    expect(list).toHaveLength(1);
+    // The Critical only the major clears is in no move until this one merges: its day is the move's, so it is alerted on.
+    expect(list[0]).toMatchObject({ to: { version: '13.7.0' }, major: false, deadline: NOW + DAY });
+    expect(list[0]?.clears.CRITICAL).toBe(0);
+    expect(list[0]?.leaves.CRITICAL).toBe(1);
+    expect(list[0]?.results).toHaveLength(1);
+    // A result with no fix has no deadline, and gives the move none.
+    const none = { ...chart('13.7.0', false), due: NOW + 4 * DAY };
+    const unfixed = { ...result({ kind: 'chart', name: 'grafana', from: '13.2.7', target: undefined }) };
+    expect(moves([none, unfixed], context())[0]?.deadline).toBe(NOW + 4 * DAY);
+  });
+
   it('is the major at once where no result has a fix within the pin’s major', () => {
     const list = moves([chart('14.3.1', true), chart('14.4.1', true)], context());
     expect(list).toHaveLength(1);

@@ -9,8 +9,9 @@
  * Dockerfiles is one move of three pins, and a package in two versions one move. A chart's images are the chart's own: two charts that run one image are two moves.
  *
  * The furthest target is one within the pin's major, where any result has a fix there (`withinMajor`): a result only
- * a major clears is then one the move leaves, and the major is listed on a later day, once the pin has moved. Where
- * no result has a fix within the major, the move is the major.
+ * a major clears is then one the move leaves, and the major is listed on a later day, once the pin has moved; until
+ * then the move's deadline is the earliest of both, so what waits for the major is still alerted on. Where no result
+ * has a fix within the major, the move is the major.
  *
  * A pin that is merely behind, with no finding (routine.ts's `Behind`), is a routine move: it clears nothing, has no
  * deadline and no results, and is listed after the findings' moves, by name, a lockfile's last in an order that says
@@ -97,7 +98,10 @@ export interface Move {
   /** The results it clears, and the results on the same pin it leaves, by severity; the excepted left out. */
   clears: Counts;
   leaves: Counts;
-  /** The earliest deadline among those it clears. */
+  /**
+   * Its earliest deadline: among those it clears, and those it leaves that only a major clears (`withinMajor`), which
+   * are in no move until this one has merged, so the pin's urgency is never hidden behind a move within its major.
+   */
   deadline?: number | undefined;
   /** How many of those it clears are new today. */
   newToday: number;
@@ -281,7 +285,8 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
     for (const each of members) clears[each.severity]++;
     const leaves = zero();
     for (const each of byPin.get(pinKey(first)) ?? []) if (!members.includes(each)) leaves[each.severity]++;
-    const dues = members.flatMap((each) => (each.due === undefined ? [] : [each.due]));
+    // The whole group's: what a move within the major leaves for the major is due all the same, and is in no other move.
+    const dues = group.flatMap((each) => (each.due === undefined ? [] : [each.due]));
     const move: Move = {
       repository: context.repository,
       name: first.name,

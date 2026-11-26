@@ -16,11 +16,13 @@ import { pinNextBranch, treeSource } from '../../src/github/pin-guard.ts';
 import {
   branchOf,
   carriedBy,
+  issueOf,
   namedMajor,
   PASS_MS,
   PIN_LABEL,
   type PinScope,
   pinWatch,
+  pullBody,
   readPinScope,
 } from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
@@ -405,6 +407,20 @@ describe('the pin watch’s issues', () => {
     expect(cd?.body).toContain('A workflow pins it, and the App writes no workflow');
     expect(cd?.body).toContain('- `.github/workflows/platform.yml:2`, pinning `10.9.5`');
     expect(cd?.body).toContain('**Deadline** 2026-11-18T06:00:00Z.');
+  });
+
+  it('says what a deadline counts where a move within its major leaves results', () => {
+    const repo = new FakeRepo(FILES);
+    const cd = factoryMoves().find((m) => m.name === 'example-cd') as ReadMove;
+    const says = 'The deadline is the earliest among what the move clears and what it leaves that only a major clears';
+    const leaves = { ...cd, leaves: { ...cd.leaves, CRITICAL: 1 } };
+    expect(issueOf(leaves, day(repo.main, [leaves])).body).toContain(`**Deadline** ${cd.deadline}. ${says}`);
+    // Nothing left, or a major itself: the deadline is of what it clears, and no more is said.
+    expect(issueOf(cd, day(repo.main, [cd])).body).not.toContain(says);
+    expect(issueOf({ ...leaves, major: true }, day(repo.main, [leaves])).body).not.toContain(says);
+    // Its pull request's table says it too, once, under the rows.
+    expect(pullBody([{ move: leaves, edits: [] }], day(repo.main, [leaves]))).toContain(`${cd.deadline} |\n\n${says}`);
+    expect(pullBody([{ move: cd, edits: [] }], day(repo.main, [cd]))).not.toContain(says);
   });
 
   it('says a move that waits for the bench waits for Martin’s bench run, with its deadline', async () => {

@@ -476,6 +476,15 @@ const routineWords = (count: number) =>
     : 'Each is a routine update: a newer release, with no advisory behind it and no deadline.';
 
 /**
+ * What a deadline counts, said wherever a move within its pin's major leaves results: its deadline is the earliest of
+ * what it clears and of what it leaves that only a later major clears (moves.ts), so the day shown is the pin's.
+ */
+const LEAVES_FOR_A_MAJOR =
+  'The deadline is the earliest among what the move clears and what it leaves that only a major clears: the scan lists that major as a move of its own once this one has merged.';
+const leavesForLater = (move: Pick<ReadMove, 'major' | 'leaves' | 'deadline'>) =>
+  !move.major && move.deadline !== undefined && SEVERITIES.some((s) => move.leaves[s]);
+
+/**
  * What each move clears and leaves, and its deadline, as a table after a blank line. A routine update clears nothing
  * and has no deadline, which its description says in a sentence: its row says only what its pins still have open,
  * where they have anything, and the table is left out where no row is left.
@@ -493,6 +502,7 @@ function countsTable(moves: readonly ReadMove[]): string[] {
             (move) =>
               `| ${code(move.name)} | ${counted(move.clears)} | ${counted(move.leaves)} | ${move.deadline ?? 'none'} |`,
           ),
+          ...(found.some(leavesForLater) ? ['', LEAVES_FOR_A_MAJOR] : []),
         ]
       : []),
     ...(left.length
@@ -687,7 +697,7 @@ export function issueOf(
       : [
           `**Clears** ${counted(move.clears)}; leaves ${counted(move.leaves)} on the same pins.`,
           '',
-          `**Deadline** ${move.deadline ?? 'none'}.`,
+          `**Deadline** ${move.deadline ?? 'none'}.${leavesForLater(move) ? ` ${LEAVES_FOR_A_MAJOR}` : ''}`,
         ]),
     '',
     'The watch keeps this issue to the scan: it updates it as the move changes, and closes it once the scan no longer lists the move.',

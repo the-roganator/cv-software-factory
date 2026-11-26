@@ -3,7 +3,17 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { newKey, open, readKey, type State, seal } from '../../../../apps/factory/src/vulnerabilities/state.ts';
+import { readTarget } from '../../../../apps/factory/src/vulnerabilities/fixes.ts';
+import {
+  contentWaits,
+  newKey,
+  open,
+  readKey,
+  type State,
+  type StateFinding,
+  type StateWait,
+  seal,
+} from '../../../../apps/factory/src/vulnerabilities/state.ts';
 
 /**
  * The step staged/factory/28-content-seen-days-ago.patch adds to the copies' scan, run here as the patch writes it: its
@@ -46,19 +56,19 @@ function aged(state: State, days: string, key = newKey()): State {
   return open(readFileSync(file), readKey(key), REPOSITORY, RUN);
 }
 
-const finding = (waits: unknown, seen: string) =>
-  ({
-    advisory: 'CVE-2026-0001',
-    package: 'musl',
-    installed: '1.2.5',
-    file: 'deploy/base/postgres/statefulset.yaml',
-    line: 21,
-    repository: 'postgres',
-    type: 'alpine',
-    severity: 'HIGH',
-    seen,
-    waits,
-  }) as unknown as State['findings'][number];
+/** A finding as the state's own type has it: the fields the step reads (`waits[].seen`, `.day`) are held to state.ts. */
+const finding = (waits: StateWait[] | undefined, seen: string): StateFinding => ({
+  advisory: 'CVE-2026-0001',
+  package: 'musl',
+  installed: '1.2.5',
+  file: 'deploy/base/postgres/statefulset.yaml',
+  line: 21,
+  repository: 'postgres',
+  type: 'alpine',
+  severity: 'HIGH',
+  seen,
+  waits,
+});
 const TARGET = `image 18.7-alpine3.24@sha256:${'ab'.repeat(32)}`;
 
 describe("the copies' scan, putting its state's sightings back", () => {
@@ -70,9 +80,9 @@ describe("the copies' scan, putting its state's sightings back", () => {
       run: RUN,
       findings: [finding([{ target: TARGET, from: '18.6-alpine3.24', seen, day: due }], found)],
     };
-    const [after] = aged(state, '2').findings as unknown as { seen: string; waits: { seen: string; day: string }[] }[];
-    expect(Date.parse(seen) - Date.parse(after?.waits[0]?.seen ?? '')).toBe(2 * DAY);
-    expect(Date.parse(due) - Date.parse(after?.waits[0]?.day ?? '')).toBe(2 * DAY);
+    const [after] = aged(state, '2').findings;
+    expect(Date.parse(seen) - Date.parse(after?.waits?.[0]?.seen ?? '')).toBe(2 * DAY);
+    expect(Date.parse(due) - Date.parse(after?.waits?.[0]?.day ?? '')).toBe(2 * DAY);
     // The finding's own day, which its deadline counts from, stays.
     expect(after?.seen).toBe(found);
   });
@@ -85,9 +95,9 @@ describe("the copies' scan, putting its state's sightings back", () => {
       run: RUN,
       findings: [finding([{ target: TARGET, from: '18.6-alpine3.24', seen, day: own }], own)],
     };
-    const [after] = aged(state, '2').findings as unknown as { waits: { seen: string; day: string }[] }[];
-    expect(Date.parse(seen) - Date.parse(after?.waits[0]?.seen ?? '')).toBe(2 * DAY);
-    expect(after?.waits[0]?.day).toBe(own);
+    const [after] = aged(state, '2').findings;
+    expect(Date.parse(seen) - Date.parse(after?.waits?.[0]?.seen ?? '')).toBe(2 * DAY);
+    expect(after?.waits?.[0]?.day).toBe(own);
   });
 
   it('leaves a sighting already that old, so a state read and written again goes no further back', () => {
@@ -101,8 +111,28 @@ describe("the copies' scan, putting its state's sightings back", () => {
         finding(undefined, seen),
       ],
     };
-    const [after] = aged(state, '2').findings as unknown as { waits: { seen: string }[] }[];
-    expect(after?.waits[0]?.seen).toBe(seen);
+    const [after] = aged(state, '2').findings;
+    expect(after?.waits?.[0]?.seen).toBe(seen);
+  });
+
+  it('puts back what the scan’s own code wrote, so the scan after it finds the fix’s content waited', () => {
+    const target = readTarget(TARGET);
+    if (!target) throw new Error('the target is not one the grammar reads');
+    const from = '18.6-alpine3.24';
+    const found = (now: number) => ({ at: [now - 5 * DAY], fixes: [target], places: [{ from }] });
+    // The first scan after a reset, with no state: the fix's content is first seen now, and waits its day.
+    const now = Date.now();
+    const first = found(now);
+    const [waits] = contentWaits(first, ['postgres'], undefined, 1, now);
+    expect(first.at[0]).toBeGreaterThan(now);
+    const state: State = { version: 1, repository: REPOSITORY, run: RUN, findings: [finding(waits, day(9 * DAY))] };
+    // The scan after it, on the state the step put back: the same target, installable now.
+    const last = { state: aged(state, '2'), keyOf: () => 'postgres' };
+    const later = Date.now();
+    const second = found(later);
+    contentWaits(second, ['postgres'], last, 1, later);
+    expect(second.fixes[0]).toEqual(target);
+    expect(second.at[0]).toBeLessThanOrEqual(later);
   });
 
   it('refuses a number of days that is not one', () => {

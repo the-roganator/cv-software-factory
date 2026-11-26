@@ -598,7 +598,7 @@ const REFUSED: Record<RefusalKind, string> = {
 };
 
 /** Why a move the watch made before is left unmade: its merge was undone on `main`. */
-const REVERTED = 'its merge was undone on main';
+export const REVERTED = 'its merge was undone on main';
 /** Why a move the pin step makes waits beside one undone on `main`: the step makes their files whole. */
 const WITH_REVERTED = 'a move made with it was undone on main';
 /** Why a move waits whose branch a pull request of someone else's stands on. */

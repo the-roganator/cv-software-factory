@@ -939,8 +939,11 @@ export function waitsFault(
 
 // ── A move put back on main ─────────────────────────────────────────────────────────────────────────────────────────
 
-/** What the App's issue says of a move whose merge was undone on `main` (apps/factory/src/github/pins.ts). */
-export const REVERTED_SAYS = /undone on main|reverted on main/;
+/**
+ * What the App's issue says of a move whose merge was undone on `main`, as GitHub gives its body: Markdown, with
+ * `main` in backticks (apps/factory/src/github/pins.ts's `issueOf`, for `REVERTED`; words.test.ts holds the two together).
+ */
+export const REVERTED_SAYS = /its merge was then undone on `main`/;
 /**
  * A move Martin reverted (test 27): the move merged, its pins were put back on `main`, and the scan after lists it
  * again from the version it had; then, for a few of the worker's passes (`watchedMs` of `settleMs`), the App opened no

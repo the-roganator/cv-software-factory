@@ -189,9 +189,11 @@ export interface Test {
 export const ASKED_FOR_CHANGES = /Martin asked for changes/;
 /**
  * What the gate's hold says of a change that writes a pin's line otherwise than the scan's move does: that it is no
- * move (review-routing.ts), or, where its own edit meets another pin on the scan's line, that main moved (move.ts).
+ * move, which in the factory's repository reads "Not an exact pin (…), nor a move: …" and in the app's "not a move: …"
+ * (review-routing.ts's `route`), or, where its own edit meets another pin on the scan's line, that main moved
+ * (pins.ts's `strayed`). words.test.ts holds them to the gate's own.
  */
-export const NOT_THE_MOVE = /not a move: |main moved since the scan/i;
+export const NOT_THE_MOVE = /\b(not|nor) a move: |main moved since the scan/i;
 /** GitHub's refusal of a push a ruleset forbids, to a branch or a tag (the `branches` and `tag main` rulesets). */
 export const RULESET_REFUSAL = /Cannot (update|create|delete) this (protected )?(ref|branch|tag)|rule violations?/i;
 /** Two of Kyverno's four images, pinned in one file at one tag's text: the pair N9 crosses. */

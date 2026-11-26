@@ -1106,7 +1106,13 @@ describe('a move put back on main', () => {
     revert: 'c'.repeat(40),
     scan: { id: 9, moves: [{ name: 'k3s', from: 'v1.37.1+k3s1' }] },
     pulls: [] as number[],
-    issues: [{ number: 20, author: app, body: 'Its merge was undone on main: the factory leaves it unmade.' }],
+    issues: [
+      {
+        number: 20,
+        author: app,
+        body: 'The factory made this move, and its merge was then undone on `main`: the pin is back.',
+      },
+    ],
     app,
     watchedMs: 5 * 60_000,
     settleMs: 5 * 60_000,

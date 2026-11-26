@@ -538,8 +538,9 @@ export const TESTS: Test[] = [
     deployed: { kind: 'none' },
   },
   {
-    // Why pnpm refuses it changes with the registry: weaker provenance for 2.2.2 alone, and a release too young for a
-    // day after each later one (2.2.3 came out on 25 November 2026). The issue must give whichever reason holds.
+    // Why the pin step cannot make it changes with the registry: weaker provenance for 2.2.2 alone; a release too
+    // young for a day after each later one (2.2.3 came out on 25 November 2026); and after that day a newer release
+    // pnpm resolves in 2.2.2's place, past the scan's target. The issue must give whichever reason holds.
     // lefthook, 2.2.1 on every baseline with 2.2.2 out, which was published without the provenance its earlier
     // releases had: pnpm refuses it, the pin step leaves it out, and the day's other routine lockfile updates ride
     // without it in the pull request test 15 stands on too.

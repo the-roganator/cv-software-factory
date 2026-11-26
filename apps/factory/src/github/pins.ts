@@ -31,7 +31,7 @@
  *   Dockerfiles', each made on what the one before it wrote. The watch commits what the scan made, whole, once each file it wrote is the same at
  *   `main`'s head as there, through the same guard, which holds where it writes; the review gate makes the same moves
  *   again on main and compares. A move the step refused (pnpm's guards: a release younger than a day, a weaker
- *   provenance; a copy only an override would move) waits, with an issue that says so by its mark and says which kind
+ *   provenance; a copy only an override would move; a routine update pnpm resolved past its target) waits, with an issue that says so by its mark and says which kind
  *   of refusal it was (`refusalKind`), in the watch's own words for the kind, and the step's own words in the
  *   worker's log; the rest of its group go on.
  * - **It makes every move of its lanes, whoever else proposes one.** A pull request of Dependabot's for the same pin is
@@ -570,14 +570,15 @@ export function pullBody(carried: readonly Carried[], moves: Moves): string {
 }
 
 /** Why a move the pin step makes is an issue: the step refused it, in the scan's run. */
-const STEP_REFUSED = 'the pin step could not make it on the commit the scan read';
+export const STEP_REFUSED = 'the pin step could not make it on the commit the scan read';
 
 /**
  * The kinds of refusal the pin step gives a move (apps/runner/src/pins.ts), by what will make the move go: a release
  * younger than the minimum age, one published with weaker provenance than the release before, an install script not
- * allowed, a copy only an override would move, a release mise could not lock; and anything else.
+ * allowed, a copy only an override would move, a routine update pnpm resolved to a newer release than the scan
+ * listed, a release mise could not lock; and anything else.
  */
-export type RefusalKind = 'young' | 'provenance' | 'script' | 'override' | 'lock' | 'other';
+export type RefusalKind = 'young' | 'provenance' | 'script' | 'override' | 'resolved' | 'lock' | 'other';
 
 /**
  * The kind of a refusal, from the step's one line of it (`MadeGroup.refused`), which carries pnpm's or mise's own
@@ -589,6 +590,9 @@ export type RefusalKind = 'young' | 'provenance' | 'script' | 'override' | 'lock
  * - `script`: pnpm's `… has to be built but the build scripts were ignored`, and its `allowBuilds`.
  * - `young`: pnpm's `… does not meet the minimumReleaseAge constraint: … within the minimumReleaseAge cutoff`, and
  *   the step's own of Node and of a tool, `… within mise.toml's minimum_release_age`.
+ * - `resolved`: the step's own, of a routine update whose manifests' copy pnpm put past the target, at a release the
+ *   range admits where pnpm would not take the target itself: `pnpm resolved … to …, past the … asked for: a routine
+ *   update …` (`RESOLVED_PAST`).
  * - `lock`: anything else `mise lock` refused, which the step says as `mise refused …`.
  *
  * Each is a phrase with a space in it or a setting's name in capitals, which no package's name can be, so a package
@@ -600,9 +604,26 @@ export function refusalKind(reason: string): RefusalKind {
   if (/ build scripts were ignored\b| under allowBuilds\b|\bERR_PNPM_IGNORED_BUILDS\b/.test(reason)) return 'script';
   if (/\bminimumReleaseAge (?:constraint|cutoff)\b| within mise\.toml's minimum_release_age\b/.test(reason))
     return 'young';
+  if (RESOLVED_PAST.test(reason)) return 'resolved';
   if (/^mise refused /.test(reason)) return 'lock';
   return 'other';
 }
+
+/** A release as the step's own line names one: a version, and nothing else. */
+const RELEASE = String.raw`\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?`;
+/**
+ * The step's own line for a routine update pnpm resolved past its target (`movePackage`, apps/runner/src/pins.ts),
+ * from its start: the package, each release pnpm resolved, and the target the step asked for.
+ */
+const RESOLVED_PAST = new RegExp(
+  `^pnpm resolved \\S+ to (${RELEASE}(?:, ${RELEASE})*), past the ${RELEASE} asked for: a routine update `,
+);
+
+/**
+ * The releases pnpm resolved past a routine update's target, from the step's own line of that refusal, for the
+ * move's issue; of any other reason, none. The step wrote them from the lockfile, and each is a version.
+ */
+export const resolvedPast = (reason: string): string | undefined => RESOLVED_PAST.exec(reason)?.[1];
 
 /** What the scan's pin step could not do, and what will make the move go, by the kind of its refusal. */
 const REFUSED: Record<RefusalKind, string> = {
@@ -614,6 +635,8 @@ const REFUSED: Record<RefusalKind, string> = {
     'The scan’s pin step could not make it on the commit it read: the release has an install script this repository does not allow. It goes only with an entry for it in `pnpm-workspace.yaml`, with its reason, and that file is yours; or with a later release that needs none.',
   override:
     'The scan’s pin step could not make it on the commit it read: a copy of it stays below the target, because what depends on it admits nothing newer. It goes with a later release of what depends on it, which the watch then makes; or with an override for that copy in `pnpm-workspace.yaml`, with its reason, and that file is yours.',
+  resolved:
+    'The scan’s pin step could not make it on the commit it read: it asked pnpm for the release the scan listed, and pnpm resolved a newer one, which has not waited the days a routine update waits. Nothing is asked of you: the watch makes the move on a later day’s scan, once the scan lists that release.',
   lock: 'The scan’s pin step could not make it on the commit it read: mise could not lock the release. The watch makes the move once a scan can, on a later run or a later release; or move it by hand, and the scan’s next run sees it.',
   other:
     'The scan’s pin step could not make it on the commit it read. The watch makes the move once a scan can; or move it by hand, and the scan’s next run sees it.',
@@ -645,8 +668,12 @@ const WAITS: Record<string, string> = {
 };
 
 /** Why the App cannot write a move, and what to do instead, for its issue. */
-function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other'): string {
-  if (why === STEP_REFUSED) return REFUSED[kind];
+function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other', resolved?: string): string {
+  if (why === STEP_REFUSED) {
+    // The release pnpm resolved, named where the step gave it: only a routine update has this refusal.
+    const newer = kind === 'resolved' && resolved ? resolved.split(', ').map(code).join(' and ') : undefined;
+    return newer ? REFUSED[kind].replace('a newer one,', `a newer one, ${newer},`) : REFUSED[kind];
+  }
   const waits = why === undefined ? undefined : WAITS[why];
   if (waits) return waits;
   if (why)
@@ -671,13 +698,15 @@ function issueKey(move: ReadMove): string {
 /**
  * An issue's title and description, and the target it is written for (`pin-target`): for a lockfile's move none, which
  * the public list withholds, but for a routine update the pin step refused, whose issue names its release, so one
- * Martin closed opens again for a later release.
+ * Martin closed opens again for a later release. `resolved` is the release pnpm took past such an update's target
+ * (`resolvedPast`), which its issue names too.
  */
 export function issueOf(
   move: ReadMove,
   moves: Moves,
   why?: string,
   kind?: RefusalKind,
+  resolved?: string,
 ): { title: string; body: string; key: string; target: string } {
   const key = issueKey(move);
   const name = move.lockfile ? `${move.name} (${key.slice('lockfile-'.length)})` : move.name;
@@ -708,7 +737,7 @@ export function issueOf(
     `<!-- factory: pin-target ${targetMark(target)} -->`,
     `${RunText(moves)} lists a move ${maker} ${why === REVERTED || why === WITH_REVERTED ? 'leaves unmade' : 'cannot make with a pull request of its own'}: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
     '',
-    cannotWrite(move, why, kind),
+    cannotWrite(move, why, kind, named ? resolved : undefined),
     '',
     '**Pins**',
     '',
@@ -1149,8 +1178,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     const keep = new Set<string>();
     /** The issues today's moves keep, each with what it says. */
     const wanted = new Map<string, { title: string; body: string; target: string }>();
-    const want = (move: ReadMove, why?: string, kind?: RefusalKind) => {
-      const issue = issueOf(move, day, why, kind);
+    const want = (move: ReadMove, why?: string, kind?: RefusalKind, resolved?: string) => {
+      const issue = issueOf(move, day, why, kind, resolved);
       wanted.set(issue.key, { title: issue.title, body: issue.body, target: issue.target });
     };
 
@@ -1252,7 +1281,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         const move = moves.find((each) => each.index === index);
         if (!move) continue;
         // Its issue only for a move told: the issue of one not told is never opened, updated or closed.
-        if (told.includes(move)) want(move, STEP_REFUSED, refusalKind(reason));
+        if (told.includes(move)) want(move, STEP_REFUSED, refusalKind(reason), resolvedPast(reason));
         if (!said.has(`refused ${run} ${index}`)) {
           said.add(`refused ${run} ${index}`);
           log.warn(

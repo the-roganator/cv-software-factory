@@ -489,13 +489,15 @@ export interface IssueWants {
 /**
  * Why the pin step refused a move, as the worker's issue says each kind (apps/factory/src/github/pins.ts's `REFUSED`),
  * but its catch-all, which says no reason: a release too young, one with weaker provenance, an install script not
- * allowed, a copy only an override would move, a release mise could not lock.
+ * allowed, a copy only an override would move, a routine update pnpm resolved to a newer release than the scan
+ * listed, a release mise could not lock.
  */
 export const REFUSAL_KINDS: Record<string, RegExp> = {
   young: /younger than the minimum age/,
   provenance: /weaker provenance/,
   script: /an install script/,
   override: /an override/,
+  resolved: /pnpm resolved a newer one/,
   lock: /mise could not lock/,
 };
 /**

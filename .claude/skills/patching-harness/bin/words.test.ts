@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { levelWait } from '../../../../apps/factory/src/github/deploy-queue.ts';
-import { issueOf, PASS_MS, READ_THE_SCAN, REVERTED, strayed } from '../../../../apps/factory/src/github/pins.ts';
+import {
+  issueOf,
+  PASS_MS,
+  READ_THE_SCAN,
+  REVERTED,
+  type RefusalKind,
+  STEP_REFUSED,
+  strayed,
+} from '../../../../apps/factory/src/github/pins.ts';
 import { type Judged, movesFile, waiting } from '../../../../apps/factory/src/vulnerabilities/moves.ts';
 import { day, FakeRepo, FILES, factoryMoves } from '../../../../apps/factory/test/github/pins-harness.ts';
 import { rulesets } from '../../../../scripts/github-settings.ts';
@@ -15,10 +23,12 @@ import {
 } from '../../../../scripts/review-routing.ts';
 import { ASKED_FOR_CHANGES, FACTORY, NOT_THE_MOVE, RULESET_REFUSAL } from './catalogue.ts';
 import {
+  issueFault,
   N10_RULESETS,
   OF_A_MOVE,
   PIN_PASS_MS,
   queueWords,
+  REFUSAL_KINDS,
   REVERTED_SAYS,
   rulesetsFault,
   rulesetsRefusal,
@@ -67,6 +77,29 @@ describe('the worker’s words, as the harness reads them', () => {
     expect(issueOf(move, moves, 'a pull request the App did not open stands on its branch').body).not.toMatch(
       REVERTED_SAYS,
     );
+  });
+
+  it('reads each kind of the pin step’s refusals from the worker’s issue, and none from its catch-all (23)', () => {
+    const repo = new FakeRepo(FILES);
+    const [move] = factoryMoves();
+    if (!move) throw new Error('the fixture has no move');
+    const moves = day(repo.main, [move]);
+    const kinds: Record<RefusalKind, true> = {
+      young: true,
+      provenance: true,
+      script: true,
+      override: true,
+      resolved: true,
+      lock: true,
+      other: true,
+    };
+    const wants = { names: [move.name], says: [], kinds: REFUSAL_KINDS };
+    for (const kind of Object.keys(kinds) as RefusalKind[]) {
+      const { body } = issueOf(move, moves, STEP_REFUSED, kind, '2.2.3');
+      const read = issueFault([{ number: 1, author: 'the-app[bot]', title: '', body }], 'the-app[bot]', wants);
+      if (kind === 'other') expect(read.fault).toContain('gives none of the reasons');
+      else expect(read, kind).toEqual({ number: 1, kind });
+    }
   });
 
   it('reads the pin watch’s pass on a scan in its log, and waits for it by the watch’s own period (27)', () => {

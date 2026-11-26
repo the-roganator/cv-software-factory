@@ -191,7 +191,7 @@ describe('a package’s move', () => {
     const past = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
     const newer = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.1', '4.2.1')));
     await expect(writePins(past, routine, tools(newer.pnpm))).rejects.toThrow(
-      'vitest resolves to 5.1.1, past 5.1.0: a routine update moves to the release the scan listed, and no further.',
+      'pnpm resolved vitest to 5.1.1, past the 5.1.0 asked for: a routine update moves to the release the scan listed, and no further.',
     );
     // The same lockfile is a fix's move made: its target is a floor.
     await writePins(

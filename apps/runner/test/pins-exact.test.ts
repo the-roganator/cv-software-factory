@@ -15,6 +15,7 @@ import { listenLocal } from '@software-factory/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { isReason, type Made, openMade, reasonOf, sealMade } from '../../factory/src/github/made.ts';
 import { madeRefusal } from '../../factory/src/github/pin-guard.ts';
+import { refusalKind, resolvedPast } from '../../factory/src/github/pins.ts';
 import { newKey, readKey } from '../../factory/src/vulnerabilities/state.ts';
 import {
   importedVersions,
@@ -286,8 +287,11 @@ describe('a routine update of a package, made by pnpm itself', { timeout: 120_00
     expect(reasons[0]).toMatch(/^pnpm refused demo-pkg@1\.0\.3: /);
     expect(reasons[1]).toMatch(/^No manifest names demo-pkg/);
     expect(reasons[2]).toBe(
-      'demo-pkg resolves to 1.0.2, past 1.0.1: a routine update moves to the release the scan listed, and no further.',
+      'pnpm resolved demo-pkg to 1.0.2, past the 1.0.1 asked for: a routine update moves to the release the scan listed, and no further.',
     );
+    // The worker reads the kind from the step's own line, and the release pnpm resolved.
+    expect(refusalKind(reasons[2] ?? '')).toBe('resolved');
+    expect(resolvedPast(reasons[2] ?? '')).toBe('1.0.2');
     expect(reasons[3]).toMatch(/^pnpm refused demo-pkg@1\.0\.1: /);
     for (const reason of reasons) {
       // One line, no command line, none of the marks pnpm draws its report with.

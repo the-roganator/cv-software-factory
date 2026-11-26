@@ -16,7 +16,15 @@ import { WatchedHeads } from '../../src/github/branches.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
 import { groupKey, groupOf, type MadeGroup, madeByStep, stepOf, toolAt, writtenBy } from '../../src/github/made.ts';
 import { pinBranchFor } from '../../src/github/pin-guard.ts';
-import { carriedBy, PASS_MS, PIN_LABEL, type PinScope, pinWatch } from '../../src/github/pins.ts';
+import {
+  carriedBy,
+  issueOf,
+  PASS_MS,
+  PIN_LABEL,
+  type PinScope,
+  pinWatch,
+  STEP_REFUSED,
+} from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { client, quiet, type Sent } from './fake.ts';
@@ -361,6 +369,43 @@ describe('the moves the scan made with the pin step', () => {
       move: 2,
       reason: expect.stringContaining('TRUST_DOWNGRADE'),
     });
+  });
+
+  it('says of a routine update pnpm resolved past its target that the newer release has not waited, naming it, and asks nothing', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    // The step's own line (apps/runner/src/pins.ts, `movePackage`), as the scan sealed it.
+    const reason =
+      'pnpm resolved example-b to 2.0.2, past the 2.0.1 asked for: a routine update moves to the release the scan listed, and no further.';
+    const update: ReadMove = {
+      ...npm(1, 'example-b', '2.0.0', '2.0.1', 8),
+      mark: 'markb0000000',
+      clears: NONE,
+      deadline: undefined,
+    };
+    const group = lockGroup({ routine: true, moves: [], refused: [{ move: 1, reason }], changed: [], steps: [] });
+    const read = today(scanned, [update], 42_000_000_101);
+    const moves: Moves = {
+      ...read,
+      made: { version: 1, repository: read.repository, run: '42000000101', commit: scanned, groups: [group] },
+    };
+    const w = harness(repo, () => moves);
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(repo.issues).toHaveLength(1);
+    const body = repo.issues[0]?.body ?? '';
+    expect(body).toContain(
+      'The scan’s pin step could not make it on the commit it read: it asked pnpm for the release the scan listed, and pnpm resolved a newer one, `2.0.2`, which has not waited the days a routine update waits. Nothing is asked of you: the watch makes the move on a later day’s scan, once the scan lists that release.',
+    );
+    expect(body).toContain('**A routine update** `example-b` to `2.0.1`');
+    // The step's line is the worker's log's, never the issue's.
+    expect(body).not.toMatch(/asked for|no further|log says which/);
+    expect(w.lines.find((line) => line.reason)).toMatchObject({ level: 40, move: 1, reason });
+    // A move a finding asks for never has this refusal; were its reason read so, its issue would name no release.
+    const fix = { ...update, clears: { ...NONE, HIGH: 1 }, deadline: '2026-12-01' };
+    const said = issueOf(fix, moves, STEP_REFUSED, 'resolved', '2.0.2');
+    expect(said.body).toContain('pnpm resolved a newer one, which has not waited');
+    expect(said.body).not.toMatch(/example-b|2\.0\.2/);
   });
 
   it('keeps one issue for a routine major pnpm refused, day after day and release after release, naming its package and release', async () => {

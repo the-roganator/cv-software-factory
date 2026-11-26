@@ -464,10 +464,12 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   if (move.routine) {
     // The manifests' copy alone is the move's: exactly the target, and a parent's copy where its range puts it.
     const got = [...new Set(importedVersions(after, move.name).map((each) => each.version))];
+    // A release past the target, which pnpm took where it would not take the target: said with both releases, in the
+    // words the worker reads the kind of the refusal from (`refusalKind`, apps/factory/src/github/pins.ts).
     const past = got.filter((v) => compareVersions(v, move.to) > 0);
     if (past.length) {
       throw new PinsRefused(
-        `${move.name} resolves to ${past.join(', ')}, past ${move.to}: a routine update moves to the release the scan listed, and no further.`,
+        `pnpm resolved ${move.name} to ${past.join(', ')}, past the ${move.to} asked for: a routine update moves to the release the scan listed, and no further.`,
       );
     }
     if (got.length !== 1 || got[0] !== move.to) {

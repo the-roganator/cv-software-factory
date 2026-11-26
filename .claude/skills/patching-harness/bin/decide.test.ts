@@ -721,6 +721,7 @@ describe('an issue that must say why', () => {
     for (const [kind, words] of [
       ['script', 'the release has an install script this repository does not allow'],
       ['override', 'it goes with an override for that copy'],
+      ['resolved', 'it asked pnpm for the release the scan listed, and pnpm resolved a newer one, `2.2.4`'],
       ['lock', 'mise could not lock the release'],
     ])
       expect(issueFault([issue(`\`lefthook\` \`2.2.3\`: ${words}.`)], app, refused).kind).toBe(kind);

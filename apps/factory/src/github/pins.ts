@@ -206,6 +206,8 @@ type Issue = z.infer<typeof ISSUES>[number];
 
 /** The most pages of open pull requests, and of the watch's issues, read. */
 const PAGES = 10;
+/** How many pages of a hundred closed pull requests are read of one pin branch: past them, no move is made on it. */
+const CLOSED_PAGES = 30;
 
 /** GitHub's failures that may pass by the next pass: a limit, an outage. Any other answer to an open is a refusal. */
 const PASSING: readonly string[] = ['rate-limited', 'server', 'network'];
@@ -595,6 +597,8 @@ const WITH_REVERTED = 'a move made with it was undone on main';
 const BRANCH_HELD = 'a pull request the App did not open stands on its branch';
 /** Why a move waits whose pull request GitHub would not open. */
 const OPEN_REFUSED = 'GitHub refused its pull request';
+/** Why a move waits whose branch has more closed pull requests than the watch reads (`CLOSED_PAGES`). */
+const HISTORY_UNREAD = 'its branch has more closed pull requests than the watch reads';
 
 /** What each of those asks of Martin, for the move's issue. */
 const WAITS: Record<string, string> = {
@@ -604,6 +608,8 @@ const WAITS: Record<string, string> = {
     'The scan’s pin step makes it together with a move whose merge was undone on `main`, in the same files, and the watch commits what the step made whole or not at all: it waits until that move’s target changes, or its merge is put back on `main`. Or move it in a pull request of your own.',
   [BRANCH_HELD]:
     'A pull request the App did not open is open from the branch the watch makes this move on, and the watch writes no branch another’s pull request stands on. Close that pull request, and the watch makes the move on its next pass.',
+  [HISTORY_UNREAD]:
+    'The branch the watch makes this move on has more closed pull requests than the watch reads, so it cannot tell whether you closed this move or undid its merge, and makes nothing there. Move it in a pull request of your own.',
   [OPEN_REFUSED]:
     'The watch committed the move to its branch, and GitHub refused the pull request from it. The watch tries again each pass; what GitHub said is in the worker’s log and its refusal.',
 };
@@ -945,17 +951,28 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     throw new GitHubError('malformed', `${repo} has more open pull requests than the pin watch reads.`);
   };
 
-  /** The App's closed pull requests from a branch of this repository, the newest hundred, merged or not. */
-  const closedOn = async (branch: string): Promise<Pull[]> => {
+  /**
+   * The App's closed pull requests from a branch of this repository, merged or not, newest first: every page, up to
+   * `CLOSED_PAGES`. A branch with more is not read `whole`, and no move is made on it: a close or an undone merge of
+   * Martin's past what was read would be forgotten, and the move made again.
+   */
+  const closedOn = async (branch: string): Promise<{ pulls: Pull[]; whole: boolean }> => {
     const [owner] = repo.split('/');
-    const { body } = await github.poll(
-      repo,
-      `/repos/${repo}/pulls?state=closed&per_page=100&head=${owner}:${encodeURIComponent(branch)}`,
-      PULLS,
-    );
-    return body.filter(
-      (pull) => pull.user?.login === APP_LOGIN && pull.head.repo?.full_name === repo && pull.head.ref === branch,
-    );
+    const pulls: Pull[] = [];
+    for (let page = 1; page <= CLOSED_PAGES; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/pulls?state=closed&per_page=100&head=${owner}:${encodeURIComponent(branch)}&page=${page}`,
+        PULLS,
+      );
+      pulls.push(
+        ...body.filter(
+          (pull) => pull.user?.login === APP_LOGIN && pull.head.repo?.full_name === repo && pull.head.ref === branch,
+        ),
+      );
+      if (body.length < 100) return { pulls, whole: true };
+    }
+    return { pulls, whole: false };
   };
 
   /**
@@ -963,7 +980,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
    * One that anyone else closed holds nothing: the watch opens the move again, and says who closed it.
    */
   const closedByMartin = async (branch: string, edits: string): Promise<boolean> => {
-    for (const pull of await closedOn(branch)) {
+    for (const pull of (await closedOn(branch)).pulls) {
       if (pull.merged_at || EDITS_MARK.exec(pull.body ?? '')?.[1] !== edits) continue;
       const by = await closedBy(pull.number);
       if (by === 'martin') return true;
@@ -997,7 +1014,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
    */
   const undoneOn = async (branch: string, marks: readonly string[], head: string): Promise<Map<string, number>> => {
     const undone = new Map<string, number>();
-    for (const pull of await closedOn(branch)) {
+    for (const pull of (await closedOn(branch)).pulls) {
       if (!pull.merged_at || !pull.merge_commit_sha) continue;
       const made = (MADE_MARK.exec(pull.body ?? '')?.[1] ?? '').split(',');
       const again = marks.filter((mark) => made.includes(mark) && !undone.has(mark));
@@ -1264,6 +1281,20 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     // A move whose merge was undone on main is left unmade, said once and as its issue; the rest of its files' moves
     // go on, but for a group the pin step made, which is committed whole or not at all.
     for (const [branch, carried] of [...groups]) {
+      // A branch whose closed pull requests are not read whole may hide Martin's close or an undone merge: nothing is
+      // made there, its open pull request is left as it is, and each of its moves says so as its issue.
+      if (!(await closedOn(branch)).whole) {
+        if (!said.has(`history ${branch}`))
+          log.warn(
+            { repo, branch, pages: CLOSED_PAGES },
+            'the pin branch has more closed pull requests than the watch reads: the watch makes no move there',
+          );
+        said.add(`history ${branch}`);
+        wantAll(carried, HISTORY_UNREAD);
+        keep.add(branch);
+        groups.delete(branch);
+        continue;
+      }
       const written = writtenOf.get(branch);
       const made = madeOf(carried, written);
       const undone = await undoneOn(

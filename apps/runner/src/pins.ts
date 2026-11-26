@@ -385,7 +385,8 @@ export const movedRange = (spec: string, version: string): string =>
  * Moves a package: each manifest's range that does not admit the target first, then `pnpm update` at every depth,
  * under the app's own policy. A copy the parents' ranges hold below the target holds the work item for an override:
  * the copy the move names, and any on the target's line (its major, or below 1.0 its minor); one on another line is no
- * part of the move.
+ * part of the move. Of several targets, one on a line no copy is at is left while another has its copy to move: the
+ * scan lists it once that move is made.
  *
  * A fix's target is a floor: pnpm takes the newest release the range admits at or above it. A routine update's is
  * exact (`pnpm update <name>@<target>`): the scan listed that release once it had waited its days, and a newer one
@@ -401,12 +402,16 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   const tos = move.to.split(',').map((each) => each.trim());
   const froms = move.from.split(',').map((each) => each.trim());
   if (tos.length > 1 || froms.length > 1) {
-    for (const to of [...tos].sort(compareVersions)) {
+    const copies = [...tos].sort(compareVersions).map((to) => {
       if (!VERSION.test(to)) throw new PinsRefused(`${to} is not a version, so ${move.name} cannot move to it.`);
-      const from = froms.find((each) => VERSION.test(each) && lineOf(each) === lineOf(to));
-      if (!from) throw new PinsRefused(`${move.name} is at no version on the line of ${to}: ${move.from}.`);
-      await movePackage(dir, { ...move, from, to }, pnpm);
-    }
+      return { to, from: froms.find((each) => VERSION.test(each) && lineOf(each) === lineOf(to)) };
+    });
+    // A target on a line no copy is at is no part of this move while another target has its copy: that one is made,
+    // and the scan lists the rest once it has. With no copy on any target's line, the move is refused.
+    const unmet = copies.find((each) => each.from === undefined);
+    if (unmet && copies.every((each) => each.from === undefined))
+      throw new PinsRefused(`${move.name} is at no version on the line of ${unmet.to}: ${move.from}.`);
+    for (const { to, from } of copies) if (from !== undefined) await movePackage(dir, { ...move, from, to }, pnpm);
     return;
   }
   if (!VERSION.test(move.to)) throw new PinsRefused(`${move.to} is not a version, so ${move.name} cannot move to it.`);

@@ -468,6 +468,8 @@ function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other'):
   if (why === STEP_REFUSED) return REFUSED[kind];
   if (why)
     return `The watch cannot write it on its pins' lines (${why}): move it by hand, and the scan's next run sees it.`;
+  if (move.bench)
+    return 'Its bump merges only after a bench run on Claude (`factory line bench`, docs/ON-THE-HOST.md#the-bench), which is yours to start: the App opens no pull request for it. Run the bench on the bumped package and move it in a pull request of your own, by the deadline below.';
   if (move.lane === 'none')
     return 'Its line is no longer built: nothing on this line will bring the fix. Move the pin to a line its publisher builds, and the scan reads it from there.';
   if (isRoutine(move) && move.pins.some((pin) => pin.file.startsWith('.github/')))

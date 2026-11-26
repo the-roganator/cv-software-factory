@@ -334,22 +334,123 @@ describe('the day’s moves', () => {
 });
 
 describe('one pin with several targets', () => {
-  it('is one move, to the furthest target any of its results needs', () => {
-    const chart = (version: string, major: boolean) =>
-      result({
-        kind: 'chart',
-        name: 'grafana',
-        from: '13.2.7',
-        target: { kind: 'chart', chart: 'grafana', version, major },
-      });
-    const list = moves([chart('13.7.0', false), chart('14.4.1', true), chart('14.4.1', true)], context());
+  const chart = (version: string, major: boolean) =>
+    result({
+      kind: 'chart',
+      name: 'grafana',
+      from: '13.2.7',
+      target: { kind: 'chart', chart: 'grafana', version, major },
+    });
+  const npm = (versions: string[], from = '1.4.0') =>
+    result({
+      kind: 'lockfile',
+      name: 'example-a',
+      from,
+      pin: { file: 'pnpm-lock.yaml', line: 120 },
+      target: { kind: 'version', versions },
+    });
+
+  it('is one move, to the furthest target within the pin’s major, and leaves what only a major clears', () => {
+    const list = moves([chart('13.6.0', false), chart('13.7.0', false), chart('14.4.1', true)], context());
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({
-      to: { kind: 'chart', version: '14.4.1', major: true },
-      major: true,
+      to: { kind: 'chart', version: '13.7.0', major: false },
+      major: false,
       lane: 'worker',
     });
-    expect(list[0]?.clears.HIGH).toBe(3);
+    expect(list[0]?.clears.HIGH).toBe(2);
+    expect(list[0]?.leaves.HIGH).toBe(1);
+    expect(list[0]?.results).toHaveLength(2);
+  });
+
+  it('is the major at once where no result has a fix within the pin’s major', () => {
+    const list = moves([chart('14.3.1', true), chart('14.4.1', true)], context());
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'chart', version: '14.4.1', major: true }, major: true });
+    expect(list[0]?.clears.HIGH).toBe(2);
+    expect(list[0]?.leaves.HIGH).toBe(0);
+  });
+
+  it('moves a package at one version within its major, never to two versions for one copy', () => {
+    const list = moves([npm(['1.5.3']), npm(['1.5.1']), npm(['2.0.1'])], context());
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'version', versions: ['1.5.3'] }, major: false });
+    expect(list[0]?.clears.HIGH).toBe(2);
+    expect(list[0]?.leaves.HIGH).toBe(1);
+    // The major alone, the day after: the one move, and a major.
+    expect(moves([npm(['2.0.1'], '1.5.3')], context())[0]).toMatchObject({
+      to: { kind: 'version', versions: ['2.0.1'] },
+      major: true,
+    });
+  });
+
+  it('keeps a fix for each copy of a package locked at two versions, one on each major', () => {
+    const list = moves([npm(['1.5.3', '2.0.1'], '1.4.0, 2.0.0'), npm(['1.5.1', '2.0.4'], '1.4.0, 2.0.0')], context());
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'version', versions: ['1.5.3', '2.0.4'] }, major: false });
+    expect(list[0]?.clears.HIGH).toBe(2);
+  });
+
+  it('lets an image’s move clear Node’s own fix in it, whatever the image’s tag says of a major', () => {
+    const image = { kind: 'dockerfile' as const, name: 'gcr.io/distroless/nodejs24-debian13', from: 'nonroot' };
+    const list = moves(
+      [
+        result({ ...image, target: { kind: 'image', tag: 'nonroot', digest: DIGEST } }),
+        result({ ...image, target: { kind: 'version', versions: ['24.23.0'] } }),
+      ],
+      context(),
+    );
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'image', tag: 'nonroot' }, major: false });
+    expect(list[0]?.clears.HIGH).toBe(2);
+  });
+});
+
+describe('a package whose bump waits for a bench run', () => {
+  const SDK = '@anthropic-ai/claude-agent-sdk';
+  const benched = context({ benched: [SDK] });
+  const sdk = (severity: Severity = 'HIGH') =>
+    result({
+      kind: 'lockfile',
+      name: SDK,
+      from: '0.2.10',
+      severity,
+      pin: { file: 'pnpm-lock.yaml', line: 40 },
+      target: { kind: 'version', versions: ['0.2.11'] },
+    });
+
+  it('is an issue of its own, marked for the bench, where its fix clears no Critical', () => {
+    const other = result({
+      kind: 'lockfile',
+      name: 'example-a',
+      from: '1.0.0',
+      pin: { file: 'pnpm-lock.yaml', line: 120 },
+      target: { kind: 'version', versions: ['1.0.1'] },
+    });
+    const list = moves([sdk(), other], benched);
+    const its = list.find((move) => move.name === SDK);
+    expect(its).toMatchObject({ lane: 'issue', bench: true, lockfile: true, deadline: NOW + 4 * DAY });
+    expect(list.find((move) => move.name === 'example-a')).toMatchObject({ lane: 'worker' });
+    expect(list.find((move) => move.name === 'example-a')?.bench).toBeUndefined();
+    const file = movesFile(list, benched);
+    expect(file.totals.lanes).toMatchObject({ issue: 1, worker: 1 });
+    expect(file.moves.find((move) => move.lane === 'issue')).toMatchObject({
+      bench: true,
+      deadline: '2026-11-14T04:30:00Z',
+    });
+    // Any other move is written as it always was, with no key for it.
+    expect(Object.keys(file.moves.find((move) => move.lane === 'worker') ?? {})).not.toContain('bench');
+  });
+
+  it('is a move like any other where its fix clears a Critical, or the policy lists none', () => {
+    expect(moves([sdk('CRITICAL'), sdk()], benched)[0]).toMatchObject({ lane: 'worker' });
+    expect(moves([sdk('CRITICAL')], benched)[0]?.bench).toBeUndefined();
+    expect(moves([sdk()], context())[0]).toMatchObject({ lane: 'worker' });
+    expect(moves([sdk()], context())[0]?.bench).toBeUndefined();
+  });
+
+  it('is the line’s to hold too, in the app’s repository', () => {
+    expect(moves([sdk()], context({ app: true, benched: [SDK] }))[0]).toMatchObject({ lane: 'issue', bench: true });
   });
 });
 

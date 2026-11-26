@@ -427,12 +427,35 @@ snapshots:
     expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'semver')).toEqual(['5.7.2', '7.8.6']);
   });
 
+  it('makes the move of the copy that has a target on its line, and leaves a target no copy is on the line of', async () => {
+    // One copy, with one fix in its major and one on the next: the in-major move, and the major is a later day's.
+    const alone = (version: string) =>
+      TWICE('0.0.0', version)
+        .replace('  semver@0.0.0:\n    resolution: {integrity: sha512-old}\n\n', '')
+        .replace('  semver@0.0.0: {}\n\n', '');
+    expect(lockedVersions(alone('5.7.1'), 'semver')).toEqual(['5.7.1']);
+    const single = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': alone('5.7.1') });
+    const one = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), alone('5.7.2')));
+    await writePins(single, { ecosystem: 'npm', name: 'semver', from: '5.7.1', to: '5.7.2,6.0.1' }, tools(one.pnpm));
+    expect(one.runs).toEqual([['update', 'semver', '--depth', 'Infinity']]);
+    expect(lockedVersions(read(single, 'pnpm-lock.yaml'), 'semver')).toEqual(['5.7.2']);
+    // Two copies, one with a fix on its line and one whose fix is a major away.
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': TWICE('5.7.1', '7.5.1') });
+    const { pnpm, runs } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), TWICE('5.7.1', '7.5.2')));
+    await writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '6.0.1,7.5.2' }, tools(pnpm));
+    expect(runs).toEqual([['update', 'semver', '--depth', 'Infinity']]);
+    expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'semver')).toEqual(['5.7.1', '7.5.2']);
+  });
+
   it('refuses a target with no copy on its line, and one that is not a version', async () => {
     const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': TWICE('5.7.1', '7.5.1') });
     const { pnpm, runs } = fakePnpm(() => {});
     await expect(
-      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '6.0.1,7.5.2' }, tools(pnpm)),
+      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '6.0.1,8.0.0' }, tools(pnpm)),
     ).rejects.toThrow('semver is at no version on the line of 6.0.1: 5.7.1, 7.5.1.');
+    await expect(
+      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1', to: '6.0.1,8.0.0' }, tools(pnpm)),
+    ).rejects.toThrow('semver is at no version on the line of 6.0.1: 5.7.1.');
     await expect(
       writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '5.7.2,latest' }, tools(pnpm)),
     ).rejects.toThrow('latest is not a version');

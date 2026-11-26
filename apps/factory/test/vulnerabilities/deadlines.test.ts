@@ -439,6 +439,232 @@ describe('an image’s fix', () => {
     expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim', 'digest node:24.23.0-trixie-slim']);
   });
 
+  describe('that must be better than the pin', () => {
+    type Severe = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+    /** A report with each finding at its severity, as Trivy rates it. */
+    const rated = (created: string, found: { package: string; advisory: string; severity: Severe }[]): TrivyReport => ({
+      Metadata: { ImageID: 'sha256:image', ImageConfig: { created } },
+      Results: [
+        {
+          Class: 'os-pkgs',
+          Type: 'debian',
+          Vulnerabilities: found.map((f) => ({
+            PkgName: f.package,
+            VulnerabilityID: f.advisory,
+            Severity: f.severity,
+          })),
+        },
+      ],
+    });
+    const other = (advisory: string, severity: Severe) => ({ package: 'libother', advisory, severity });
+    const NEWEST = 'node:24.23.0-trixie-slim';
+    const NO_BETTER = 'No release read for node 24.22.1-trixie-slim is better than the pin';
+
+    it('is not the newest when that has a Critical the pin has not: the newest below it that is better', async () => {
+      const { fixes, asked, lines } = await judge({
+        findings: [finding],
+        alerts,
+        tags: { node: [...tags.node, '24.22.4-trixie-slim', '24.22.5-trixie-slim', '24.22.0-trixie-slim'] },
+        images: {
+          // Rated Critical by its publisher alone, as a finding of the scan's would be.
+          [NEWEST]: {
+            ...imageReport('2026-11-01T00:00:00Z'),
+            Results: [
+              {
+                Type: 'debian',
+                Vulnerabilities: [
+                  {
+                    PkgName: 'libother',
+                    VulnerabilityID: 'CVE-2099-29001',
+                    Severity: 'LOW',
+                    DataSource: { ID: 'debian' },
+                    VendorSeverity: { debian: 4 },
+                  },
+                ],
+              },
+            ],
+          },
+          'node:24.22.5-trixie-slim': rated('2026-10-28T00:00:00Z', [other('CVE-2099-29002', 'MEDIUM')]),
+        },
+      });
+      expect(asked).toEqual([
+        'tags node',
+        `image ${NEWEST}`,
+        'image node:24.22.5-trixie-slim',
+        'digest node:24.22.5-trixie-slim',
+      ]);
+      expect(fixes[0]?.target).toMatchObject({ kind: 'image', tag: '24.22.5-trixie-slim' });
+      expect(fixes[0]?.day).toBe(at('2026-10-28T00:00:00Z'));
+      expect(lines.join('\n')).not.toContain(NO_BETTER);
+    });
+
+    it('is none where a release has not the finding and none is better, said by the pin’s name', async () => {
+      // As many Highs as the pin: another advisory in place of the one it clears.
+      const world = {
+        findings: [finding],
+        alerts,
+        tags,
+        images: { [NEWEST]: rated('2026-11-01T00:00:00Z', [other('CVE-2099-29003', 'HIGH')]) },
+      };
+      const { fixes, rows, lines } = await judge(world);
+      expect(fixes[0]).toBeUndefined();
+      expect(rows[0]?.bucket).toBe('none');
+      expect(lines.filter((line) => line.includes(NO_BETTER))).toHaveLength(1);
+      // With fewer Criticals it is better, whatever its Highs.
+      const critical = os({ advisory: 'CVE-2099-20009', severity: 'CRITICAL' });
+      const fewer = await judge({
+        ...world,
+        findings: [finding, critical],
+        alerts: [...alerts, alertOf(critical, '2026-10-01T00:00:00Z')],
+        images: {
+          [NEWEST]: rated('2026-11-01T00:00:00Z', [
+            other('CVE-2099-29003', 'HIGH'),
+            other('CVE-2099-29004', 'HIGH'),
+            other('CVE-2099-29005', 'HIGH'),
+          ]),
+        },
+      });
+      expect(fewer.fixes.map((fix) => fix?.target.kind)).toEqual(['image', 'image']);
+    });
+
+    it('does not keep the last run’s fix for a pin whose releases it finds no better', async () => {
+      const first = await judge({
+        findings: [finding],
+        alerts,
+        tags,
+        images: { [NEWEST]: imageReport('2026-11-03T00:00:00Z') },
+      });
+      expect(first.fixes[0]?.target.kind).toBe('image');
+      const second = await judge(
+        {
+          findings: [finding],
+          state: first.kept(),
+          tags,
+          images: { [NEWEST]: rated('2026-11-03T00:00:00Z', [other('CVE-2099-29003', 'HIGH')]) },
+        },
+        NOW + DAY,
+      );
+      expect(second.fixes[0]).toBeUndefined();
+      expect(second.rows[0]?.due).toBeUndefined();
+    });
+
+    it('tries three releases at most, newest first, and never the pin’s own tag below a newer one', async () => {
+      const worse = rated('2026-11-01T00:00:00Z', [other('CVE-2099-29006', 'CRITICAL')]);
+      const { fixes, asked } = await judge({
+        findings: [finding],
+        alerts,
+        tags: {
+          node: [...tags.node, '24.22.2-trixie-slim', '24.22.3-trixie-slim', '24.22.4-trixie-slim'],
+        },
+        images: {
+          [NEWEST]: worse,
+          'node:24.22.4-trixie-slim': worse,
+          'node:24.22.3-trixie-slim': worse,
+          'node:24.22.2-trixie-slim': imageReport('2026-10-20T00:00:00Z'),
+        },
+      });
+      expect(asked).toEqual([
+        'tags node',
+        `image ${NEWEST}`,
+        'image node:24.22.4-trixie-slim',
+        'image node:24.22.3-trixie-slim',
+      ]);
+      expect(fixes[0]).toBeUndefined();
+    });
+
+    it('counts neither the pin’s excepted findings nor the same in a candidate', async () => {
+      const excepted = os({ advisory: 'CVE-2099-20008' });
+      const world = (left: Finding[]) => ({
+        findings: [finding, excepted],
+        excepted: left,
+        alerts: [...alerts, alertOf(excepted, '2026-10-01T00:00:00Z')],
+        tags,
+        // The newest still has the excepted one, and nothing else.
+        images: {
+          [NEWEST]: rated('2026-11-01T00:00:00Z', [{ ...excepted, severity: 'HIGH' }, other('CVE-2099-29007', 'HIGH')]),
+        },
+      });
+      // Excepted, it is in neither count: one High against one, and no better.
+      expect((await judge(world([excepted]))).fixes[0]).toBeUndefined();
+      // Not excepted, it is in both: two Highs against two, and no better either; with one fewer, better.
+      expect((await judge(world([]))).fixes[0]).toBeUndefined();
+      const clean = await judge({
+        ...world([excepted]),
+        images: { [NEWEST]: rated('2026-11-01T00:00:00Z', [{ ...excepted, severity: 'HIGH' }]) },
+      });
+      expect(clean.fixes[0]?.target.kind).toBe('image');
+    });
+
+    it('gives a pin with neither a Critical nor a High no fix, and reads its newest alone', async () => {
+      const medium = os({ severity: 'MEDIUM' });
+      const { fixes, asked, lines } = await judge({
+        findings: [medium],
+        alerts: [alertOf(medium, '2026-10-01T00:00:00Z')],
+        tags: { node: [...tags.node, '24.22.5-trixie-slim'] },
+        images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') },
+      });
+      expect(fixes[0]).toBeUndefined();
+      expect(asked).toEqual(['tags node', `image ${NEWEST}`]);
+      expect(lines.join('\n')).toContain(NO_BETTER);
+    });
+  });
+
+  describe('kept from the last run', () => {
+    const NEWEST = 'node:24.23.0-trixie-slim';
+    const first = () =>
+      judge({ findings: [finding], alerts, tags, images: { [NEWEST]: imageReport('2026-11-03T00:00:00Z') } });
+
+    it('is dropped once its registry no longer lists its tag, and the log names it', async () => {
+      const kept = (await first()).kept();
+      // The release was pulled: the pin's own tag is the line's newest again, and has the finding.
+      const second = await judge(
+        {
+          findings: [finding],
+          state: kept,
+          tags: { node: ['24.22.1-trixie-slim'] },
+          images: { 'node:24.22.1-trixie-slim': imageReport('2026-10-01T00:00:00Z', [finding]) },
+        },
+        NOW + DAY,
+      );
+      expect(second.fixes[0]).toBeUndefined();
+      expect(second.rows[0]?.bucket).toBe('none');
+      expect(second.lines.join('\n')).toContain(`${NEWEST} is no longer listed by its registry`);
+      expect(moves(second.judged, { repository: REPOSITORY, app: false, now: NOW + DAY })).toEqual([]);
+    });
+
+    it('stands while its tag is listed, and while its registry does not answer', async () => {
+      const run = await first();
+      const again = {
+        findings: [finding],
+        state: run.kept(),
+        tags,
+        images: { [NEWEST]: imageReport('2026-11-09T00:00:00Z', [finding]) },
+      };
+      expect((await judge(again, NOW + DAY)).fixes[0]).toEqual(run.fixes[0]);
+      // The tags cannot be read: the result keeps what it had, and the source is named as any that did not answer.
+      const { sources } = sourcesOf(again);
+      const silent: Sources = {
+        ...sources,
+        tags: async () => {
+          throw new Error('the registry is down');
+        },
+      };
+      const handoff: Handoff = {
+        repository: REPOSITORY,
+        started: new Date(NOW).toISOString(),
+        cache: '/nowhere',
+        minimumReleaseAge: undefined,
+        findings: [finding],
+        excepted: [],
+        targets: [LOCKFILE, IMAGE],
+        kubeVersion: undefined,
+      };
+      const judged = await assess(handoff, silent, NOW + DAY);
+      expect(judged.fixes[0]).toEqual(run.fixes[0]);
+      expect(judged.missed.map((each) => each.source)).toEqual(['The tags of node']);
+    });
+  });
+
   describe('of ours', () => {
     const OURS = `ghcr.io/example/factory@sha256:${'c'.repeat(64)}`;
     const RUNTIME = `gcr.io/distroless/nodejs24-debian13:nonroot@sha256:${'d'.repeat(64)}`;
@@ -1272,6 +1498,14 @@ describe('the parts', () => {
     expect(firstFixed('1.0.0', undefined)).toBeUndefined();
   });
 
+  it('never takes a pre-release for the first fixed version', () => {
+    expect(firstFixed('1.4.0', '1.5.0-rc.1, 2.0.0')).toBe('2.0.0');
+    expect(firstFixed('1.4.0', '1.5.0-rc.1, 1.5.0')).toBe('1.5.0');
+    expect(firstFixed('1.4.0', '1.5.0-rc.1')).toBeUndefined();
+    // A build is no pre-release.
+    expect(firstFixed('1.4.0', '1.5.0+build.2')).toBe('1.5.0+build.2');
+  });
+
   it('finds the newest tag on a line as ci-images.sh does', () => {
     const tags = [
       '24.21.0-alpine3.24',
@@ -1564,6 +1798,54 @@ describe('what fixes it', () => {
         renders: { ...base.renders, 'example@13.8.0': render('2.14.2') },
       });
       expect(fixes[0]?.target).toEqual({ kind: 'chart', chart: 'example', version: '13.7.0', major: false });
+    });
+
+    it('is no chart whose image is no better than the pin’s, and none at all where none is better', async () => {
+      const finding = inChart();
+      const high = (advisory: string): TrivyReport => ({
+        ...imageReport('2026-10-10T00:00:00Z'),
+        Results: [
+          { Type: 'debian', Vulnerabilities: [{ PkgName: 'libother', VulnerabilityID: advisory, Severity: 'HIGH' }] },
+        ],
+      });
+      // The major's newest has as many Highs as the pin: the next major's, which is better, is the fix.
+      const base = world(finding, {
+        'quay.io/example/sidecar:2.14.1': high('CVE-2099-29010'),
+        'quay.io/example/sidecar:2.14.3': imageReport('2026-10-15T00:00:00Z'),
+      });
+      const next = await judge(base);
+      expect(next.fixes[0]?.target).toEqual({ kind: 'chart', chart: 'example', version: '14.3.1', major: true });
+      // None better on any major: no fix, said by the chart's name.
+      const none = await judge({
+        ...base,
+        images: { ...base.images, 'quay.io/example/sidecar:2.14.3': high('CVE-2099-29011') },
+      });
+      expect(none.fixes[0]).toBeUndefined();
+      expect(none.lines.join('\n')).toContain(
+        'No release read for the chart example 13.2.7, for quay.io/example/sidecar is better than the pin',
+      );
+    });
+
+    it('keeps the last run’s chart only while the chart’s repository lists that version', async () => {
+      const finding = inChart();
+      const base = world(finding, { 'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z') });
+      const first = await judge(base);
+      expect(first.fixes[0]?.target).toMatchObject({ kind: 'chart', version: '13.7.0' });
+      // The image has the finding again: the fix stands while its version is listed, and not once it is gone.
+      const again = {
+        ...base,
+        alerts: [],
+        state: first.kept(),
+        images: { 'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z', [finding]) },
+        renders: { 'example@13.7.0': render('2.14.1') },
+      };
+      expect((await judge(again, NOW + DAY)).fixes[0]).toEqual(first.fixes[0]);
+      const pulled = await judge(
+        { ...again, charts: { example: base.charts.example.filter((each) => each.version !== '13.7.0') } },
+        NOW + DAY,
+      );
+      expect(pulled.fixes[0]).toBeUndefined();
+      expect(pulled.lines.join('\n')).toContain('the chart example 13.7.0 is no longer listed by its registry');
     });
 
     it('is a value’s pin when a values file pins the image: the image moves, on its line', async () => {

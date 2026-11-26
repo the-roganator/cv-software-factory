@@ -21,7 +21,9 @@
  *   mise pins, from the day the newest release in its range without the finding is that old. For anything else in an
  *   image (an operating system's package, a binary it ships), from the creation of the newest image on the line of the pin that brings it (the runtime stage of its Dockerfile, for an
  *   image of ours), found as `scripts/ci-images.sh`'s `newest` finds it, or the tag's current image for a tag that is
- *   not a version, once that image no longer has the finding; an image that runs Node only once the Node it
+ *   not a version, once that image no longer has the finding and is better than the pin (`fewer`: fewer Criticals, or
+ *   as many and fewer Highs, the excepted left out of both), or of the newest below it on the line that is, three
+ *   tried at most; an image that runs Node only once the Node it
  *   runs is one mise may install, the release `mise.toml` pins or a later one as old as its `minimum_release_age`, as
  *   the pin step moves Node with it. An image that arrives only with a k3s release is
  *   installable from the day the first k3s release after the pin on its Kubernetes minor (its node image's tags) was
@@ -30,7 +32,10 @@
  *   several versions is installable once every copy's fix is, and Node's fix is a release on the major installed. Only
  *   an image with such a finding that Trivy says is fixed has its line's newest scanned, each once, and nothing is
  *   uploaded for it; a newest that gives no time it was made (a reproducible build says 1970) is installable from the
- *   day the scan first saw it without the finding, which the state keeps. While no fix is installable there is no
+ *   day the scan first saw it without the finding, which the state keeps. A chart's version is a fix on the same
+ *   terms: the image it runs has not the finding and is better than the pin's. Where a release has not the finding
+ *   and none is better, there is no fix that day, the last run's is not kept, and the log names the pin. A fix kept
+ *   from the last run whose release its registry no longer lists is dropped. While no fix is installable there is no
  *   deadline.
  * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
  *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
@@ -107,6 +112,7 @@ import {
   type Handoff,
   imagesIn,
   PULL_WAITS,
+  publisherOf,
   type ReadTarget,
   realTools,
   type TrivyReport,
@@ -128,7 +134,7 @@ import {
   type StateRoutine,
   seal,
 } from './state.ts';
-import { compareTags, compareVersions, majorOf } from './versions.ts';
+import { compareTags, compareVersions, isPrerelease, majorOf } from './versions.ts';
 
 export { compareVersions } from './versions.ts';
 
@@ -245,14 +251,25 @@ export function severityOf(finding: Pick<Finding, 'severity' | 'publisher'>): Se
   return publisher && SEVERITIES.indexOf(publisher) < SEVERITIES.indexOf(severity) ? publisher : severity;
 }
 
-/** The first fixed version above what is installed, from Trivy's list of fixed versions, or undefined. */
+/** Keeps the higher of two severities under a key. */
+function worst(rated: Map<string, Severity>, key: string, severity: Severity) {
+  const seen = rated.get(key);
+  if (seen === undefined || SEVERITIES.indexOf(severity) < SEVERITIES.indexOf(seen)) rated.set(key, severity);
+}
+
+/**
+ * The first fixed version above what is installed, from Trivy's list of fixed versions, or undefined. Never a
+ * pre-release, as a routine update's target never is: a fix one alone has is none yet.
+ */
 export function firstFixed(installed: string, fixed: string | undefined) {
   if (!fixed) return undefined;
   const [lowest] = installed.split(', ').filter(Boolean).sort(compareVersions);
   return fixed
     .split(/,\s*/)
     .map((version) => version.trim())
-    .filter((version) => /^v?\d/.test(version) && (!lowest || compareVersions(version, lowest) > 0))
+    .filter(
+      (version) => /^v?\d/.test(version) && !isPrerelease(version) && (!lowest || compareVersions(version, lowest) > 0),
+    )
     .sort(compareVersions)[0];
 }
 
@@ -448,6 +465,19 @@ const CHART_MAJORS = 3;
 /** How many versions of one chart's major, or of a tool's range, are tried for a fix, newest first, at most. */
 export const CANDIDATES = 4;
 
+/** How many tags of an image's line are tried for a fix, newest first, at most: each is a scan. */
+export const TRIED = 3;
+
+/** An image's Criticals and Highs, each package and advisory once. */
+export interface Worth {
+  critical: number;
+  high: number;
+}
+
+/** Whether a candidate is better than the pin, worst kind first: fewer Criticals, or as many and fewer Highs. */
+export const fewer = (candidate: Worth, pin: Worth) =>
+  candidate.critical < pin.critical || (candidate.critical === pin.critical && candidate.high < pin.high);
+
 /** A tool in mise.toml whose release brings a package into an image of ours, from where Trivy found it (`opt/pnpm/…`). */
 export function toolOf(path: string | undefined, tools: string[]) {
   const name = /^\/?opt\/([\w.-]+)\//.exec(path ?? '')?.[1];
@@ -511,6 +541,8 @@ export async function installable(
   log: (line: string) => void = () => {},
   now = Date.now(),
   kubeVersion?: string,
+  /** The alert key (sarif.ts) of each excepted result: left out of a pin's count, and of its candidates'. */
+  excepted: ReadonlySet<string> = new Set(),
 ) {
   const kinds = new Map(targets.map((target) => [target.key, target]));
   const at: (number | undefined)[] = findings.map(() => undefined);
@@ -549,12 +581,43 @@ export async function installable(
     found.add(has(finding.package, finding.advisory));
     byImage.set(identity(image), found);
   }
+  // What Trivy rated in each image the scan read, by the same key: each package and advisory with its severity, the
+  // higher of two; and those an exception excepts there. Node's own advisories are not Trivy's, and no candidate's
+  // report has them, so they are in neither count.
+  const ratedByImage = new Map<string, Map<string, Severity>>();
+  const exceptedByImage = new Map<string, Set<string>>();
+  for (const finding of findings) {
+    const image = kinds.get(finding.item)?.image;
+    if (!image || finding.type === 'node') continue;
+    const key = has(finding.package, finding.advisory);
+    const rated = ratedByImage.get(identity(image)) ?? new Map<string, Severity>();
+    worst(rated, key, severityOf(finding));
+    ratedByImage.set(identity(image), rated);
+    if (!excepted.has(alertKey(finding))) continue;
+    exceptedByImage.set(identity(image), (exceptedByImage.get(identity(image)) ?? new Set<string>()).add(key));
+  }
+  /** An image's Criticals and Highs, from what Trivy rated in it, without those excepted at the pin given. */
+  const worth = (rated: Map<string, Severity> | undefined, pin: string): Worth => {
+    const left = exceptedByImage.get(identity(pin));
+    const count = (severity: Severity) =>
+      [...(rated ?? [])].filter(([key, its]) => its === severity && !left?.has(key)).length;
+    return { critical: count('CRITICAL'), high: count('HIGH') };
+  };
+  /** Whether a candidate's image is better than the pin it would replace (`fewer`). */
+  const betterThan = (pin: string, candidate: { rated: Map<string, Severity> }) =>
+    fewer(worth(candidate.rated, pin), worth(ratedByImage.get(identity(pin)), pin));
+  // The pins a release no longer has a finding of, and none is better than: named in the log, and their results.
+  const worse = new Set<string>();
+  const refused = new Set<Finding>();
   const tools = miseTools(sources.file('mise.lock'));
   // npm: each package and version once; each repository's tags once; each line's newest once.
   const npm = new Map<string, Promise<string | undefined>>();
   const tags = new Map<string, Promise<string[]>>();
   let releases: Promise<{ version: string; date: string }[]> | undefined;
-  const newest = new Map<string, Promise<{ created?: number | undefined; has: Set<string> }>>();
+  const newest = new Map<
+    string,
+    Promise<{ created?: number | undefined; has: Set<string>; rated: Map<string, Severity> }>
+  >();
   const pins = new Map<string, { image: string; dockerfile: string; line: number } | undefined>();
   /** The pin whose line brings a target's image findings: its own, or its Dockerfile's runtime stage for one of ours. */
   const stageOf = (target: ReadTarget) => {
@@ -667,10 +730,16 @@ export async function installable(
     // A reproducible build (distroless's) says it was made in 1970: it gives no day of its own.
     if (Number.isNaN(created) || created < EARLIEST) created = undefined;
     const set = new Set<string>();
+    const rated = new Map<string, Severity>();
     for (const result of report.Results ?? [])
       for (const v of result.Vulnerabilities ?? [])
-        if (v.PkgName && v.VulnerabilityID) set.add(has(v.PkgName, v.VulnerabilityID));
-    return { created, has: set };
+        if (v.PkgName && v.VulnerabilityID) {
+          set.add(has(v.PkgName, v.VulnerabilityID));
+          // Rated as a finding of the scan's is: the higher of Trivy's and the publisher's.
+          const severity = SEVERITIES.includes(v.Severity as Severity) ? (v.Severity as Severity) : 'UNKNOWN';
+          worst(rated, has(v.PkgName, v.VulnerabilityID), severityOf({ severity, publisher: publisherOf(v) }));
+        }
+    return { created, has: set, rated };
   };
   const undated = new Set<string>();
   const digests = new Map<string, Promise<string>>();
@@ -679,6 +748,54 @@ export async function installable(
     if (!once) {
       once = asking(`The digest of ${reference}`, () => sources.digest(reference));
       digests.set(reference, once);
+    }
+    return once;
+  };
+  /**
+   * The tags a pin's fix is looked for at, newest first: what its tag names now (`newestOf`), then for a version the
+   * tags below that on its line and above the pin's own, `TRIED` in all at most.
+   */
+  const candidatesOf = async (pin: string) => {
+    const first = await newestOf(pin, listTags);
+    if (!first) return [];
+    const { repository, tag = '' } = nameAndTag(pin);
+    const line = first.version ? tagLine(tag) : undefined;
+    if (!line) return [first];
+    const below = (await listTags(repository))
+      .filter((each) => line.pattern.test(each) && compareTags(each, first.tag) < 0 && compareTags(each, tag) > 0)
+      .sort((a, b) => compareTags(b, a))
+      .slice(0, TRIED - 1);
+    return [first, ...below.map((each) => ({ reference: `${repository}:${each}`, tag: each, version: true }))];
+  };
+  type Scanned = Awaited<ReturnType<typeof scanned>>;
+  type Candidate = NonNullable<Awaited<ReturnType<typeof newestOf>>>;
+  const picks = new Map<
+    string,
+    Promise<{ latest: Candidate; image: Scanned; tried: Scanned[]; better: boolean } | undefined>
+  >();
+  /**
+   * The image a pin's fix is: the newest of its candidates that is better than the pin, each pin once. Where none is,
+   * the newest, marked so, with every image tried. A pin with neither a Critical nor a High has nothing a candidate
+   * could have fewer of, so only the newest is read.
+   */
+  const pickOf = (pin: string) => {
+    let once = picks.get(pin);
+    if (!once) {
+      once = (async () => {
+        const all = await candidatesOf(pin);
+        const own = worth(ratedByImage.get(identity(pin)), pin);
+        const candidates = own.critical || own.high ? all : all.slice(0, 1);
+        const tried: Scanned[] = [];
+        for (const latest of candidates) {
+          const image = await scanned(latest.reference, true);
+          tried.push(image);
+          if (betterThan(pin, image)) return { latest, image, tried, better: true };
+        }
+        const [latest] = candidates;
+        const [image] = tried;
+        return latest && image ? { latest, image, tried, better: false } : undefined;
+      })();
+      picks.set(pin, once);
     }
     return once;
   };
@@ -752,8 +869,9 @@ export async function installable(
     return listed;
   };
   /**
-   * The newest chart on the pinned major whose rendering runs a copy of the image without the finding, or the first
-   * later major's newest that does, marked a major; dated from the chart's publication.
+   * The newest chart on the pinned major whose rendering runs a copy of the image without the finding that is better
+   * than the pin's (`fewer`), or the first later major's newest that does, marked a major; dated from the chart's
+   * publication. Where a copy has not the finding and none is better, there is none, and the log names the chart.
    */
   const chartFix = async (target: ReadTarget, finding: Finding) => {
     const chart = target.chart;
@@ -772,6 +890,7 @@ export async function installable(
       if (its < pinnedMajor || its > pinnedMajor + BigInt(CHART_MAJORS)) continue;
       byMajor.set(its, [...(byMajor.get(its) ?? []), each]);
     }
+    let noBetter = false;
     for (const major of [...byMajor.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
       const newestFirst = (byMajor.get(major) ?? [])
         .sort((a, b) => compareVersions(b.version, a.version))
@@ -783,7 +902,9 @@ export async function installable(
         if (!reference || sameImage(reference, target.image ?? '')) continue;
         const image = await scanned(reference, false);
         const created = time(candidate.created);
-        if (!image.has.has(has(finding.package, finding.advisory)) && !Number.isNaN(created))
+        if (image.has.has(has(finding.package, finding.advisory)) || Number.isNaN(created)) continue;
+        if (!betterThan(target.image ?? '', image)) noBetter = true;
+        else
           return {
             at: created,
             target: {
@@ -794,6 +915,10 @@ export async function installable(
             } as Target,
           };
       }
+    }
+    if (noBetter) {
+      worse.add(`the chart ${chart.chart} ${chart.version}, for ${repositoryOf(target.image ?? '')}`);
+      refused.add(finding);
     }
     return undefined;
   };
@@ -1004,9 +1129,16 @@ export async function installable(
       }
       return;
     }
-    const latest = await newestOf(pinOf(target) ?? '', listTags);
-    if (!latest) return;
-    const image = await scanned(latest.reference, true);
+    const pin = pinOf(target) ?? '';
+    const pick = await pickOf(pin);
+    if (!pick) return;
+    const { latest, image } = pick;
+    // No candidate better than the pin is no fix today: said by the pin's name where one no longer has the finding.
+    if (!pick.better && pick.tried.some((each) => !each.has.has(has(finding.package, finding.advisory)))) {
+      worse.add(`${repositoryOf(pin)} ${pinned(pin)}`);
+      refused.add(finding);
+      return;
+    }
     if (!image.has.has(has(finding.package, finding.advisory))) {
       // An image that runs Node brings its Node, which waits for mise as Node's own move does.
       const ready = target.kind !== 'k3s' ? await nodeReady(latest.reference) : 0;
@@ -1049,6 +1181,44 @@ export async function installable(
       `::warning::${source} could not be read (${why}): ${results} ${results === 1 ? 'result keeps' : 'results keep'} the fix the last run gave, and one with none has none today.`,
     );
   }
+  for (const name of [...worse].sort())
+    log(
+      `::warning::No release read for ${name} is better than the pin, by its Criticals and then its Highs, though one no longer has a finding of it: its findings have no fix today.`,
+    );
+  /**
+   * Whether a fix the last run kept for a result names a release its registry still lists: an image's tag, or k3s's
+   * release, among its repository's tags, and a chart's version among the chart's. Any other target is; and so is one
+   * whose registry does not answer, which costs a result nothing it had. One no longer listed is named in the log,
+   * each once.
+   */
+  const gone = new Set<string>();
+  const listed = async (index: number, kept: Target) => {
+    const finding = findings[index];
+    const target = finding ? kinds.get(finding.item) : undefined;
+    if (!target) return true;
+    let name: string;
+    try {
+      if (kept.kind === 'image') {
+        const { repository } = nameAndTag(pinOf(target) ?? '');
+        if (!repository || (await listTags(repository)).includes(kept.tag)) return true;
+        name = `${repository}:${kept.tag}`;
+      } else if (kept.kind === 'k3s') {
+        if ((await listTags(K3S_IMAGE)).includes(kept.release.replace('+k3s', '-k3s'))) return true;
+        name = `k3s ${kept.release}`;
+      } else if (kept.kind === 'chart' && target.chart) {
+        if ((await chartListed(target.chart)).some((each) => each.version === kept.version)) return true;
+        name = `the chart ${kept.chart} ${kept.version}`;
+      } else return true;
+    } catch (error) {
+      if (error instanceof Unanswered) return true;
+      throw error;
+    }
+    if (!gone.has(name)) {
+      gone.add(name);
+      log(`::warning::${name} is no longer listed by its registry: the fix the last run kept there is dropped.`);
+    }
+    return false;
+  };
   for (const repository of dropped)
     log(
       `::warning::The last k3s release read after the pin no longer lists ${repository}: its findings have no fix to count from.`,
@@ -1067,7 +1237,17 @@ export async function installable(
     rendered,
     k3s: k3sRelease,
   };
-  return { at, fixes, places, looked: lines, lookups, missed };
+  return {
+    at,
+    fixes,
+    places,
+    looked: lines,
+    lookups,
+    missed,
+    /** Each result whose pin's releases were refused as no better than the pin, by its index. */
+    refused: findings.map((each) => refused.has(each)),
+    listed,
+  };
 }
 
 /**
@@ -1391,7 +1571,8 @@ function statedIn(findings: Finding[], state: State) {
 /**
  * Each result's fix: its target, and the earlier of the day the sources give and the day its alert states, so the day
  * never moves forward. Where this run finds no fix installable but the alert states one, that fix stands: once a fix
- * could be installed, the deadline it started stands, and the next message keeps its day. A fix not yet installable
+ * could be installed, the deadline it started stands, and the next message keeps its day; `assess` gives none stated
+ * for a release its registry no longer lists, or one of a pin whose releases this run found no better than it. A fix not yet installable
  * (inside pnpm's wait) with none stated is none yet. A line no longer built is first seen on the first run that found
  * it so. A fix the grammar cannot write (fixes.ts) is none.
  */
@@ -1543,6 +1724,7 @@ export async function assess(
     ? carried(handoff, await kept, policy, log, now)
     : carried(handoff, {}, policy);
   const findings = carry.findings;
+  const excepted = new Set([...handoff.excepted, ...carry.excepted.keys()]);
   const [found, read] = await Promise.all([
     installable(
       findings,
@@ -1552,12 +1734,23 @@ export async function assess(
       log,
       now,
       handoff.kubeVersion,
+      excepted,
     ),
     kept,
   ]);
   if (read.state)
     log(`Each day read from the state run ${read.state.run} kept: ${read.state.findings.length} findings.`);
-  const states = read.state ? statedIn(findings, read.state) : stated(findings, read.ours, log);
+  const stood = read.state ? statedIn(findings, read.state) : stated(findings, read.ours, log);
+  // A fix the last run gave stands only where this run did not refuse the pin's releases as no better than the pin;
+  // and, where this run has none of its own to give, only while its registry still lists its release.
+  const states = await Promise.all(
+    stood.map(async (state, index) => {
+      if (!state || found.refused[index]) return undefined;
+      const day = found.at[index];
+      const own = found.fixes[index] !== undefined && day !== undefined && day <= now;
+      return own || (await found.listed(index, state.target)) ? state : undefined;
+    }),
+  );
   const seens = read.state
     ? seenIn(findings, handoff.targets, read.state, now)
     : seen(findings, handoff.targets, read.ours, now, time(handoff.started));
@@ -1566,13 +1759,7 @@ export async function assess(
   const installableAt = fixes.map((fix, index) =>
     fix && fix.target.kind !== 'unbuilt' ? fix.day : (found.at[index] ?? 0) > now ? found.at[index] : undefined,
   );
-  const judgedRows = rows(
-    findings,
-    new Set([...handoff.excepted, ...carry.excepted.keys()]),
-    installableAt,
-    seens,
-    now,
-  );
+  const judgedRows = rows(findings, excepted, installableAt, seens, now);
   const judged: Judged[] = judgedRows.map((row, index) => {
     const where = found.places[index] ?? {
       kind: 'third-party' as Kind,
@@ -2276,6 +2463,8 @@ export async function main(args: string[]): Promise<number> {
     repository: handoff.repository,
     app: handoff.repository === APP,
     now,
+    // The policy is `main`'s, whatever commit runs this: one from before it listed any has none.
+    benched: ((POLICY as { BENCHED?: typeof POLICY.BENCHED }).BENCHED ?? []).map((each) => each.package),
   };
   // The pins that are merely behind, each a routine move after the findings' (routine.ts): a pin a finding's move has
   // is not looked up. Nothing here fails the run, or changes what it judged.

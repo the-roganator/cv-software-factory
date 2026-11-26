@@ -108,6 +108,27 @@ export const ROUTINE: Routine = {
   ],
 };
 
+/** A package whose bump merges only after a bench run, and why. */
+export interface Benched {
+  /** The package, as its lockfile names it. */
+  package: string;
+  /** Why its bump waits for the bench. */
+  reason: string;
+}
+
+/**
+ * The packages a fix of which waits for Martin's bench run (`factory line bench`, docs/ON-THE-HOST.md#the-bench): the
+ * scan lists such a fix as an issue for him, with its deadline, and the App opens no pull request for it. A fix that
+ * clears a Critical does not wait: it is a move like any other. Its routine update is left alone (`ROUTINE.leave`).
+ */
+export const BENCHED: Benched[] = [
+  {
+    package: '@anthropic-ai/claude-agent-sdk',
+    reason:
+      'The SDK is the agent loop every step runs in, and the tests replay cassettes, so a change in it shows only on a live step.',
+  },
+];
+
 /** A day, `YYYY-MM-DD`, as a count of days, or undefined for anything else. */
 function day(text: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return undefined;

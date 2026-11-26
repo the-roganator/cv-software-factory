@@ -8,6 +8,10 @@
  * the furthest target (fixes.ts) any of them needs, and a line no longer built is a move apart; so one image in three
  * Dockerfiles is one move of three pins, and a package in two versions one move. A chart's images are the chart's own: two charts that run one image are two moves.
  *
+ * The furthest target is one within the pin's major, where any result has a fix there (`withinMajor`): a result only
+ * a major clears is then one the move leaves, and the major is listed on a later day, once the pin has moved. Where
+ * no result has a fix within the major, the move is the major.
+ *
  * A pin that is merely behind, with no finding (routine.ts's `Behind`), is a routine move: it clears nothing, has no
  * deadline and no results, and is listed after the findings' moves, by name, a lockfile's last in an order that says
  * nothing of its package, so a finding's move keeps the place it would have with none listed. One pin is one move: a pin a finding's move has gets no routine move that day. Routine
@@ -18,7 +22,10 @@
  * - `none`: nothing to move to (a line no longer built);
  * - `line`: the app's, which its line moves, an image's under `deploy/` among them;
  * - `cluster`: k3s, which only the cluster's own command applies;
- * - `issue`: what no pull request of the App's can write: a workflow's pin, with a finding or none;
+ * - `issue`: what no pull request of the App's can write: a workflow's pin, with a finding or none; and a fix of a
+ *   package whose bump waits for a bench run (`BENCHED`, policy/vulnerabilities.ts) that clears no Critical, marked
+ *   `bench`: an issue of its own with its deadline, never a part of the lockfile's shared pull request. One that
+ *   clears a Critical is a move like any other;
  * - `worker`: every other pin, which the GitHub worker moves: a chart among them, at one Application or several, or
  *   at the Makefile (Argo CD's); and every package of the lockfile, what mise pins (k3d, a tool's release), and an image that brings another pin with
  *   it (Node, or Playwright's library: the pin step's `moveImage`), which the pin step makes in the scan's run for the
@@ -97,6 +104,8 @@ export interface Move {
   lane: Lane;
   /** Whether it is a lockfile's: printed as "a package in <file>". */
   lockfile: boolean;
+  /** Set for a fix that waits for Martin's bench run (`Context.benched`): its lane is `issue`. */
+  bench?: true | undefined;
   /** The results it clears, by their fingerprints (sarif.ts): never printed. */
   results: string[];
 }
@@ -107,6 +116,11 @@ export interface Context {
   /** Whether it is the app's repository, whose moves its line makes. */
   app: boolean;
   now: number;
+  /**
+   * The packages whose bump merges only after a bench run (`BENCHED`, policy/vulnerabilities.ts): a fix of one that
+   * clears no Critical is lane `issue`. Absent, none is.
+   */
+  benched?: readonly string[] | undefined;
 }
 
 const zero = (): Counts => Object.fromEntries(SEVERITIES.map((s) => [s, 0])) as Counts;
@@ -168,9 +182,25 @@ const further = (a: Target, b: Target) => {
 };
 
 /**
+ * The results of one pin that its move clears. Where any has a fix within the pin's major, those alone: one only a
+ * major clears (a chart's next major, a package's version on a major no copy is at) is left, and its major is a later
+ * day's move, once the pin has moved. Where none has, all of them, and the move is the major.
+ */
+export function withinMajor(group: Judged[]): Judged[] {
+  const crosses = (each: Judged) => {
+    const target = each.finding.fix?.target;
+    if (target?.kind === 'chart') return target.major;
+    return target?.kind === 'version' && each.kind === 'lockfile' && isMajor(target, each.from);
+  };
+  const within = group.filter((each) => !crosses(each));
+  return within.length ? within : group;
+}
+
+/**
  * The furthest of the targets one pin's results need: moving there is the move. A pin's own target (an image, a chart, a
  * k3s release, a tool) is preferred to a bare version, which is Node's own fix in an image: the image's newer tag brings
  * it. Versions alone are joined, the highest on each major, so a package in two versions keeps a fix for each copy.
+ * The targets are those of the results the move clears (`withinMajor`).
  */
 export function furthest(targets: Target[]): Target | undefined {
   const pinned = targets.filter((target) => target.kind !== 'version');
@@ -224,7 +254,8 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
   for (const each of open) {
     const target = each.finding.fix?.target;
     if (!target) continue;
-    // One pin is one move, to the furthest target any of its results needs; a line no longer built is a move apart.
+    // One pin is one move, to the furthest target any of its results needs within its major, or to the major where
+    // none has a fix within it; a line no longer built is a move apart.
     const key = JSON.stringify([pinKey(each), target.kind === 'unbuilt']);
     const group = groups.get(key);
     if (group) group.push(each);
@@ -239,7 +270,8 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
     else byPin.set(key, [each]);
   }
   const out: Move[] = [];
-  for (const members of groups.values()) {
+  for (const group of groups.values()) {
+    const members = withinMajor(group);
     const first = members[0];
     const target = furthest(members.flatMap((each) => (each.finding.fix ? [each.finding.fix.target] : [])));
     if (!first || !target) continue;
@@ -266,6 +298,11 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
       results: members.map((each) => fingerprint(each.finding)),
     };
     move.lane = laneOf(move, new Set(members.map((each) => each.kind)), context);
+    // A benched package's fix waits for the bench run, as an issue of its own, unless it clears a Critical.
+    if (move.lockfile && context.benched?.includes(move.name) && move.lane !== 'none' && clears.CRITICAL === 0) {
+      move.lane = 'issue';
+      move.bench = true;
+    }
     out.push(move);
   }
   out.sort(
@@ -337,6 +374,12 @@ export interface PublicMove {
   lane: Lane;
   /** Whether it is a lockfile's, whose package, versions and lines are withheld: its name is "a package in <file>". */
   lockfile: boolean;
+  /**
+   * Set for a fix that waits for Martin's bench run (`factory line bench`): a package the policy lists as benched,
+   * clearing no Critical, in lane `issue`. Optional under the same `MOVES_VERSION`, as `totals.open` is: a file with
+   * no such move reads as it did.
+   */
+  bench?: true | undefined;
 }
 
 /**
@@ -429,6 +472,7 @@ export function publicMove(move: Move): PublicMove {
     newToday: move.newToday,
     lane: move.lane,
     lockfile: hidden,
+    ...(move.bench ? { bench: true as const } : {}),
   };
 }
 

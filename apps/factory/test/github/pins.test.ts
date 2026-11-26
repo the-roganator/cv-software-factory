@@ -398,6 +398,20 @@ describe('the pin watch’s issues', () => {
     expect(cd?.body).toContain('**Deadline** 2026-11-18T06:00:00Z.');
   });
 
+  it('says a move that waits for the bench waits for Martin’s bench run, with its deadline', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const moves = factoryMoves().map((each) =>
+      each.lockfile && each.lane === 'issue' ? { ...each, bench: true as const } : each,
+    );
+    await harness(repo, () => day(scanned, moves)).pass();
+    const issue = repo.issues.find((i) => i.title.startsWith('Move a package in pnpm-lock.yaml'));
+    expect(issue?.body).toContain(
+      'Its bump merges only after a bench run on Claude (`factory line bench`, docs/ON-THE-HOST.md#the-bench), which is yours to start',
+    );
+    expect(issue?.body).toMatch(/\*\*Deadline\*\* \d{4}-\d{2}-\d{2}T/);
+  });
+
   it('updates an issue rather than opening another, and closes it when its move is gone', async () => {
     const repo = new FakeRepo(FILES);
     const scanned = repo.main;

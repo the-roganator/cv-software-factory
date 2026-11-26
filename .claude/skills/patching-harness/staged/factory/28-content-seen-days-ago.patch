@@ -1,0 +1,74 @@
+# Test 28 and every test that stands on an image's or a chart's fix: a reset deletes the scan's state, so the content of every fix is first seen at the next scan and waits a day. With the repository variable SCRATCH_CONTENT_SEEN_DAYS_AGO set, the scan writes each such sighting in its state as that many days old, so the scan after it lists the moves; unset, the step does not run. The step holds the scan's key, to seal the state again, so the workflows' test of which steps hold it names this one.
+diff --git a/.github/workflows/vulnerabilities.yml b/.github/workflows/vulnerabilities.yml
+index cbfc9071..47022cc7 100644
+--- a/.github/workflows/vulnerabilities.yml
++++ b/.github/workflows/vulnerabilities.yml
+@@ -343,6 +343,45 @@ jobs:
+           name: moves
+           path: ${{ runner.temp }}/scan/moves.json
+           if-no-files-found: error
++      # The scratch copies alone, for the patching tests: with the repository variable SCRATCH_CONTENT_SEEN_DAYS_AGO set
++      # (a whole number of days), each fix's content the state has seen for less than that long is written as first
++      # seen that many days ago, and the state sealed again for this run. A reset of a copy deletes its scan's state, so
++      # every image's digest and chart's version is first seen at the next scan and waits its day; the scan after it
++      # reads this state and lists them, and the tests read both. With the variable unset, as at every other time, the
++      # step does not run.
++      - name: Put the state’s sightings back for the patching tests
++        if: ${{ steps.scan.outputs.sarif == 'true' && vars.SCRATCH_CONTENT_SEEN_DAYS_AGO != '' }}
++        env:
++          SCAN_STATE_KEY: ${{ secrets.SCAN_STATE_KEY }}
++          DAYS: ${{ vars.SCRATCH_CONTENT_SEEN_DAYS_AGO }}
++        run: |
++          node --input-type=module - "$RUNNER_TEMP/scan/state.sealed" <<'JS'
++          import { readFileSync, writeFileSync } from 'node:fs';
++          import { resolve } from 'node:path';
++          import { pathToFileURL } from 'node:url';
++          const state = resolve('factory/apps/factory/src/vulnerabilities/state.ts');
++          const { open, seal, readKey } = await import(pathToFileURL(state).href);
++          const file = process.argv[2];
++          const days = Number(process.env.DAYS);
++          if (!Number.isInteger(days) || days < 1 || days > 30)
++            throw new Error('SCRATCH_CONTENT_SEEN_DAYS_AGO is a whole number of days, 1 to 30');
++          const key = readKey(process.env.SCAN_STATE_KEY ?? '');
++          const kept = open(readFileSync(file), key, process.env.GITHUB_REPOSITORY, process.env.GITHUB_RUN_ID);
++          const span = days * 86_400_000;
++          const back = (day) => new Date(Date.parse(day) - span).toISOString().replace(/\.\d+Z$/, 'Z');
++          let put = 0;
++          // A fix's content, on its pin: when it was first seen, and the day it is installable, where that came after.
++          for (const finding of kept.findings) {
++            for (const wait of finding.waits ?? []) {
++              if (Date.now() - Date.parse(wait.seen) >= span) continue;
++              if (Date.parse(wait.day) > Date.parse(wait.seen)) wait.day = back(wait.day);
++              wait.seen = back(wait.seen);
++              put += 1;
++            }
++          }
++          writeFileSync(file, seal(kept, key));
++          console.log(`Put ${put} sightings ${days} days back in the state, for the patching tests.`);
++          JS
+       # The state the next run and the GitHub worker read (state.ts), sealed: uploaded before the results, so no upload
+       # is without one. Kept as long as GitHub keeps an artifact; a scan that finds none reads the alerts.
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+diff --git a/scripts/workflows.test.ts b/scripts/workflows.test.ts
+index 7d4f78d1..bd2f538c 100644
+--- a/scripts/workflows.test.ts
++++ b/scripts/workflows.test.ts
+@@ -236,7 +236,9 @@ describe('every workflow', () => {
+     expect(job.steps?.[0]?.run).toContain('The scan runs only on a push to the default branch');
+     expect(job.env).toBeUndefined();
+     const steps = job.steps ?? [];
+-    const given = steps.filter((step) => JSON.stringify(step).includes('secrets.'));
++    // The scratch copies' own step, for the patching tests, holds the key too, to seal again the state it puts back.
++    const scratch = 'Put the state’s sightings back for the patching tests';
++    const given = steps.filter((step) => step.name !== scratch && JSON.stringify(step).includes('secrets.'));
+     expect(given).toHaveLength(1);
+     expect(given[0]?.env?.[SCAN_STATE_ENVIRONMENT.key]).toBe(expression(`secrets.${SCAN_STATE_ENVIRONMENT.key}`));
+     // That step runs one script of this repository's, from the sparse copy at the workflow's commit; the scanned
+@@ -250,6 +252,7 @@ describe('every workflow', () => {
+     expect(own?.with?.['sparse-checkout-cone-mode']).toBe(false);
+     for (const step of steps) {
+       if (step.uses?.startsWith('actions/checkout@')) expect(step.with?.['persist-credentials'], step.name).toBe(false);
++      if (step.name === scratch) continue;
+       for (const [, script] of (step.run ?? '').matchAll(/\bnode\s+(\S+)/g))
+         expect(script, step.name).toMatch(/^factory\/apps\/factory\/src\/vulnerabilities\//);
+       expect(step.run ?? '', step.name).not.toMatch(/(^|[\s;&|(])(\.\/)?scanned\/\S*(\s|$)/m);

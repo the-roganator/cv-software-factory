@@ -2,6 +2,7 @@
  * The patching tests (../TESTS.md), one entry each: what the harness looks for and what "deployed" means
  * for it. The list is Martin's; an entry here says only how the outcome is read from GitHub and the scratch cluster.
  */
+import { BOTH_REFUSED } from './decide.ts';
 
 export const FACTORY = 'the-roganator/cv-software-factory-scratch';
 export const APP = 'the-roganator/cv-worlds-worst-website-scratch';
@@ -194,8 +195,11 @@ export const ASKED_FOR_CHANGES = /Martin asked for changes/;
  * (pins.ts's `strayed`). words.test.ts holds them to the gate's own.
  */
 export const NOT_THE_MOVE = /\b(not|nor) a move: |main moved since the scan/i;
-/** GitHub's refusal of a push a ruleset forbids, to a branch or a tag (the `branches` and `tag main` rulesets). */
-export const RULESET_REFUSAL = /Cannot (update|create|delete) this (protected )?(ref|branch|tag)|rule violations?/i;
+/**
+ * N10's line when GitHub refused both pushes by the rulesets, the commit by `branches` and the tag by `tag main`, each
+ * judged by its own words (decide.ts's `rulesetsRefusal`): one refusal beside any other error does not begin so.
+ */
+export const RULESET_REFUSAL = new RegExp(`^${BOTH_REFUSED}: `);
 /** Two of Kyverno's four images, pinned in one file at one tag's text: the pair N9 crosses. */
 const KYVERNO = 'kyverno: reg.kyverno.io/kyverno/kyverno';
 const KYVERNO_PRE = 'kyverno: reg.kyverno.io/kyverno/kyvernopre';

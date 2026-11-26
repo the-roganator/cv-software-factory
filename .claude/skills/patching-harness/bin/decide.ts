@@ -937,6 +937,47 @@ export function waitsFault(
   return undefined;
 }
 
+// ── The rulesets' two refusals ──────────────────────────────────────────────────────────────────────────────────────
+
+/** GitHub's refusal of a commit a ruleset forbids on a branch, as `createCommitOnBranch` answers it. */
+export const COMMIT_REFUSED = /Cannot update this protected ref|Repository rule violations?/i;
+/** GitHub's refusal to create a ref a ruleset forbids: a 422, and not the 422 of a ref that is already there. */
+export const TAG_REFUSED = /\b422\b(?![\s\S]*already exists)/i;
+/** How N10's line begins when both pushes were refused, each by the rulesets: what the catalogue's test reads. */
+export const BOTH_REFUSED = 'refused by the rulesets, each in its own words';
+/**
+ * What N10's two pushes came to, from what GitHub said of each (nothing where one went through): `landed` when
+ * either went through; otherwise `refused`, which begins `BOTH_REFUSED` only when the App's commit to Martin's branch
+ * was refused in the `branches` ruleset's words and the tag `main` with the `tag main` ruleset's 422. Any other error
+ * of either (a token GitHub would not take, a head that moved, a tag left there) is no refusal by a ruleset, and the
+ * line names which. Both are quoted.
+ */
+export function rulesetsRefusal(o: {
+  branch: string;
+  commit: string | undefined;
+  tag: string | undefined;
+}): { refused: string } | { landed: string } {
+  const quote = (said: string) => said.replace(/\s+/g, ' ').trim().slice(0, 180);
+  const said = [
+    o.commit === undefined ? '' : `the commit was refused: ${quote(o.commit)}`,
+    o.tag === undefined ? '' : `the tag was refused: ${quote(o.tag)}`,
+  ].filter(Boolean);
+  const landed = [
+    o.commit === undefined ? `the App's commit to ${o.branch}` : '',
+    o.tag === undefined ? 'the tag `main`' : '',
+  ].filter(Boolean);
+  if (landed.length) return { landed: [`${landed.join(' and ')} went through`, ...said].join('; ') };
+  const other = [
+    COMMIT_REFUSED.test(o.commit ?? '') ? '' : 'the commit',
+    TAG_REFUSED.test(o.tag ?? '') ? '' : 'the tag',
+  ].filter(Boolean);
+  return {
+    refused: other.length
+      ? `${said.join('; ')}; no ruleset's refusal of ${other.join(' or of ')}`
+      : `${BOTH_REFUSED}: ${said.join('; ')}`,
+  };
+}
+
 // ── A move put back on main ─────────────────────────────────────────────────────────────────────────────────────────
 
 /**

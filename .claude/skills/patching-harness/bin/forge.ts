@@ -57,6 +57,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { APP, FACTORY } from './catalogue.ts';
+import { rulesetsRefusal } from './decide.ts';
 import { WORK as CLONES, SKILL } from './paths.ts';
 
 const WORK = join(CLONES, 'factory');
@@ -455,8 +456,9 @@ async function refusalOf(call: () => Promise<any>): Promise<string | undefined> 
 /**
  * N10: as the App, a commit to a branch Martin's login made outside the prefixes the rulesets leave the factory
  * (`forged/n10`), of a file the App may write, so only the ruleset can refuse it; and a tag `main`. What it prints
- * has `refused`, GitHub's words for each, when both were refused, and `landed` when either went through; a tag that
- * landed is taken off again as Martin, if GitHub lets him.
+ * has `landed` when either went through, and otherwise `refused`, GitHub's words for each, which says both were the
+ * rulesets' only when each was refused in its own words (decide.ts's `rulesetsRefusal`); a tag that landed is taken
+ * off again as Martin, if GitHub lets him.
  */
 async function forgeRulesets(head: string, branch: string, dry: boolean) {
   const file = 'deploy/base/postgres/kustomization.yaml';
@@ -501,22 +503,7 @@ async function forgeRulesets(head: string, branch: string, dry: boolean) {
   const tag = await refusalOf(() => github('POST', `/repos/${REPO}/git/refs`, { ref: 'refs/tags/main', sha: head }));
   if (tag === undefined)
     await refusalOf(() => github('DELETE', `/repos/${REPO}/git/refs/tags/main`, undefined, undefined, martin));
-  const landed = [
-    commit === undefined ? `the App's commit to ${branch}` : '',
-    tag === undefined ? 'the tag `main`' : '',
-  ].filter(Boolean);
-  const said = { pushedBy: 'app', at: new Date().toISOString() };
-  return landed.length
-    ? {
-        ...out,
-        ...said,
-        landed: `${landed.join(' and ')} went through${commit ? `; the commit was refused: ${commit.slice(0, 200)}` : ''}${tag ? `; the tag was refused: ${tag.slice(0, 200)}` : ''}`,
-      }
-    : {
-        ...out,
-        ...said,
-        refused: `the commit: ${(commit ?? '').slice(0, 260)}; the tag: ${(tag ?? '').slice(0, 260)}`,
-      };
+  return { ...out, pushedBy: 'app', at: new Date().toISOString(), ...rulesetsRefusal({ branch, commit, tag }) };
 }
 
 // ── N7 and N8: a workflow's pins ────────────────────────────────────────────────────────────────────────────────────

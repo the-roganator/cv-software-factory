@@ -4,11 +4,12 @@ import { issueOf, REVERTED, strayed } from '../../../../apps/factory/src/github/
 import { movesFile } from '../../../../apps/factory/src/vulnerabilities/moves.ts';
 import { day, FakeRepo, FILES, factoryMoves } from '../../../../apps/factory/test/github/pins-harness.ts';
 import { FACTORY_APP, type Facts, MARTIN, type PullRequest, route } from '../../../../scripts/review-routing.ts';
-import { APP, ASKED_FOR_CHANGES, FACTORY, NOT_THE_MOVE } from './catalogue.ts';
+import { APP, ASKED_FOR_CHANGES, FACTORY, NOT_THE_MOVE, RULESET_REFUSAL } from './catalogue.ts';
 import {
   OF_A_MOVE,
   queueWords,
   REVERTED_SAYS,
+  rulesetsRefusal,
   STOPPED_WAIT,
   SUPERVISED_WAIT,
   shownAs,
@@ -107,5 +108,46 @@ describe('the scan’s document, as the harness reads it', () => {
     const file = movesFile([], { repository: real(FACTORY), now: Date.parse('2026-11-26T06:00:00Z') });
     expect(Object.keys(file)).not.toContain(WAITING_KEY);
     expect(shownAs({ ...file }, 'postgres')).toBe('absent');
+  });
+});
+
+describe('GitHub’s words for the rulesets’ two refusals, as the harness reads them (N10)', () => {
+  const branch = 'forged/n10';
+  const commit = 'Repository rule violations found\n\nCannot update this protected ref.\n\n';
+  const tag =
+    'POST /repos/x/y-scratch/git/refs: 422 {"message":"Repository rule violations found\\n\\nCannot create ref due to creations being restricted.","status":"422"}';
+  const line = (o: { commit: string | undefined; tag: string | undefined }) => rulesetsRefusal({ branch, ...o });
+
+  it('passes only when each was refused in its own words, and quotes both', () => {
+    const both = line({ commit, tag });
+    expect(both).toEqual({ refused: expect.stringMatching(RULESET_REFUSAL) });
+    expect('refused' in both && both.refused).toContain('Cannot update this protected ref.');
+    expect('refused' in both && both.refused).toContain('Cannot create ref due to creations being restricted');
+  });
+
+  it('is no pass on one ruleset’s refusal beside any other error', () => {
+    // The commit refused by the ruleset, and the tag by a token GitHub would not take.
+    const unauthorised = line({ commit, tag: 'POST /repos/x/y-scratch/git/refs: 401 {"message":"Bad credentials"}' });
+    expect(unauthorised).toEqual({ refused: expect.stringContaining("no ruleset's refusal of the tag") });
+    expect('refused' in unauthorised && unauthorised.refused).not.toMatch(RULESET_REFUSAL);
+    // A tag left there by an earlier run is a 422 too, and no ruleset's.
+    const there = line({ commit, tag: 'POST /repos/x/y-scratch/git/refs: 422 {"message":"Reference already exists"}' });
+    expect('refused' in there && there.refused).not.toMatch(RULESET_REFUSAL);
+    // The tag refused, and the commit for a head that moved under it.
+    const moved = line({ commit: 'Expected branch to point to "aaa" but it did not. Pull and try again.', tag });
+    expect(moved).toEqual({ refused: expect.stringContaining("no ruleset's refusal of the commit") });
+    expect('refused' in moved && moved.refused).not.toMatch(RULESET_REFUSAL);
+  });
+
+  it('says which landed where either went through, with what was said of the other', () => {
+    expect(line({ commit: undefined, tag })).toEqual({
+      landed: expect.stringMatching(/^the App's commit to forged\/n10 went through; the tag was refused: /),
+    });
+    expect(line({ commit, tag: undefined })).toEqual({
+      landed: expect.stringMatching(/^the tag `main` went through; the commit was refused: /),
+    });
+    expect(line({ commit: undefined, tag: undefined })).toEqual({
+      landed: "the App's commit to forged/n10 and the tag `main` went through",
+    });
   });
 });

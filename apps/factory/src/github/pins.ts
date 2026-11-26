@@ -49,7 +49,11 @@
  *   it back. It is said once in the log and is one issue, as below; a move the pin step makes waits with the rest of
  *   its group, which the step makes whole. A `main` whose history no longer has the merge (one written again from an
  *   earlier commit) has had nothing undone on it, and the move is made.
- * - **A pull request with no move left** is closed, with a sentence, and so is the issue of a move that is gone.
+ * - **A pull request with no move left** is closed, with a sentence, and so is the issue of a move that is gone. A
+ *   move the scan holds for its content's day (`Moves.waiting`, why `content`) is not gone: the pull request that
+ *   carries it, and its issue, are left as they are for the scan that lists it again, said once in the log. One the
+ *   scan refused as no better than the pin is gone, and the close says so. A scan that does not say what waits is
+ *   read by its moves alone.
  * - **In the app's repository it keeps the issues alone** (`ISSUE_REPOS`): the app's moves are its line's, made from
  *   tickets, and no ticket is made for a move on a line no longer built (`none`), the one lane but `line` the scan
  *   gives an app's move (`laneOf`), so each is one issue there, opened, updated and closed as here. The watch reads
@@ -440,6 +444,16 @@ export function ownEdit(
 const runText = (moves: Moves) => `the scan of run [${moves.run.id}](${moves.run.url})`;
 /** The same, to start a sentence. */
 const RunText = (moves: Moves) => `T${runText(moves).slice(1)}`;
+
+/**
+ * The names of the pins the scan says wait (scanning.ts's `Moves.waiting`), by why: held for their content's day, or
+ * refused as no better than the pin. None where the scan does not say what waits: a move it does not list is then
+ * gone, as it ever was.
+ */
+export function heldBy(waiting: Moves['waiting']): { content: Set<string>; noBetter: Set<string> } {
+  const names = (why: string) => new Set((waiting ?? []).filter((each) => each.why === why).map((each) => each.name));
+  return { content: names('content'), noBetter: names('no-better') };
+}
 
 /** One move a pull request carries, and the edits it makes at its pins. */
 export interface Carried {
@@ -1466,9 +1480,26 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       const carries = carriedBy(pull.body);
       return carries.length > 0 && carries.every((name) => named.has(name));
     };
+    // A move the scan holds for its content's day is not gone: it lists again once the day has passed, so what stands
+    // for it stays as it is, neither closed today nor opened again tomorrow. One the scan refused, since no release
+    // read is better than the pin, is gone, and its close says that.
+    const held = heldBy(read.waiting);
     for (const pull of open) {
       if (keep.has(pull.head.ref) || !(every || own(pull))) continue;
-      const sentence = `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: \`main\` has moved its pins, or the scan has nothing left to move them for. Closed; the watch opens another if the scan lists one.`;
+      const carries = carriedBy(pull.body);
+      const waits = carries.filter((name) => held.content.has(name));
+      if (waits.length) {
+        say(
+          `held ${run} ${pull.number}`,
+          { number: pull.number, branch: pull.head.ref, moves: waits },
+          'the scan holds a move of this pull request for its content’s day: it is left open for the scan that lists it',
+        );
+        continue;
+      }
+      const refusedFor = carries.filter((name) => held.noBetter.has(name));
+      const sentence = refusedFor.length
+        ? `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: it read no release of ${refusedFor.map(code).join(' and ')} that is better than the pin, by its findings at each severity, so it lists no fix there today. Closed; the watch opens another if the scan lists one.`
+        : `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: \`main\` has moved its pins, or the scan has nothing left to move them for. Closed; the watch opens another if the scan lists one.`;
       await actions.closePullRequest(repo, pull.number, sentence);
       heads?.delete(repo, pull.head.ref);
       log.info({ repo, number: pull.number }, 'closed a pin pull request with no move left');
@@ -1500,6 +1531,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     }
     for (const [key, issue] of issues) {
       if (issue.state !== 'open' || wanted.has(key) || !(every || ownIssues.has(key))) continue;
+      // Its move held for its content's day: the issue stays for the scan that lists it again.
+      if ([...held.content].some((name) => segmentOf(name) === key)) continue;
       await actions.closeIssue(
         repo,
         issue.number,

@@ -318,6 +318,31 @@ describe('an image’s pin that is behind', () => {
     const dropped = await listed(world('c', day3.records, { gone: [digest('b')] }), NOW + 3.5 * DAY);
     expect(dropped.routine).toEqual([]);
     expect(dropped.listing.counts).toMatchObject({ waiting: 1, unread: 0 });
+    // The listing says the pin waits for its content, by the digest that comes due first, and when.
+    expect(dropped.listing.waits).toEqual([
+      {
+        kind: 'third-party',
+        name: 'example/image',
+        pins: [{ file: PINNED.file, line: PINNED.line }],
+        from: '2.17.0',
+        to: { kind: 'image', tag: '2.18.1', digest: digest('c') },
+        until: NOW + 4.5 * DAY,
+      },
+    ]);
+    // A tag still inside its own days waits for those, not for its content; and a move listed waits for nothing.
+    expect(day0.listing.waits).toBeUndefined();
+    expect(day3.listing.waits).toBeUndefined();
+    // A state written before it kept each digest's day has none: the tag has waited, and its content waits from now.
+    const old = day0.records.map(({ content: _, ...record }) => record);
+    const first = await listed(world('b', old), NOW + 3 * DAY);
+    expect(first.routine).toEqual([]);
+    expect(first.listing.waits).toEqual([
+      expect.objectContaining({
+        name: 'example/image',
+        to: { kind: 'image', tag: '2.18.1', digest: digest('b') },
+        until: NOW + 4 * DAY,
+      }),
+    ]);
     expect(dropped.records[0]?.content).toEqual([
       { target: `image 2.18.1@${digest('c')}`, seen: '2026-11-13T16:30:00Z' },
     ]);

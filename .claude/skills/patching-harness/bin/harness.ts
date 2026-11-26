@@ -511,14 +511,14 @@ interface Scan {
   createdAt: string;
   conclusion?: string;
   moves?: Move[];
-  /** What its `moves.json` lists as waiting, should it list any (decide.ts's `WAITING_KEY`). */
+  /** What its `moves.json` lists as waiting (decide.ts's `WAITING_KEY`); undefined for a scan that does not say. */
   waiting?: unknown;
 }
 /** A scan as decide.ts reads one: its id, its moves and what it says waits. */
 const fileOf = (scan: Scan): { id: number } & MovesFile => ({
   id: scan.id,
   ...(scan.moves ? { moves: scan.moves } : {}),
-  [WAITING_KEY]: scan.waiting,
+  ...(scan.waiting === undefined ? {} : { [WAITING_KEY]: scan.waiting }),
 });
 interface Move {
   name: string;
@@ -1892,10 +1892,16 @@ function verdict(state: State, test: Test): { pass: boolean; why: string; mark?:
   if (test.waits) {
     const move = test.waits.move;
     const [first, second] = [state.scan0, state.scan1];
+    // Every pull request of the App's this run read that carries the move, opened before the scan the run stands on.
+    const early = Object.values(state.seen)
+      .flatMap((each) => each?.pulls ?? [])
+      .filter((p) => second && p.carries?.includes(move) && Date.parse(p.createdAt) < Date.parse(second.createdAt))
+      .map((p) => p.number);
     return waitedVerdict({
       move,
       first: first?.moves ? { id: first.id, shown: shownAs(fileOf(first), move) } : undefined,
       second: second?.moves ? { id: second.id, listed: shownAs(fileOf(second), move) === 'listed' } : undefined,
+      early: [...new Set(early)],
     });
   }
   if (test.reverted) {

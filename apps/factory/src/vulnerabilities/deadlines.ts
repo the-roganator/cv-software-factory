@@ -42,6 +42,10 @@
  *   their publisher pushed last; where today's is too new, the newest the last runs found for the finding that has
  *   waited stands in, while its registry still lists its tag and serves its digest, or today's waits its day; and
  *   with no state to read the wait starts that day.
+ * - **A fix that exists and is no move today** is said in `moves.json`'s `waiting` (moves.ts), by its pin: one that
+ *   waits for its content, with its target and when it comes due, and one whose releases are no better than the pin
+ *   (`heldOf`); with each routine update of an image that waits for its content alone (routine.ts). The state names
+ *   each such result's place there, so the list is held to it as the moves are.
  * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
  *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
  *   first seen today. A rename keeps its clock: when an item is new to the list, and a finding of the same package and
@@ -79,7 +83,7 @@ import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { retried } from '../gates/retry.ts';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
 import { judge as excepting, type Policy } from './exceptions.ts';
-import { dayText, type Fix, type MoveTag, readFix, type Target, targetText, writable } from './fixes.ts';
+import { dayText, type Fix, type MoveTag, readFix, readTarget, type Target, targetText, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
 import { counted, dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
 import {
@@ -87,6 +91,7 @@ import {
   type Context,
   type Counts,
   type DayCounts,
+  type Held,
   type Judged,
   type Move,
   moves,
@@ -95,6 +100,7 @@ import {
   pinsOf,
   publicMove,
   type ScannedImage,
+  waiting,
 } from './moves.ts';
 import { satisfies } from './node.ts';
 import { DIGEST, hasRegistry, repositoryOf, splitReference } from './reference.ts';
@@ -142,6 +148,7 @@ import {
   type StateWait,
   seal,
   sightings,
+  waitMs,
 } from './state.ts';
 import { compareTags, compareVersions, isPrerelease, majorOf } from './versions.ts';
 
@@ -1610,6 +1617,28 @@ function statedIn(findings: Finding[], state: State) {
 }
 
 /**
+ * Why a result with no fix today has none though one exists (moves.ts's `waiting`), or nothing: its pin's releases
+ * were refused as no better than the pin; or its targets' content has not waited its day (`contentWaits`), and then
+ * the first of them to come due, and when. Any other result with no fix (none yet, a source that did not answer, a
+ * Node mise may not install yet) waits for nothing the scan can name here.
+ */
+function heldOf(
+  fix: Fix | undefined,
+  refused: boolean,
+  waits: StateWait[] | undefined,
+  wait: number,
+  now: number,
+): Held | undefined {
+  if (fix) return undefined;
+  if (refused) return { why: 'no-better' };
+  const [first] = (waits ?? [])
+    .map((each) => ({ to: readTarget(each.target), until: Date.parse(each.day), seen: Date.parse(each.seen) }))
+    .filter((each) => each.to && each.until > now && each.seen + wait > now)
+    .sort((a, b) => a.until - b.until);
+  return first?.to ? { why: 'content', to: first.to, until: first.until } : undefined;
+}
+
+/**
  * Each result's fix: its target, and the earlier of the day the sources give and the day its alert states, so the day
  * never moves forward. Where this run finds no fix installable but the alert states one, that fix stands: once a fix
  * could be installed, the deadline it started stands, and the next message keeps its day; `assess` gives none stated
@@ -1815,6 +1844,8 @@ export async function assess(
     }),
   );
   const fixes = fixesOf(found.at, found.fixes, states, now);
+  const contentWait = waitMs(policy.ROUTINE.contentDays, policy.ROUTINE.slackHours);
+  const held = fixes.map((fix, index) => heldOf(fix, found.refused[index] === true, waits[index], contentWait, now));
   // A fix's day where it has one; a fix still inside pnpm's wait keeps its time, so its row starts no clock yet.
   const installableAt = fixes.map((fix, index) =>
     fix && fix.target.kind !== 'unbuilt' ? fix.day : (found.at[index] ?? 0) > now ? found.at[index] : undefined,
@@ -1841,6 +1872,7 @@ export async function assess(
     fixes,
     judged,
     waits,
+    held,
     looked: found.looked,
     missed: found.missed,
     lookups: found.lookups,
@@ -2365,6 +2397,8 @@ export function stateOf(
   findings: Finding[],
   routine: StateRoutine[] = [],
   waits: (StateWait[] | undefined)[] = [],
+  /** Each result's pin's place in the run's `waiting`, from 1, where it waits there. */
+  waiting: (number | undefined)[] = [],
 ): State {
   return {
     version: STATE_VERSION,
@@ -2384,6 +2418,7 @@ export function stateOf(
       seen: dayText(rows[index]?.own ?? rows[index]?.seen ?? Number.NaN),
       ...(finding.fix ? { fix: fixOf(finding.fix) } : {}),
       ...(finding.fix && finding.move ? { move: finding.move.index } : {}),
+      ...(waiting[index] !== undefined && !(finding.fix && finding.move) ? { waiting: waiting[index] } : {}),
       ...(waits[index]?.length ? { waits: waits[index] } : {}),
       // The rest of it, which makes the same result again on a run that cannot pull its image (`carried`).
       item: finding.item,
@@ -2579,6 +2614,8 @@ export async function main(args: string[]): Promise<number> {
     return 1;
   }
   const { lines, bySeverity, byBucket, passes, counts } = verdict(judged.rows, prove, list);
+  // Each pin with a fix, or a routine update, that is no move today, and why: none is an empty list.
+  const waits = waiting(judged.judged, judged.held, listing.waits);
   const file = movesFile(
     list,
     context,
@@ -2587,6 +2624,7 @@ export async function main(args: string[]): Promise<number> {
     counts,
     bySeverity,
     listed ? { unread: listing.counts.unread } : undefined,
+    waits,
   );
   const tags = new Map<string, MoveTag>();
   if (run)
@@ -2637,7 +2675,9 @@ export async function main(args: string[]): Promise<number> {
     // The state the next scan and the worker read, sealed: what was judged, as it is uploaded.
     if (keeps) {
       const routines = recorded(listing.records, list);
-      const state = stateOf(handoff.repository, keeps.run, judged.rows, findings, routines, judged.waits);
+      const places = new Map(waits.flatMap((each, at) => each.results.map((result) => [result, at + 1] as const)));
+      const waitingAt = judged.judged.map((each) => places.get(fingerprint(each.finding)));
+      const state = stateOf(handoff.repository, keeps.run, judged.rows, findings, routines, judged.waits, waitingAt);
       writeFileSync(join(dir, STATE_FILE), seal(state, keeps.key));
       console.log(
         `State kept for the next run: ${state.findings.length} findings${state.routine ? ` and ${state.routine.length} releases a pin is behind` : ''}, sealed.`,

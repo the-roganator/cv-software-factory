@@ -486,6 +486,37 @@ describe('the pin watch’s issues', () => {
     expect(repo.issues.find((i) => i.title.startsWith('Move example-cd'))?.state).toBe('closed');
   });
 
+  it('leaves an issue open whose move the scan holds for its content’s day, and closes it once it is gone', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const all = factoryMoves();
+    const cd = all.find((m) => m.name === 'example-cd') as ReadMove;
+    const rest = all.filter((m) => m !== cd);
+    let read: Moves = day(scanned, all);
+    const w = harness(repo, () => read);
+    await w.pass();
+    const issue = repo.issues.find((i) => i.title.startsWith('Move example-cd'));
+    expect(issue?.state).toBe('open');
+    const held = {
+      index: 1,
+      name: cd.name,
+      pins: cd.pins,
+      from: cd.from,
+      lockfile: false as const,
+      why: 'content' as const,
+      to: cd.to,
+      until: '2026-11-12T04:15:00Z',
+      clears: cd.clears,
+      findings: [],
+    };
+    read = { ...day(scanned, rest, 42_000_000_102), waiting: [held] };
+    await w.pass();
+    expect(issue?.state).toBe('open');
+    read = { ...day(scanned, rest, 42_000_000_103), waiting: [] };
+    await w.pass();
+    expect(issue?.state).toBe('closed');
+  });
+
   it('leaves an issue Martin closed, until its move has a later target', async () => {
     const repo = new FakeRepo(FILES);
     const scanned = repo.main;
@@ -1092,6 +1123,78 @@ describe('one pull request for the day’s moves at one file', () => {
     );
     expect(openPins(repo).map((p) => p.head)).toEqual([BRANCH]);
     expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([2, 9]);
+  });
+
+  /** The chart's pin as the scan says it waits (scanning.ts's `ReadWaiting`), a routine update's or a fix's. */
+  const waits = (over: Partial<NonNullable<Moves['waiting']>[number]> = {}): NonNullable<Moves['waiting']>[number] => ({
+    index: 1,
+    name: 'kyverno',
+    pins: [{ file: KYVERNO, line: 9 }],
+    from: '3.5.0',
+    lockfile: false,
+    why: 'content',
+    to: 'chart kyverno 3.6.2',
+    until: '2026-11-12T04:15:00Z',
+    clears: NONE,
+    routine: true,
+    findings: [],
+    ...over,
+  });
+
+  it('leaves a pull request open whose move the scan holds for its content’s day, and writes nothing to it', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    let read: Moves = day(scanned, [behind()]);
+    const w = harness(repo, () => read);
+    await w.pass();
+    const [pull] = openPins(repo);
+    const before = JSON.stringify(pull);
+    // The next scan lists no move of the pin, and says it waits: the pull request is not closed for a day.
+    read = { ...day(scanned, [], 42_000_000_102), waiting: [waits()] };
+    await w.pass();
+    expect(openPins(repo)).toEqual([pull]);
+    expect(JSON.stringify(pull)).toBe(before);
+    // The day it lists again, the same pull request carries it.
+    read = day(scanned, [behind('chart kyverno 3.6.2')], 42_000_000_103);
+    await w.pass();
+    expect(appPulls(repo).map((p) => [p.number, p.state])).toEqual([[pull?.number, 'open']]);
+    expect(pull?.title).toBe('chore(pin): move kyverno to 3.6.2');
+  });
+
+  it('closes one whose move is gone: not listed by a scan that does not say what waits, or says nothing waits', async () => {
+    for (const waiting of [undefined, [], [waits({ name: 'another-chart' })]]) {
+      const repo = new FakeRepo(files());
+      const scanned = repo.main;
+      let read: Moves = day(scanned, [behind()]);
+      const w = harness(repo, () => read);
+      await w.pass();
+      const [pull] = openPins(repo);
+      read = { ...day(scanned, [], 42_000_000_102), ...(waiting ? { waiting } : {}) };
+      await w.pass();
+      expect(pull?.state).toBe('closed');
+      expect(pull?.comments?.at(-1)).toContain(
+        '`main` has moved its pins, or the scan has nothing left to move them for.',
+      );
+    }
+  });
+
+  it('closes one whose target the scan refused as no better than the pin, and says that', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const fix = { ...behind(), clears: { ...NONE, HIGH: 1 }, deadline: '2026-11-18T06:00:00Z' };
+    let read: Moves = day(scanned, [fix]);
+    const w = harness(repo, () => read);
+    await w.pass();
+    const [pull] = openPins(repo);
+    const refused = waits({ why: 'no-better', to: undefined, until: undefined, routine: undefined });
+    read = { ...day(scanned, [], 42_000_000_102), waiting: [{ ...refused, clears: { ...NONE, HIGH: 1 } }] };
+    await w.pass();
+    expect(pull?.state).toBe('closed');
+    const said = pull?.comments?.at(-1) ?? '';
+    expect(said).toContain(
+      'it read no release of `kyverno` that is better than the pin, by its findings at each severity, so it lists no fix there today.',
+    );
+    expect(said).not.toContain('`main` has moved its pins');
   });
 
   it('makes the Makefile’s pin of Argo CD’s chart, its version alone, as any pin of the worker’s lane', async () => {

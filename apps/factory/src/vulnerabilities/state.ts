@@ -64,6 +64,11 @@ export interface StateFinding {
   /** Its move's place in the run's `moves.json`, from 1; absent for one with no fix, or excepted. */
   move?: number | undefined;
   /**
+   * Its pin's place in the run's `moves.json`'s `waiting`, from 1, for one with a fix that is no move today; absent
+   * for any other, and in a state written before the scan said what waits.
+   */
+  waiting?: number | undefined;
+  /**
    * For a fix that is an image or a chart: each target the scan found to fix it on this pin, the newest whose content
    * has waited its day and those still waiting (`contentWaits`). A state written before these has none, and each
    * such fix waits from the first run after.
@@ -270,6 +275,8 @@ function problemOf(state: unknown, repository: string, run: string): string | un
     }
     if (f.move !== undefined && (!Number.isInteger(f.move) || (f.move as number) < 1 || f.fix === undefined))
       return `gives ${at} a move that is not one`;
+    if (f.waiting !== undefined && (!Number.isInteger(f.waiting) || (f.waiting as number) < 1 || f.move !== undefined))
+      return `gives ${at} a place among those waiting that is not one`;
     if (f.waits !== undefined) {
       if (!isSeen(f.waits)) return `gives ${at} waiting fixes that are not ones`;
       for (const wait of f.waits as Record<string, unknown>[])

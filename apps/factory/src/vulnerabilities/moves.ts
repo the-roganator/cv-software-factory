@@ -43,8 +43,10 @@
  *
  * A fix that exists and is no move today is in `waiting` (`Waiting`), beside the moves, with why: its target's content
  * has not waited its day (`content`), or no release read is better than the pin (`no-better`); and so is a routine
- * update of an image whose tag has waited and whose content has not. A reader that takes "no move lists it" to mean
- * "fixed" or "gone" reads `waiting` first.
+ * update of an image whose tag has waited and whose content has not. One that waits for its content names the move
+ * the pin will have, by the moves' own rule: the furthest target within its major, where any result that waits has
+ * one there, and what only a major clears is what it leaves. A reader that takes "no move lists it" to mean "fixed"
+ * or "gone" reads `waiting` first.
  *
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
@@ -195,9 +197,16 @@ const further = (a: Target, b: Target) => {
  * major clears (a chart's next major, a package's version on a major no copy is at) is left, and its major is a later
  * day's move, once the pin has moved. Where none has, all of them, and the move is the major.
  */
-export function withinMajor(group: Judged[]): Judged[] {
-  const crosses = (each: Judged) => {
-    const target = each.finding.fix?.target;
+export function withinMajor<T>(
+  group: T[],
+  /** One of the group as it was judged, and its target: a result's fix, or what one that waits is held for. */
+  of: (one: T) => { each: Judged; target: Target | undefined } = (one) => {
+    const each = one as Judged;
+    return { each, target: each.finding.fix?.target };
+  },
+): T[] {
+  const crosses = (one: T) => {
+    const { each, target } = of(one);
     if (target?.kind === 'chart') return target.major;
     return target?.kind === 'version' && each.kind === 'lockfile' && isMajor(target, each.from);
   };
@@ -397,9 +406,10 @@ export interface Wait {
   to?: Target | undefined;
   until?: number | undefined;
   clears: Counts;
+  leaves: Counts;
   deadline?: number | undefined;
   routine: boolean;
-  /** The results that wait (sarif.ts's `fingerprint`): never printed. */
+  /** The results that wait, those its move would leave among them (sarif.ts's `fingerprint`): never printed. */
   results: string[];
 }
 
@@ -407,6 +417,11 @@ export interface Wait {
  * The day's pins that wait: each pin whose results have a fix that is no move today, once for each reason, the most
  * urgent first as the moves are; then each routine update that waits for its content, by name. The excepted are left
  * out, as of a move, and a lockfile's, which neither reason holds, is never named. `held` is by the results' index.
+ *
+ * One that waits for its content says the move the pin will have, by the rule a move is made by: the furthest target
+ * of the results held within its major, where any is (`withinMajor`, `furthest`), when that target comes due, and
+ * those results as what it clears. A result only a major clears waits with them, as what the move leaves: it keeps
+ * its place in the entry and its deadline, and is counted apart. Where none is held within the major, the major.
  */
 export function waiting(results: Judged[], held: (Held | undefined)[], routine: RoutineWait[] = []): Wait[] {
   const groups = new Map<string, { each: Judged; held: Held }[]>();
@@ -424,13 +439,19 @@ export function waiting(results: Judged[], held: (Held | undefined)[], routine: 
     if (!first) continue;
     const pins = new Map<string, Pin>();
     for (const { each } of group) pins.set(`${each.pin.file}:${each.pin.line}`, each.pin);
+    const members = withinMajor(group, (one) => ({ each: one.each, target: one.held.to }));
     const clears = zero();
-    for (const { each } of group) clears[each.severity]++;
+    const leaves = zero();
+    for (const one of group) (members.includes(one) ? clears : leaves)[one.each.severity]++;
+    // The whole group's, as a move's is: what waits for the major is due all the same.
     const dues = group.flatMap(({ each }) => (each.due === undefined ? [] : [each.due]));
-    // The first of its targets to come due, and the furthest of those due then.
-    const untils = group.flatMap((one) => (one.held.until === undefined ? [] : [one.held.until]));
-    const until = untils.length ? Math.min(...untils) : undefined;
-    const to = furthest(group.flatMap((one) => (one.held.to && one.held.until === until ? [one.held.to] : [])));
+    // The target its move takes, and when that one comes due: the latest of them all, where it is joined from several.
+    const to = furthest(members.flatMap((one) => (one.held.to ? [one.held.to] : [])));
+    const untilOf = (list: typeof members) =>
+      list.flatMap((one) => (one.held.until === undefined ? [] : [one.held.until]));
+    const its = to ? untilOf(members.filter((one) => one.held.to && targetText(one.held.to) === targetText(to))) : [];
+    const all = untilOf(members);
+    const until = its.length ? Math.min(...its) : all.length ? Math.max(...all) : undefined;
     out.push({
       name: first.each.name,
       pins: [...pins.values()].sort((a, b) => order(a.file, b.file) || a.line - b.line),
@@ -438,6 +459,7 @@ export function waiting(results: Judged[], held: (Held | undefined)[], routine: 
       why: first.held.why,
       ...(first.held.why === 'content' ? { to, until } : {}),
       clears,
+      leaves,
       deadline: dues.length ? Math.min(...dues) : undefined,
       routine: false,
       results: group.map(({ each }) => fingerprint(each.finding)),
@@ -465,6 +487,7 @@ export function waiting(results: Judged[], held: (Held | undefined)[], routine: 
       to: each.to,
       until: each.until,
       clears: zero(),
+      leaves: zero(),
       deadline: undefined,
       routine: true,
       results: [],
@@ -490,14 +513,20 @@ export interface Waiting {
    */
   why: WaitingWhy;
   /**
-   * For `content`: fixes.ts's text of the first of its targets to come due, and when, UTC to the second, the slack
+   * For `content`: fixes.ts's text of the target its move will take, the furthest within the pin's major where any
+   * result that waits has a fix there (`withinMajor`), and when that target comes due, UTC to the second, the slack
    * of a daily scan taken off (state.ts's `waitMs`). Content pushed again before then waits its own day, and the move
    * lists at the newest that has waited.
    */
   to?: string | undefined;
   until?: string | undefined;
-  /** The results that wait, by severity: what its move would clear. All zero for a routine update's. */
+  /** The results that move would clear, by severity. All zero for a routine update's. */
   clears: Counts;
+  /**
+   * The results that wait with them and that move would leave, by severity: those only a major clears, where the
+   * move is within the major. Written only where there is one.
+   */
+  leaves?: Counts | undefined;
   /** Their earliest deadline, where any has one: UTC, to the second. */
   deadline?: string | undefined;
   /** Set for a routine update's wait: no finding asks for it. */
@@ -515,6 +544,7 @@ export function publicWaiting(wait: Wait): Waiting {
     ...(wait.to ? { to: targetText(wait.to) } : {}),
     ...(wait.until === undefined ? {} : { until: dayText(wait.until) }),
     clears: wait.clears,
+    ...(total(wait.leaves) ? { leaves: wait.leaves } : {}),
     ...(wait.deadline === undefined ? {} : { deadline: dayText(wait.deadline) }),
     ...(wait.routine ? { routine: true as const } : {}),
   };
@@ -719,7 +749,8 @@ export function table(file: MovesFile): string[] {
 
 /** One pin that waits, in a line: what it is, why it has no move, and what waits with it. */
 export function waitingLine(each: Waiting): string {
-  const what = each.routine ? 'a routine update' : `a fix of ${short(each.clears)}`;
+  const left = each.leaves && total(each.leaves) ? `, leaving ${short(each.leaves)} for a major` : '';
+  const what = each.routine ? 'a routine update' : `a fix of ${short(each.clears)}${left}`;
   const due = each.deadline ? `, due ${each.deadline}` : '';
   return each.why === 'content'
     ? `${each.name} ${each.from}: ${what}${due}, to ${each.to ?? 'a release'}, waits for its content's day, until ${each.until ?? 'the next scan'}.`

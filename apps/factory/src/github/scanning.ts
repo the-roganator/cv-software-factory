@@ -132,7 +132,7 @@ export interface ReadMove extends PublicMove {
 export interface ReadWaiting extends Waiting {
   /** Its place in `moves.json`'s `waiting`, from 1. */
   index: number;
-  /** The findings that wait with it, as the state names them: none for a routine update's. */
+  /** The findings that wait with it, those its move would leave among them, as the state names them: none for a routine update's. */
   findings: Pick<MoveFinding, 'advisory' | 'package' | 'severity'>[];
 }
 
@@ -326,6 +326,8 @@ export const MOVES_FILE_SCHEMA = z.strictObject({
           to: z.string().optional(),
           until: DAY.optional(),
           clears: COUNTS,
+          // What its move would leave for a major: a file with none reads as it did.
+          leaves: COUNTS.optional(),
           deadline: DAY.optional(),
           routine: z.literal(true).optional(),
         })
@@ -638,8 +640,8 @@ export function joined(
 
 /**
  * `moves.json`'s pins that wait, each with its findings from the state, and each held to it, as a move is: a finding
- * names a place on the list, and none that is in a move; every entry has as many findings as it counts, and none of
- * them twice; a routine update's has none, and is a release the state recorded for that pin and gave no move. So what
+ * names a place on the list, and none that is in a move; every entry has as many findings as it counts, those its
+ * move would clear and those it would leave for a major together, and none of them twice; a routine update's has none, and is a release the state recorded for that pin and gave no move. So what
  * waits is the sealed state's word as much as the artifact's. A state that names a place and a file with no list do
  * not agree. Nothing where the file has no list: that scan does not say.
  */
@@ -664,8 +666,9 @@ function waitingOf(repo: string, file: MovesFile, state: State): ReadWaiting[] |
     if (seen.has(key)) throw disagrees(repo, `${where} is listed twice`);
     seen.add(key);
     const own = findings[i] ?? [];
-    if (own.length !== total(entry.clears))
-      throw disagrees(repo, `${where} counts ${total(entry.clears)} results and the state gives it ${own.length}`);
+    const counted = total(entry.clears) + (entry.leaves ? total(entry.leaves) : 0);
+    if (own.length !== counted)
+      throw disagrees(repo, `${where} counts ${counted} results and the state gives it ${own.length}`);
     if (
       entry.routine &&
       !(state.routine ?? []).some((r) => r.move === undefined && r.name === entry.name && r.from === entry.from)

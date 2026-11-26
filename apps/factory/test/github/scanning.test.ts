@@ -600,6 +600,17 @@ describe('the scan’s moves', () => {
       },
       { ...day.moves.waiting[1], index: 2, findings: [] },
     ]);
+    // A result its move would leave for a major waits with the rest: it has the entry's place, counted apart.
+    const left = waitingDay();
+    const last = left.state.findings.at(-1);
+    if (!last) throw new Error('the day has no finding that waits');
+    left.state.findings.push({ ...last, advisory: 'CVE-2099-40002', package: 'libmajor', severity: 'CRITICAL' });
+    Object.assign(left.moves.waiting[0], { leaves: { ...none, CRITICAL: 1 } });
+    expect((await read(left)).waiting?.[0]).toMatchObject({
+      clears: { HIGH: 1 },
+      leaves: { CRITICAL: 1 },
+      findings: [{ package: 'libwaits' }, { package: 'libmajor' }],
+    });
     // Nothing waiting is said so: an empty list, and a pin a refusal names is read with no target.
     const empty = routineDay();
     empty.moves.waiting = [];
@@ -620,6 +631,17 @@ describe('the scan’s moves', () => {
     await fails(
       wrong((day) => day.state.findings.pop()),
       /the pin that waits at place 1 counts 1 results and the state gives it 0/,
+    );
+    // One the state gives the entry that it counts neither as cleared nor as left, and one it counts left with none.
+    await fails(
+      wrong((day) =>
+        day.state.findings.push({ ...(day.state.findings.at(-1) as StateFinding), advisory: 'CVE-2099-40002' }),
+      ),
+      /the pin that waits at place 1 counts 1 results and the state gives it 2/,
+    );
+    await fails(
+      wrong((day) => Object.assign(day.moves.waiting[0], { leaves: { ...none, CRITICAL: 1 } })),
+      /the pin that waits at place 1 counts 2 results and the state gives it 1/,
     );
     await fails(
       wrong((day) => day.moves.waiting.shift()),

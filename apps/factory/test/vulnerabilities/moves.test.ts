@@ -14,7 +14,9 @@ import {
   publicMove,
   publicWaiting,
   table,
+  type Wait,
   waiting,
+  waitingLine,
 } from '../../src/vulnerabilities/moves.ts';
 import type { Finding, Severity } from '../../src/vulnerabilities/sarif.ts';
 
@@ -723,6 +725,66 @@ describe('the pins that wait', () => {
     expect(waiting([...results.slice(0, 3)].reverse(), [...held].reverse()).map(publicWaiting)).toEqual(
       list.map(publicWaiting),
     );
+  });
+
+  it('says the move the pin will have: within its major where a result that waits has a fix there', () => {
+    const chart = (version: string, major = false): Target => ({ kind: 'chart', chart: 'prometheus', version, major });
+    const pinned = {
+      kind: 'chart' as const,
+      name: 'prometheus',
+      from: '29.35.0',
+      pin: { file: 'deploy/p.yaml', line: 9 },
+    };
+    const soon = NOW + DAY - 7_200_000;
+    const results = [
+      waits({ ...pinned, severity: 'CRITICAL', due: NOW + 2 * DAY }),
+      waits({ ...pinned, due: NOW + 5 * DAY }),
+      waits({ ...pinned, due: NOW + 3 * DAY }),
+    ];
+    // Two fixed within the major, at two releases, and one only the next major clears, all first seen today.
+    const held = [
+      { why: 'content' as const, to: chart('30.0.1', true), until: soon },
+      { why: 'content' as const, to: chart('29.49.0'), until: soon },
+      { why: 'content' as const, to: chart('29.40.0'), until: soon },
+    ];
+    const list = waiting(results, held);
+    expect(list.map(publicWaiting)).toEqual([
+      {
+        name: 'prometheus',
+        pins: [{ file: 'deploy/p.yaml', line: 9 }],
+        from: '29.35.0',
+        lockfile: false,
+        why: 'content',
+        to: 'chart prometheus 29.49.0',
+        until: '2026-11-11T02:30:00Z',
+        clears: { CRITICAL: 0, HIGH: 2, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+        // What only the major clears waits with them, counted apart, and its deadline is the entry's.
+        leaves: { CRITICAL: 1, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+        deadline: '2026-11-12T04:30:00Z',
+      },
+    ]);
+    expect(list[0]?.results).toHaveLength(3);
+    // It is the move the same results make once their content has waited: the same target, the same counts.
+    const fixed = results.map((each, at) => ({
+      ...each,
+      finding: { ...each.finding, fix: { target: held[at]?.to as Target, day: NOW } },
+    }));
+    const [move] = moves(fixed, context()).map(publicMove);
+    expect(move).toMatchObject({ to: list.map(publicWaiting)[0]?.to, major: false });
+    expect([move?.clears, move?.leaves]).toEqual([list[0]?.clears, list[0]?.leaves]);
+    expect(waitingLine(publicWaiting(list[0] as Wait))).toBe(
+      "prometheus 29.35.0: a fix of 2 high, leaving 1 critical for a major, due 2026-11-12T04:30:00Z, to chart prometheus 29.49.0, waits for its content's day, until 2026-11-11T02:30:00Z.",
+    );
+    // Its target's own day, where the nearer release's content came first.
+    const later = waiting(results, [held[0], { ...held[1], until: soon + DAY }, held[2]] as typeof held);
+    expect(later.map(publicWaiting)[0]).toMatchObject({
+      to: 'chart prometheus 29.49.0',
+      until: '2026-11-12T02:30:00Z',
+    });
+    // A pin whose only fixes are a major says the major, and leaves nothing.
+    const major = waiting(results.slice(0, 1), held.slice(0, 1)).map(publicWaiting);
+    expect(major[0]).toMatchObject({ to: 'chart prometheus 30.0.1 (a major)', clears: { CRITICAL: 1, HIGH: 0 } });
+    expect(major[0]).not.toHaveProperty('leaves');
   });
 
   it('names a routine update that waits for its content after the fixes, and never a lockfile’s', () => {

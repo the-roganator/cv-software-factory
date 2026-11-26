@@ -12,6 +12,7 @@ import { DEPENDABOT } from '../../src/github/dependabot.ts';
 import { APP_USER, MARTIN } from '../../src/github/issues.ts';
 import { branchOf } from '../../src/github/pins.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
+import type { MovesFile } from '../../src/vulnerabilities/moves.ts';
 import type { Route, Sent } from './fake.ts';
 
 export const FACTORY = 'the-roganator/cv-software-factory';
@@ -584,8 +585,40 @@ export function move(over: Partial<ReadMove> & Pick<ReadMove, 'name' | 'pins' | 
   };
 }
 
-/** The scan's day as the moves read gives it, at a commit. */
-export function day(scanned: string, moves: ReadMove[], run = 42_000_000_101): Moves {
+/**
+ * The images a scan read at the moves' pins, as `moves.json` lists them (`scanned`): each image's move at each of its
+ * pins, its repository and tag at the digest the line writes in the files given. A line that writes none has none.
+ */
+export function scannedAt(files: Record<string, string>, moves: readonly ReadMove[]): MovesFile['scanned'] {
+  return moves.flatMap((each) =>
+    each.to.startsWith('image ')
+      ? each.pins.flatMap((pin) => {
+          const tag = each.from.split('@')[0] ?? '';
+          const found = /@(sha256:[0-9a-f]{64})/.exec(files[pin.file]?.split('\n')[pin.line - 1] ?? '')?.[1];
+          const repository = each.name.slice(each.name.lastIndexOf(': ') + 1).trim();
+          return found
+            ? [
+                {
+                  kind: 'third-party' as const,
+                  item: each.name,
+                  image: `${repository}:${tag}@${found}`,
+                  digests: [found],
+                  pin,
+                },
+              ]
+            : [];
+        })
+      : [],
+  );
+}
+
+/** The scan's day as the moves read gives it, at a commit: the images it read are those of `files` (the fixture's). */
+export function day(
+  scanned: string,
+  moves: ReadMove[],
+  run = 42_000_000_101,
+  files: Record<string, string> = FILES,
+): Moves {
   return {
     repository: FACTORY,
     run: {
@@ -612,7 +645,7 @@ export function day(scanned: string, moves: ReadMove[], run = 42_000_000_101): M
         newHighWithFix: 0,
         newHighWithoutFix: 0,
       },
-      scanned: [],
+      scanned: scannedAt(files, moves),
     },
     moves: moves.map((m, i) => ({ ...m, index: i + 1 })),
   };

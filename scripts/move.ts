@@ -33,7 +33,7 @@
 
 import { madeByLine, madeByStep, namedMajor, routineStep, stepOf } from '../apps/factory/src/github/made.ts';
 import { spans } from '../apps/factory/src/github/pin-guard.ts';
-import { editAt } from '../apps/factory/src/github/pins.ts';
+import { chartPinAt, ownEdit, strayed } from '../apps/factory/src/github/pins.ts';
 import type { ReadMove } from '../apps/factory/src/github/scanning.ts';
 import { moveOf } from '../apps/factory/src/patching/sends.ts';
 import { repositoryOfImage } from '../apps/factory/src/repositories.ts';
@@ -154,8 +154,9 @@ function stepMove(move: ScanMove, app: boolean, base: MoveIO['base']): PinStepMo
   return { ecosystem: made.ecosystem, name: made.name, from: made.from, to: made.to, ...routineStep(move) };
 }
 
-const moved = (pin: { file: string; line: number }, move: ScanMove) =>
-  `${pin.file}:${pin.line} is not ${move.name}'s pin at ${move.from} now: main moved since the scan`;
+const moved = (pin: { file: string; line: number }, move: ScanMove) => strayed(pin, move.name, move.from);
+
+export { chartPinAt };
 
 /**
  * Why a tool's entry in main's `mise.lock` is not the move's own pin, or nothing when it is: the line the scan named is
@@ -186,31 +187,6 @@ export function unmade(move: Pick<ScanMove, 'name' | 'lane' | 'bench'>): string 
   return undefined;
 }
 
-/** A chart's `chart:` line, and its `targetRevision:` at a version, as an Application writes them (inventory.ts). */
-const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const keyLine = (key: string, value: string) =>
-  new RegExp(`^\\s*-?\\s*${key}:\\s*['"]?${literal(value)}['"]?\\s*(?:#.*)?$`);
-
-/**
- * Whether a line is a chart's pin at a version, placed as the list places it (inventory.ts): in its YAML document, the
- * `targetRevision` at that version nearest the chart's `chart:` line; or in the Makefile, which installs one chart,
- * the line that sets `ARGOCD_CHART`.
- */
-export function chartPinAt(lines: readonly string[], line: number, chart: string, version: string): boolean {
-  const text = lines[line - 1] ?? '';
-  if (/^ARGOCD_CHART\s*:?=/.test(text)) return true;
-  let [start, end] = [line - 1, line - 1];
-  while (start > 0 && lines[start - 1] !== '---') start--;
-  while (end < lines.length && lines[end] !== '---') end++;
-  const [named, revision] = [keyLine('chart', chart), keyLine('targetRevision', version)];
-  const at = lines.findIndex((each, index) => index >= start && index < end && named.test(each));
-  if (at < 0) return false;
-  const revisions = lines.flatMap((each, index) =>
-    index >= start && index < end && revision.test(each) ? [index] : [],
-  );
-  return revisions.sort((a, b) => Math.abs(a - at) - Math.abs(b - at))[0] === line - 1;
-}
-
 /** Why the gate will not make a move by an edit, or nothing when it will. */
 function unedited(move: ScanMove, target: Target | undefined): string | undefined {
   if (!target) return `the scan names no target the gate can make for ${move.name}`;
@@ -223,7 +199,8 @@ function unedited(move: ScanMove, target: Target | undefined): string | undefine
 }
 
 /**
- * The text of the files the edits write, each made from main's: the pin watch's edit at each pin.
+ * The text of the files the edits write, each made from main's: the pin watch's edit at each pin, by the watch's own
+ * function (`ownEdit`, github/pins.ts), so the watch writes a move exactly where the gate would.
  *
  * Each is written only on the move's own pin: the line the scan named holds, on main's tip, an image's repository, its
  * tag and the digest the scan read there (`scanned`); a chart's `targetRevision`, nearest its `chart:`; k3s's release,
@@ -251,17 +228,6 @@ export function edit(
     const target = readTarget(move.to);
     const why = unedited(move, target);
     if (why || !target) return { reason: why ?? `no target for ${move.name}` };
-    // The image the scan read at the pin, by its repository and tag: the digest the move is from.
-    const repository = move.name.slice(move.name.lastIndexOf(': ') + 1).trim();
-    const fromAt = (pin: { file: string; line: number }) => {
-      if (target.kind !== 'image') return move.from;
-      const digests = scanned
-        .filter((each) => each.pin.file === pin.file && each.pin.line === pin.line)
-        .map((each) => splitReference(each.image))
-        .filter((each) => each.repository === repository && each.tag === move.from)
-        .flatMap((each) => each.digest ?? []);
-      return digests[0] ? `${move.from}@${digests[0]}` : move.from;
-    };
     for (const pin of move.pins) {
       let lines = files.get(pin.file);
       if (!lines) {
@@ -273,12 +239,8 @@ export function edit(
       const line = lines[pin.line - 1];
       if (line === undefined)
         return { reason: `${pin.file}:${pin.line}, a pin of ${move.name}, is past its end on main` };
-      if (
-        (target.kind === 'chart' && !chartPinAt(lines, pin.line, target.chart, move.from)) ||
-        (target.kind === 'version' && !line.includes(move.name))
-      )
-        return { reason: `the gate cannot make ${move.name} on main: ${moved(pin, move)}` };
-      const made = editAt(pin, line, fromAt(pin), target, move.name);
+      // The pin watch's own edit, by its own check that the line is the move's pin (`ownEdit`): the two agree.
+      const made = ownEdit(move, pin, lines, target, scanned);
       if ('reason' in made) return { reason: `the gate cannot make ${move.name} on main: ${made.reason}` };
       // The one span the pin watch's guard replaces: the same bytes as its commit.
       const at = spans(line, made.from)[0] as number;

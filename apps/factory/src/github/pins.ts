@@ -72,7 +72,7 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../repositories.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
-import { isRoutine } from '../vulnerabilities/moves.ts';
+import { isRoutine, type ScannedImage } from '../vulnerabilities/moves.ts';
 import { DIGEST_PATTERN, splitReference } from '../vulnerabilities/reference.ts';
 import { libraryOf } from '../vulnerabilities/registry.ts';
 import { SEVERITIES } from '../vulnerabilities/sarif.ts';
@@ -321,7 +321,7 @@ export function editAt(
   const at = `${pin.file}:${pin.line}`;
   const tries: { from: string; to: (digested: boolean) => string | undefined }[] = [];
   const { name: tag, digest: read } = splitReference(from);
-  const moved = `${at} is not ${name ?? 'the move'}'s pin at ${from} now: main moved since the scan`;
+  const moved = strayed(pin, name ?? 'the move', from);
   switch (target.kind) {
     case 'image':
       tries.push({ from: tag, to: (digested) => (digested ? `${target.tag}@${target.digest}` : target.tag) });
@@ -365,6 +365,73 @@ export function editAt(
     return { file: pin.file, line: pin.line, from: written, to };
   }
   return { reason: `${at} does not write ${from} once as a word of its own` };
+}
+
+/** What a refusal says of a line that is not the move's own pin now. */
+export const strayed = (pin: { file: string; line: number }, name: string, from: string) =>
+  `${pin.file}:${pin.line} is not ${name}'s pin at ${from} now: main moved since the scan`;
+
+/** A chart's `chart:` line, and its `targetRevision:` at a version, as an Application writes them (inventory.ts). */
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const keyLine = (key: string, value: string) =>
+  new RegExp(`^\\s*-?\\s*${key}:\\s*['"]?${literal(value)}['"]?\\s*(?:#.*)?$`);
+
+/**
+ * Whether a line is a chart's pin at a version, placed as the list places it (inventory.ts): in its YAML document, the
+ * `targetRevision` at that version nearest the chart's `chart:` line; or in the Makefile, which installs one chart,
+ * the line that sets `ARGOCD_CHART`.
+ */
+export function chartPinAt(lines: readonly string[], line: number, chart: string, version: string): boolean {
+  const text = lines[line - 1] ?? '';
+  if (/^ARGOCD_CHART\s*:?=/.test(text)) return true;
+  let [start, end] = [line - 1, line - 1];
+  while (start > 0 && lines[start - 1] !== '---') start--;
+  while (end < lines.length && lines[end] !== '---') end++;
+  const [named, revision] = [keyLine('chart', chart), keyLine('targetRevision', version)];
+  const at = lines.findIndex((each, index) => index >= start && index < end && named.test(each));
+  if (at < 0) return false;
+  const revisions = lines.flatMap((each, index) =>
+    index >= start && index < end && revision.test(each) ? [index] : [],
+  );
+  return revisions.sort((a, b) => Math.abs(a - at) - Math.abs(b - at))[0] === line - 1;
+}
+
+/**
+ * The edit a move makes at one of its pins, in a file's lines, or why it is not written there: `editAt`, on the line
+ * only where it is the move's own pin. The one check the pin watch writes by and the review gate makes the move again
+ * by (scripts/move.ts), with the same inputs, so a move the watch writes is one the gate makes on the same line:
+ *
+ * - an image's line writes the move's repository before the tag, and after it the digest the scan read at that pin
+ *   (`scanned`, `moves.json`'s list of the images read: the one at this pin with the move's repository and tag). A
+ *   values file's line, which writes a tag alone, is known by that digest or not at all;
+ * - a chart's is the `targetRevision` nearest its `chart:` (`chartPinAt`);
+ * - a version's line names what it is a version of.
+ */
+export function ownEdit(
+  move: Pick<ReadMove, 'name' | 'from'>,
+  pin: { file: string; line: number },
+  lines: readonly string[],
+  target: Target,
+  scanned: readonly Pick<ScannedImage, 'image' | 'pin'>[] = [],
+): PinEdit | { reason: string } {
+  const line = lines[pin.line - 1] ?? '';
+  if (
+    (target.kind === 'chart' && !chartPinAt(lines, pin.line, target.chart, move.from)) ||
+    (target.kind === 'version' && !line.includes(move.name))
+  )
+    return { reason: strayed(pin, move.name, move.from) };
+  let from = move.from;
+  if (target.kind === 'image') {
+    // The image the scan read at the pin, by its repository and tag: the digest the move is from.
+    const repository = move.name.slice(move.name.lastIndexOf(': ') + 1).trim();
+    const [digest] = scanned
+      .filter((each) => each.pin.file === pin.file && each.pin.line === pin.line)
+      .map((each) => splitReference(each.image))
+      .filter((each) => each.repository === repository && each.tag === move.from)
+      .flatMap((each) => each.digest ?? []);
+    if (digest) from = `${move.from}@${digest}`;
+  }
+  return editAt(pin, line, from, target, move.name);
 }
 
 /** What the scan's run is, in a sentence. */
@@ -1086,7 +1153,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
             waits = true;
             break;
           }
-          const edit = editAt(pin, line, move.from, target);
+          // The line must be the move's own pin, by the check the review gate makes the move again by.
+          const edit = ownEdit(move, pin, now, target, day.file.scanned);
           if ('reason' in edit) {
             why = edit.reason;
             break;

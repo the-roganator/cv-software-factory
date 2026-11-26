@@ -37,9 +37,13 @@ import {
   move,
   NONE,
   pinBranchOf,
+  scannedAt,
   trivyCritical,
   writes,
 } from './pins-harness.ts';
+
+/** The fixture's day, by a name a suite with files of its own can still reach under its own `day`. */
+const fixtureDay = day;
 
 /** A watch over the fake repository, whose day is what `today` gives, and a clock a test moves on. */
 function harness(
@@ -495,12 +499,12 @@ describe('the pin watch’s issues', () => {
   it('opens an issue for a move whose pin’s line it cannot write', async () => {
     const repo = new FakeRepo({
       ...FILES,
-      'deploy/base/telemetry/dashboards.yaml': 'targetRevision: 13.2.7 # was 13.2.7\n',
+      'deploy/base/telemetry/dashboards.yaml': 'chart: example-dashboards\ntargetRevision: 13.2.7 # was 13.2.7\n',
     });
     const scanned = repo.main;
     const moves = factoryMoves()
       .filter((m) => m.name === 'example-dashboards')
-      .map((m) => ({ ...m, pins: [{ file: 'deploy/base/telemetry/dashboards.yaml', line: 1 }] }));
+      .map((m) => ({ ...m, pins: [{ file: 'deploy/base/telemetry/dashboards.yaml', line: 2 }] }));
     await harness(repo, () => day(scanned, moves)).pass();
     expect(appPulls(repo)).toEqual([]);
     expect(repo.issues.map((i) => i.title)).toEqual(['Move example-dashboards to chart example-dashboards 13.7.2']);
@@ -781,6 +785,8 @@ describe('one pull request for the day’s moves at one file', () => {
       findings: critical ? [trivyCritical({ file: KYVERNO, line: 9 })] : [],
     });
   const BRANCH = branchOf(four()[0] as ReadMove);
+  /** The scan's day, with the images it read in this file among those it lists. */
+  const day = (scanned: string, moves: ReadMove[], run?: number) => fixtureDay(scanned, moves, run, files());
 
   /** What the review gate makes of a branch (scripts/move.ts): the day's moves made on main, compared with its head. */
   const gate = (repo: FakeRepo, branch: string, scan: ReadMove[]) => {
@@ -1072,7 +1078,7 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(branchOf(fix)).toMatch(/^factory\/pin\/makefile-[0-9a-f]{8}$/);
   });
 
-  it('records the guard’s refusal of any other line of the Makefile, and opens nothing', async () => {
+  it('writes no move on any other line of the Makefile: an issue, and nothing for the guard to refuse', async () => {
     const MAKEFILE = ['OTHER_CHART := 10.15.0', 'ARGOCD_CHART := 10.15.0', ''];
     const repo = new FakeRepo({ ...FILES, Makefile: MAKEFILE.join('\n') });
     const scanned = repo.main;
@@ -1085,8 +1091,58 @@ describe('one pull request for the day’s moves at one file', () => {
     const w = harness(repo, () => day(scanned, [other]));
     await w.pass();
     expect(appPulls(repo)).toEqual([]);
-    expect(w.records()).toHaveLength(1);
-    expect(JSON.stringify(w.records())).toContain('is not the Makefile’s pin of Argo CD’s chart');
+    expect(w.records()).toEqual([]);
+    expect(repo.issues.map((i) => i.title)).toEqual(['Move argo-cd to chart argo-cd 10.16.2']);
+    expect(repo.issues[0]?.body).toContain("Makefile:1 is not argo-cd's pin at 10.15.0 now: main moved since the scan");
+  });
+
+  describe('a move is written only on its own pin, by the check the gate makes it again by', () => {
+    it('writes no image’s move on a neighbouring image at the same tag, and the day’s other moves go on', async () => {
+      // The scan's line now holds another image of the chart, at the same tag: the same text, another pin.
+      const repo = new FakeRepo(files());
+      const scanned = repo.main;
+      const [first, ...rest] = four() as [ReadMove, ...ReadMove[]];
+      const strayed = { ...first, pins: [{ file: KYVERNO, line: 4 }] };
+      const moves = [strayed, ...rest.slice(1)];
+      // What the scan read: each image at its own line, the strayed move's at line 2 still.
+      const today = () => {
+        const read = day(scanned, moves);
+        return { ...read, file: read.file && { ...read.file, scanned: scannedAt(files(), four()) } };
+      };
+      await harness(repo, today).pass();
+      const [pull] = openPins(repo);
+      expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([6, 8]);
+      expect(carriedBy(pull?.body).sort()).toEqual(
+        rest
+          .slice(1)
+          .map((m) => m.name)
+          .sort(),
+      );
+      expect(repo.issues).toHaveLength(1);
+      expect(repo.issues[0]?.body).toContain(`${KYVERNO}:4 is not ${first.name}'s pin at v1.19.1 now`);
+      // The gate, given the same move and the same images read, refuses it in the same words.
+      const forged = repo.commitOn(repo.main, {
+        [KYVERNO]: (repo.file(repo.main, KYVERNO) as string).replace(
+          `v1.19.1@${digest('kyvernopre/old')}`,
+          first.to.replace('image ', ''),
+        ),
+      });
+      repo.refs.set('forged', forged);
+      expect(await gate(repo, 'forged', moves)).toEqual({
+        reason: expect.stringContaining(`${KYVERNO}:4 is not ${first.name}'s pin at v1.19.1 now`),
+      });
+    });
+
+    it('writes a values file’s tag only where the scan read the move’s image at that digest', async () => {
+      const repo = new FakeRepo(files());
+      const scanned = repo.main;
+      // The scan listed no image at the pins: a tag alone is no one's, as it is to the gate.
+      const unread = () => fixtureDay(scanned, four(), undefined, {});
+      await harness(repo, unread).pass();
+      expect(appPulls(repo)).toEqual([]);
+      expect(repo.issues).toHaveLength(4);
+      expect(repo.issues[0]?.body).toContain('main moved since the scan');
+    });
   });
 
   it('leaves out a move whose line has changed since the scan, and one that is an issue, and carries the rest', async () => {

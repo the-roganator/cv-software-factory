@@ -25,8 +25,16 @@
  * last day's, so a line that restarts and reads the store again counts what the line before it counted: a move leaves
  * the days only with a day, and each check of the day it left is made at that day's time. Every read of the store, and
  * every count, is the security events' (`security.ts`), whose gauge says when a read fails.
+ *
+ * And he hears when the scan stops (`staleScans`): a repository whose newest scan in the sense's days judged its moves
+ * more than `SCAN_MAX_AGE_HOURS` ago, by the clock. No day arriving is the same to it as a day with no newer scan, so
+ * it says so whether the scan has stopped running, fails before it judges, or the sense can no longer read it. It is a
+ * condition, not a count: it ends when a day arrives with a scan judged since. A repository no scan has judged yet is
+ * measured from the first day that says so, and a store with no day at all, as a new cluster's is until the sense's
+ * first read, has nothing to measure from: nothing is stale there.
  */
 import type { PayloadOf } from '@software-factory/events';
+import { SCAN_MAX_AGE_HOURS } from '../../../../policy/vulnerabilities.ts';
 
 export const PATCHING_KINDS = ['move-fix', 'move-waits', 'move-due-soon', 'move-overdue', 'app-fix-merged'] as const;
 export type PatchingKind = (typeof PATCHING_KINDS)[number];
@@ -51,11 +59,16 @@ const HIS: readonly Move['lane'][] = ['cluster', 'issue'];
  */
 const routine = (move: Move) => Object.values(move.clears).every((count) => count === 0) && move.lane !== 'none';
 
-/** The counts so far, what each has counted, and the deadlines of the last day's moves, by move. */
+/**
+ * The counts so far, what each has counted, and the deadlines of the last day's moves, by move; and for each
+ * repository the days have named, when its newest scan judged its moves, or, while none has, when the first day arrived
+ * that said so.
+ */
 export interface PatchingTally {
   kinds: Record<PatchingKind, number>;
   counted: Record<PatchingKind, Set<string>>;
   deadlines: Map<string, number>;
+  scans: Map<string, { judged: boolean; at: number }>;
 }
 
 export const emptyPatchingTally = (): PatchingTally => ({
@@ -65,6 +78,7 @@ export const emptyPatchingTally = (): PatchingTally => ({
     Set<string>
   >,
   deadlines: new Map(),
+  scans: new Map(),
 });
 
 /** Counts a kind for a key, once ever. */
@@ -112,6 +126,11 @@ export function addDay(tally: PatchingTally, day: Day, at: number): void {
   judgeDeadlines(tally, at);
   const deadlines = new Map<string, number>();
   for (const repository of day.repositories) {
+    const scan = tally.scans.get(repository.repository);
+    if (repository.judged !== null) {
+      const judged = Date.parse(repository.judged);
+      if (!scan?.judged || judged > scan.at) tally.scans.set(repository.repository, { judged: true, at: judged });
+    } else if (!scan) tally.scans.set(repository.repository, { judged: false, at });
     if (repository.judged === null) {
       for (const [key, deadline] of tally.deadlines) {
         if (key.startsWith(`${repository.repository} `)) deadlines.set(key, deadline);
@@ -138,6 +157,17 @@ export function addDay(tally: PatchingTally, day: Day, at: number): void {
 }
 
 /**
+ * Each repository the days have named, and whether its scan is stale at t: its newest judged its moves more than
+ * `SCAN_MAX_AGE_HOURS` before, or none has in that long since the first day that named it.
+ */
+export function staleScans(tally: PatchingTally, t: number): { repository: string; stale: boolean }[] {
+  return [...tally.scans].map(([repository, scan]) => ({
+    repository,
+    stale: t - scan.at > SCAN_MAX_AGE_HOURS * 3_600_000,
+  }));
+}
+
+/**
  * Adds one of the line's merges: counted when the line queued and merged a vulnerable dependency's fix for the app that
  * no merge hold had waited on Martin for.
  */
@@ -159,4 +189,5 @@ export const copyPatchingTally = (tally: PatchingTally): PatchingTally => ({
     Set<string>
   >,
   deadlines: new Map(tally.deadlines),
+  scans: new Map(tally.scans),
 });

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse, stringify } from 'yaml';
+import { SCAN_MAX_AGE_HOURS } from '../../../policy/vulnerabilities.ts';
 import {
   ADMIN_UNCOUNTED,
   ADMIN_UNCOUNTED_FOR,
@@ -19,6 +20,8 @@ import {
   PHONE_OFF,
   PUSHED_FRESH,
   RULES_FILE,
+  SCAN_STALE,
+  SCAN_STALE_FOR,
   WORKERS,
 } from '../src/alerts/rules.ts';
 import { NO_CAP } from '../src/gateway/metrics.ts';
@@ -935,6 +938,75 @@ describe('the alert that the admin service’s word on auto-rollback differs fro
               lineSays(each(1, 1, 1, 1, 1)),
             ],
             alert_rule_test: [{ eval_time: '4m', alertname: ADMIN_UNCOUNTED, exp_alerts: [] }],
+          },
+        ],
+        'martin',
+      ),
+    );
+  });
+});
+
+describe('the alert that the vulnerability scan has stopped', PROMTOOL, () => {
+  const [rule] = martinRules().filter((r) => r.alert === SCAN_STALE);
+  const stale = (repository: string) => line('line_patching_scan_stale', `repository="${repository}"`);
+  const fires = { exp_labels: rule?.labels, exp_annotations: rule?.annotations };
+  const minutes = (value: number, count: number) => Array<number>(count).fill(value);
+
+  it('notifies, as each move does, of a scan older than a move may be judged by', () => {
+    expect(martinRules().filter((r) => r.alert === SCAN_STALE)).toHaveLength(1);
+    expect(rule?.labels).toEqual({ level: LEVELS.notify });
+    expect(rule?.expr).toContain(METRICS_FROM_THE_LINE);
+    expect(rule?.annotations.description).toContain(`more than ${SCAN_MAX_AGE_HOURS} hours ago`);
+  });
+
+  it(`fires once either repository’s scan has been stale for ${SCAN_STALE_FOR}, and ends when a newer one is read`, () => {
+    expect(SCAN_STALE_FOR).toBe('15m');
+    expectPasses(
+      promtool(
+        [
+          {
+            interval: '1m',
+            input_series: [
+              // The app's scan goes stale at 2m, and a newer one is read at 20m; the factory's is read all along.
+              { series: stale('example/app'), values: each(0, 0, ...minutes(1, 18), 0, 0) },
+              { series: stale('example/factory'), values: each(...minutes(0, 22)) },
+              // Another worker cannot say it through the line's figures.
+              {
+                series: other('line_patching_scan_stale', 'repository="example/app"'),
+                values: each(...minutes(1, 22)),
+              },
+            ],
+            alert_rule_test: [
+              { eval_time: '16m', alertname: SCAN_STALE, exp_alerts: [] },
+              { eval_time: '17m', alertname: SCAN_STALE, exp_alerts: [fires] },
+              { eval_time: '19m', alertname: SCAN_STALE, exp_alerts: [fires] },
+              { eval_time: '20m', alertname: SCAN_STALE, exp_alerts: [] },
+            ],
+          },
+        ],
+        'martin',
+      ),
+    );
+  });
+
+  it('says nothing of a cluster that wakes with the last day it read, nor before the sense’s first day', () => {
+    expectPasses(
+      promtool(
+        [
+          {
+            interval: '1m',
+            // Stale as the line starts, until the sense's first read, ten minutes on.
+            input_series: [{ series: stale('example/app'), values: each(...minutes(1, 10), ...minutes(0, 12)) }],
+            alert_rule_test: [
+              { eval_time: '9m', alertname: SCAN_STALE, exp_alerts: [] },
+              { eval_time: '20m', alertname: SCAN_STALE, exp_alerts: [] },
+            ],
+          },
+          {
+            interval: '1m',
+            // A line with no day to read reports no scan at all.
+            input_series: [{ series: line('line_work_items', 'stage="plan"'), values: each(...minutes(0, 31)) }],
+            alert_rule_test: [{ eval_time: '30m', alertname: SCAN_STALE, exp_alerts: [] }],
           },
         ],
         'martin',

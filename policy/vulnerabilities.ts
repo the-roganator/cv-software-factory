@@ -159,3 +159,6 @@ export function dismissal(entry: Exception) {
   const text = `Excepted in policy/vulnerabilities.ts until ${entry.expires}: ${entry.reason}`;
   return text.length > 280 ? `${text.slice(0, 279)}…` : text;
 }
+
+/** How old the scan a move is judged by may be, in hours, before it is no judgement and Martin is told. */
+export const SCAN_MAX_AGE_HOURS = 36;

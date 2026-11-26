@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
+import { SCAN_MAX_AGE_HOURS } from '../../../../policy/vulnerabilities.ts';
 import {
   addDay,
   addMerge,
@@ -13,6 +14,7 @@ import {
   emptyPatchingTally,
   judgeDeadlines,
   type PatchingTally,
+  staleScans,
 } from '../../src/line/patching-alerts.ts';
 
 type Day = PayloadOf<'patching.read'>;
@@ -321,6 +323,76 @@ describe('a move across days', () => {
     judgeDeadlines(tally, at('2026-11-16T18:00:00Z'));
     // The sidecar's and k3s's deadlines passed while the runs judged nothing.
     expect(tally.kinds['move-overdue']).toBe(2);
+  });
+});
+
+describe('a scan that stops', () => {
+  const FACTORY = 'the-roganator/cv-software-factory';
+  const APP = 'the-roganator/cv-worlds-worst-website';
+  /** The fixture's scans judged at 04:57 and 05:01 on the 11th. */
+  const JUDGED = { [FACTORY]: at('2026-11-11T04:57:00Z'), [APP]: at('2026-11-11T05:01:00Z') };
+  const stale = (tally: PatchingTally, t: number) =>
+    Object.fromEntries(staleScans(tally, t).map((each) => [each.repository, each.stale]));
+  const scanned = (day: Day, judged: Record<string, string | null>): Day => ({
+    ...day,
+    repositories: day.repositories.map((r) => ({ ...r, judged: judged[r.repository] ?? r.judged })),
+  });
+
+  it('is the policy’s age: a day and a half, so a scan GitHub starts hours late is not one', () => {
+    expect(SCAN_MAX_AGE_HOURS).toBe(36);
+  });
+
+  it('says nothing before the sense’s first day: a new cluster has no scan to be old', () => {
+    expect(staleScans(emptyPatchingTally(), READ + 365 * 24 * H)).toEqual([]);
+  });
+
+  it('is stale for each repository once its newest scan judged more than the age ago, by the clock, with no day since', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    expect(stale(tally, READ)).toEqual({ [FACTORY]: false, [APP]: false });
+    // No day arrives: the scan did not run, or the sense could not read it. Each is told from its own scan's time.
+    expect(stale(tally, JUDGED[FACTORY] + 36 * H)).toEqual({ [FACTORY]: false, [APP]: false });
+    expect(stale(tally, JUDGED[FACTORY] + 36 * H + 1)).toEqual({ [FACTORY]: true, [APP]: false });
+    expect(stale(tally, JUDGED[APP] + 36 * H + 1)).toEqual({ [FACTORY]: true, [APP]: true });
+  });
+
+  it('ends for a repository when a day arrives with a scan judged since, and not for the other', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    const later = READ + 48 * H;
+    expect(stale(tally, later)).toEqual({ [FACTORY]: true, [APP]: true });
+    addDay(tally, scanned(DAY, { [APP]: '2026-11-13T05:01:00Z' }), later);
+    expect(stale(tally, later)).toEqual({ [FACTORY]: true, [APP]: false });
+  });
+
+  it('is not ended by a day whose run judged nothing, nor set back by a day read from an older scan', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    const failed: Day = { ...DAY, repositories: DAY.repositories.map((r) => ({ ...r, judged: null, totals: null })) };
+    addDay(tally, failed, READ + 24 * H);
+    addDay(tally, scanned(DAY, { [APP]: '2026-11-10T05:01:00Z' }), READ + 25 * H);
+    expect(stale(tally, JUDGED[APP] + 36 * H)).toEqual({ [FACTORY]: true, [APP]: false });
+    expect(stale(tally, JUDGED[APP] + 36 * H + 1)).toEqual({ [FACTORY]: true, [APP]: true });
+  });
+
+  it('measures a repository no scan has judged from the first day that said so', () => {
+    const tally = emptyPatchingTally();
+    const never: Day = { ...DAY, repositories: DAY.repositories.map((r) => ({ ...r, judged: null, totals: null })) };
+    addDay(tally, never, READ);
+    addDay(tally, never, READ + 24 * H);
+    expect(stale(tally, READ + 36 * H)).toEqual({ [FACTORY]: false, [APP]: false });
+    expect(stale(tally, READ + 36 * H + 1)).toEqual({ [FACTORY]: true, [APP]: true });
+    // Its first scan to judge ends it, though it judged before that first day.
+    addDay(tally, DAY, READ + 40 * H);
+    expect(stale(tally, JUDGED[FACTORY] + 36 * H)).toEqual({ [FACTORY]: false, [APP]: false });
+  });
+
+  it('is copied with the tally', () => {
+    const tally = emptyPatchingTally();
+    const copy = copyPatchingTally(tally);
+    addDay(copy, DAY, READ);
+    expect(tally.scans.size).toBe(0);
+    expect(copyPatchingTally(copy).scans).toEqual(copy.scans);
   });
 });
 

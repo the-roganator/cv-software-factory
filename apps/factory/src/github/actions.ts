@@ -40,6 +40,7 @@ import {
   scratchBranch,
   withCarries,
 } from './deploys.ts';
+import { MARK_PAGES, workItemMarkOf } from './issue-mark.ts';
 import { type IssueAction, IssueGuard, type Opener, openedBy, type QueueAsker } from './issues.ts';
 import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
@@ -806,7 +807,41 @@ export class LiveActions implements Actions {
     await this.#github.write(repo, 'PATCH', `/repos/${repo}/check-runs/${id}`, checkRunBody(report));
   }
 
+  /**
+   * Opens an issue, once for a work item: one whose body carries a work item's mark (`issue-mark.ts`) is the open
+   * issue of the App's that already carries it, when there is one, and nothing is opened. So a caller that asks again,
+   * its record of the first lost, gets the same issue, saying what it now asks: one whose title or body differs is
+   * written again. Only the App's own: anyone may write the mark in theirs.
+   */
   async openIssue(repo: string, issue: { title: string; body: string; labels?: string[] }): Promise<number> {
+    const mark = workItemMarkOf(issue.body);
+    for (let page = 1; mark && page <= MARK_PAGES; page++) {
+      const open = await this.#github.read(
+        repo,
+        `/repos/${repo}/issues?state=open&per_page=100&sort=created&direction=desc&page=${page}`,
+        z.array(
+          z.object({
+            number: NUMBER,
+            title: z.string(),
+            body: z.string().nullable().default(null),
+            user: z.object({ login: z.string() }).nullable().default(null),
+            pull_request: z.unknown().optional(),
+          }),
+        ),
+      );
+      const found = open.find(
+        (each) =>
+          each.pull_request === undefined && each.user?.login === APP_LOGIN && workItemMarkOf(each.body) === mark,
+      );
+      if (found) {
+        if (found.title !== issue.title || !same(found.body ?? '', issue.body)) {
+          const { title, body } = issue;
+          await this.#github.write(repo, 'PATCH', `/repos/${repo}/issues/${found.number}`, { title, body });
+        }
+        return found.number;
+      }
+      if (open.length < 100) break;
+    }
     const made = await this.#github.write(repo, 'POST', `/repos/${repo}/issues`, issue, z.object({ number: NUMBER }));
     return made.number;
   }

@@ -2550,7 +2550,9 @@ export class Line {
         // In the merge queue, the queue's word on it: taken out without a merge is recorded, and holds it for Martin.
         if (!drafts.length && state.enqueued && pr.state === 'open') {
           const out = await this.#dequeued(item.workItem, state.enqueued);
-          if (out) drafts.push(out);
+          // Out of the queue, its head's checks are the line's to judge again: what they did while it was there is
+          // recorded with its leaving, before anything adds it again.
+          if (out) drafts.push(out, ...gateEvents(pr, runs, required, gateRecord([...raw, out])));
         }
         if (drafts.length) await this.#append(item.workItem, drafts);
       } catch (error) {

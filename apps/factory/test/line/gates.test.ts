@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { countsNote } from '../../src/gates/counts.ts';
 import type { CheckRun, PullRequestState } from '../../src/github/reads.ts';
 import { APP_SLUG, asEvent, type Draft, gateEvents, gateRecord, REVIEW_GATE_CHECK } from '../../src/line/gates.ts';
-import { decide, type Facts, type LineEvent } from '../../src/line/machine.ts';
+import { decide, type Facts, fold, type LineEvent } from '../../src/line/machine.ts';
 
 const SHA = 'a'.repeat(40);
 const MERGED = 'c'.repeat(40);
@@ -213,53 +213,146 @@ describe('the gates, as events', () => {
     expect(gateEvents(pr(), [...first, run(3, 'test', 'failure')], required, failing)).toEqual([]);
   });
 
-  it('send a change on to review when the check that sent it back is run again to green on the same commit', () => {
+  describe('with the line’s machine, on one commit', () => {
     const facts: Facts = { issue: 3, failures: 0, failure: null };
-    const events: LineEvent[] = [
-      {
-        type: 'ticket.opened',
-        payload: {
-          title: 'Server errors on /search',
-          category: 'errors',
-          severity: 'broken',
-          fingerprint: { route: '/search', class: 'server-error' },
-          traces: [],
+    /** A work item whose pull request #12 the coder pushed, and what the line reads of its checks, appended to it. */
+    const pushedWork = () => {
+      const events: LineEvent[] = [
+        {
+          type: 'ticket.opened',
+          payload: {
+            title: 'Server errors on /search',
+            category: 'errors',
+            severity: 'broken',
+            fingerprint: { route: '/search', class: 'server-error' },
+            traces: [],
+          },
         },
-      },
-      {
-        type: 'spec.written',
-        payload: {
-          outcome: 'Search answers every query.',
-          criteria: [
-            { given: 'a query', when: 'it is searched', expect: 'the page lists matches', from: 'the ticket' },
-          ],
-          scope: ['src/search.ts', 'test/'],
-          risks: [],
-          rollout: 'Ships as it is.',
+        {
+          type: 'spec.written',
+          payload: {
+            outcome: 'Search answers every query.',
+            criteria: [{ given: 'a query', when: 'it is searched', expect: 'it lists matches', from: 'the ticket' }],
+            scope: ['src/search.ts', 'test/'],
+            risks: [],
+            rollout: 'Ships as it is.',
+          },
         },
-      },
-      {
-        type: 'pull-request.pushed',
-        payload: {
-          number: 12,
-          title: 'fix(search): escape the query',
-          branch: 'factory/1001-search',
-          attempt: 1,
-          testsFirst: true,
-          files: [{ path: 'src/search.ts', added: 1, removed: 1 }],
-          whole: [{ path: 'src/search.ts', added: 1, removed: 1 }],
+        {
+          type: 'pull-request.pushed',
+          payload: {
+            number: 12,
+            title: 'fix(search): escape the query',
+            branch: 'factory/1001-search',
+            attempt: 1,
+            testsFirst: true,
+            files: [{ path: 'src/search.ts', added: 1, removed: 1 }],
+            whole: [{ path: 'src/search.ts', added: 1, removed: 1 }],
+          },
         },
-      },
+      ];
+      const read = (runs: CheckRun[], state = pr()) => {
+        const drafts = gateEvents(state, runs, ['test'], gateRecord(events));
+        events.push(...(drafts as LineEvent[]));
+        return drafts.map((d) => d.type);
+      };
+      return { events, read };
+    };
+    const FAILED = [run(1, 'test', 'failure')];
+    const PASSED = [run(1, 'test', 'success')];
+    const FAILED_AGAIN = [...PASSED, run(2, 'test', 'failure')];
+    const approved: LineEvent[] = [
+      { type: 'review.submitted', payload: { pullRequest: 12, verdict: 'approved', note: 'Fine.', findings: [] } },
+      { type: 'work-item.summarised', payload: { title: 'Search answers', description: 'Fixed.', story: 'Fixed.' } },
     ];
-    const read = (runs: CheckRun[]) =>
-      events.push(...(gateEvents(pr(), runs, ['test'], gateRecord(events)) as LineEvent[]));
-    read([run(1, 'test', 'failure')]);
-    expect(decide(events, facts).next).toMatchObject({ do: 'return', from: 'gates', to: 'build' });
-    events.push({ type: 'work.returned', payload: { from: 'gates', to: 'build', reason: 'The gates failed: test' } });
-    expect(decide(events, facts).next).toMatchObject({ do: 'step', agent: 'coder' });
-    // The branch does not move: the check is run again on the commit that failed, and passes there.
-    read([run(1, 'test', 'failure'), run(2, 'test', 'success')]);
-    expect(decide(events, facts).next).toMatchObject({ do: 'step', agent: 'reviewer' });
+    const back = { do: 'return', from: 'gates', to: 'build', failed: ['test'] };
+
+    it('send a change on to review when the check that sent it back is run again to green', () => {
+      const { events, read } = pushedWork();
+      read(FAILED);
+      expect(decide(events, facts).next).toMatchObject(back);
+      events.push({ type: 'work.returned', payload: { from: 'gates', to: 'build', reason: 'The gates failed: test' } });
+      expect(decide(events, facts).next).toMatchObject({ do: 'step', agent: 'coder' });
+      // The branch does not move: the check is run again on the commit that failed, and passes there.
+      read([...FAILED, run(2, 'test', 'success')]);
+      expect(decide(events, facts).next).toMatchObject({ do: 'step', agent: 'reviewer' });
+    });
+
+    it('send a change at review back when a check that passed is run again and fails', () => {
+      const { events, read } = pushedWork();
+      read(PASSED);
+      expect(decide(events, facts).next).toMatchObject({ do: 'step', agent: 'reviewer' });
+      // Still running, the round that passed stands.
+      expect(read([...PASSED, run(2, 'test', null)])).toEqual([]);
+      expect(read(FAILED_AGAIN)).toEqual(['gate.finished', 'gates.finished']);
+      expect(events.at(-1)).toMatchObject({ payload: { commit: SHA, conclusion: 'failed', failed: ['test'] } });
+      expect(decide(events, facts).next).toMatchObject(back);
+      expect(read(FAILED_AGAIN)).toEqual([]);
+      // Reviewed and written up, the same: nothing is held for a merge GitHub would refuse.
+      const reviewed = pushedWork();
+      reviewed.read(PASSED);
+      reviewed.events.push(...approved);
+      expect(decide(reviewed.events, facts).next).toMatchObject({ do: 'hold', hold: { cause: 'merge' } });
+      reviewed.read(FAILED_AGAIN);
+      expect(decide(reviewed.events, facts).next).toMatchObject(back);
+    });
+
+    it('end the hold for Martin’s merge, and send the change back, when a check that passed fails run again', () => {
+      const { events, read } = pushedWork();
+      read(PASSED);
+      events.push(...approved, {
+        type: 'hold.started',
+        payload: { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits for Martin to merge it' },
+      });
+      expect(decide(events, facts).next).toEqual({ do: 'wait', for: 'martin' });
+      read(FAILED_AGAIN);
+      expect(fold(events).hold).toBeUndefined();
+      expect(decide(events, facts).next).toMatchObject(back);
+    });
+
+    it('leave a change in the merge queue to the queue, and judge its head again once the queue takes it out', () => {
+      const { events, read } = pushedWork();
+      read(PASSED);
+      events.push(...approved, {
+        type: 'pull-request.enqueued',
+        payload: { number: 12, commit: SHA, rule: 'low-risk', position: 1 },
+      });
+      const queued = { stage: 'review', next: { do: 'wait', for: 'queue' } };
+      expect(decide(events, facts)).toEqual(queued);
+      // The queue tests its own commit: a check run again on the head it holds changes nothing the line acts on.
+      expect(read(FAILED_AGAIN)).toEqual([]);
+      expect(decide(events, facts)).toEqual(queued);
+      // A late word on an older commit leaves it in the queue.
+      const out = { number: 12, reason: 'failed_checks', failed: ['test'] };
+      events.push({ type: 'pull-request.dequeued', payload: { ...out, commit: MERGED } });
+      expect(read(FAILED_AGAIN)).toEqual([]);
+      // Taken out, the head's checks are the line's again: the failure is recorded, and the work goes back.
+      events.push({ type: 'pull-request.dequeued', payload: { ...out, commit: SHA } });
+      expect(read(FAILED_AGAIN)).toEqual(['gate.finished', 'gates.finished']);
+      expect(decide(events, facts).next).toMatchObject(back);
+    });
+
+    it('record what the head’s checks last did with the merge, which carries the change on whatever they said', () => {
+      const { events, read } = pushedWork();
+      read(PASSED);
+      events.push(...approved, {
+        type: 'pull-request.enqueued',
+        payload: { number: 12, commit: SHA, rule: 'low-risk', position: 1 },
+      });
+      const merged = pr({
+        state: 'closed',
+        merged: true,
+        mergeCommit: MERGED,
+        mergedBy: 'mrogan-software-factory[bot]',
+      });
+      expect(read(FAILED_AGAIN, merged)).toEqual(['gate.finished', 'gates.finished', 'pull-request.merged']);
+      const { stage, next } = decide(events, facts);
+      expect(fold(events).merged).toBe(true);
+      expect(stage).not.toBe('build');
+      expect(next.do).not.toBe('return');
+      // Merged, nothing more is read of it.
+      expect(read([...FAILED_AGAIN, run(3, 'test', 'success')], merged)).toEqual([]);
+    });
   });
 
   it('leave out the review gate’s check, required or not: it waits for Martin, who looks once the gates are done', () => {

@@ -325,6 +325,30 @@ describe('a fix whose gates fail on a branch brought up to date while it waited 
     expect(foldItem(story.events)).toMatchObject({ stage: 'build', hold: undefined, outcome: 'in-progress' });
   });
 
+  it('goes back the same way when a check run again on the same head fails, with no run started on a newer one', () => {
+    const again = work('1')
+      .open()
+      .add(0, 'pull-request.pushed', 'coder', {
+        number: 7,
+        title: 'fix(products): load them all',
+        branch: 'factory/1-products',
+        attempt: 1,
+        testsFirst: true,
+        files: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+        whole: [{ path: 'src/products.ts', added: 1, removed: 1 }],
+      })
+      .add(1, 'gates.started', 'actions', payloads.gatesStarted)
+      .add(3, 'gates.finished', 'actions', payloads.gatesPassed)
+      .add(4, 'review.submitted', 'reviewer', { pullRequest: 7, verdict: 'approved', note: 'Fine', findings: [] })
+      .add(5, 'hold.started', 'factory', { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits' })
+      .add(9, 'gates.finished', 'actions', payloads.gatesFailed);
+    expect(foldItem(again.events.slice(0, -1))).toMatchObject({ stage: 'review', outcome: 'needs-you' });
+    const failed = foldItem(again.events);
+    expect(failed).toMatchObject({ stage: 'gates', hold: undefined, outcome: 'in-progress' });
+    expect(failed?.failure?.stage).toBe('gates');
+    expect(failed && attempts(failed)).toMatchObject([{ attempt: 1, gates: { state: 'failed' } }]);
+  });
+
   it('stays at Build when the work already went back there before the run failed', () => {
     const returned = work('1').add(7, 'work.returned', 'reviewer', {
       from: 'review',

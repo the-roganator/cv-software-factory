@@ -973,12 +973,12 @@ describe('a base image’s move', () => {
     expect(read(dir, 'older.Dockerfile')).toBe(`FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`);
   });
 
-  it('writes nothing for a move the checkout already has: no FROM at the old pin, and one at the target', async () => {
+  it('writes nothing for a move the checkout already has: no FROM at the old pin, and every one at the target', async () => {
     const to = `sha256:${'5'.repeat(64)}`;
     const get: Get = async () => new Response(null, { headers: { 'docker-content-digest': to } });
     const files = {
       Dockerfile: `FROM ghcr.io/anchore/syft:v1.57.1@${to}\n`,
-      'older.Dockerfile': `FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`,
+      'older.Dockerfile': `FROM ghcr.io/anchore/syft:v1.57.1@${to} AS older\n`,
     };
     const dir = checkout(files);
     const tools = { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir };
@@ -995,6 +995,18 @@ describe('a base image’s move', () => {
     await expect(writePins(other, move, { ...tools, aside: other })).rejects.toThrow(
       'No FROM pins ghcr.io/anchore/syft at v1.54.0.',
     );
+    // Nor is the move there while another FROM of the image is at neither its old pin nor the target: with one at the
+    // target beside it, that pin would be left unmoved, and nothing says so.
+    const two = {
+      Dockerfile: `FROM ghcr.io/anchore/syft:v1.57.1@${to}\n`,
+      'older.Dockerfile': `FROM ghcr.io/anchore/syft:v1.53.0@sha256:${'3'.repeat(64)} AS older\n`,
+    };
+    const split = checkout(two);
+    await expect(writePins(split, move, { ...tools, aside: split })).rejects.toThrow(
+      'No FROM pins ghcr.io/anchore/syft at v1.54.0.',
+    );
+    expect(read(split, 'Dockerfile')).toBe(two.Dockerfile);
+    expect(read(split, 'older.Dockerfile')).toBe(two['older.Dockerfile']);
     // Nor is another image at the target's tag and digest.
     const another = checkout({ Dockerfile: `FROM ghcr.io/anchore/grype:v1.57.1@${to}\n` });
     await expect(writePins(another, move, { ...tools, aside: another })).rejects.toThrow(

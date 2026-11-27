@@ -48,10 +48,6 @@
   font: 11px var(--font-mono);
   color: var(--text-muted);
 }
-.pins > div span:last-child {
-  font: 12px var(--font-mono);
-  color: var(--text-2);
-}
 .patch-counts {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -186,6 +182,10 @@
 .patching .clr span {
   text-align: right;
   white-space: nowrap;
+}
+.pins > div span:last-child {
+  font: 12px var(--font-mono);
+  color: var(--text-2);
 }
 /* Under the headers, a count carries no letter; narrower, where they go, each follows its own. */
 .patching .clr i {

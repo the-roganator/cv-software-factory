@@ -77,11 +77,6 @@ table.audit {
   padding: 0 14px 8px 0;
   border-bottom: 1px solid var(--line-strong);
 }
-/* Each column but the last as narrow as what it holds, so the columns stay put as a filter changes the rows. */
-.audit thead th:not(:last-child) {
-  width: 1%;
-  white-space: nowrap;
-}
 .audit td {
   padding: 10px 14px 10px 0;
   border-bottom: 1px solid var(--line);
@@ -92,6 +87,11 @@ table.audit {
   padding: 18px 0 6px;
   font-weight: 400;
   border-bottom: 1px solid var(--line-strong);
+}
+/* Each column but the last as narrow as what it holds, so the columns stay put as a filter changes the rows. */
+.audit thead th:not(:last-child) {
+  width: 1%;
+  white-space: nowrap;
 }
 .audit .audit-time {
   font: 12px var(--font-mono);
@@ -131,10 +131,6 @@ table.audit {
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
-.audit tr.martin td:first-child {
-  box-shadow: inset 2px 0 0 var(--text);
-  padding-left: 10px;
-}
 .audit .audit-what small.withheld {
   font-family: var(--font-sans);
   font-size: 12px;
@@ -147,6 +143,10 @@ table.audit {
   padding: 18px 0;
   font-size: 13px;
   color: var(--text-muted);
+}
+.audit tr.martin td:first-child {
+  box-shadow: inset 2px 0 0 var(--text);
+  padding-left: 10px;
 }
 .audit-page .btn.small {
   align-self: flex-start;

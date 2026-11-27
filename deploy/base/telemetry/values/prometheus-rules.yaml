@@ -317,7 +317,16 @@ serverFiles:
               kind: "move-waits"
             annotations:
               summary: "A move waits on you"
-              description: "A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you."
+              description: "A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, it is in a line no longer built, or the sense found something running that no scan read. Patching in the console has it under Yours to do by hand."
+          - alert: PatchingMove
+            expr: "max(increase(line_patching_moves_total{kind=\"move-stopped\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "notify"
+              kind: "move-stopped"
+            annotations:
+              summary: "A move was tried and stopped"
+              description: "The factory tried a move and cannot take it further by itself: its pull request’s checks failed on every try, the merge queue took it out on every try, or it conflicts with main; the scan’s pin step refused it, its branch is held, or GitHub refused its pull request; or no release is better than the pin, and the finding has a deadline. Patching in the console has it under Tried and stopped."
           - alert: PatchingMove
             expr: "max(increase(line_patching_moves_total{kind=\"move-due-soon\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
             for: 0s
@@ -346,13 +355,21 @@ serverFiles:
               summary: "A fix for the app’s vulnerable dependency merged without you"
               description: "The line merged a work item’s fix for a vulnerable dependency of the app, by the review gate’s rule, with nobody’s approval. The canary still guards it, and its sheet in the console says which."
           - alert: PatchingScanStale
-            expr: "max(last_over_time(line_patching_scan_stale{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[1m])) == 1"
-            for: 15m
+            expr: "max(last_over_time(line_patching_scan_stale_seconds{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[1m])) > 900 < 11700"
+            for: 0s
             labels:
               level: "notify"
             annotations:
               summary: "The vulnerability scan has stopped"
               description: "In one of the two repositories, the newest scan of main the dependency sense has read judged its moves more than 36 hours ago: the daily scan is not running, fails before it judges, or the sense cannot read it. Until a newer one is read the review gate passes no move there, and nothing new is found. The scan’s runs in each repository and the dependency sense’s log say which."
+          - alert: PatchingSenseStale
+            expr: "max(last_over_time(line_patching_sense_stale_seconds{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[1m])) > 900 < 11700"
+            for: 0s
+            labels:
+              level: "notify"
+            annotations:
+              summary: "The dependency sense has stopped"
+              description: "The dependency sense has appended no day in 26 hours, though it reads each hour and appends one at least every 12: it is not running, or every read fails. Patching in the console shows the last day it read and nothing newer of the moves or their pull requests, and no move found meanwhile is told to you. The dependency sense’s log says why."
           - alert: SecurityEventsUncounted
             expr: "(count(last_over_time(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[6h])) unless count(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"})) or max(line_security_events_counting{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}) == 0"
             for: 5m

@@ -84,6 +84,7 @@ import {
   PATCHING_KINDS,
   PATCHING_ROLE,
   type PatchingTally,
+  senseStaleFor,
   staleScans,
 } from './patching-alerts.ts';
 
@@ -503,12 +504,19 @@ const holdsStored = meter.createObservableCounter('line.holds.stored', {
 
 const patchingMoves = meter.createObservableCounter('line.patching_moves', {
   description:
-    'The moves Martin hears of, each once, by kind: a new High or Critical fix, waiting on him, due within a day, past its deadline, and the app’s vulnerable dependency fixed without him',
+    'The moves Martin hears of, each once, by kind: a new High or Critical fix, waiting on him, tried and stopped, due within a day, past its deadline, and the app’s vulnerable dependency fixed without him',
 });
 
 const scanStale = meter.createObservableGauge('line.patching.scan_stale', {
   description:
-    'Whether a repository’s newest scan in the dependency sense’s days judged its moves too long ago to judge by: 1 if so, 0 if not',
+    'How long a repository’s newest scan in the dependency sense’s days has been too old to judge a move by, as this line has seen it: 0 while it is not',
+  unit: 's',
+});
+
+const senseStale = meter.createObservableGauge('line.patching.sense_stale', {
+  description:
+    'How long the dependency sense has gone without appending a day past the age it keeps one to, as this line has seen it: 0 while it has not',
+  unit: 's',
 });
 
 const counting = meter.createObservableGauge('line.security_events.counting', {
@@ -530,6 +538,9 @@ export function observeSecurity(
 ): () => void {
   let tally = emptyTally();
   let failing = false;
+  // When this line began reading: a staleness is measured from it at the latest, so a cluster that wakes with an old
+  // day is told of only once the sense has had time to read.
+  const since = now();
   const callback = async (result: BatchObservableResult) => {
     try {
       tally = await readOn(sql, tally, verifier, log, now());
@@ -545,11 +556,13 @@ export function observeSecurity(
     for (const kind of SECURITY_KINDS) result.observe(securityEvents, tally.kinds[kind], { kind });
     for (const cause of HOLD_CAUSES) result.observe(holdsStored, tally.holds[cause], { cause });
     for (const kind of PATCHING_KINDS) result.observe(patchingMoves, tally.patching.kinds[kind], { kind });
-    for (const { repository, stale } of staleScans(tally.patching, now())) {
-      result.observe(scanStale, stale ? 1 : 0, { repository });
+    for (const { repository, staleFor } of staleScans(tally.patching, now(), since)) {
+      result.observe(scanStale, staleFor, { repository });
     }
+    const sense = senseStaleFor(tally.patching, now(), since);
+    if (sense !== null) result.observe(senseStale, sense);
   };
-  const observed = [securityEvents, holdsStored, patchingMoves, scanStale, counting];
+  const observed = [securityEvents, holdsStored, patchingMoves, scanStale, senseStale, counting];
   meter.addBatchObservableCallback(callback, observed);
   return () => meter.removeBatchObservableCallback(callback, observed);
 }

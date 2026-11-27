@@ -1,8 +1,9 @@
 /**
- * `factory patching`: the dependency sense (apps/factory/src/patching). As it starts, and each day after the scan, it
- * asks the GitHub worker for both repositories' moves, compares the images the
- * cluster's pods run with the scan's list, and appends the day as `patching.read` when it differs from the last; and it
- * sends each of the app's moves for the line to triage's inbox (`patching/sends.ts`). It connects to the store as its
+ * `factory patching`: the dependency sense (apps/factory/src/patching). As it starts, and each hour after, it asks the
+ * GitHub worker for both repositories' moves and the pull requests and issues that carry them, compares the images the
+ * cluster's pods run with the scan's list, and appends the day as `patching.read` when it differs from the last, or
+ * when the last is 12 hours old; and it sends each of the app's moves for the line to triage's inbox
+ * (`patching/sends.ts`). It connects to the store as its
  * own role, `factory_patching`, which alone may append that event, and may send only its own signals.
  *
  *     factory patching          the sense, until stopped
@@ -13,9 +14,8 @@
  *
  *     PGHOST, PGDATABASE, PGUSER, PGPASSWORD   the store, as factory_patching
  *     GITHUB_URL                               the GitHub worker's reads door (its PATCHING_PORT), which serves the
- *                                              sense's one read and nothing else
+ *                                              sense's two reads and nothing else
  *     KUBE_API_URL                             on a host, what `kubectl proxy` serves; in the cluster the pod's account
- *     PATCHING_AT                              the day's read, HH:MM in UTC (05:30, once the scan has finished)
  *     PATCHING_REPOSITORIES                    the repositories, comma-separated (both public ones)
  *     PATCHING_NAMESPACES                      the namespaces it lists pods in, comma-separated; unset, every one,
  *                                              as `kubectl proxy` on a host may; an empty item or a name that is
@@ -27,7 +27,7 @@ export const USAGE = '  factory patching [--once]';
 
 export async function run(args: string[]): Promise<number> {
   const once = args[0] === '--once';
-  const { GITHUB_URL, PATCHING_AT = '05:30', PATCHING_REPOSITORIES, PATCHING_NAMESPACES } = process.env;
+  const { GITHUB_URL, PATCHING_REPOSITORIES, PATCHING_NAMESPACES } = process.env;
   if (args.length > (once ? 1 : 0) || !GITHUB_URL) {
     console.log(`Usage:\n${USAGE}\n\nSet GITHUB_URL to the GitHub worker's reads door.`);
     return 2;
@@ -43,8 +43,7 @@ export async function run(args: string[]): Promise<number> {
   const repositories = PATCHING_REPOSITORIES?.trim()
     ? PATCHING_REPOSITORIES.split(',').map((repo) => repo.trim())
     : [...REPOSITORIES];
-  const { timeOfDay, everyDay } = await import('../patching/schedule.ts');
-  const at = timeOfDay(PATCHING_AT);
+  const { everyHour } = await import('../patching/schedule.ts');
   const { shutdownTelemetry } = await import('../telemetry.ts');
   const { log } = await import('../log.ts');
   const { connect, DiskArtifacts, EventWriter } = await import('@software-factory/store');
@@ -67,6 +66,7 @@ export async function run(args: string[]): Promise<number> {
     log,
     senses: {
       moves: (repo) => github.read('moves', repo, {}),
+      pulls: (repo) => github.read('pulls', repo, {}),
       running: () => runningContainers(kube, namespaces),
     },
   });
@@ -78,16 +78,14 @@ export async function run(args: string[]): Promise<number> {
         log.info(
           {
             moves: Object.fromEntries(day.repositories.map((r) => [r.repository, r.moves.length])),
+            pulls: Object.fromEntries(day.repositories.map((r) => [r.repository, r.pulls.length])),
             compared: day.compared,
             rows: day.rows.length,
           },
           result.pass === 'appended' ? 'patching: the day appended' : 'patching: nothing changed, nothing appended',
         );
       } else if (result.pass === 'not-real') log.warn('patching: the store holds samples; nothing appended');
-      const { next, why } = nextAfter(result, Date.now());
-      if (why === 'stale')
-        log.info('patching: a scan read is older than today’s, so the day is read again within the hour');
-      return { next, code: exitCode(result) };
+      return { next: nextAfter(result).next, code: exitCode(result) };
     } catch (error) {
       log.error({ err: error }, 'patching: the pass failed, so the day is not appended');
       return { next: 'hour' as const, code: 1 };
@@ -103,8 +101,8 @@ export async function run(args: string[]): Promise<number> {
         abort.abort();
       });
     }
-    log.info({ github: GITHUB_URL, at: PATCHING_AT, repositories }, 'patching: reading now, then each day');
-    await everyDay(pass, at, abort.signal);
+    log.info({ github: GITHUB_URL, repositories }, 'patching: reading now, then each hour');
+    await everyHour(pass, abort.signal);
     return 0;
   } finally {
     await Promise.all([sql.end(), shutdownTelemetry()]);

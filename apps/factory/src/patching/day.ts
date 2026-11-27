@@ -1,6 +1,7 @@
 /**
  * The day, as `patching.read` holds it: a pure function of what the GitHub worker read for each repository (its moves,
- * checked against its scan's state) and of the rows the cluster's comparison made.
+ * checked against its scan's state, the pins that wait, and the pull requests and issues that carry its moves), of the
+ * rows the cluster's comparison made, and of when the sense read.
  *
  * A move keeps what `moves.json` says of it. A lockfile's move, which the artifact names by its file alone, carries its
  * package apart (`package`), from the scan's state, for the public view to leave out.
@@ -10,17 +11,21 @@
  * sense reads no log.
  */
 import type { MoveLane, PayloadOf, ScanFailure, ScanSeverity } from '@software-factory/events';
-import { MOST_MOVES, MOST_PINS, MOST_ROWS } from '@software-factory/events/schemas';
-import type { Moves, ReadMove } from '../github/scanning.ts';
+import { MOST_MOVES, MOST_PINS, MOST_PULLS, MOST_ROWS, SETTLED_DAYS } from '@software-factory/events/schemas';
+import type { Moves, ReadMove, ReadWaiting } from '../github/scanning.ts';
 import type { Counts, MovesFile } from '../vulnerabilities/moves.ts';
 import type { Row } from './compare.ts';
 
 export type Day = PayloadOf<'patching.read'>;
 type DayMove = Day['repositories'][number]['moves'][number];
+type DayWaiting = Day['repositories'][number]['waiting'][number];
+/** A pull request or issue that carries a move, as the GitHub worker's `pulls` read gives it. */
+export type PatchPull = Day['repositories'][number]['pulls'][number];
 
-/** What the worker read for one repository. */
+/** What the worker read for one repository: its moves, and the pull requests and issues that carry them. */
 export interface RepositoryRead {
   moves: Moves;
+  pulls: PatchPull[];
 }
 
 const counts = (from: Counts): Record<ScanSeverity, number> => ({
@@ -55,6 +60,38 @@ function dayMove(move: ReadMove): DayMove {
         }
       : {}),
   };
+}
+
+/** A pin that waits, as the day holds it: what `moves.json` says of it, without its findings or its place there. */
+function dayWaiting(wait: ReadWaiting): DayWaiting {
+  return {
+    name: wait.name,
+    pins: wait.pins.slice(0, MOST_PINS),
+    from: wait.from,
+    why: wait.why,
+    ...(wait.to === undefined ? {} : { to: wait.to }),
+    ...(wait.until === undefined ? {} : { until: wait.until }),
+    clears: counts(wait.clears),
+    ...(wait.leaves ? { leaves: counts(wait.leaves) } : {}),
+    ...(wait.deadline === undefined ? {} : { deadline: wait.deadline }),
+    ...(wait.routine ? { routine: true as const } : {}),
+  };
+}
+
+const DAY_MS = 24 * 3_600_000;
+
+/**
+ * The pull requests and issues a day holds: the open ones, and those settled within `SETTLED_DAYS` of the read; past
+ * the cap the open ones first, then the latest settled.
+ */
+function pullsOf(pulls: PatchPull[], read: number): PatchPull[] {
+  const kept = pulls.filter((pull) => !pull.settled || read - Date.parse(pull.settled) <= SETTLED_DAYS * DAY_MS);
+  if (kept.length <= MOST_PULLS) return kept;
+  const open = kept.filter((pull) => !pull.settled);
+  const settled = kept
+    .filter((pull) => pull.settled)
+    .sort((a, b) => Date.parse(b.settled as string) - Date.parse(a.settled as string));
+  return [...open, ...settled].slice(0, MOST_PULLS);
 }
 
 /** The conclusions GitHub gives a run that failed. */
@@ -94,7 +131,7 @@ const totalsOf = (t: ScanTotals): NonNullable<Day['repositories'][number]['total
 });
 
 /** One repository's day. */
-function repositoryDay({ moves }: RepositoryRead): Day['repositories'][number] {
+function repositoryDay({ moves, pulls }: RepositoryRead, read: number): Day['repositories'][number] {
   const list = moves.moves.slice(0, MOST_MOVES).map(dayMove);
   const judged = moves.file?.judged ?? null;
   return {
@@ -112,8 +149,8 @@ function repositoryDay({ moves }: RepositoryRead): Day['repositories'][number] {
     totals: moves.file ? totalsOf(moves.file.totals) : null,
     scanned: scannedOf(moves).length,
     moves: list,
-    waiting: [],
-    pulls: [],
+    waiting: (moves.waiting ?? []).slice(0, MOST_MOVES).map(dayWaiting),
+    pulls: pullsOf(pulls, read),
   };
 }
 
@@ -122,12 +159,16 @@ export function scannedOf(moves: Moves) {
   return moves.file?.scanned ?? [];
 }
 
-/** The day: each repository, in order, the containers compared, and the rows, or null when none could be made. */
-export function dayOf(reads: RepositoryRead[], containers: number, rows: Row[] | null): Day {
+/**
+ * The day read at `read`: each repository, in order, the containers compared, and the rows, or null when none could be
+ * made.
+ */
+export function dayOf(reads: RepositoryRead[], containers: number, rows: Row[] | null, read: Date): Day {
   return {
     repositories: reads
-      .map(repositoryDay)
+      .map((each) => repositoryDay(each, read.getTime()))
       .sort((a, b) => (a.repository < b.repository ? -1 : a.repository > b.repository ? 1 : 0)),
+    read: read.toISOString(),
     compared: rows !== null,
     containers,
     rows: capped(rows ?? []),
@@ -152,15 +193,15 @@ function capped(rows: Row[]): Row[] {
 }
 
 /**
- * Whether two days say the same: the same runs, moves and rows. A pod's name and how many containers ran are left out,
- * and so is how many copies make a row, so a pod made again, or a Deployment scaled, is no new day while its row
- * stands.
+ * Whether two days say the same: the same runs, moves, waits, pull requests and rows. When each was read is left out,
+ * and so are a pod's name, how many containers ran and how many copies make a row, so a pod made again, or a
+ * Deployment scaled, is no new day while its row stands.
  */
 export function sameDay(a: Day, b: Day | null): boolean {
   if (!b) return false;
   // Without the pods' names the rows may come in another order and repeat, so they are compared as a sorted set.
   const set = (items: string[]) => [...new Set(items)].sort();
-  const plain = ({ containers: _, rows, ...day }: Day) => ({
+  const plain = ({ containers: _, read: __, rows, ...day }: Day) => ({
     ...day,
     rows: set(
       rows.map((row) =>

@@ -87,8 +87,8 @@ const queue = (over: Partial<MergeQueue> = {}): MergeQueue => ({
 });
 
 const level =
-  (autonomy: Autonomy = 'guarded', autoMerge = true): LevelReader =>
-  async () => ({ autonomy, autoMerge });
+  (autonomy: Autonomy = 'guarded', autoMerge = true, stopped = false): LevelReader =>
+  async () => ({ autonomy, autoMerge, stopped });
 
 /** A log whose lines a test reads: what the queue said of each wait. */
 function capture() {
@@ -364,12 +364,58 @@ describe('the workflow pin queue watch', () => {
     }
     // What Martin changes holds from the next pass, with nothing restarted.
     let autonomy: Autonomy = 'supervised';
-    const { pass, enqueued } = harness({ level: async () => ({ autonomy, autoMerge: true }) });
+    const { pass, enqueued } = harness({ level: async () => ({ autonomy, autoMerge: true, stopped: false }) });
     await pass();
     expect(enqueued).toEqual([]);
     autonomy = 'guarded';
     await pass();
     expect(enqueued).toEqual([[81, HEAD]]);
+  });
+
+  it('adds none while the line is stopped, at any level, and adds it once the line runs again', async () => {
+    for (const autonomy of ['guarded', 'lights-out'] as const) {
+      let stopped = true;
+      const said = capture();
+      const { pass, enqueued } = harness({
+        level: async () => ({ autonomy, autoMerge: true, stopped }),
+        log: said.log,
+      });
+      await pass();
+      await pass();
+      expect(enqueued, autonomy).toEqual([]);
+      expect(said.lines).toMatchObject([
+        { waits: 'stopped', why: 'the line is stopped, so an exact-pin waits for Martin' },
+      ]);
+      stopped = false;
+      await pass();
+      expect(enqueued, autonomy).toEqual([[81, HEAD]]);
+    }
+  });
+
+  it('leaves out a head a person took out of the queue, on a worker that has just started, and says so in its log', async () => {
+    const said = capture();
+    const taken = queue({
+      removed: {
+        at: '2026-11-24T21:10:00Z',
+        by: 'mrogan',
+        reason: 'manual',
+        commit: NEWER,
+        failures: 0,
+        person: true,
+        atHead: true,
+      },
+    });
+    const { pass, enqueued, sent } = harness({ queued: () => taken, log: said.log });
+    await pass();
+    await pass();
+    expect(enqueued).toEqual([]);
+    expect(said.lines.filter((line) => line.level === 40)).toMatchObject([
+      {
+        msg: 'someone took the workflow pin pull request out of the merge queue: it waits for Martin',
+      },
+    ]);
+    // Nothing is said on Dependabot's pull request, and nothing read of its comments.
+    expect(sent.filter((s) => s.path.includes('/comments'))).toEqual([]);
   });
 
   it('waits for every other required check, and for one that failed says what would move it, once', async () => {
@@ -414,8 +460,18 @@ describe('the workflow pin queue watch', () => {
   });
 
   it(`adds a head the queue took out for failed checks again, ${QUEUE_TRIES} times in all, then leaves it for Martin with no comment`, async () => {
-    const out = (failures: number, reason = 'failed_checks') =>
-      queue({ removed: { at: '2026-11-24T21:10:00Z', by: 'github-merge-queue', reason, commit: NEWER, failures } });
+    const out = (failures: number, reason = 'failed_checks', person = false) =>
+      queue({
+        removed: {
+          at: '2026-11-24T21:10:00Z',
+          by: person ? 'mrogan' : 'github-merge-queue',
+          reason,
+          commit: NEWER,
+          failures,
+          person,
+          atHead: true,
+        },
+      });
     let state = queue();
     const said = capture();
     const { pass, enqueued } = harness({ queued: () => state, log: said.log });
@@ -431,13 +487,13 @@ describe('the workflow pin queue watch', () => {
     expect(enqueued).toHaveLength(QUEUE_TRIES);
     expect(said.lines.at(-1)).toMatchObject({
       level: 40,
-      msg: `the merge queue took the workflow pin pull request out for failed checks ${QUEUE_TRIES} times: it waits for Martin`,
+      msg: `the merge queue took the workflow pin pull request out itself ${QUEUE_TRIES} times: it waits for Martin`,
     });
     // Out any other way (Martin took it out), it is not added again.
     state = queue();
     const taken = harness({ queued: () => state });
     await taken.pass();
-    state = out(0, 'dequeued');
+    state = out(0, 'manual', true);
     await taken.pass();
     expect(taken.enqueued).toHaveLength(1);
   });

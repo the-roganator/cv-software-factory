@@ -345,6 +345,14 @@ serverFiles:
             annotations:
               summary: "A fix for the app’s vulnerable dependency merged without you"
               description: "The line merged a work item’s fix for a vulnerable dependency of the app, by the review gate’s rule, with nobody’s approval. The canary still guards it, and its sheet in the console says which."
+          - alert: PatchingScanStale
+            expr: "max(last_over_time(line_patching_scan_stale{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[1m])) == 1"
+            for: 15m
+            labels:
+              level: "notify"
+            annotations:
+              summary: "The vulnerability scan has stopped"
+              description: "In one of the two repositories, the newest scan of main the dependency sense has read judged its moves more than 36 hours ago: the daily scan is not running, fails before it judges, or the sense cannot read it. Until a newer one is read the review gate passes no move there, and nothing new is found. The scan’s runs in each repository and the dependency sense’s log say which."
           - alert: SecurityEventsUncounted
             expr: "(count(last_over_time(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[6h])) unless count(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"})) or max(line_security_events_counting{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}) == 0"
             for: 5m

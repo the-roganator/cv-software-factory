@@ -21,12 +21,18 @@
 #                            ask Dependabot to make it again on main (the harness calls it before a run whose test
 #                            needs one)
 #   ./copies.sh worker 0|1   stop or start the scratch cluster's GitHub worker
+#   ./copies.sh line stop|start|new-work-off  the scratch line stopped or started, or new work set off, by the
+#                            factory copy's own `make` in work/factory, as Martin's commands (stop.sh calls it)
 #   ./copies.sh summon-dependabot [factory|app]  have Dependabot look at a copy now, the app's by default (test 20;
 #                            the harness calls it)
 #   ./copies.sh move-on-main <file> <image> <tag> <tag@digest>  an image's move put on the app copy's main, as another
 #                            change would have made it (W3b; the harness calls it)
 #   ./copies.sh lift-exception <package> <advisory>…  the factory copy's exceptions of those advisories for a package
 #                            taken off its main, its others left (test 21; the harness calls it)
+#   ./copies.sh revert-move <merge>  a merged move's pins put back on the factory copy's main, as Martin reverting its
+#                            merge commit (test 27; the harness calls it)
+#   ./copies.sh pin-watch    the moves the scratch pin watch takes, from batch.env, written where the worker reads them
+#                            as it starts (the harness calls it, once the scan its run stands on is in)
 #   ./copies.sh down         delete the scratch cluster and its state
 #
 # The scratch cluster is the copies' alone: its own k3d name and kube context (k3d-software-factory-scratch), ports
@@ -185,8 +191,12 @@ pin_watch_from_cluster() { # <dir>
   grep -qx ' *name: scratch-pin-watch' "$file" || die "PIN_WATCH_ONLY in $file is not read from scratch-pin-watch"
 }
 
+# PIN_WATCH_HOLD=1 writes no move, whatever batch.env names: a run's reset holds the watch so, until the scan the run
+# stands on is in (the first scan after a reset has no state, and lists no content first seen that day), and then
+# writes batch.env's (`./copies.sh pin-watch`) and restarts the worker.
 pin_watch() {
   local only=${PIN_WATCH_ONLY-*}
+  [[ -z ${PIN_WATCH_HOLD:-} ]] || only=
   kubectl --context "$SCRATCH_CONTEXT" -n factory create configmap scratch-pin-watch --from-literal=only="$only" \
     --dry-run=client -o yaml | kubectl --context "$SCRATCH_CONTEXT" apply -f - >/dev/null
   echo "  the scratch pin watch takes: ${only:-no move}"
@@ -326,13 +336,12 @@ run_ok() { # <run> <repository>
   return 1
 }
 
-# Every branch ruleset on the copy (github-settings.ts makes one, "main"): off for a force-push to main, on again after.
-ruleset() { # <copy> active|disabled
-  local id
-  for id in $(gh api "repos/$1/rulesets" --jq '.[] | select(.target == "branch") | .id'); do
-    gh api -X PUT "repos/$1/rulesets/$id" -f enforcement="$2" >/dev/null
-  done
-}
+# `ruleset <copy> active|disabled`: a copy's branch rulesets off for a push to main and on again after, and on again
+# on any exit that left them off; the tag ruleset is never touched (rulesets.sh). With it comes `gh_retry <gh's
+# arguments>` (gh-retry.sh): a write of gh's that sets a run up, tried three times when GitHub answers in the 500s or
+# the network drops, and failing at once on anything else. A call that reads standard input is plain `gh`.
+# shellcheck source=rulesets.sh
+source "$HERE/rulesets.sh"
 
 push_baseline() { # <copy> <dir>
   local copy=$1 dir=$2
@@ -361,13 +370,13 @@ settings() {
   # with the keys in place, applies the ruleset.
   copy_settings || true
   for copy in "$FACTORY_COPY" "$APP_COPY"; do
-    gh repo edit "$copy" --description "Scratch copy for the patching tests. Reset often; nothing here is real." >/dev/null
-    gh variable set FACTORY_REPOSITORY -R "$copy" -b "$FACTORY_COPY"
-    gh variable set APP_REPOSITORY -R "$copy" -b "$APP_COPY"
+    gh_retry repo edit "$copy" --description "Scratch copy for the patching tests. Reset often; nothing here is real." >/dev/null
+    gh_retry variable set FACTORY_REPOSITORY -R "$copy" -b "$FACTORY_COPY"
+    gh_retry variable set APP_REPOSITORY -R "$copy" -b "$APP_COPY"
     # The real ones' labels: the line, the worker and the gate read them.
     local real=$FACTORY_REAL; [[ $copy == "$APP_COPY" ]] && real=$APP_REAL
-    gh label clone "$real" -R "$copy" --force >/dev/null
-    for env in review scan-state; do gh api -X PUT "repos/$copy/environments/$env" >/dev/null; done
+    gh_retry label clone "$real" -R "$copy" --force >/dev/null
+    for env in review scan-state; do gh_retry api -X PUT "repos/$copy/environments/$env" >/dev/null; done
     security find-generic-password -s "$REVIEW_APP_KEYCHAIN" -w | base64 -d |
       gh secret set REVIEW_APP_PRIVATE_KEY --env review -R "$copy"
   done
@@ -404,6 +413,19 @@ in_copy() {
   fi
   (cd "$dir" && env -u GITHUB_APP_PRIVATE_KEY -u PUSHOVER_APP_TOKEN -u PUSHOVER_USER_KEY -u PRIVATE_DIR -u KUBECONFIG \
     -u FACTORY_REPOSITORY -u APP_REPOSITORY mise exec -- "$@")
+}
+
+# The scratch line stopped or started, or new work set off, as Martin's own commands: the copy's `make stop-the-line`,
+# `make start-the-line` and `make new-work OFF=1`, which append the events as `factory line` does, with his operator
+# role, whatever the store holds (a line never started has nothing to stop, and the command says so).
+line_make() {
+  [[ -f "$WORK/factory/Makefile" ]] || die "build first"
+  case "${1:-}" in
+    stop) in_copy make stop-the-line REASON='a patching test' ;;
+    start) in_copy make start-the-line REASON='a patching test' ;;
+    new-work-off) in_copy make new-work OFF=1 ;;
+    *) die "line takes stop, start or new-work-off, not ${1:-nothing}" ;;
+  esac
 }
 
 # The scratch cluster, made by the factory copy's own `make up` at its baseline: Argo CD then deploys each copy's main.
@@ -451,7 +473,7 @@ pin_images() {
     local copy=${pair%%:*} sha=${pair#*:}
     say "build.yml on $copy at $sha"
     local since run=; since=$(date -u +%FT%TZ)
-    gh workflow run build.yml -R "$copy" --ref main
+    gh_retry workflow run build.yml -R "$copy" --ref main
     # The run this dispatch started: by its event and its time, not merely the newest.
     for _ in $(seq 1 30); do
       run=$(gh run list -R "$copy" -w build.yml -e workflow_dispatch -L 5 --json databaseId,createdAt,headSha \
@@ -519,13 +541,13 @@ dependabot_only_needed() { # <copy>
     --jq '.[] | "\(.number)\t\(.title | ascii_downcase)"' |
     while IFS=$'\t' read -r n title; do
       if ! grep -qE -- "$keep" <<<"$title"; then
-        gh pr close "$n" -R "$copy" -c "Closed for the patching tests: the copy keeps only the Dependabot pull requests they need." >/dev/null
+        gh_retry pr close "$n" -R "$copy" -c "Closed for the patching tests: the copy keeps only the Dependabot pull requests they need." >/dev/null
         echo "  closed Dependabot's #$n ($title): no test needs it"
       elif grep -qE -- "$as_is" <<<"$title"; then
         echo "  kept Dependabot's #$n ($title) as it is"
       else
         # Made again on the baseline just pushed, so its checks are the baseline's, not a run from before the reset.
-        gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
+        gh_retry pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
         echo "  asked Dependabot to recreate #$n ($title) on the baseline"
       fi
     done
@@ -553,14 +575,14 @@ dependabot_reopen() { # <copy>
     n=$(awk -F'\t' -v re="$one" '$2 ~ re { print $1; exit }' <<<"$closed")
     title=$(awk -F'\t' -v re="$one" '$2 ~ re { print $2; exit }' <<<"$closed")
     if [[ -n $n ]] && grep -qE -- "$as_is" <<<"$title"; then
-      if gh pr reopen "$n" -R "$copy" >/dev/null; then
+      if gh_retry pr reopen "$n" -R "$copy" >/dev/null; then
         echo "  reopened Dependabot's #$n, kept as it is: a test needs it open ($one)"
       else
         echo "  Dependabot's #$n cannot be reopened: the test that needs it ($one) has none" >&2
       fi
     elif [[ -n $n ]]; then
-      if gh pr reopen "$n" -R "$copy" >/dev/null; then
-        gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
+      if gh_retry pr reopen "$n" -R "$copy" >/dev/null; then
+        gh_retry pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
         reopened+=("$n")
         echo "  reopened Dependabot's #$n and asked Dependabot to recreate it on main: a test needs it ($one)"
       else
@@ -597,8 +619,11 @@ forget_closed() { # <copy>
   gh pr list -R "$copy" --author "app/$SCRATCH_APP_SLUG" --state closed --limit 500 --json number,title,mergedAt,body \
     --jq '.[] | select(.mergedAt == null) | select((((.title | startswith("chore(reset): ")) or (.title | startswith("[reset] "))) | not) or (.body | test("<!-- factory: pin-edits [0-9a-f]{64} -->"))) | "\(.number)\t\(.title)"' |
     while IFS=$'\t' read -r n title; do
-      gh pr view "$n" -R "$copy" --json body --jq .body | sed -E 's/<!-- factory: pin-edits [0-9a-f]{64} -->/<!-- factory: pin-edits reset -->/' |
-        gh pr edit "$n" -R "$copy" --title "chore(reset): $(printf %s "${title#\[reset\] }" | sed -E "s/^[a-z]+(\\([a-z0-9-]+\\))?!?: //")" --body-file - >/dev/null && echo "  retitled #$n, closed by a reset"
+      # The body in a file, not a pipe, so the edit can be made again (gh_retry).
+      local body; body=$(mktemp)
+      gh pr view "$n" -R "$copy" --json body --jq .body | sed -E 's/<!-- factory: pin-edits [0-9a-f]{64} -->/<!-- factory: pin-edits reset -->/' >"$body" &&
+        gh_retry pr edit "$n" -R "$copy" --title "chore(reset): $(printf %s "${title#\[reset\] }" | sed -E "s/^[a-z]+(\\([a-z0-9-]+\\))?!?: //")" --body-file "$body" >/dev/null && echo "  retitled #$n, closed by a reset"
+      rm -f "$body"
     done
 }
 
@@ -612,7 +637,7 @@ dependabot_like_real() { # <copy> <real>
       # One a test needs stays, whatever the real repository did with its own of that title.
       if grep -qE -- "$keep" <<<"$title"; then continue; fi
       if grep -qxF "$title" <<<"$closed"; then
-        gh pr close "$n" -R "$copy" -c "Closed as $real closed it: the copy's Dependabot skips what the real one skips." >/dev/null
+        gh_retry pr close "$n" -R "$copy" -c "Closed as $real closed it: the copy's Dependabot skips what the real one skips." >/dev/null
         echo "  closed Dependabot's #$n ($title), as $real did"
       fi
     done
@@ -625,32 +650,36 @@ reset_one() { # <copy> <dir>
   # skip that version for good; left open, it rebases them on the baseline itself.
   gh pr list -R "$copy" --state open --limit 200 --json number,author,headRefName \
     --jq '.[] | select(.author.login != "app/dependabot") | "\(.number) \(.headRefName)"' |
-    while read -r n branch; do gh pr close "$n" -R "$copy" --delete-branch >/dev/null || true; done
+    while read -r n branch; do gh_retry pr close "$n" -R "$copy" --delete-branch >/dev/null || true; done
   # Every other branch but main, baseline and Dependabot's.
   gh api --paginate "repos/$copy/branches" --jq '.[].name' |
     { grep -vxE 'main|baseline|dependabot/.*' || true; } | while read -r b; do
-      gh api -X DELETE "repos/$copy/git/refs/heads/$b" >/dev/null || true
+      gh_retry api -X DELETE "repos/$copy/git/refs/heads/$b" >/dev/null || true
     done
   # Issues (the worker's), deleted, so the next run's numbers and texts are its own.
   gh issue list -R "$copy" --state all --limit 500 --json id --jq '.[].id' | while read -r id; do
-    gh api graphql -f query='mutation($id:ID!){deleteIssue(input:{issueId:$id}){clientMutationId}}' -f id="$id" >/dev/null
+    gh_retry api graphql -f query='mutation($id:ID!){deleteIssue(input:{issueId:$id}){clientMutationId}}' -f id="$id" >/dev/null
   done
   # Releases and every tag, which release-please makes from merges after the baseline.
   gh release list -R "$copy" --limit 200 --json tagName --jq '.[].tagName' | while read -r t; do
-    gh release delete "$t" -R "$copy" --yes --cleanup-tag >/dev/null || true
+    gh_retry release delete "$t" -R "$copy" --yes --cleanup-tag >/dev/null || true
   done
   gh api --paginate "repos/$copy/tags" --jq '.[].name' | while read -r t; do
-    gh api -X DELETE "repos/$copy/git/refs/tags/$t" >/dev/null || true
+    gh_retry api -X DELETE "repos/$copy/git/refs/tags/$t" >/dev/null || true
   done
-  # The scan's sealed state (the artifact `state`), so the next scan starts its clocks afresh.
+  # The scan's sealed state (the artifact `state`), so the next scan starts its clocks afresh: every image's digest
+  # and chart's version it finds is then first seen that day, and waits a day. The copy's scan puts the sightings in
+  # the state it writes this many days back (staged/factory/28-…, which reads the variable), so the scan after it
+  # lists them: a run reads both scans (test 28).
+  gh_retry variable set SCRATCH_CONTENT_SEEN_DAYS_AGO -R "$copy" -b "${CONTENT_SEEN_DAYS_AGO:-2}" >/dev/null
   gh api --paginate "repos/$copy/actions/artifacts?name=state" --jq '.artifacts[].id' | while read -r id; do
-    gh api -X DELETE "repos/$copy/actions/artifacts/$id" >/dev/null || true
+    gh_retry api -X DELETE "repos/$copy/actions/artifacts/$id" >/dev/null || true
   done
   # Code scanning: every analysis, and so every alert, so the next scan finds its findings anew.
   local next
   while next=$(gh api "repos/$copy/code-scanning/analyses?per_page=100" --jq '[.[] | select(.deletable)][0].id' 2>/dev/null) \
     && [[ -n "$next" && "$next" != null ]]; do
-    gh api -X DELETE "repos/$copy/code-scanning/analyses/$next?confirm_delete=true" >/dev/null || break
+    gh_retry api -X DELETE "repos/$copy/code-scanning/analyses/$next?confirm_delete=true" >/dev/null || break
   done
   # main, back to the baseline.
   local was; was=$(git ls-remote "https://github.com/$copy" refs/heads/main | cut -f1)
@@ -661,7 +690,7 @@ reset_one() { # <copy> <dir>
   if [[ $was == "$sha" ]]; then
     local codeql
     codeql=$(gh run list -R "$copy" -w codeql.yml -e push -c "$sha" -L 1 --json databaseId --jq '.[0].databaseId // empty')
-    if [[ -n $codeql ]] && gh run rerun "$codeql" -R "$copy" >/dev/null 2>&1; then
+    if [[ -n $codeql ]] && gh_retry run rerun "$codeql" -R "$copy" >/dev/null; then
       echo "  main was already the baseline: CodeQL's push run $codeql on it runs again, for an analysis of main"
     else
       echo "  main was already the baseline, and CodeQL has no push run on it to run again: no analysis of main until one" >&2
@@ -749,6 +778,30 @@ lift_exception() { # <package> <advisory>…
       die "the exception of $advisory is still in the factory copy's policy"
     fi
   done
+}
+
+# Test 27: a merged move's pins put back on the factory copy's main, as Martin reverting its merge: `git revert` of
+# the merge's one commit, signed, pushed with the ruleset off for the push alone. `[skip ci]` in the subject, as
+# lift_exception: no build and no deploy pin follow it, and the run dispatches the scan that reads it.
+revert_move() { # <merge commit>
+  local merge=${1:?the merge commit of the move to put back} dir="$WORK/factory" pushed=0
+  [[ $merge =~ ^[0-9a-f]{7,40}$ ]] || die "revert-move: $merge is no commit"
+  git -C "$dir" fetch -q "https://github.com/$FACTORY_COPY" main
+  git -C "$dir" checkout -q -f --detach FETCH_HEAD
+  git -C "$dir" merge-base --is-ancestor "$merge" HEAD || die "revert-move: $merge is not on $FACTORY_COPY's main"
+  git -C "$dir" revert --no-commit "$merge" >/dev/null || {
+    git -C "$dir" revert --abort 2>/dev/null || true
+    die "revert-move: $merge does not revert cleanly on main"
+  }
+  if git -C "$dir" diff --cached --quiet; then die "revert-move: main no longer has what $merge changed"; fi
+  git -C "$dir" -c commit.gpgsign=true commit -q -m "chore(scratch): put back what ${merge:0:7} moved [skip ci]" \
+    -m "This reverts commit $merge." -m "Scratch copy for the patching tests: not the real repository." ||
+    die "the commit was not made (is a signing key set?): revert-move"
+  ruleset "$FACTORY_COPY" disabled
+  git -C "$dir" push -q "https://github.com/$FACTORY_COPY" HEAD:refs/heads/main || pushed=1
+  ruleset "$FACTORY_COPY" active
+  [[ $pushed == 0 ]] || die "could not push the revert of $merge to $FACTORY_COPY"
+  say "on $FACTORY_COPY's main at $(git -C "$dir" rev-parse HEAD): put back what ${merge:0:7} moved"
 }
 
 # reset [factory|app] [--store]: both copies unless one is named; --store also puts the scratch store back to its clean
@@ -902,6 +955,7 @@ case "${1:-}" in
   forget-closed) forget_closed "$FACTORY_COPY"; forget_closed "$APP_COPY" ;;
   status) status ;;
   worker) worker "${2:?0 or 1}" ;;
+  line) line_make "${2:-}" ;;
   summon-dependabot) summon_dependabot "${2:-app}" ;;
   reopen-dependabot)
     case "${2:-}" in
@@ -912,5 +966,7 @@ case "${1:-}" in
     esac ;;
   move-on-main) shift; move_on_main "$@" ;;
   lift-exception) shift; lift_exception "$@" ;;
-  *) sed -n '2,38p' "$0"; exit 2 ;;
+  revert-move) revert_move "${2:-}" ;;
+  pin-watch) pin_watch ;;
+  *) sed -n '2,44p' "$0"; exit 2 ;;
 esac

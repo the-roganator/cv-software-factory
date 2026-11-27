@@ -21,13 +21,17 @@ function checkout(files: Record<string, string>): string {
 const digest = (c: string) => `sha256:${c.repeat(64)}`;
 const STATIC = 'gcr.io/distroless/static';
 
-/** A registry whose tag `nonroot` of distroless's static image is at a digest now. */
+/**
+ * A registry whose tag `nonroot` of distroless's static image is at a digest now, and which still has each of `kept`
+ * under that repository, asked for by its digest.
+ */
 const registry =
-  (now: string, asked: string[] = []): Get =>
+  (now: string, asked: string[] = [], kept: string[] = [now]): Get =>
   async (url) => {
     asked.push(url);
-    if (url === 'https://gcr.io/v2/distroless/static/manifests/nonroot')
-      return new Response(null, { headers: { 'docker-content-digest': now } });
+    const at = url.replace('https://gcr.io/v2/distroless/static/manifests/', '');
+    if (at === 'nonroot') return new Response(null, { headers: { 'docker-content-digest': now } });
+    if (kept.includes(at)) return new Response(null, { headers: { 'docker-content-digest': at } });
     return new Response(null, { status: 404 });
   };
 
@@ -66,30 +70,26 @@ describe('the derivation, made again with the answers the scan had (C-1)', () =>
   const move: Move = { ecosystem: 'docker', name: STATIC, from: 'nonroot', to: `nonroot@${digest('5')}` };
   const derivation = () => ({ work: mkdtempSync(join(tmpdir(), 'derive-work-')), workspace: true, pnpm: '/bin/pnpm' });
 
-  it('writes the scan’s digest for a tag the registry has pushed again since, where a fresh ask refuses it', async () => {
-    const asked: string[] = [];
-    const answers = new Map([[askedKey(STATIC, 'nonroot'), digest('5')]]);
-    const made = await deriveOn(checkout({ Dockerfile: DOCKERFILE }), [move], {
-      ...derivation(),
-      get: registry(digest('6'), asked),
-      asked: answers,
-    });
-    expect(made.get('Dockerfile')).toBe(`FROM ${STATIC}:nonroot@${digest('5')}\n`);
-    expect(asked).toEqual([]);
-    // Asked again, the registry's new answer is not the scan's, and the step refuses the move.
+  it('writes the scan’s digest for a tag the registry has pushed again since, while the registry still has it', async () => {
+    // With the scan's answers or none: the move's digest is the scan's, and the tag's answer now is never asked.
+    for (const answers of [new Map([[askedKey(STATIC, 'nonroot'), digest('5')]]), undefined]) {
+      const asked: string[] = [];
+      const made = await deriveOn(checkout({ Dockerfile: DOCKERFILE }), [move], {
+        ...derivation(),
+        get: registry(digest('6'), asked, [digest('5'), digest('6')]),
+        ...(answers ? { asked: answers } : {}),
+      });
+      expect(made.get('Dockerfile')).toBe(`FROM ${STATIC}:nonroot@${digest('5')}\n`);
+      expect(asked).toEqual([`https://gcr.io/v2/distroless/static/manifests/${digest('5')}`]);
+    }
+    // A digest the registry no longer has under the repository is refused, whatever the scan was given.
     await expect(
-      deriveOn(checkout({ Dockerfile: DOCKERFILE }), [move], { ...derivation(), get: registry(digest('6')) }),
-    ).rejects.toThrow(/is sha256:6{64} in its registry, not sha256:5{64}/);
-  });
-
-  it('keeps each answer it was given by the registry, for the gate to make the move with', async () => {
-    const answers = new Map<string, string>();
-    await deriveOn(checkout({ Dockerfile: DOCKERFILE }), [move], {
-      ...derivation(),
-      get: registry(digest('5')),
-      asked: answers,
-    });
-    expect([...answers]).toEqual([[askedKey(STATIC, 'nonroot'), digest('5')]]);
+      deriveOn(checkout({ Dockerfile: DOCKERFILE }), [move], {
+        ...derivation(),
+        get: registry(digest('6')),
+        asked: new Map([[askedKey(STATIC, 'nonroot'), digest('5')]]),
+      }),
+    ).rejects.toThrow(/Its registry no longer has gcr\.io\/distroless\/static at sha256:5{64}/);
   });
 
   it('runs pnpm as of the scan’s time', async () => {

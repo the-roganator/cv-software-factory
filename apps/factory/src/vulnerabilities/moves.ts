@@ -8,6 +8,12 @@
  * the furthest target (fixes.ts) any of them needs, and a line no longer built is a move apart; so one image in three
  * Dockerfiles is one move of three pins, and a package in two versions one move. A chart's images are the chart's own: two charts that run one image are two moves.
  *
+ * The furthest target is one within the pin's major, where any result has a fix there (`withinMajor`): a result only
+ * a major clears is then one the move leaves, and the major is listed on a later day, once the pin has moved; until
+ * then the move's deadline is the earliest of both, so what waits for the major is still alerted on. Where no result
+ * has a fix within the major, the move is the major; and so it is for a chart where the move within the major would
+ * leave for the major something worse than anything it clears (a High left where only Mediums and Lows are cleared).
+ *
  * A pin that is merely behind, with no finding (routine.ts's `Behind`), is a routine move: it clears nothing, has no
  * deadline and no results, and is listed after the findings' moves, by name, a lockfile's last in an order that says
  * nothing of its package, so a finding's move keeps the place it would have with none listed. One pin is one move: a pin a finding's move has gets no routine move that day. Routine
@@ -18,7 +24,10 @@
  * - `none`: nothing to move to (a line no longer built);
  * - `line`: the app's, which its line moves, an image's under `deploy/` among them;
  * - `cluster`: k3s, which only the cluster's own command applies;
- * - `issue`: what no pull request of the App's can write: a workflow's pin, with a finding or none;
+ * - `issue`: what no pull request of the App's can write: a workflow's pin, with a finding or none; and a fix of a
+ *   package whose bump waits for a bench run (`BENCHED`, policy/vulnerabilities.ts) that clears no Critical, marked
+ *   `bench`: an issue of its own with its deadline, never a part of the lockfile's shared pull request. One that
+ *   clears a Critical is a move like any other;
  * - `worker`: every other pin, which the GitHub worker moves: a chart among them, at one Application or several, or
  *   at the Makefile (Argo CD's); and every package of the lockfile, what mise pins (k3d, a tool's release), and an image that brings another pin with
  *   it (Node, or Playwright's library: the pin step's `moveImage`), which the pin step makes in the scan's run for the
@@ -32,6 +41,13 @@
  * `moves.json`, the scan's artifact, is `MovesFile`: what the log prints, no more. A lockfile's move is "a package in
  * `pnpm-lock.yaml`", with neither its versions nor its lines, which name the package in a public lockfile; the alerts
  * hold the rest.
+ *
+ * A fix that exists and is no move today is in `waiting` (`Waiting`), beside the moves, with why: its target's content
+ * has not waited its day (`content`), or no release read is better than the pin (`no-better`); and so is a routine
+ * update of an image whose tag has waited and whose content has not. One that waits for its content names the move
+ * the pin will have, by the moves' own rule (`withinMajor`): the furthest target within its major, where any result
+ * that waits has one there and none worse waits for a chart's major, and what only a major clears is what it leaves.
+ * A reader that takes "no move lists it" to mean "fixed" or "gone" reads `waiting` first.
  *
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
@@ -90,13 +106,23 @@ export interface Move {
   /** The results it clears, and the results on the same pin it leaves, by severity; the excepted left out. */
   clears: Counts;
   leaves: Counts;
-  /** The earliest deadline among those it clears. */
+  /**
+   * Of what it leaves, the results only a major clears (`withinMajor`), where it leaves any: the rest of what it
+   * leaves has no fix, or is another move's.
+   */
+  forMajor?: Counts | undefined;
+  /**
+   * Its earliest deadline: among those it clears, and those it leaves that only a major clears (`forMajor`), which
+   * are in no move until this one has merged, so the pin's urgency is never hidden behind a move within its major.
+   */
   deadline?: number | undefined;
   /** How many of those it clears are new today. */
   newToday: number;
   lane: Lane;
   /** Whether it is a lockfile's: printed as "a package in <file>". */
   lockfile: boolean;
+  /** Set for a fix that waits for Martin's bench run (`Context.benched`): its lane is `issue`. */
+  bench?: true | undefined;
   /** The results it clears, by their fingerprints (sarif.ts): never printed. */
   results: string[];
 }
@@ -107,6 +133,11 @@ export interface Context {
   /** Whether it is the app's repository, whose moves its line makes. */
   app: boolean;
   now: number;
+  /**
+   * The packages whose bump merges only after a bench run (`BENCHED`, policy/vulnerabilities.ts): a fix of one that
+   * clears no Critical is lane `issue`. Absent, none is.
+   */
+  benched?: readonly string[] | undefined;
 }
 
 const zero = (): Counts => Object.fromEntries(SEVERITIES.map((s) => [s, 0])) as Counts;
@@ -167,10 +198,53 @@ const further = (a: Target, b: Target) => {
   return compare(versionOf(a), versionOf(b)) || order(versionOf(a), versionOf(b));
 };
 
+/** A result's place among the severities, the worst first; and the worst place of a list, or none for an empty one. */
+const rank = (each: Judged) => SEVERITIES.indexOf(each.severity);
+const worst = (list: Judged[]) => Math.min(...list.map(rank));
+
+/**
+ * The results of one pin that its move clears. Where any has a fix within the pin's major, those alone: one only a
+ * major clears (a chart's next major, a package's version on a major no copy is at) is left, and its major is a later
+ * day's move, once the pin has moved. Where none has, all of them, and the move is the major.
+ *
+ * A chart's move is the major, too, where the move within the major would leave something worse than it clears: the
+ * worst severity among the results only the chart's major clears is strictly worse than the worst among those with a
+ * fix within the major (a High left where Mediums and Lows are cleared, a Critical left where the worst cleared is a
+ * High). The move then clears them all. Only the worst of each side is compared, never how many: a High cleared and
+ * a High left is the move within the major. A result with no fix is on neither side, and an excepted one is none of
+ * the group: both callers leave it out before they group.
+ *
+ * A package's move is never preferred to its major so. Its target is a version for each line a copy is on
+ * (`furthest`), and the pin step moves each copy to the target on its own line and leaves a target no copy is on the
+ * line of (`movePackage`, apps/runner/src/pins.ts): a major for one copy would need a target that says which copy it
+ * is for, and a copy only a parent's range brings crosses no major without an override. A package's major is listed
+ * once its copy has moved within its major, or at once where it has no fix there.
+ */
+export function withinMajor<T>(
+  group: T[],
+  /** One of the group as it was judged, and its target: a result's fix, or what one that waits is held for. */
+  of: (one: T) => { each: Judged; target: Target | undefined } = (one) => {
+    const each = one as Judged;
+    return { each, target: each.finding.fix?.target };
+  },
+): T[] {
+  const crosses = (one: T) => {
+    const { each, target } = of(one);
+    if (target?.kind === 'chart') return target.major;
+    return target?.kind === 'version' && each.kind === 'lockfile' && isMajor(target, each.from);
+  };
+  const within = group.filter((each) => !crosses(each));
+  if (!within.length) return group;
+  const judged = (list: T[]) => list.map((one) => of(one).each);
+  const forChartsMajor = group.filter((one) => crosses(one) && of(one).target?.kind === 'chart');
+  return worst(judged(forChartsMajor)) < worst(judged(within)) ? group : within;
+}
+
 /**
  * The furthest of the targets one pin's results need: moving there is the move. A pin's own target (an image, a chart, a
  * k3s release, a tool) is preferred to a bare version, which is Node's own fix in an image: the image's newer tag brings
  * it. Versions alone are joined, the highest on each major, so a package in two versions keeps a fix for each copy.
+ * The targets are those of the results the move clears (`withinMajor`).
  */
 export function furthest(targets: Target[]): Target | undefined {
   const pinned = targets.filter((target) => target.kind !== 'version');
@@ -224,7 +298,8 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
   for (const each of open) {
     const target = each.finding.fix?.target;
     if (!target) continue;
-    // One pin is one move, to the furthest target any of its results needs; a line no longer built is a move apart.
+    // One pin is one move, to the furthest target any of its results needs within its major, or to the major where
+    // none has a fix within it or a chart's would leave worse than it clears; a line no longer built is a move apart.
     const key = JSON.stringify([pinKey(each), target.kind === 'unbuilt']);
     const group = groups.get(key);
     if (group) group.push(each);
@@ -239,7 +314,8 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
     else byPin.set(key, [each]);
   }
   const out: Move[] = [];
-  for (const members of groups.values()) {
+  for (const group of groups.values()) {
+    const members = withinMajor(group);
     const first = members[0];
     const target = furthest(members.flatMap((each) => (each.finding.fix ? [each.finding.fix.target] : [])));
     if (!first || !target) continue;
@@ -249,7 +325,10 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
     for (const each of members) clears[each.severity]++;
     const leaves = zero();
     for (const each of byPin.get(pinKey(first)) ?? []) if (!members.includes(each)) leaves[each.severity]++;
-    const dues = members.flatMap((each) => (each.due === undefined ? [] : [each.due]));
+    const forMajor = zero();
+    for (const each of group) if (!members.includes(each)) forMajor[each.severity]++;
+    // The whole group's: what a move within the major leaves for the major is due all the same, and is in no other move.
+    const dues = group.flatMap((each) => (each.due === undefined ? [] : [each.due]));
     const move: Move = {
       repository: context.repository,
       name: first.name,
@@ -259,6 +338,7 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
       major: isMajor(target, first.from),
       clears,
       leaves,
+      ...(total(forMajor) ? { forMajor } : {}),
       deadline: dues.length ? Math.min(...dues) : undefined,
       newToday: members.filter((each) => each.firstSeenToday).length,
       lane: 'none',
@@ -266,6 +346,11 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
       results: members.map((each) => fingerprint(each.finding)),
     };
     move.lane = laneOf(move, new Set(members.map((each) => each.kind)), context);
+    // A benched package's fix waits for the bench run, as an issue of its own, unless it clears a Critical.
+    if (move.lockfile && context.benched?.includes(move.name) && move.lane !== 'none' && clears.CRITICAL === 0) {
+      move.lane = 'issue';
+      move.bench = true;
+    }
     out.push(move);
   }
   out.sort(
@@ -320,6 +405,181 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
   return [...out, ...routine];
 }
 
+/** Why a pin with somewhere to go has no move today: see `Waiting`. */
+export type WaitingWhy = 'content' | 'no-better';
+
+/** One result with no fix today, and why (deadlines.ts's `assess`): what `waiting` is made from. */
+export interface Held {
+  why: WaitingWhy;
+  /** For `content`: the first of its targets to come due, and when. */
+  to?: Target | undefined;
+  until?: number | undefined;
+}
+
+/** A routine update of an image whose tag has waited its days and whose content has not (routine.ts). */
+export interface RoutineWait {
+  kind: Kind;
+  name: string;
+  pins: Pin[];
+  from: string;
+  to: Target;
+  until: number;
+}
+
+/** A pin that waits, before it is printed: `Waiting`, with the results that wait, by their fingerprints. */
+export interface Wait {
+  name: string;
+  pins: Pin[];
+  from: string;
+  why: WaitingWhy;
+  to?: Target | undefined;
+  until?: number | undefined;
+  clears: Counts;
+  leaves: Counts;
+  deadline?: number | undefined;
+  routine: boolean;
+  /** The results that wait, those its move would leave among them (sarif.ts's `fingerprint`): never printed. */
+  results: string[];
+}
+
+/**
+ * The day's pins that wait: each pin whose results have a fix that is no move today, once for each reason, the most
+ * urgent first as the moves are; then each routine update that waits for its content, by name. The excepted are left
+ * out, as of a move, and a lockfile's, which neither reason holds, is never named. `held` is by the results' index.
+ *
+ * One that waits for its content says the move the pin will have, by the rule a move is made by: the furthest target
+ * of the results held within its major, where any is (`withinMajor`, `furthest`), when that target comes due, and
+ * those results as what it clears. A result only a major clears waits with them, as what the move leaves: it keeps
+ * its place in the entry and its deadline, and is counted apart. Where none is held within the major, or a chart's
+ * major is held for something worse than anything held within it, the major, which clears them all.
+ */
+export function waiting(results: Judged[], held: (Held | undefined)[], routine: RoutineWait[] = []): Wait[] {
+  const groups = new Map<string, { each: Judged; held: Held }[]>();
+  for (const [index, each] of results.entries()) {
+    const its = held[index];
+    if (!its || each.excepted || each.kind === 'lockfile') continue;
+    const key = JSON.stringify([pinKey(each), its.why]);
+    const group = groups.get(key);
+    if (group) group.push({ each, held: its });
+    else groups.set(key, [{ each, held: its }]);
+  }
+  const out: Wait[] = [];
+  for (const group of groups.values()) {
+    const [first] = group;
+    if (!first) continue;
+    const pins = new Map<string, Pin>();
+    for (const { each } of group) pins.set(`${each.pin.file}:${each.pin.line}`, each.pin);
+    const members = withinMajor(group, (one) => ({ each: one.each, target: one.held.to }));
+    const clears = zero();
+    const leaves = zero();
+    for (const one of group) (members.includes(one) ? clears : leaves)[one.each.severity]++;
+    // The whole group's, as a move's is: what waits for the major is due all the same.
+    const dues = group.flatMap(({ each }) => (each.due === undefined ? [] : [each.due]));
+    // The target its move takes, and when that one comes due: the latest of them all, where it is joined from several.
+    const to = furthest(members.flatMap((one) => (one.held.to ? [one.held.to] : [])));
+    const untilOf = (list: typeof members) =>
+      list.flatMap((one) => (one.held.until === undefined ? [] : [one.held.until]));
+    const its = to ? untilOf(members.filter((one) => one.held.to && targetText(one.held.to) === targetText(to))) : [];
+    const all = untilOf(members);
+    const until = its.length ? Math.min(...its) : all.length ? Math.max(...all) : undefined;
+    out.push({
+      name: first.each.name,
+      pins: [...pins.values()].sort((a, b) => order(a.file, b.file) || a.line - b.line),
+      from: first.each.from,
+      why: first.held.why,
+      ...(first.held.why === 'content' ? { to, until } : {}),
+      clears,
+      leaves,
+      deadline: dues.length ? Math.min(...dues) : undefined,
+      routine: false,
+      results: group.map(({ each }) => fingerprint(each.finding)),
+    });
+  }
+  out.sort(
+    (a, b) =>
+      (a.deadline ?? Number.POSITIVE_INFINITY) - (b.deadline ?? Number.POSITIVE_INFINITY) ||
+      b.clears.CRITICAL - a.clears.CRITICAL ||
+      b.clears.HIGH - a.clears.HIGH ||
+      order(a.name, b.name) ||
+      order(a.from, b.from) ||
+      order(a.why, b.why),
+  );
+  const behind = new Map<string, Wait>();
+  for (const each of routine) {
+    if (each.kind === 'lockfile') continue;
+    const key = pinKey(each);
+    if (behind.has(key)) continue;
+    behind.set(key, {
+      name: each.name,
+      pins: [...each.pins].sort((a, b) => order(a.file, b.file) || a.line - b.line),
+      from: each.from,
+      why: 'content',
+      to: each.to,
+      until: each.until,
+      clears: zero(),
+      leaves: zero(),
+      deadline: undefined,
+      routine: true,
+      results: [],
+    });
+  }
+  return [...out, ...[...behind.values()].sort((a, b) => order(a.name, b.name) || order(a.from, b.from))];
+}
+
+/**
+ * A pin that has somewhere to go and no move today, as the log, the step summary and `moves.json` give it: a fix that
+ * exists and is not listed, or a routine update that is not. Named as a move names its pin; never a lockfile's, whose
+ * package would be withheld, and never a result's fingerprint, as of a move.
+ */
+export interface Waiting {
+  name: string;
+  pins: Pin[];
+  from: string;
+  lockfile: false;
+  /**
+   * `content`: its target's content (an image's digest, a chart's version) has not waited `ROUTINE.contentDays` since
+   * the scan first saw it. `no-better`: no release read has fewer findings than the pin, worst severity first, though
+   * one no longer has a finding of it.
+   */
+  why: WaitingWhy;
+  /**
+   * For `content`: fixes.ts's text of the target its move will take, the furthest within the pin's major where any
+   * result that waits has a fix there and none worse waits for a chart's major (`withinMajor`), and when that target
+   * comes due, UTC to the second, the slack of a daily scan taken off (state.ts's `waitMs`). Content pushed again
+   * before then waits its own day, and the move lists at the newest that has waited.
+   */
+  to?: string | undefined;
+  until?: string | undefined;
+  /** The results that move would clear, by severity. All zero for a routine update's. */
+  clears: Counts;
+  /**
+   * The results that wait with them and that move would leave, by severity: those only a major clears, where the
+   * move is within the major. Written only where there is one.
+   */
+  leaves?: Counts | undefined;
+  /** Their earliest deadline, where any has one: UTC, to the second. */
+  deadline?: string | undefined;
+  /** Set for a routine update's wait: no finding asks for it. */
+  routine?: true | undefined;
+}
+
+/** A pin that waits with nothing in it the log may not print. */
+export function publicWaiting(wait: Wait): Waiting {
+  return {
+    name: wait.name,
+    pins: wait.pins,
+    from: wait.from,
+    lockfile: false,
+    why: wait.why,
+    ...(wait.to ? { to: targetText(wait.to) } : {}),
+    ...(wait.until === undefined ? {} : { until: dayText(wait.until) }),
+    clears: wait.clears,
+    ...(total(wait.leaves) ? { leaves: wait.leaves } : {}),
+    ...(wait.deadline === undefined ? {} : { deadline: dayText(wait.deadline) }),
+    ...(wait.routine ? { routine: true as const } : {}),
+  };
+}
+
 /** A move as the log, the step summary and `moves.json` give it: a lockfile's named by its file alone. */
 export interface PublicMove {
   repository: string;
@@ -331,12 +591,20 @@ export interface PublicMove {
   major: boolean;
   clears: Counts;
   leaves: Counts;
+  /** Of what it leaves, what only a major clears, where it leaves any. */
+  forMajor?: Counts | undefined;
   /** UTC, to the second. */
   deadline?: string | undefined;
   newToday: number;
   lane: Lane;
   /** Whether it is a lockfile's, whose package, versions and lines are withheld: its name is "a package in <file>". */
   lockfile: boolean;
+  /**
+   * Set for a fix that waits for Martin's bench run (`factory line bench`): a package the policy lists as benched,
+   * clearing no Critical, in lane `issue`. Optional under the same `MOVES_VERSION`, as `totals.open` is: a file with
+   * no such move reads as it did.
+   */
+  bench?: true | undefined;
 }
 
 /**
@@ -408,6 +676,13 @@ export interface MovesFile {
     routineUnread?: number;
   } & DayCounts;
   moves: PublicMove[];
+  /**
+   * Each pin with somewhere to go and no move today, and why (`Waiting`). Optional under the same `MOVES_VERSION`, as
+   * `totals.open` is, and by the rule `totals.routine` keeps: written by every scan that judges what waits, an empty
+   * list included, and by none that predates it, so a reader takes "absent" as "this scan does not say what waits",
+   * and reads its moves as it did; and a pin no move lists as moved or fixed only where none here names it.
+   */
+  waiting?: Waiting[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];
 }
@@ -425,10 +700,12 @@ export function publicMove(move: Move): PublicMove {
     major: move.major,
     clears: move.clears,
     leaves: move.leaves,
+    ...(move.forMajor ? { forMajor: move.forMajor } : {}),
     deadline: move.deadline === undefined ? undefined : dayText(move.deadline),
     newToday: move.newToday,
     lane: move.lane,
     lockfile: hidden,
+    ...(move.bench ? { bench: true as const } : {}),
   };
 }
 
@@ -441,6 +718,8 @@ export function movesFile(
   open?: Counts,
   /** The day's routine listing, where the scan made one: how many pins it could not read. */
   listing?: { unread: number },
+  /** The day's pins that wait (`waiting`), from a scan that judged them: none is an empty list. */
+  waits?: Wait[],
 ): MovesFile {
   const lanes = Object.fromEntries(LANES.map((lane) => [lane, list.filter((m) => m.lane === lane).length])) as Record<
     Lane,
@@ -463,6 +742,7 @@ export function movesFile(
       ...day,
     },
     moves: list.map(publicMove),
+    ...(waits ? { waiting: waits.map(publicWaiting) } : {}),
     scanned: [...scanned].sort(
       (a, b) => order(a.pin.file, b.pin.file) || a.pin.line - b.pin.line || order(a.image, b.image),
     ),
@@ -482,15 +762,30 @@ export function table(file: MovesFile): string[] {
   const lines = [
     `Moves: ${file.totals.fixed} results with a fix, in ${file.totals.moves} moves${file.totals.routine ? `, ${file.totals.routine} of them routine` : ''}${lanes ? ` (${lanes})` : ''}.`,
   ];
-  if (!file.moves.length) return lines;
-  lines.push(
-    '',
-    '| Move | From | To | Clears | Leaves | New today | Deadline | Lane |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- |',
-  );
-  for (const move of file.moves)
+  if (file.moves.length) {
     lines.push(
-      `| ${move.name} | ${move.from || '–'} | ${move.to || '–'} | ${short(move.clears)} | ${short(move.leaves)} | ${move.newToday} | ${move.deadline ?? '–'} | ${move.lane} |`,
+      '',
+      '| Move | From | To | Clears | Leaves | New today | Deadline | Lane |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |',
     );
+    for (const move of file.moves)
+      lines.push(
+        `| ${move.name} | ${move.from || '–'} | ${move.to || '–'} | ${short(move.clears)} | ${short(move.leaves)} | ${move.newToday} | ${move.deadline ?? '–'} | ${move.lane} |`,
+      );
+  }
+  if (file.waiting?.length) {
+    lines.push('', `Waiting: ${file.waiting.length} with somewhere to go and no move today.`, '');
+    for (const each of file.waiting) lines.push(`- ${waitingLine(each)}`);
+  }
   return lines;
+}
+
+/** One pin that waits, in a line: what it is, why it has no move, and what waits with it. */
+export function waitingLine(each: Waiting): string {
+  const left = each.leaves && total(each.leaves) ? `, leaving ${short(each.leaves)} for a major` : '';
+  const what = each.routine ? 'a routine update' : `a fix of ${short(each.clears)}${left}`;
+  const due = each.deadline ? `, due ${each.deadline}` : '';
+  return each.why === 'content'
+    ? `${each.name} ${each.from}: ${what}${due}, to ${each.to ?? 'a release'}, waits for its content's day, until ${each.until ?? 'the next scan'}.`
+    : `${each.name} ${each.from}: ${what}${due} is not listed: no release read is better than the pin.`;
 }

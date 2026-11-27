@@ -444,11 +444,17 @@ const added = (at: string, by = 'mrogan-software-factory') => ({
   createdAt: at,
   actor: { login: by },
 });
-const removed = (at: string, reason: string) => ({
+const QUEUE_BOT = { __typename: 'Bot', login: 'github-merge-queue' };
+const PERSON = { __typename: 'User', login: 'mrogan' };
+const removed = (
+  at: string,
+  reason: string,
+  actor: { __typename?: string; login: string } | null = { login: 'github-merge-queue' },
+) => ({
   __typename: 'RemovedFromMergeQueueEvent',
   createdAt: at,
   reason,
-  actor: { login: 'github-merge-queue' },
+  actor,
   beforeCommit: { oid: QUEUE_COMMIT },
 });
 
@@ -516,6 +522,21 @@ describe('the merge queue', () => {
     });
   });
 
+  it('says whether it left the queue at the head it has now: it last went in after that head was committed', async () => {
+    const events = [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:50:00Z', 'manual')];
+    const at = async (committed?: string, over = events) =>
+      (await queueReads(queueAnswer({ events: over, ...(committed ? { committed } : {}) })).mergeQueue(REPO, 17))
+        .removed?.atHead;
+    // The head was committed before it went in: the removal is of this head.
+    expect(await at('2026-11-04T11:30:00Z')).toBe(true);
+    // A head committed since it went in, as when its branch moved and the queue dropped it: of the head before.
+    expect(await at('2026-11-04T11:45:00Z')).toBe(false);
+    expect(await at('2026-11-04T11:55:00Z')).toBe(false);
+    // Without the head's time, or the time it went in, it counts as this head's: it errs towards Martin.
+    expect(await at()).toBe(true);
+    expect(await at('2026-11-04T11:45:00Z', [removed('2026-11-04T11:50:00Z', 'manual')])).toBe(true);
+  });
+
   it('reads why it left the queue, and what the queue’s failed check said', async () => {
     const read = await queueReads(
       queueAnswer({ events: [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:46:00Z', 'failed_checks')] }),
@@ -531,7 +552,24 @@ describe('the merge queue', () => {
     });
   });
 
-  it('counts the times the queue failed its head: those since the head was committed, and every one without that', async () => {
+  it('says who took it out: a person, the queue’s bot or the App, or nobody it can name', async () => {
+    const by = async (actor: Parameters<typeof removed>[2]) =>
+      (
+        await queueReads(
+          queueAnswer({ events: [added('2026-11-04T11:40:00Z'), removed('2026-11-04T11:46:00Z', 'manual', actor)] }),
+        ).mergeQueue(REPO, 17)
+      ).removed?.person;
+    expect(await by(PERSON)).toBe(true);
+    expect(await by({ __typename: 'Mannequin', login: 'someone-gone' })).toBe(true);
+    // A person who took the queue bot's name is a person still.
+    expect(await by({ __typename: 'User', login: 'github-merge-queue' })).toBe(true);
+    expect(await by(QUEUE_BOT)).toBe(false);
+    expect(await by({ __typename: 'Bot', login: 'mrogan-software-factory' })).toBe(false);
+    expect(await by({ __typename: 'Bot', login: 'another-app' })).toBeNull();
+    expect(await by(null)).toBeNull();
+  });
+
+  it('counts the times the queue itself took its head out: those since the head was committed, and every one without that', async () => {
     const events = [
       added('2026-11-04T09:00:00Z'),
       removed('2026-11-04T09:10:00Z', 'failed_checks'),
@@ -539,16 +577,27 @@ describe('the merge queue', () => {
       added('2026-11-04T11:40:00Z'),
       removed('2026-11-04T11:46:00Z', 'FAILED_CHECKS'),
       added('2026-11-04T11:50:00Z'),
-      removed('2026-11-04T11:52:00Z', 'dequeued'),
+      // A person's removal is not the queue's own, and nor is one nobody is named for with a reason not the queue's.
+      removed('2026-11-04T11:52:00Z', 'manual', PERSON),
+      added('2026-11-04T11:53:00Z'),
+      removed('2026-11-04T11:54:00Z', 'manual', null),
+      // Nor is a `manual` one GitHub names the queue's bot for: the pull request was closed while it was queued.
+      added('2026-11-04T11:54:20Z'),
+      removed('2026-11-04T11:54:40Z', 'manual', QUEUE_BOT),
+      added('2026-11-04T11:55:00Z'),
+      // The queue's own, for another reason than a failed check: counted with them.
+      removed('2026-11-04T11:56:00Z', 'stack_invalidated', QUEUE_BOT),
+      added('2026-11-04T11:57:00Z'),
+      removed('2026-11-04T11:58:00Z', 'merge_conflict', null),
       added('2026-11-04T12:00:00Z'),
       removed('2026-11-04T12:06:00Z', 'failed_checks'),
     ];
     const at = async (committed?: string) =>
       (await queueReads(queueAnswer({ events, ...(committed ? { committed } : {}) })).mergeQueue(REPO, 17)).removed;
-    expect(await at('2026-11-04T10:00:00Z')).toMatchObject({ reason: 'failed_checks', failures: 2 });
+    expect(await at('2026-11-04T10:00:00Z')).toMatchObject({ reason: 'failed_checks', failures: 4 });
     expect(await at('2026-11-04T12:30:00Z')).toMatchObject({ failures: 0 });
-    expect(await at()).toMatchObject({ failures: 3 });
-    expect(await at('not a time')).toMatchObject({ failures: 3 });
+    expect(await at()).toMatchObject({ failures: 5 });
+    expect(await at('not a time')).toMatchObject({ failures: 5 });
   });
 
   it('says nothing of a removal once it has gone back in, and nothing of a queue it never joined', async () => {

@@ -267,7 +267,9 @@ function countedBefore(scan: SignalScan): Required<ScanCounts> {
  * the scan on the app's `main`). It waits for a run of the commit the stable Service runs that read the image it runs,
  * by digest; the line holds the work item for Martin once the policy's wait has passed without one (`waitHours`). Then
  * each finding the move's newest signal listed with a fix is looked for among the scan's open findings, by its advisory
- * and its package: one still open and the move persists, which sends it back to Plan as any sense's does. None, and the
+ * and its package: one still open and the move persists, which sends it back to Plan as any sense's does. A finding
+ * the scan names as waiting (the worker's `waiting`: its fix is no move today) is open as one in a move is; a scan
+ * that does not say what waits is read by its moves alone. None, and the
  * canary's journeys passed at the release's last step, and it has cleared. Verify reads the scan's findings, never a
  * version's name, and never an advisory's words: the read gives its id alone. It keeps the counts before and after.
  *
@@ -346,9 +348,13 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
   const isFixed = (each: { advisory: string; package: string }) =>
     fixed.some((finding) => finding.advisory === each.advisory && finding.package === each.package);
   // What the scan still has open of the move: every finding on its pins (its moves of the same name, a lockfile's by
-  // its package), and any finding the signal listed wherever the scan now groups it, each once.
-  const open = read.moves.flatMap((each) =>
-    each.findings.filter((finding) => (each.withheld?.package ?? each.name) === move.name || isFixed(finding)),
+  // its package), and any finding the signal listed wherever the scan now groups it, each once. A finding whose fix
+  // is no move today (it waits for its content's day, or no release read is better than the pin) is as open as one in
+  // a move, where the scan says what waits; one from before it did says nothing of them.
+  const open = [...read.moves, ...(read.waiting ?? [])].flatMap((each) =>
+    each.findings.filter(
+      (finding) => (('withheld' in each && each.withheld?.package) || each.name) === move.name || isFixed(finding),
+    ),
   );
   const after = noCounts();
   for (const finding of open) {
@@ -400,6 +406,8 @@ function stillListed(read: Moves, move: NonNullable<FirstSignal['move']>): boole
     });
     if (moved) return false;
   }
+  // A routine update the scan holds for its content's day is as listed as one it lists: the pin is where it was.
+  if ((read.waiting ?? []).some((each) => each.routine && each.name === move.name && from.has(each.from))) return true;
   return read.moves.some((each) => {
     const listed = moveOf(read.repository, each);
     // A move of the name the sense could not name as a signal does (no target, no ecosystem) cannot be told from

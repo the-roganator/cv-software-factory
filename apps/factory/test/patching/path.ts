@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { codeOwners, type FileChange, tagsOf } from '../../../../scripts/review-routing.ts';
 import { PinsHeld, PinsRefused, writePins } from '../../../runner/src/pins.ts';
 import { filesIn } from '../../src/github/patches.ts';
@@ -167,7 +168,10 @@ function getOf(world: World) {
     if (manifest) {
       const [, host, path, tag] = manifest as unknown as [string, string, string, string];
       const repository = host === 'registry-1.docker.io' ? path.replace(/^library\//, '') : `${host}/${path}`;
-      const digest = world.digests?.[`${repository}:${tag}`];
+      // A tag's digest; and, asked for by a digest, that digest where a tag of the repository serves it.
+      const digest = /^sha256:[0-9a-f]{64}$/.test(tag)
+        ? Object.entries(world.digests ?? {}).find(([at, its]) => at.startsWith(`${repository}:`) && its === tag)?.[1]
+        : world.digests?.[`${repository}:${tag}`];
       return digest
         ? new Response(null, { headers: { 'docker-content-digest': digest } })
         : new Response(null, { status: 404 });
@@ -235,7 +239,11 @@ export async function carry(
     targets,
   };
   const sources = sourcesOf(world);
-  const judged = await assess(handoff, sources, NOW);
+  // With no day for an image's content to wait, which no one scan can show: the path is from a fix that is listed.
+  const judged = await assess(handoff, sources, NOW, undefined, {
+    ...POLICY,
+    ROUTINE: { ...POLICY.ROUTINE, contentDays: 0 },
+  });
   const context: Context = {
     repository: APP,
     app: true,

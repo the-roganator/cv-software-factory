@@ -63,6 +63,9 @@ const pr = (author: number | null, repo = APP_REPO, over: Partial<PullRequest> =
   base: { ref: 'main', repo: { full_name: repo } },
   ...over,
 });
+/** One Martin opened, from a branch only he writes. */
+const his = (repo = APP_REPO): PullRequest =>
+  pr(MARTIN, repo, { head: { sha: HEAD, ref: 'fix/a-thing', repo: { full_name: repo } } });
 const approved = (commit = HEAD) => ({ user: { id: MARTIN }, state: 'APPROVED', commit_id: commit });
 const tag = (name: Found['tag'], ...because: string[]): Found => found(name, because.length ? because : ['x']);
 
@@ -81,7 +84,7 @@ const facts = (over: Partial<Facts> = {}): Facts => ({
 describe('approval routing: the rule, the first that holds', () => {
   it("passes Martin's own pull request, and his approval of the head, whatever its tags", () => {
     const tags = [tag('dependency-change'), tag('code-owned'), tag('release')];
-    expect(route(facts({ pr: pr(MARTIN), tags }))).toMatchObject({ pass: true, rule: 'martin-opened', tags });
+    expect(route(facts({ pr: his(), tags }))).toMatchObject({ pass: true, rule: 'martin-opened', tags });
     expect(route(facts({ reviews: [approved()], tags }))).toMatchObject({ pass: true, rule: 'martin-approved-head' });
     // In this repository too, and with test integrity unread or a label removed: his say is his.
     expect(
@@ -385,7 +388,96 @@ describe('approval routing: the rule, the first that holds', () => {
 
   it('holds what it could not read, unless Martin has had his say', () => {
     expect(route(facts({ unread: 'GET /files: 502' }))).toMatchObject({ pass: false, rule: 'held' });
-    expect(route(facts({ unread: 'GET /files: 502', pr: pr(MARTIN) })).rule).toBe('martin-opened');
+    expect(route(facts({ unread: 'GET /files: 502', pr: his() })).rule).toBe('martin-opened');
+  });
+
+  describe('changes Martin asked for', () => {
+    const asked = (commit = HEAD) => ({ user: { id: MARTIN }, state: 'CHANGES_REQUESTED', commit_id: commit });
+    const image = 'ghcr.io/the-roganator/cv-software-factory/console';
+    const pin = {
+      pins: [{ file: 'deploy/overlays/local/image/kustomization.yaml', image, from: 'sha256:1', to: 'sha256:2' }],
+    };
+    const title = 'The scan’s move of postgres to 18.7-alpine3.24';
+    const workflows = { moved: { from: 'a'.repeat(40), to: 'b'.repeat(40), files: ['.github/workflows/ci.yml'] } };
+    /** Each rule that passes a pull request without Martin, as the facts that pass it. */
+    const passing: [string, Facts][] = [
+      ['low-risk', facts()],
+      ['lights-out', facts({ autonomy: 'lights-out', tags: [tag('dependency-change')] })],
+      ['exact-pin', facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), pin })],
+      ['exact-pin', facts({ pr: pr(DEPENDABOT), workflows })],
+      ['move', facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), move: { rule: 'move', title } })],
+      ['major', facts({ repo: FACTORY_REPO, pr: pr(42, FACTORY_REPO), move: { rule: 'major', title } })],
+    ];
+
+    it('hold every rule that passes without him, on the head he reviewed and on any pushed since', () => {
+      for (const [rule, each] of passing) {
+        expect(route(each), rule).toMatchObject({ pass: true, rule });
+        for (const commit of [HEAD, EARLIER]) {
+          const said = route({ ...each, reviews: [asked(commit)] });
+          expect(said, rule).toEqual({ pass: false, rule: 'held', title: 'Martin asked for changes', tags: each.tags });
+        }
+      }
+    });
+
+    it('are no wait, whatever else is one: only his next review ends them', () => {
+      const waiting = { read: false as const, reason: 'test integrity has not run', pending: true as const };
+      expect(route(facts({ reviews: [asked()], testIntegrity: waiting })).pending).toBeUndefined();
+      expect(
+        route(facts({ reviews: [asked()], pin: { unchecked: 'ghcr.io did not answer' } })).pending,
+      ).toBeUndefined();
+      expect(route(facts({ reviews: [asked()], move: { pending: 'not judged' } })).pending).toBeUndefined();
+    });
+
+    it('end with his approval of the head, or with their dismissal', () => {
+      const [, move] = passing[4] as [string, Facts];
+      expect(route({ ...move, reviews: [asked(EARLIER), approved()] })).toMatchObject({ rule: 'martin-approved-head' });
+      // His approval of an earlier head ends the request too: the rules decide again, as before he reviewed.
+      expect(route({ ...move, reviews: [asked(EARLIER), approved(EARLIER)] })).toMatchObject({ rule: 'move' });
+      // GitHub writes a dismissal as the review's own state, and who dismissed it as an issue event.
+      const gone = { ...asked(), id: 7, state: 'DISMISSED' };
+      const by = (actor: number, state = 'changes_requested', review_id = 7) => ({
+        event: 'review_dismissed',
+        actor: { id: actor },
+        dismissed_review: { state, review_id },
+      });
+      expect(route({ ...move, reviews: [gone], events: [by(MARTIN)] })).toMatchObject({ rule: 'move' });
+      // An approval a push dismissed leaves a later request standing, and an earlier one ended, whoever pushed.
+      const dismissed = { ...approved(EARLIER), id: 8, state: 'DISMISSED' };
+      const pushed = [by(42, 'approved', 8)];
+      expect(route({ ...move, reviews: [dismissed, asked(EARLIER)], events: pushed })).toMatchObject({ rule: 'held' });
+      expect(route({ ...move, reviews: [asked(EARLIER), dismissed], events: pushed })).toMatchObject({ rule: 'move' });
+      // A comment of his, and anyone else's review, say nothing.
+      const comment = { user: { id: MARTIN }, state: 'COMMENTED', commit_id: HEAD };
+      const theirs = { user: { id: 42 }, state: 'APPROVED', commit_id: HEAD };
+      expect(route({ ...move, reviews: [asked(EARLIER), comment, theirs] })).toMatchObject({ rule: 'held' });
+    });
+
+    it('stand when anyone but Martin dismisses them, or the dismissal cannot be read', () => {
+      const gone = { ...asked(), id: 7, state: 'DISMISSED' };
+      const by = (actor: number | null, review_id = 7) => ({
+        event: 'review_dismissed',
+        actor: actor === null ? null : { id: actor },
+        dismissed_review: { state: 'changes_requested', review_id },
+      });
+      const someone = 'Martin asked for changes; his review was dismissed by someone else';
+      for (const [rule, each] of passing) {
+        for (const actor of [FACTORY_APP, 42, null]) {
+          const said = route({ ...each, reviews: [gone], events: [by(actor)] });
+          expect(said, rule).toEqual({ pass: false, rule: 'held', title: someone, tags: each.tags });
+        }
+        // No event for it, another review's event, events not read, a review with no number: none says Martin did.
+        for (const events of [[], [by(MARTIN, 9)], undefined]) {
+          const said = route({ ...each, reviews: [gone], ...(events ? { events } : {}) });
+          expect(said, rule).toMatchObject({ pass: false, rule: 'held' });
+          expect(said.title, rule).toContain('could not read by whom');
+        }
+        const unnumbered = route({ ...each, reviews: [{ ...asked(), state: 'DISMISSED' }], events: [by(MARTIN)] });
+        expect(unnumbered, rule).toMatchObject({ pass: false, rule: 'held' });
+        // His approval after it ends it all the same.
+        const after = route({ ...each, reviews: [gone, approved()], events: [by(42)] });
+        expect(after, rule).toMatchObject({ pass: true, rule: 'martin-approved-head' });
+      }
+    });
   });
 
   it('never takes a read that failed for a wait: nothing runs the gate again for it, and it may never succeed', () => {
@@ -1574,7 +1666,7 @@ describe('an earlier pass that stands', () => {
   it('stands when this run could only fail it for a pin the earlier one checked at the same head', () => {
     expect(stands(earlier([PIN_ENTRY]), QUEUE, [now()])).toBe(true);
     // A stack: one below that passes now, the one above unchecked now and an exact pin then.
-    const below = route(facts({ pr: pr(MARTIN) }));
+    const below = route(facts({ pr: his() }));
     const both = earlier([{ number: 6, head: EARLIER, rule: 'martin-opened', tags: [] }, PIN_ENTRY]);
     expect(stands(both, QUEUE, [now(below, 6, EARLIER), now()])).toBe(true);
   });
@@ -1598,7 +1690,7 @@ describe('an earlier pass that stands', () => {
     expect(moved).toMatchObject({ rule: 'held', retargeted: true });
     expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(moved)])).toBe(false);
     // Nothing held now: there is nothing to stand for.
-    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(route(facts({ pr: pr(MARTIN) })))])).toBe(false);
+    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(route(facts({ pr: his() })))])).toBe(false);
   });
 });
 

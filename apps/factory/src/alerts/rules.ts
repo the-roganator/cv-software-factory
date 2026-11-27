@@ -18,6 +18,7 @@ import { FLAGS_HELD } from '../../../../policy/flags.ts';
 import { type Objectives, objectives } from '../../../../policy/objectives.ts';
 import { STUCK, type StuckStage } from '../../../../policy/stuck.ts';
 import { REPORT_TEXT } from '../../../../policy/triage.ts';
+import { SCAN_MAX_AGE_HOURS } from '../../../../policy/vulnerabilities.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { ADMIN_ACTIONS, type AdminAction } from '../line/admin-actions.ts';
 import { NUMBER_PATTERN, RELEASE_ENDINGS } from '../line/metrics.ts';
@@ -288,6 +289,15 @@ const PATCHING_WORDS: Record<PatchingKind, { summary: string; description: strin
       'The line merged a work item’s fix for a vulnerable dependency of the app, by the review gate’s rule, with nobody’s approval. The canary still guards it, and its sheet in the console says which.',
   },
 };
+
+/** The alert that the scan has stopped, in either repository: its newest is too old to judge a move by. */
+export const SCAN_STALE = 'PatchingScanStale';
+
+/**
+ * How long a scan is stale before Martin hears: a cluster that was off for longer than a scan may age wakes with the
+ * last day it read, and the sense reads the day's within minutes of starting.
+ */
+export const SCAN_STALE_FOR = '15m';
 
 /**
  * The kinds of security event that reach the phone whatever the switch says: switching alerts off, so the last message
@@ -602,6 +612,8 @@ const RECENT = '5m';
  * - a notification for each move Martin hears of (`PATCHING_WORDS`), from the line's count of the dependency sense's
  *   days and its merges, each once for each move: a new High or Critical fix, a move that waits on him, one within a
  *   day of its deadline, one past it, and the app's vulnerable dependency fixed without him; never a finding with no fix;
+ * - a notification while either repository's newest scan is older than a move may be judged by (`SCAN_MAX_AGE_HOURS`), for
+ *   `SCAN_STALE_FOR`: the scan has stopped, or the sense's reads of it have. It ends when a newer scan is read;
  * - a page when that count has gone missing for ten minutes, having been there in the six hours before, or the line
  *   has not been able to read the store for five: no security event would reach him meanwhile;
  * - a page when a change the admin service makes (the flags, the app's Rollout, a session) stands for two minutes with
@@ -648,6 +660,19 @@ export function martinRules(): Rule[] {
   return [
     ...security,
     ...patching,
+    {
+      // Whether either repository's newest scan is too old, as the line says of the sense's days by its clock
+      // (`staleScans`), read as its other gauges are. No day at all leaves no series, and nothing fires. Its words
+      // name no repository, as no alert to Martin carries a label's value: the scan's runs say which.
+      alert: SCAN_STALE,
+      expr: `max(last_over_time(${fromTheLine('line_patching_scan_stale')}[${PUSHED_FRESH}])) == 1`,
+      for: SCAN_STALE_FOR,
+      labels: { level: LEVELS.notify },
+      annotations: {
+        summary: 'The vulnerability scan has stopped',
+        description: `In one of the two repositories, the newest scan of main the dependency sense has read judged its moves more than ${SCAN_MAX_AGE_HOURS} hours ago: the daily scan is not running, fails before it judges, or the sense cannot read it. Until a newer one is read the review gate passes no move there, and nothing new is found. The scan’s runs in each repository and the dependency sense’s log say which.`,
+      },
+    },
     {
       alert: 'SecurityEventsUncounted',
       expr: `(count(last_over_time(${SECURITY_EVENTS}[6h])) unless count(${SECURITY_EVENTS})) or max(${COUNTING}) == 0`,

@@ -9,10 +9,15 @@ import {
   isRoutine,
   type Judged,
   MOVES_VERSION,
+  type Move,
   moves,
   movesFile,
   publicMove,
+  publicWaiting,
   table,
+  type Wait,
+  waiting,
+  waitingLine,
 } from '../../src/vulnerabilities/moves.ts';
 import type { Finding, Severity } from '../../src/vulnerabilities/sarif.ts';
 
@@ -334,22 +339,333 @@ describe('the day’s moves', () => {
 });
 
 describe('one pin with several targets', () => {
-  it('is one move, to the furthest target any of its results needs', () => {
-    const chart = (version: string, major: boolean) =>
-      result({
-        kind: 'chart',
-        name: 'grafana',
-        from: '13.2.7',
-        target: { kind: 'chart', chart: 'grafana', version, major },
-      });
-    const list = moves([chart('13.7.0', false), chart('14.4.1', true), chart('14.4.1', true)], context());
+  const chart = (version: string, major: boolean) =>
+    result({
+      kind: 'chart',
+      name: 'grafana',
+      from: '13.2.7',
+      target: { kind: 'chart', chart: 'grafana', version, major },
+    });
+  const npm = (versions: string[], from = '1.4.0') =>
+    result({
+      kind: 'lockfile',
+      name: 'example-a',
+      from,
+      pin: { file: 'pnpm-lock.yaml', line: 120 },
+      target: { kind: 'version', versions },
+    });
+
+  it('is one move, to the furthest target within the pin’s major, and leaves what only a major clears', () => {
+    const list = moves([chart('13.6.0', false), chart('13.7.0', false), chart('14.4.1', true)], context());
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({
-      to: { kind: 'chart', version: '14.4.1', major: true },
-      major: true,
+      to: { kind: 'chart', version: '13.7.0', major: false },
+      major: false,
       lane: 'worker',
     });
-    expect(list[0]?.clears.HIGH).toBe(3);
+    expect(list[0]?.clears.HIGH).toBe(2);
+    expect(list[0]?.leaves.HIGH).toBe(1);
+    expect(list[0]?.forMajor?.HIGH).toBe(1);
+    expect(list[0]?.results).toHaveLength(2);
+  });
+
+  it('counts what a move leaves for a major apart from what it leaves with no fix', () => {
+    const unfixed = (due: number) => ({
+      ...result({ kind: 'chart', name: 'grafana', from: '13.2.7', target: undefined }),
+      severity: 'CRITICAL' as const,
+      due,
+    });
+    // A result with no fix is left, for no major: the move says nothing is left for one, and its deadline is of what
+    // it clears alone, however soon the unfixed one is due.
+    const [alone] = moves([{ ...chart('13.7.0', false), due: NOW + 4 * DAY }, unfixed(NOW + DAY)], context());
+    expect(alone).toMatchObject({ major: false, deadline: NOW + 4 * DAY });
+    expect(alone?.leaves.CRITICAL).toBe(1);
+    expect(alone?.forMajor).toBeUndefined();
+    expect(publicMove(alone as Move)).not.toHaveProperty('forMajor');
+    // With one a major clears beside it, that one alone is for the major, and the file says so.
+    const [both] = moves([chart('13.7.0', false), chart('14.4.1', true), unfixed(NOW + DAY)], context());
+    expect(both?.leaves).toMatchObject({ CRITICAL: 1, HIGH: 1 });
+    expect(both?.forMajor).toMatchObject({ CRITICAL: 0, HIGH: 1 });
+    expect(publicMove(both as Move).forMajor).toMatchObject({ CRITICAL: 0, HIGH: 1 });
+  });
+
+  it('gives a move within the major the earliest deadline of what it clears and of what it leaves for the major', () => {
+    const sooner = { ...chart('14.4.1', true), due: NOW + DAY };
+    const list = moves([{ ...chart('13.7.0', false), due: NOW + 4 * DAY }, sooner], context());
+    expect(list).toHaveLength(1);
+    // The High only the major clears is in no move until this one merges: its day is the move's, so it is alerted on.
+    expect(list[0]).toMatchObject({ to: { version: '13.7.0' }, major: false, deadline: NOW + DAY });
+    expect(list[0]?.clears.HIGH).toBe(1);
+    expect(list[0]?.leaves.HIGH).toBe(1);
+    expect(list[0]?.results).toHaveLength(1);
+    // A result with no fix has no deadline, and gives the move none.
+    const none = { ...chart('13.7.0', false), due: NOW + 4 * DAY };
+    const unfixed = { ...result({ kind: 'chart', name: 'grafana', from: '13.2.7', target: undefined }) };
+    expect(moves([none, unfixed], context())[0]?.deadline).toBe(NOW + 4 * DAY);
+  });
+
+  it('is the major at once where no result has a fix within the pin’s major', () => {
+    const list = moves([chart('14.3.1', true), chart('14.4.1', true)], context());
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'chart', version: '14.4.1', major: true }, major: true });
+    expect(list[0]?.clears.HIGH).toBe(2);
+    expect(list[0]?.leaves.HIGH).toBe(0);
+  });
+
+  it('moves a package at one version within its major, never to two versions for one copy', () => {
+    const list = moves([npm(['1.5.3']), npm(['1.5.1']), npm(['2.0.1'])], context());
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'version', versions: ['1.5.3'] }, major: false });
+    expect(list[0]?.clears.HIGH).toBe(2);
+    expect(list[0]?.leaves.HIGH).toBe(1);
+    // The major alone, the day after: the one move, and a major.
+    expect(moves([npm(['2.0.1'], '1.5.3')], context())[0]).toMatchObject({
+      to: { kind: 'version', versions: ['2.0.1'] },
+      major: true,
+    });
+  });
+
+  it('keeps a fix for each copy of a package locked at two versions, one on each major', () => {
+    const list = moves([npm(['1.5.3', '2.0.1'], '1.4.0, 2.0.0'), npm(['1.5.1', '2.0.4'], '1.4.0, 2.0.0')], context());
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'version', versions: ['1.5.3', '2.0.4'] }, major: false });
+    expect(list[0]?.clears.HIGH).toBe(2);
+  });
+
+  it('lets an image’s move clear Node’s own fix in it, whatever the image’s tag says of a major', () => {
+    const image = { kind: 'dockerfile' as const, name: 'gcr.io/distroless/nodejs24-debian13', from: 'nonroot' };
+    const list = moves(
+      [
+        result({ ...image, target: { kind: 'image', tag: 'nonroot', digest: DIGEST } }),
+        result({ ...image, target: { kind: 'version', versions: ['24.23.0'] } }),
+      ],
+      context(),
+    );
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ to: { kind: 'image', tag: 'nonroot' }, major: false });
+    expect(list[0]?.clears.HIGH).toBe(2);
+  });
+});
+
+describe('a chart whose move within its major would leave worse than it clears', () => {
+  type Side = Partial<Record<Severity, number>>;
+  const counts = (side: Side = {}) => ({ CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0, ...side });
+  /** A chart's results: so many of each severity fixed at each release, the release a major or not. */
+  const pinned = (name: string, from: string, fixes: { version: string; major: boolean; has: Side }[]): Judged[] =>
+    fixes.flatMap(({ version, major, has }) =>
+      (Object.entries(has) as [Severity, number][]).flatMap(([severity, count]) =>
+        Array.from({ length: count }, () =>
+          result({
+            kind: 'chart',
+            name,
+            from,
+            pin: { file: `deploy/${name}.yaml`, line: 9 },
+            severity,
+            target: { kind: 'chart', chart: name, version, major },
+          }),
+        ),
+      ),
+    );
+  /** The move the results make, and the wait the same results make while their content has not waited its day. */
+  const both = (results: Judged[]) => {
+    const [move, ...others] = moves(results, context());
+    const held = results.map((each) => {
+      const to = each.finding.fix?.target;
+      return to ? { why: 'content' as const, to, until: NOW + DAY } : undefined;
+    });
+    const unfixed = results.map((each) => ({ ...each, finding: { ...each.finding, fix: undefined } }));
+    const [wait, ...more] = waiting(unfixed, held);
+    expect([others, more]).toEqual([[], []]);
+    return { move: move as Move, wait: wait as Wait };
+  };
+  /** The wait says the move: its target, what it clears, and what it leaves for the major. */
+  const agree = ({ move, wait }: ReturnType<typeof both>) => {
+    expect(wait.to).toEqual(move.to);
+    expect(wait.clears).toEqual(move.clears);
+    expect(wait.leaves).toEqual(move.forMajor ?? counts());
+  };
+
+  it('is the major for grafana: Lows cleared, Highs left', () => {
+    const made = both(
+      pinned('grafana', '13.2.7', [
+        { version: '13.7.0', major: false, has: { LOW: 3 } },
+        { version: '14.6.0', major: true, has: { HIGH: 16, MEDIUM: 25, LOW: 1 } },
+      ]),
+    );
+    expect(made.move).toMatchObject({ to: { kind: 'chart', version: '14.6.0', major: true }, major: true });
+    expect(made.move.clears).toEqual(counts({ HIGH: 16, MEDIUM: 25, LOW: 4 }));
+    expect(made.move.leaves).toEqual(counts());
+    expect(made.move.forMajor).toBeUndefined();
+    expect(made.move.results).toHaveLength(45);
+    agree(made);
+  });
+
+  it('stays within the major for prometheus: Highs cleared, Highs left, however many', () => {
+    const made = both(
+      pinned('prometheus', '29.35.0', [
+        { version: '29.49.0', major: false, has: { HIGH: 17, MEDIUM: 48, LOW: 7 } },
+        { version: '30.0.1', major: true, has: { HIGH: 13, MEDIUM: 27, LOW: 4 } },
+      ]),
+    );
+    expect(made.move).toMatchObject({ to: { kind: 'chart', version: '29.49.0', major: false }, major: false });
+    expect(made.move.clears).toEqual(counts({ HIGH: 17, MEDIUM: 48, LOW: 7 }));
+    expect(made.move.leaves).toEqual(counts({ HIGH: 13, MEDIUM: 27, LOW: 4 }));
+    expect(made.move.forMajor).toEqual(made.move.leaves);
+    agree(made);
+    // One High cleared and a hundred left is the same: the worst of each side, never how many.
+    const few = both(
+      pinned('prometheus', '29.35.0', [
+        { version: '29.49.0', major: false, has: { HIGH: 1 } },
+        { version: '30.0.1', major: true, has: { HIGH: 100 } },
+      ]),
+    );
+    expect(few.move).toMatchObject({ to: { version: '29.49.0' }, major: false });
+    agree(few);
+  });
+
+  it('is the major for loki, which has no fix within its major', () => {
+    const made = both(pinned('loki', '18.13.7', [{ version: '21.6.0', major: true, has: { HIGH: 2, MEDIUM: 5 } }]));
+    expect(made.move).toMatchObject({ to: { kind: 'chart', version: '21.6.0', major: true }, major: true });
+    expect(made.move.clears).toEqual(counts({ HIGH: 2, MEDIUM: 5 }));
+    agree(made);
+  });
+
+  it('is the major where a Critical is left and the worst cleared is a High', () => {
+    const made = both(
+      pinned('grafana', '13.2.7', [
+        { version: '13.7.0', major: false, has: { HIGH: 9, LOW: 2 } },
+        { version: '14.6.0', major: true, has: { CRITICAL: 1 } },
+      ]),
+    );
+    expect(made.move).toMatchObject({ to: { version: '14.6.0', major: true }, major: true });
+    expect(made.move.clears).toEqual(counts({ CRITICAL: 1, HIGH: 9, LOW: 2 }));
+    agree(made);
+  });
+
+  it('stays within the major where the worst of each side is the same, or the worse is cleared', () => {
+    for (const [cleared, left] of [
+      [{ CRITICAL: 1 }, { CRITICAL: 4 }],
+      [{ MEDIUM: 1 }, { MEDIUM: 2, LOW: 9 }],
+      [{ HIGH: 1 }, { MEDIUM: 30 }],
+      [{ LOW: 1 }, { UNKNOWN: 3 }],
+    ] as [Side, Side][]) {
+      const made = both(
+        pinned('grafana', '13.2.7', [
+          { version: '13.7.0', major: false, has: cleared },
+          { version: '14.6.0', major: true, has: left },
+        ]),
+      );
+      expect(made.move).toMatchObject({ to: { version: '13.7.0' }, major: false });
+      expect(made.move.clears).toEqual(counts(cleared));
+      expect(made.move.forMajor).toEqual(counts(left));
+      agree(made);
+    }
+  });
+
+  it('is not the major for a result with no fix at all, however bad', () => {
+    const fixed = pinned('grafana', '13.2.7', [
+      { version: '13.7.0', major: false, has: { LOW: 3 } },
+      { version: '14.6.0', major: true, has: { LOW: 1 } },
+    ]);
+    const none = {
+      ...result({ kind: 'chart', name: 'grafana', from: '13.2.7', target: undefined }),
+      pin: { file: 'deploy/grafana.yaml', line: 9 },
+      severity: 'CRITICAL' as const,
+    };
+    const made = both([...fixed, none]);
+    expect(made.move).toMatchObject({ to: { version: '13.7.0' }, major: false });
+    expect(made.move.leaves).toEqual(counts({ CRITICAL: 1, LOW: 1 }));
+    expect(made.move.forMajor).toEqual(counts({ LOW: 1 }));
+    // The one with no fix waits for nothing, and is in no entry.
+    expect(made.wait.results).toHaveLength(4);
+    expect(made.wait.to).toEqual(made.move.to);
+    expect([made.wait.clears, made.wait.leaves]).toEqual([made.move.clears, made.move.forMajor]);
+  });
+
+  it('counts an excepted result for nothing', () => {
+    const results = pinned('grafana', '13.2.7', [
+      { version: '13.7.0', major: false, has: { LOW: 3 } },
+      { version: '14.6.0', major: true, has: { HIGH: 2, LOW: 1 } },
+    ]).map((each) => ({ ...each, excepted: each.severity === 'HIGH' }));
+    const made = both(results);
+    expect(made.move).toMatchObject({ to: { version: '13.7.0' }, major: false });
+    expect(made.move.clears).toEqual(counts({ LOW: 3 }));
+    expect(made.move.forMajor).toEqual(counts({ LOW: 1 }));
+    agree(made);
+    // An excepted Critical cleared within the major is no reason to stay there.
+    const cleared = pinned('grafana', '13.2.7', [
+      { version: '13.7.0', major: false, has: { CRITICAL: 1, LOW: 3 } },
+      { version: '14.6.0', major: true, has: { HIGH: 2 } },
+    ]).map((each) => ({ ...each, excepted: each.severity === 'CRITICAL' }));
+    const major = both(cleared);
+    expect(major.move).toMatchObject({ to: { version: '14.6.0', major: true }, major: true });
+    expect(major.move.clears).toEqual(counts({ HIGH: 2, LOW: 3 }));
+    agree(major);
+  });
+
+  it('leaves a package within its major, whatever its major would clear', () => {
+    const npm = (versions: string[], severity: Severity) =>
+      result({
+        kind: 'lockfile',
+        name: 'example-a',
+        from: '1.4.0',
+        pin: { file: 'pnpm-lock.yaml', line: 120 },
+        severity,
+        target: { kind: 'version', versions },
+      });
+    const [move, ...others] = moves([npm(['1.5.3'], 'LOW'), npm(['2.0.1'], 'CRITICAL')], context());
+    expect(others).toEqual([]);
+    expect(move).toMatchObject({ to: { kind: 'version', versions: ['1.5.3'] }, major: false });
+    expect(move?.clears).toEqual(counts({ LOW: 1 }));
+    expect(move?.forMajor).toEqual(counts({ CRITICAL: 1 }));
+  });
+});
+
+describe('a package whose bump waits for a bench run', () => {
+  const SDK = '@anthropic-ai/claude-agent-sdk';
+  const benched = context({ benched: [SDK] });
+  const sdk = (severity: Severity = 'HIGH') =>
+    result({
+      kind: 'lockfile',
+      name: SDK,
+      from: '0.2.10',
+      severity,
+      pin: { file: 'pnpm-lock.yaml', line: 40 },
+      target: { kind: 'version', versions: ['0.2.11'] },
+    });
+
+  it('is an issue of its own, marked for the bench, where its fix clears no Critical', () => {
+    const other = result({
+      kind: 'lockfile',
+      name: 'example-a',
+      from: '1.0.0',
+      pin: { file: 'pnpm-lock.yaml', line: 120 },
+      target: { kind: 'version', versions: ['1.0.1'] },
+    });
+    const list = moves([sdk(), other], benched);
+    const its = list.find((move) => move.name === SDK);
+    expect(its).toMatchObject({ lane: 'issue', bench: true, lockfile: true, deadline: NOW + 4 * DAY });
+    expect(list.find((move) => move.name === 'example-a')).toMatchObject({ lane: 'worker' });
+    expect(list.find((move) => move.name === 'example-a')?.bench).toBeUndefined();
+    const file = movesFile(list, benched);
+    expect(file.totals.lanes).toMatchObject({ issue: 1, worker: 1 });
+    expect(file.moves.find((move) => move.lane === 'issue')).toMatchObject({
+      bench: true,
+      deadline: '2026-11-14T04:30:00Z',
+    });
+    // Any other move is written as it always was, with no key for it.
+    expect(Object.keys(file.moves.find((move) => move.lane === 'worker') ?? {})).not.toContain('bench');
+  });
+
+  it('is a move like any other where its fix clears a Critical, or the policy lists none', () => {
+    expect(moves([sdk('CRITICAL'), sdk()], benched)[0]).toMatchObject({ lane: 'worker' });
+    expect(moves([sdk('CRITICAL')], benched)[0]?.bench).toBeUndefined();
+    expect(moves([sdk()], context())[0]).toMatchObject({ lane: 'worker' });
+    expect(moves([sdk()], context())[0]?.bench).toBeUndefined();
+  });
+
+  it('is the line’s to hold too, in the app’s repository', () => {
+    expect(moves([sdk()], context({ app: true, benched: [SDK] }))[0]).toMatchObject({ lane: 'issue', bench: true });
   });
 });
 
@@ -556,5 +872,184 @@ describe('a pin that is merely behind', () => {
       }),
     ]);
     expect(file.moves.map(isRoutine)).toEqual([true]);
+  });
+});
+
+describe('the pins that wait', () => {
+  const TARGET: Target = { kind: 'image', tag: '2.18.0', digest: DIGEST };
+  /** A result with a fix that is no move today. */
+  const waits = (over: Parameters<typeof result>[0] = {}) => result({ target: undefined, due: undefined, ...over });
+  const content = { why: 'content' as const, to: TARGET, until: NOW + DAY - 7_200_000 };
+
+  it('names each pin once for each reason, with what waits there, its target and when it comes due', () => {
+    const results = [
+      waits({ severity: 'CRITICAL' }),
+      waits(),
+      waits({ name: 'example/other', from: '3.1.0', pin: { file: 'deploy/y.yaml', line: 8 }, due: NOW + DAY }),
+      // One with a fix today, one with none and nothing held, and one excepted: none of them waits.
+      result(),
+      waits(),
+      waits({ excepted: true }),
+    ];
+    const list = waiting(results, [content, content, { why: 'no-better' }, undefined, undefined, content]);
+    expect(list.map(publicWaiting)).toEqual([
+      {
+        name: 'example/other',
+        pins: [{ file: 'deploy/y.yaml', line: 8 }],
+        from: '3.1.0',
+        lockfile: false,
+        why: 'no-better',
+        clears: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+        deadline: '2026-11-11T04:30:00Z',
+      },
+      {
+        name: 'example/image',
+        pins: [{ file: 'deploy/x.yaml', line: 3 }],
+        from: '2.17.0',
+        lockfile: false,
+        why: 'content',
+        to: `image 2.18.0@${DIGEST}`,
+        until: '2026-11-11T02:30:00Z',
+        clears: { CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+      },
+    ]);
+    // The results that wait are kept by their fingerprints, and never printed, as a move's are not.
+    expect(list.map((each) => each.results.length)).toEqual([1, 2]);
+    expect(JSON.stringify(list.map(publicWaiting))).not.toContain(list[0]?.results[0]);
+    // The same results in another order give the same list.
+    const held = [content, content, { why: 'no-better' as const }];
+    expect(waiting([...results.slice(0, 3)].reverse(), [...held].reverse()).map(publicWaiting)).toEqual(
+      list.map(publicWaiting),
+    );
+  });
+
+  it('says the move the pin will have: within its major where a result that waits has a fix there', () => {
+    const chart = (version: string, major = false): Target => ({ kind: 'chart', chart: 'prometheus', version, major });
+    const pinned = {
+      kind: 'chart' as const,
+      name: 'prometheus',
+      from: '29.35.0',
+      pin: { file: 'deploy/p.yaml', line: 9 },
+    };
+    const soon = NOW + DAY - 7_200_000;
+    const results = [
+      waits({ ...pinned, due: NOW + 2 * DAY }),
+      waits({ ...pinned, severity: 'CRITICAL', due: NOW + 5 * DAY }),
+      waits({ ...pinned, due: NOW + 3 * DAY }),
+    ];
+    // Two fixed within the major, at two releases, and one only the next major clears, all first seen today.
+    const held = [
+      { why: 'content' as const, to: chart('30.0.1', true), until: soon },
+      { why: 'content' as const, to: chart('29.49.0'), until: soon },
+      { why: 'content' as const, to: chart('29.40.0'), until: soon },
+    ];
+    const list = waiting(results, held);
+    expect(list.map(publicWaiting)).toEqual([
+      {
+        name: 'prometheus',
+        pins: [{ file: 'deploy/p.yaml', line: 9 }],
+        from: '29.35.0',
+        lockfile: false,
+        why: 'content',
+        to: 'chart prometheus 29.49.0',
+        until: '2026-11-11T02:30:00Z',
+        clears: { CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+        // What only the major clears waits with them, counted apart, and its deadline is the entry's.
+        leaves: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+        deadline: '2026-11-12T04:30:00Z',
+      },
+    ]);
+    expect(list[0]?.results).toHaveLength(3);
+    // It is the move the same results make once their content has waited: the same target, the same counts.
+    const fixed = results.map((each, at) => ({
+      ...each,
+      finding: { ...each.finding, fix: { target: held[at]?.to as Target, day: NOW } },
+    }));
+    const [move] = moves(fixed, context()).map(publicMove);
+    expect(move).toMatchObject({ to: list.map(publicWaiting)[0]?.to, major: false });
+    expect([move?.clears, move?.leaves]).toEqual([list[0]?.clears, list[0]?.leaves]);
+    expect(waitingLine(publicWaiting(list[0] as Wait))).toBe(
+      "prometheus 29.35.0: a fix of 1 critical, 1 high, leaving 1 high for a major, due 2026-11-12T04:30:00Z, to chart prometheus 29.49.0, waits for its content's day, until 2026-11-11T02:30:00Z.",
+    );
+    // Its target's own day, where the nearer release's content came first.
+    const later = waiting(results, [held[0], { ...held[1], until: soon + DAY }, held[2]] as typeof held);
+    expect(later.map(publicWaiting)[0]).toMatchObject({
+      to: 'chart prometheus 29.49.0',
+      until: '2026-11-12T02:30:00Z',
+    });
+    // A pin whose only fixes are a major says the major, and leaves nothing.
+    const major = waiting(results.slice(0, 1), held.slice(0, 1)).map(publicWaiting);
+    expect(major[0]).toMatchObject({ to: 'chart prometheus 30.0.1 (a major)', clears: { CRITICAL: 0, HIGH: 1 } });
+    expect(major[0]).not.toHaveProperty('leaves');
+  });
+
+  it('names a routine update that waits for its content after the fixes, and never a lockfile’s', () => {
+    const routine = {
+      kind: 'third-party' as const,
+      pins: [{ file: 'deploy/z.yaml', line: 2 }],
+      to: TARGET,
+      until: NOW,
+    };
+    const list = waiting(
+      [waits(), waits({ kind: 'lockfile', name: 'left-pad' })],
+      [content, content],
+      [
+        { ...routine, name: 'example/zeta', from: '1.0.0' },
+        { ...routine, name: 'example/alpha', from: '1.0.0' },
+        { ...routine, kind: 'lockfile', name: 'left-pad', from: '1.0.0' },
+      ],
+    ).map(publicWaiting);
+    expect(list.map((each) => [each.name, each.routine])).toEqual([
+      ['example/image', undefined],
+      ['example/alpha', true],
+      ['example/zeta', true],
+    ]);
+    expect(list[1]).toEqual({
+      name: 'example/alpha',
+      pins: [{ file: 'deploy/z.yaml', line: 2 }],
+      from: '1.0.0',
+      lockfile: false,
+      why: 'content',
+      to: `image 2.18.0@${DIGEST}`,
+      until: '2026-11-10T04:30:00Z',
+      clears: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+      routine: true,
+    });
+  });
+
+  it('is written by a scan that judged what waits, an empty list included, and changes nothing else of the file', () => {
+    const list = moves([result()], context());
+    const before = movesFile(list, context(), '19234567890');
+    expect('waiting' in before).toBe(false);
+    const none = movesFile(list, context(), '19234567890', [], undefined, undefined, undefined, []);
+    expect(none.waiting).toEqual([]);
+    const held = waiting([waits()], [content]);
+    const some = movesFile(list, context(), '19234567890', [], undefined, undefined, undefined, held);
+    expect(some.waiting).toEqual(held.map(publicWaiting));
+    for (const file of [none, some]) {
+      const { waiting: _, ...rest } = file;
+      expect(JSON.stringify(rest)).toBe(JSON.stringify(before));
+    }
+    // The table says what waits, under the moves; with nothing waiting it reads as it did.
+    expect(table(none)).toEqual(table(before));
+    expect(table(some).slice(table(before).length)).toEqual([
+      '',
+      'Waiting: 1 with somewhere to go and no move today.',
+      '',
+      `- example/image 2.17.0: a fix of 1 high, to image 2.18.0@${DIGEST}, waits for its content's day, until 2026-11-11T02:30:00Z.`,
+    ]);
+    const refused = movesFile(
+      [],
+      context(),
+      '1',
+      [],
+      undefined,
+      undefined,
+      undefined,
+      waiting([waits()], [{ why: 'no-better' }]),
+    );
+    expect(table(refused).at(-1)).toBe(
+      '- example/image 2.17.0: a fix of 1 high is not listed: no release read is better than the pin.',
+    );
   });
 });

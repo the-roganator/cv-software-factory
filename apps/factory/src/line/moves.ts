@@ -10,6 +10,7 @@ import { parsePatch } from 'diff';
 import type { Move as PinnedMove } from '../../../runner/src/pins.ts';
 import type { DependencyPull } from '../github/dependabot.ts';
 import { groupMovesTo } from '../github/dependabot.ts';
+import { workItemMark } from '../github/issue-mark.ts';
 import { filesIn } from '../github/patches.ts';
 import { compareVersions } from '../vulnerabilities/versions.ts';
 import type { StepContext } from './agents/agent.ts';
@@ -57,7 +58,8 @@ export function restWords(scan: Scan): string {
  * become public, as Dependabot's own pull request would make them: so it is built from the ticket's own payload and
  * the signal, never from a public view, which may withhold both. `rated` gives the category and the severity, as the
  * line reads them for every ticket. A routine update's signal carries no scan, and its issue says why it moves: a
- * newer release, and no advisory.
+ * newer release, and no advisory. Its last line is the work item's mark, which finds the issue again
+ * (`github/issue-mark.ts`).
  */
 export function moveIssue(
   workItem: string,
@@ -89,6 +91,8 @@ export function moveIssue(
         : []),
     '',
     'The factory is working on it: its move will come as a pull request that refers here. The issue closes when the move is verified in production, by the scan of the release.',
+    '',
+    workItemMark(workItem),
   ].join('\n');
   return { title: own.title, body };
 }

@@ -1,5 +1,5 @@
 /**
- * The other queue of ADR 0017, the deploy queue, adds the deploy watch's own pull request from `deploy/local`, known
+ * The other queue of ADR 0027, the deploy queue, adds the deploy watch's own pull request from `deploy/local`, known
  * by its branch, label and title. So the door refuses every worker that asks to write that branch or its scratch
  * branch, open a pull request from either, give a deploy label, or act on a pull request from either: what the queue
  * takes is the deploy watch's own, as it left it.

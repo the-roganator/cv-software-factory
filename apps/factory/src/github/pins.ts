@@ -19,7 +19,10 @@
  *   routine update, with no advisory behind it and no deadline, and how it merges. As the
  *   day's moves at its files change (a target moves on, a move joins or goes), its branch moves, in one forced update,
  *   and its title and description with it; one that conflicts with `main` is committed again on `main`'s head. A pull
- *   request Martin closed without merging it is not opened again for the same edits. A worker started again keeps
+ *   request Martin closed without merging it is not opened again for the same edits; one anyone else closed is. A
+ *   branch that a pull request of someone else's stands on is not written, and an open GitHub refuses costs that
+ *   branch alone: each is refused for the branch, with an issue for each of its moves, and the pass goes on to the
+ *   rest. A worker started again keeps
  *   a branch whose head is already the commit it would write, so a restart sends no pull request round its checks
  *   again. Two moves that name one line are both refused, and the rest of their file's go on.
  * - **A move no pin's line writes**, a lockfile's package, what mise pins, or an image that brings another pin with it
@@ -28,7 +31,7 @@
  *   Dockerfiles', each made on what the one before it wrote. The watch commits what the scan made, whole, once each file it wrote is the same at
  *   `main`'s head as there, through the same guard, which holds where it writes; the review gate makes the same moves
  *   again on main and compares. A move the step refused (pnpm's guards: a release younger than a day, a weaker
- *   provenance; a copy only an override would move) waits, with an issue that says so by its mark and says which kind
+ *   provenance; a copy only an override would move; a routine update pnpm resolved past its target) waits, with an issue that says so by its mark and says which kind
  *   of refusal it was (`refusalKind`), in the watch's own words for the kind, and the step's own words in the
  *   worker's log; the rest of its group go on.
  * - **It makes every move of its lanes, whoever else proposes one.** A pull request of Dependabot's for the same pin is
@@ -36,14 +39,26 @@
  *   as a branch the factory does not own and a pull request the App did not open). Once `main` has the version,
  *   Dependabot closes it itself when it next looks at it, or the worker's watch of such duplicates does
  *   (`duplicates.ts`).
- * - **A move in the `issue` lane** (a workflow's pin), a line no longer built, a move the watch cannot write on its pins' lines, and one the pin step refused, is
+ * - **A move in the `issue` lane** (a workflow's pin, or a fix that waits for a bench run, marked `bench`), a line no longer built, a move the watch cannot write on its pins' lines, one the pin step refused, one undone on `main`, and one whose branch is held or whose pull request GitHub refused, is
  *   one issue, labelled `pin`, that a session can take as it stands: its pins, its target, its counts and its
  *   deadline. It is found again by the mark in its body, and updated, never opened twice; one Martin closed is opened
  *   again only for a later target.
- * - **A pull request with no move left** is closed, with a sentence, and so is the issue of a move that is gone.
+ * - **A move whose merge was undone on `main`** is left unmade until its target changes: a merged pull request of the
+ *   App's from the move's branch made this very move (its name, what it moved from and to, by the mark in its
+ *   description), its merge is still in `main`'s history, and `main` again holds what it moved from, so someone put
+ *   it back. It is said once in the log and is one issue, as below; a move the pin step makes waits with the rest of
+ *   its group, which the step makes whole. A `main` whose history no longer has the merge (one written again from an
+ *   earlier commit) has had nothing undone on it, and the move is made.
+ * - **A pull request with no move left** is closed, with a sentence, and so is the issue of a move that is gone. A
+ *   move the scan holds for its content's day (`Moves.waiting`, why `content`) is not gone: the pull request that
+ *   carries it, and its issue, are left as they are for the scan that lists it again, said once in the log. One the
+ *   scan refused as no better than the pin is gone, and the close says so. A scan that does not say what waits is
+ *   read by its moves alone.
  * - **In the app's repository it keeps the issues alone** (`ISSUE_REPOS`): the app's moves are its line's, made from
- *   tickets, and no ticket is made for a move on a line no longer built (`none`), the one lane but `line` the scan
- *   gives an app's move (`laneOf`), so each is one issue there, opened, updated and closed as here. The watch reads
+ *   tickets, and no ticket is made for a move on a line no longer built (`none`), or for a fix of a package whose
+ *   bump waits for a bench run (`issue`, marked `bench`: `BENCHED`, policy/vulnerabilities.ts), the two lanes but
+ *   `line` the scan gives an app's move (`laneOf`, and `moves` for the bench), so each is one issue there, opened,
+ *   updated and closed as here. The watch reads
  *   no branch, file or pull request there and writes none: its pass there has the four actions on issues and no
  *   other (`issuesOnly`).
  *
@@ -63,13 +78,14 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../repositories.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
-import { isRoutine } from '../vulnerabilities/moves.ts';
+import { isRoutine, type ScannedImage } from '../vulnerabilities/moves.ts';
 import { DIGEST_PATTERN, splitReference } from '../vulnerabilities/reference.ts';
 import { libraryOf } from '../vulnerabilities/registry.ts';
 import { SEVERITIES } from '../vulnerabilities/sarif.ts';
 import { type Actions, APP_LOGIN } from './actions.ts';
 import { BranchRefused, PIN_PREFIX, type WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
+import { MARTIN } from './issues.ts';
 import { type Apart, groupKey, groupOf, type MadeGroup, madeByStep, namedMajor, writtenBy } from './made.ts';
 import { isOwnCommit } from './own-commit.ts';
 import { PatchRefused } from './patches.ts';
@@ -107,6 +123,8 @@ const ISSUE_LANES = new Set(['issue', 'none']);
 
 /** How often a pass reads the day: the scan runs daily, and a pass is idempotent. */
 export const PASS_MS = 60 * 60_000;
+/** What the watch logs once a scan, with the scan's run, when a pass has read its moves and what it takes of them. */
+export const READ_THE_SCAN = 'the pin watch takes the moves it was told to (PIN_WATCH_ONLY), and leaves the rest alone';
 
 export interface PinWatchDependencies {
   github: GitHub;
@@ -160,7 +178,9 @@ export function readPinScope(text: string | undefined): PinScope {
   return [...new Set(names)];
 }
 
-const CLOSED_BY = z.object({ closed_by: z.object({ login: z.string() }).nullable().optional() });
+const CLOSED_BY = z.object({
+  closed_by: z.object({ login: z.string(), id: z.number().int().optional() }).nullable().optional(),
+});
 const PULLS = z.array(
   z.object({
     number: z.number().int().positive(),
@@ -168,11 +188,13 @@ const PULLS = z.array(
     state: z.string(),
     body: z.string().nullable().optional(),
     merged_at: z.string().nullable().optional(),
+    merge_commit_sha: z.string().nullable().optional(),
     user: z.object({ login: z.string() }).nullable(),
     labels: z.array(z.object({ name: z.string() })),
     head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
   }),
 );
+const MERGE_BASE = z.object({ merge_base_commit: z.object({ sha: z.string() }) });
 const PULL = z.object({ mergeable: z.boolean().nullable() });
 const BRANCH = z.object({ object: z.object({ sha: z.string() }) });
 /** A file's bytes as text, every byte kept, as the guard reads a file from git (`treeSource`). */
@@ -192,6 +214,11 @@ type Issue = z.infer<typeof ISSUES>[number];
 
 /** The most pages of open pull requests, and of the watch's issues, read. */
 const PAGES = 10;
+/** How many pages of a hundred closed pull requests are read of one pin branch: past them, no move is made on it. */
+const CLOSED_PAGES = 30;
+
+/** GitHub's failures that may pass by the next pass: a limit, an outage. Any other answer to an open is a refusal. */
+const PASSING: readonly string[] = ['rate-limited', 'server', 'network'];
 
 /** The mark that finds a move's issue again, and the target it was written for. */
 const ISSUE_MARK = /<!-- factory: pin-issue ([a-z0-9][a-z0-9.-]*) -->/;
@@ -206,6 +233,27 @@ const EDITS_MARK = /<!-- factory: pin-edits ([0-9a-f]{64}) -->/;
 const editsHash = (edits: readonly PinEdit[]) => createHash('sha256').update(JSON.stringify(edits)).digest('hex');
 /** The mark that names the moves a pull request carries, URI-encoded: what a watch told only some moves may close. */
 const MOVES_MARK = /<!-- factory: pin-moves ([A-Za-z0-9%._~!*'()-]*) -->/;
+
+/**
+ * The mark that names each move a pull request makes, by a digest of the move's name, what it moves from and what it
+ * moves to (`madeMark`): a merged pull request's says which moves `main` took by it, so one put back on `main` since
+ * is known again, whatever else its files' moves are that day.
+ */
+const MADE_MARK = /<!-- factory: pin-made ([0-9a-f]{64}(?:,[0-9a-f]{64})*) -->/;
+const madeMark = (name: string, from: string | readonly string[], to: string | readonly string[]) =>
+  createHash('sha256')
+    .update(JSON.stringify([name, from, to]))
+    .digest('hex');
+
+/** Each move a pull request makes, as `MADE_MARK` names it, with its place in `moves.json`. */
+function madeOf(carried: readonly Carried[], written?: Written): { mark: string; move: number }[] {
+  if (written)
+    return written.made.steps.map((step) => ({ mark: madeMark(step.name, step.before, step.after), move: step.move }));
+  return carried.map(({ move }) => ({ mark: madeMark(move.name, move.from, move.to), move: move.index }));
+}
+
+const madeLine = (made: readonly { mark: string }[]) =>
+  made.length ? [`<!-- factory: pin-made ${[...new Set(made.map((each) => each.mark))].sort().join(',')} -->`] : [];
 
 /** The moves a pull request's description says it carries, by name; none when it has no mark the watch wrote. */
 export function carriedBy(body: string | null | undefined): string[] {
@@ -261,19 +309,29 @@ function versionOf(target: Target): string | undefined {
 /** A digest written after a pin's tag, as `@sha256:…`. */
 const DIGEST_AFTER = new RegExp(`^@${DIGEST_PATTERN}`);
 
+/** The repository a line writes before a tag, which follows its `:`; none where the tag stands alone (a values file's). */
+const REPOSITORY_BEFORE = /([A-Za-z0-9._/:-]+):$/;
+
 /**
  * The edit a move makes at one pin's line, or why it cannot be written there: what it pins now, as the line writes it
  * (a tag and its digest, or a version), replaced by the target, in the same shape.
+ *
+ * An image's line must be the move's own pin still, or main has moved since the scan and the edit would be written on
+ * another's: where `from` carries the digest the scan read there (`tag@sha256:…`), the line writes that digest after the
+ * tag; and with the move's `name`, the repository the line writes before the tag is the move's. A line that writes a tag
+ * alone (a chart's value) names no repository, and is known by its digest or not at all.
  */
 export function editAt(
   pin: { file: string; line: number },
   line: string,
   from: string,
   target: Target,
+  name?: string,
 ): PinEdit | { reason: string } {
   const at = `${pin.file}:${pin.line}`;
   const tries: { from: string; to: (digested: boolean) => string | undefined }[] = [];
-  const tag = splitReference(from).name;
+  const { name: tag, digest: read } = splitReference(from);
+  const moved = strayed(pin, name ?? 'the move', from);
   switch (target.kind) {
     case 'image':
       tries.push({ from: tag, to: (digested) => (digested ? `${target.tag}@${target.digest}` : target.tag) });
@@ -304,6 +362,14 @@ export function editAt(
     const written = `${each.from}${digest ?? ''}`;
     // What the guard reads as a word of its own, the same rule: the span with its digest, once on the line.
     if (spans(line, written).length !== 1) continue;
+    if (target.kind === 'image') {
+      if (read !== undefined && digest !== `@${read}`) return { reason: moved };
+      // A chart's image is named `<chart>: <repository>`, and pinned by a value that writes its tag alone.
+      const repository = REPOSITORY_BEFORE.exec(line.slice(0, start))?.[1];
+      const own = name?.slice(name.lastIndexOf(': ') + 1).trim();
+      if (own !== undefined && (repository === undefined ? read === undefined : repository !== own))
+        return { reason: moved };
+    }
     const to = each.to(digest !== undefined);
     if (to === undefined) return { reason: `${at} pins a digest the target does not name` };
     return { file: pin.file, line: pin.line, from: written, to };
@@ -311,10 +377,87 @@ export function editAt(
   return { reason: `${at} does not write ${from} once as a word of its own` };
 }
 
+/** What a refusal says of a line that is not the move's own pin now. */
+export const strayed = (pin: { file: string; line: number }, name: string, from: string) =>
+  `${pin.file}:${pin.line} is not ${name}'s pin at ${from} now: main moved since the scan`;
+
+/** A chart's `chart:` line, and its `targetRevision:` at a version, as an Application writes them (inventory.ts). */
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const keyLine = (key: string, value: string) =>
+  new RegExp(`^\\s*-?\\s*${key}:\\s*['"]?${literal(value)}['"]?\\s*(?:#.*)?$`);
+
+/**
+ * Whether a line is a chart's pin at a version, placed as the list places it (inventory.ts): in its YAML document, the
+ * `targetRevision` at that version nearest the chart's `chart:` line; or in the Makefile, which installs one chart,
+ * the line that sets `ARGOCD_CHART`.
+ */
+export function chartPinAt(lines: readonly string[], line: number, chart: string, version: string): boolean {
+  const text = lines[line - 1] ?? '';
+  if (/^ARGOCD_CHART\s*:?=/.test(text)) return true;
+  let [start, end] = [line - 1, line - 1];
+  while (start > 0 && lines[start - 1] !== '---') start--;
+  while (end < lines.length && lines[end] !== '---') end++;
+  const [named, revision] = [keyLine('chart', chart), keyLine('targetRevision', version)];
+  const at = lines.findIndex((each, index) => index >= start && index < end && named.test(each));
+  if (at < 0) return false;
+  const revisions = lines.flatMap((each, index) =>
+    index >= start && index < end && revision.test(each) ? [index] : [],
+  );
+  return revisions.sort((a, b) => Math.abs(a - at) - Math.abs(b - at))[0] === line - 1;
+}
+
+/**
+ * The edit a move makes at one of its pins, in a file's lines, or why it is not written there: `editAt`, on the line
+ * only where it is the move's own pin. The one check the pin watch writes by and the review gate makes the move again
+ * by (scripts/move.ts), with the same inputs, so a move the watch writes is one the gate makes on the same line:
+ *
+ * - an image's line writes the move's repository before the tag, and after it the digest the scan read at that pin
+ *   (`scanned`, `moves.json`'s list of the images read: the one at this pin with the move's repository and tag). A
+ *   values file's line, which writes a tag alone, is known by that digest or not at all;
+ * - a chart's is the `targetRevision` nearest its `chart:` (`chartPinAt`);
+ * - a version's line names what it is a version of.
+ */
+export function ownEdit(
+  move: Pick<ReadMove, 'name' | 'from'>,
+  pin: { file: string; line: number },
+  lines: readonly string[],
+  target: Target,
+  scanned: readonly Pick<ScannedImage, 'image' | 'pin'>[] = [],
+): PinEdit | { reason: string } {
+  const line = lines[pin.line - 1] ?? '';
+  if (
+    (target.kind === 'chart' && !chartPinAt(lines, pin.line, target.chart, move.from)) ||
+    (target.kind === 'version' && !line.includes(move.name))
+  )
+    return { reason: strayed(pin, move.name, move.from) };
+  let from = move.from;
+  if (target.kind === 'image') {
+    // The image the scan read at the pin, by its repository and tag: the digest the move is from.
+    const repository = move.name.slice(move.name.lastIndexOf(': ') + 1).trim();
+    const [digest] = scanned
+      .filter((each) => each.pin.file === pin.file && each.pin.line === pin.line)
+      .map((each) => splitReference(each.image))
+      .filter((each) => each.repository === repository && each.tag === move.from)
+      .flatMap((each) => each.digest ?? []);
+    if (digest) from = `${move.from}@${digest}`;
+  }
+  return editAt(pin, line, from, target, move.name);
+}
+
 /** What the scan's run is, in a sentence. */
 const runText = (moves: Moves) => `the scan of run [${moves.run.id}](${moves.run.url})`;
 /** The same, to start a sentence. */
 const RunText = (moves: Moves) => `T${runText(moves).slice(1)}`;
+
+/**
+ * The names of the pins the scan says wait (scanning.ts's `Moves.waiting`), by why: held for their content's day, or
+ * refused as no better than the pin. None where the scan does not say what waits: a move it does not list is then
+ * gone, as it ever was.
+ */
+export function heldBy(waiting: Moves['waiting']): { content: Set<string>; noBetter: Set<string> } {
+  const names = (why: string) => new Set((waiting ?? []).filter((each) => each.why === why).map((each) => each.name));
+  return { content: names('content'), noBetter: names('no-better') };
+}
 
 /** One move a pull request carries, and the edits it makes at its pins. */
 export interface Carried {
@@ -353,6 +496,17 @@ const routineWords = (count: number) =>
     : 'Each is a routine update: a newer release, with no advisory behind it and no deadline.';
 
 /**
+ * What a deadline counts, said wherever a move within its pin's major leaves results that only a later major clears
+ * (the scan's `forMajor`): its deadline is the earliest of what it clears and of those (moves.ts), so the day shown is
+ * the pin's. A move that leaves only results with no fix leaves nothing for a major, and its deadline is of what it
+ * clears alone.
+ */
+const LEAVES_FOR_A_MAJOR =
+  'The deadline is the earliest among what the move clears and what it leaves that only a major clears: the scan lists that major as a move of its own once this one has merged.';
+const leavesForLater = (move: Pick<ReadMove, 'major' | 'forMajor' | 'deadline'>) =>
+  !move.major && move.deadline !== undefined && SEVERITIES.some((s) => move.forMajor?.[s]);
+
+/**
  * What each move clears and leaves, and its deadline, as a table after a blank line. A routine update clears nothing
  * and has no deadline, which its description says in a sentence: its row says only what its pins still have open,
  * where they have anything, and the table is left out where no row is left.
@@ -370,6 +524,7 @@ function countsTable(moves: readonly ReadMove[]): string[] {
             (move) =>
               `| ${code(move.name)} | ${counted(move.clears)} | ${counted(move.leaves)} | ${move.deadline ?? 'none'} |`,
           ),
+          ...(found.some(leavesForLater) ? ['', LEAVES_FOR_A_MAJOR] : []),
         ]
       : []),
     ...(left.length
@@ -409,19 +564,21 @@ export function pullBody(carried: readonly Carried[], moves: Moves): string {
     '',
     `<!-- factory: pin-edits ${editsHash(edits)} -->`,
     `<!-- factory: pin-moves ${encodeURIComponent(JSON.stringify(sorted.map(({ move }) => move.name)))} -->`,
+    ...madeLine(madeOf(sorted)),
   ];
   return `${lines.join('\n')}\n`;
 }
 
 /** Why a move the pin step makes is an issue: the step refused it, in the scan's run. */
-const STEP_REFUSED = 'the pin step could not make it on the commit the scan read';
+export const STEP_REFUSED = 'the pin step could not make it on the commit the scan read';
 
 /**
  * The kinds of refusal the pin step gives a move (apps/runner/src/pins.ts), by what will make the move go: a release
  * younger than the minimum age, one published with weaker provenance than the release before, an install script not
- * allowed, a copy only an override would move, a release mise could not lock; and anything else.
+ * allowed, a copy only an override would move, a routine update pnpm resolved to a newer release than the scan
+ * listed, a release mise could not lock; and anything else.
  */
-export type RefusalKind = 'young' | 'provenance' | 'script' | 'override' | 'lock' | 'other';
+export type RefusalKind = 'young' | 'provenance' | 'script' | 'override' | 'resolved' | 'lock' | 'other';
 
 /**
  * The kind of a refusal, from the step's one line of it (`MadeGroup.refused`), which carries pnpm's or mise's own
@@ -433,6 +590,9 @@ export type RefusalKind = 'young' | 'provenance' | 'script' | 'override' | 'lock
  * - `script`: pnpm's `… has to be built but the build scripts were ignored`, and its `allowBuilds`.
  * - `young`: pnpm's `… does not meet the minimumReleaseAge constraint: … within the minimumReleaseAge cutoff`, and
  *   the step's own of Node and of a tool, `… within mise.toml's minimum_release_age`.
+ * - `resolved`: the step's own, of a routine update whose manifests' copy pnpm put past the target, at a release the
+ *   range admits where pnpm would not take the target itself: `pnpm resolved … to …, past the … asked for: a routine
+ *   update …` (`RESOLVED_PAST`).
  * - `lock`: anything else `mise lock` refused, which the step says as `mise refused …`.
  *
  * Each is a phrase with a space in it or a setting's name in capitals, which no package's name can be, so a package
@@ -444,9 +604,26 @@ export function refusalKind(reason: string): RefusalKind {
   if (/ build scripts were ignored\b| under allowBuilds\b|\bERR_PNPM_IGNORED_BUILDS\b/.test(reason)) return 'script';
   if (/\bminimumReleaseAge (?:constraint|cutoff)\b| within mise\.toml's minimum_release_age\b/.test(reason))
     return 'young';
+  if (RESOLVED_PAST.test(reason)) return 'resolved';
   if (/^mise refused /.test(reason)) return 'lock';
   return 'other';
 }
+
+/** A release as the step's own line names one: a version, and nothing else. */
+const RELEASE = String.raw`\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?`;
+/**
+ * The step's own line for a routine update pnpm resolved past its target (`movePackage`, apps/runner/src/pins.ts),
+ * from its start: the package, each release pnpm resolved, and the target the step asked for.
+ */
+const RESOLVED_PAST = new RegExp(
+  `^pnpm resolved \\S+ to (${RELEASE}(?:, ${RELEASE})*), past the ${RELEASE} asked for: a routine update `,
+);
+
+/**
+ * The releases pnpm resolved past a routine update's target, from the step's own line of that refusal, for the
+ * move's issue; of any other reason, none. The step wrote them from the lockfile, and each is a version.
+ */
+export const resolvedPast = (reason: string): string | undefined => RESOLVED_PAST.exec(reason)?.[1];
 
 /** What the scan's pin step could not do, and what will make the move go, by the kind of its refusal. */
 const REFUSED: Record<RefusalKind, string> = {
@@ -458,16 +635,51 @@ const REFUSED: Record<RefusalKind, string> = {
     'The scan’s pin step could not make it on the commit it read: the release has an install script this repository does not allow. It goes only with an entry for it in `pnpm-workspace.yaml`, with its reason, and that file is yours; or with a later release that needs none.',
   override:
     'The scan’s pin step could not make it on the commit it read: a copy of it stays below the target, because what depends on it admits nothing newer. It goes with a later release of what depends on it, which the watch then makes; or with an override for that copy in `pnpm-workspace.yaml`, with its reason, and that file is yours.',
+  resolved:
+    'The scan’s pin step could not make it on the commit it read: it asked pnpm for the release the scan listed, and pnpm resolved a newer one, which has not waited the days a routine update waits. Nothing is asked of you: the watch makes the move on a later day’s scan, once the scan lists that release.',
   lock: 'The scan’s pin step could not make it on the commit it read: mise could not lock the release. The watch makes the move once a scan can, on a later run or a later release; or move it by hand, and the scan’s next run sees it.',
   other:
     'The scan’s pin step could not make it on the commit it read. The watch makes the move once a scan can; or move it by hand, and the scan’s next run sees it.',
 };
 
+/** Why a move the watch made before is left unmade: its merge was undone on `main`. */
+export const REVERTED = 'its merge was undone on main';
+/** Why a move the pin step makes waits beside one undone on `main`: the step makes their files whole. */
+const WITH_REVERTED = 'a move made with it was undone on main';
+/** Why a move waits whose branch a pull request of someone else's stands on. */
+const BRANCH_HELD = 'a pull request the App did not open stands on its branch';
+/** Why a move waits whose pull request GitHub would not open. */
+const OPEN_REFUSED = 'GitHub refused its pull request';
+/** Why a move waits whose branch has more closed pull requests than the watch reads (`CLOSED_PAGES`). */
+const HISTORY_UNREAD = 'its branch has more closed pull requests than the watch reads';
+
+/** What each of those asks of Martin, for the move's issue. */
+const WAITS: Record<string, string> = {
+  [REVERTED]:
+    'The factory made this move, and its merge was then undone on `main`: the pin is back at what it moved from. The watch leaves it unmade until its target changes. To have it made as it is, put its merge back on `main`, or move it in a pull request of your own.',
+  [WITH_REVERTED]:
+    'The scan’s pin step makes it together with a move whose merge was undone on `main`, in the same files, and the watch commits what the step made whole or not at all: it waits until that move’s target changes, or its merge is put back on `main`. Or move it in a pull request of your own.',
+  [BRANCH_HELD]:
+    'A pull request the App did not open is open from the branch the watch makes this move on, and the watch writes no branch another’s pull request stands on. Close that pull request, and the watch makes the move on its next pass.',
+  [HISTORY_UNREAD]:
+    'The branch the watch makes this move on has more closed pull requests than the watch reads, so it cannot tell whether you closed this move or undid its merge, and makes nothing there. Move it in a pull request of your own.',
+  [OPEN_REFUSED]:
+    'The watch committed the move to its branch, and GitHub refused the pull request from it. The watch tries again each pass; what GitHub said is in the worker’s log and its refusal.',
+};
+
 /** Why the App cannot write a move, and what to do instead, for its issue. */
-function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other'): string {
-  if (why === STEP_REFUSED) return REFUSED[kind];
+function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other', resolved?: string): string {
+  if (why === STEP_REFUSED) {
+    // The release pnpm resolved, named where the step gave it: only a routine update has this refusal.
+    const newer = kind === 'resolved' && resolved ? resolved.split(', ').map(code).join(' and ') : undefined;
+    return newer ? REFUSED[kind].replace('a newer one,', `a newer one, ${newer},`) : REFUSED[kind];
+  }
+  const waits = why === undefined ? undefined : WAITS[why];
+  if (waits) return waits;
   if (why)
     return `The watch cannot write it on its pins' lines (${why}): move it by hand, and the scan's next run sees it.`;
+  if (move.bench)
+    return 'Its bump merges only after a bench run on Claude (`factory line bench`, docs/ON-THE-HOST.md#the-bench), which is yours to start: the App opens no pull request for it. Run the bench on the bumped package and move it in a pull request of your own, by the deadline below.';
   if (move.lane === 'none')
     return 'Its line is no longer built: nothing on this line will bring the fix. Move the pin to a line its publisher builds, and the scan reads it from there.';
   if (isRoutine(move) && move.pins.some((pin) => pin.file.startsWith('.github/')))
@@ -486,13 +698,15 @@ function issueKey(move: ReadMove): string {
 /**
  * An issue's title and description, and the target it is written for (`pin-target`): for a lockfile's move none, which
  * the public list withholds, but for a routine update the pin step refused, whose issue names its release, so one
- * Martin closed opens again for a later release.
+ * Martin closed opens again for a later release. `resolved` is the release pnpm took past such an update's target
+ * (`resolvedPast`), which its issue names too.
  */
 export function issueOf(
   move: ReadMove,
   moves: Moves,
   why?: string,
   kind?: RefusalKind,
+  resolved?: string,
 ): { title: string; body: string; key: string; target: string } {
   const key = issueKey(move);
   const name = move.lockfile ? `${move.name} (${key.slice('lockfile-'.length)})` : move.name;
@@ -521,9 +735,9 @@ export function issueOf(
   const body = [
     `<!-- factory: pin-issue ${key} -->`,
     `<!-- factory: pin-target ${targetMark(target)} -->`,
-    `${RunText(moves)} lists a move ${maker} cannot make with a pull request of its own: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
+    `${RunText(moves)} lists a move ${maker} ${why === REVERTED || why === WITH_REVERTED ? 'leaves unmade' : 'cannot make with a pull request of its own'}: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
     '',
-    cannotWrite(move, why, kind),
+    cannotWrite(move, why, kind, named ? resolved : undefined),
     '',
     '**Pins**',
     '',
@@ -538,7 +752,7 @@ export function issueOf(
       : [
           `**Clears** ${counted(move.clears)}; leaves ${counted(move.leaves)} on the same pins.`,
           '',
-          `**Deadline** ${move.deadline ?? 'none'}.`,
+          `**Deadline** ${move.deadline ?? 'none'}.${leavesForLater(move) ? ` ${LEAVES_FOR_A_MAJOR}` : ''}`,
         ]),
     '',
     'The watch keeps this issue to the scan: it updates it as the move changes, and closes it once the scan no longer lists the move.',
@@ -629,6 +843,7 @@ export function madeBody(carried: readonly Carried[], written: Written, moves: M
     '',
     `<!-- factory: pin-edits ${writtenHash(written.files)} -->`,
     `<!-- factory: pin-moves ${encodeURIComponent(JSON.stringify(carried.map(({ move }) => move.name)))} -->`,
+    ...madeLine(madeOf(carried, written)),
   ];
   return `${lines.join('\n')}\n`;
 }
@@ -767,43 +982,105 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     return isOwnCommit(github, source, repo, commit.base, at, whole);
   };
 
-  /** Whether the App closed an issue or pull request itself, rather than Martin: only his close holds a target back. */
-  const closedByApp = async (number: number): Promise<boolean> => {
+  /**
+   * Who closed an issue or pull request: Martin (`MARTIN`, by his id), whose close alone holds a target back; the App
+   * itself; or anyone else, whose close holds nothing.
+   */
+  const closedBy = async (number: number): Promise<'martin' | 'app' | 'other'> => {
     const { body } = await github.poll(repo, `/repos/${repo}/issues/${number}`, CLOSED_BY);
-    return body.closed_by?.login === APP_LOGIN;
+    if (body.closed_by?.id === MARTIN) return 'martin';
+    return body.closed_by?.login === APP_LOGIN ? 'app' : 'other';
   };
 
-  const openPulls = async (): Promise<Pull[]> => {
-    const out: Pull[] = [];
+  /**
+   * The open pull requests from this repository's pin branches: the App's own, and anyone else's, which the watch
+   * never writes under (`theirs`).
+   */
+  const openPulls = async (): Promise<{ own: Pull[]; theirs: Pull[] }> => {
+    const own: Pull[] = [];
+    const theirs: Pull[] = [];
     for (let page = 1; page <= PAGES; page++) {
       const { body } = await github.poll(repo, `/repos/${repo}/pulls?state=open&per_page=100&page=${page}`, PULLS);
-      out.push(
-        ...body.filter(
-          (p) => p.user?.login === APP_LOGIN && p.head.repo?.full_name === repo && p.head.ref.startsWith(PIN_PREFIX),
-        ),
-      );
-      if (body.length < 100) return out;
+      for (const p of body) {
+        if (p.head.repo?.full_name !== repo || !p.head.ref.startsWith(PIN_PREFIX)) continue;
+        (p.user?.login === APP_LOGIN ? own : theirs).push(p);
+      }
+      if (body.length < 100) return { own, theirs };
     }
     throw new GitHubError('malformed', `${repo} has more open pull requests than the pin watch reads.`);
   };
 
-  /** Whether Martin closed, without merging it, a pull request of the App's on this branch that made the same edits. */
-  const closedByMartin = async (branch: string, edits: string): Promise<boolean> => {
+  /**
+   * The App's closed pull requests from a branch of this repository, merged or not, newest first: every page, up to
+   * `CLOSED_PAGES`. A branch with more is not read `whole`, and no move is made on it: a close or an undone merge of
+   * Martin's past what was read would be forgotten, and the move made again.
+   */
+  const closedOn = async (branch: string): Promise<{ pulls: Pull[]; whole: boolean }> => {
     const [owner] = repo.split('/');
-    const { body } = await github.poll(
-      repo,
-      `/repos/${repo}/pulls?state=closed&per_page=20&head=${owner}:${encodeURIComponent(branch)}`,
-      PULLS,
-    );
-    for (const pull of body)
-      if (
-        pull.user?.login === APP_LOGIN &&
-        pull.head.repo?.full_name === repo &&
-        !pull.merged_at &&
-        EDITS_MARK.exec(pull.body ?? '')?.[1] === edits
-      )
-        if (!(await closedByApp(pull.number))) return true;
+    const pulls: Pull[] = [];
+    for (let page = 1; page <= CLOSED_PAGES; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/pulls?state=closed&per_page=100&head=${owner}:${encodeURIComponent(branch)}&page=${page}`,
+        PULLS,
+      );
+      pulls.push(
+        ...body.filter(
+          (pull) => pull.user?.login === APP_LOGIN && pull.head.repo?.full_name === repo && pull.head.ref === branch,
+        ),
+      );
+      if (body.length < 100) return { pulls, whole: true };
+    }
+    return { pulls, whole: false };
+  };
+
+  /**
+   * Whether Martin closed, without merging it, a pull request of the App's on this branch that made the same edits.
+   * One that anyone else closed holds nothing: the watch opens the move again, and says who closed it.
+   */
+  const closedByMartin = async (branch: string, edits: string): Promise<boolean> => {
+    for (const pull of (await closedOn(branch)).pulls) {
+      if (pull.merged_at || EDITS_MARK.exec(pull.body ?? '')?.[1] !== edits) continue;
+      const by = await closedBy(pull.number);
+      if (by === 'martin') return true;
+      if (by === 'other')
+        say(
+          `closed by another ${pull.number}`,
+          { branch, number: pull.number },
+          'someone but Martin closed this pin pull request: the watch opens its move again',
+        );
+    }
     return false;
+  };
+
+  /** Whether a commit is in `main`'s history at a head: GitHub's merge base of the two is the commit itself. */
+  const inMain = async (commit: string, head: string): Promise<boolean> => {
+    try {
+      const { body } = await github.poll(repo, `/repos/${repo}/compare/${commit}...${head}?per_page=1`, MERGE_BASE);
+      return body.merge_base_commit.sha === commit;
+    } catch (error) {
+      // A commit GitHub no longer has is in nobody's history.
+      if (error instanceof GitHubError && error.kind === 'not-found') return false;
+      throw error;
+    }
+  };
+
+  /**
+   * Which of the moves a branch's pull request would make today were undone on `main`, each with the merged pull
+   * request that made it: a merged pull request of the App's from the branch names the very move (`MADE_MARK`), and
+   * its merge is still in `main`'s history. That the watch can make the move again at all says `main` holds what it
+   * moved from, so `main` took the move and someone put it back. Read from GitHub, so a restart finds the same.
+   */
+  const undoneOn = async (branch: string, marks: readonly string[], head: string): Promise<Map<string, number>> => {
+    const undone = new Map<string, number>();
+    for (const pull of (await closedOn(branch)).pulls) {
+      if (!pull.merged_at || !pull.merge_commit_sha) continue;
+      const made = (MADE_MARK.exec(pull.body ?? '')?.[1] ?? '').split(',');
+      const again = marks.filter((mark) => made.includes(mark) && !undone.has(mark));
+      if (!again.length || !(await inMain(pull.merge_commit_sha, head))) continue;
+      for (const mark of again) undone.set(mark, pull.number);
+    }
+    return undone;
   };
 
   const pinIssues = async (): Promise<Map<string, Issue>> => {
@@ -858,7 +1135,10 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       last = now();
       return;
     }
-    const [open, issues] = await Promise.all([makes ? openPulls() : [], pinIssues()]);
+    const [{ own: open, theirs }, issues] = await Promise.all([
+      makes ? openPulls() : { own: [], theirs: [] },
+      pinIssues(),
+    ]);
     // Where it keeps issues alone no move is written, so nothing is read of main.
     const head = makes ? await source.head(repo) : '';
     const scanned = day.run.headSha;
@@ -871,12 +1151,13 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     say(
       `scope ${run}`,
       {
+        run,
         only: every ? '*' : [...named],
         taken: taken.length,
         leftAlone: read.moves.length - taken.length,
         unknown: [...named].filter((name) => !read.moves.some((move) => move.name === name)),
       },
-      'the pin watch takes the moves it was told to (PIN_WATCH_ONLY), and leaves the rest alone',
+      READ_THE_SCAN,
     );
     /** Whether the next poll reads the day again rather than wait the hour: main moved while a move was written. */
     let again = false;
@@ -897,8 +1178,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     const keep = new Set<string>();
     /** The issues today's moves keep, each with what it says. */
     const wanted = new Map<string, { title: string; body: string; target: string }>();
-    const want = (move: ReadMove, why?: string, kind?: RefusalKind) => {
-      const issue = issueOf(move, day, why, kind);
+    const want = (move: ReadMove, why?: string, kind?: RefusalKind, resolved?: string) => {
+      const issue = issueOf(move, day, why, kind, resolved);
       wanted.set(issue.key, { title: issue.title, body: issue.body, target: issue.target });
     };
 
@@ -949,7 +1230,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
             waits = true;
             break;
           }
-          const edit = editAt(pin, line, move.from, target);
+          // The line must be the move's own pin, by the check the review gate makes the move again by.
+          const edit = ownEdit(move, pin, now, target, day.file.scanned);
           if ('reason' in edit) {
             why = edit.reason;
             break;
@@ -999,7 +1281,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         const move = moves.find((each) => each.index === index);
         if (!move) continue;
         // Its issue only for a move told: the issue of one not told is never opened, updated or closed.
-        if (told.includes(move)) want(move, STEP_REFUSED, refusalKind(reason));
+        if (told.includes(move)) want(move, STEP_REFUSED, refusalKind(reason), resolvedPast(reason));
         if (!said.has(`refused ${run} ${index}`)) {
           said.add(`refused ${run} ${index}`);
           log.warn(
@@ -1049,6 +1331,52 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         }));
       groups.set(branch, carried);
       writtenOf.set(branch, { made, files: made.changed });
+    }
+
+    /** An issue for each move of a group the watch was told to take, saying why the group waits. */
+    const wantAll = (carried: readonly Carried[], why: string) => {
+      for (const { move } of carried) if (day.moves.includes(move)) want(move, why);
+    };
+
+    // A move whose merge was undone on main is left unmade, said once and as its issue; the rest of its files' moves
+    // go on, but for a group the pin step made, which is committed whole or not at all.
+    for (const [branch, carried] of [...groups]) {
+      // A branch whose closed pull requests are not read whole may hide Martin's close or an undone merge: nothing is
+      // made there, its open pull request is left as it is, and each of its moves says so as its issue.
+      if (!(await closedOn(branch)).whole) {
+        if (!said.has(`history ${branch}`))
+          log.warn(
+            { repo, branch, pages: CLOSED_PAGES },
+            'the pin branch has more closed pull requests than the watch reads: the watch makes no move there',
+          );
+        said.add(`history ${branch}`);
+        wantAll(carried, HISTORY_UNREAD);
+        keep.add(branch);
+        groups.delete(branch);
+        continue;
+      }
+      const written = writtenOf.get(branch);
+      const made = madeOf(carried, written);
+      const undone = await undoneOn(
+        branch,
+        made.map((each) => each.mark),
+        head,
+      );
+      if (!undone.size) continue;
+      const left = new Set(made.filter((each) => undone.has(each.mark)).map((each) => each.move));
+      for (const { move } of carried.filter((each) => left.has(each.move.index))) {
+        const merged = undone.get(made.find((each) => each.move === move.index && undone.has(each.mark))?.mark ?? '');
+        if (day.moves.includes(move)) want(move, REVERTED);
+        say(
+          `undone ${move.lockfile ? (move.mark ?? move.index) : move.name} ${move.to}`,
+          { move: move.lockfile ? move.index : move.name, branch, merged },
+          'this move’s merge was undone on main: the watch leaves it unmade until its target changes',
+        );
+      }
+      const rest = carried.filter((each) => !left.has(each.move.index));
+      if (written) wantAll(rest, WITH_REVERTED);
+      if (written || !rest.length) groups.delete(branch);
+      else groups.set(branch, rest);
     }
 
     for (const [branch, carried] of groups) {
@@ -1111,6 +1439,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
           'Martin closed this pull request: the watch waits for the day’s moves there to change',
         );
         continue;
+      } else {
+        // A branch someone else's pull request stands on is not the watch's to move: nothing is committed, and GitHub
+        // would refuse a second pull request from it.
+        const other = theirs.find((p) => p.head.ref === branch);
+        if (other) {
+          const error = new BranchRefused(
+            `Pull request #${other.number}, which the App did not open, is open from ${branch}: the pin watch writes no branch another's pull request stands on.`,
+          );
+          await refused(run, branch, error, other.number);
+          wantAll(carried, BRANCH_HELD);
+          continue;
+        }
       }
       let commit: string;
       try {
@@ -1137,14 +1477,36 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
           holds ? 'made the pin moves again on main' : 'moved the pin pull request to the day’s moves',
         );
       } else {
-        const made = await actions.openPullRequest(repo, {
-          head: branch,
-          base: 'main',
-          title,
-          body,
-          labels: [PIN_LABEL],
-        });
-        log.info({ repo, number: made.number, commit, moves: carried.length }, 'opened a pin pull request');
+        // An open that fails costs this branch alone, and the pass goes on: thrown, it would end the pass before it
+        // was marked as made, and the next poll would commit to the branch again.
+        try {
+          const made = await actions.openPullRequest(repo, {
+            head: branch,
+            base: 'main',
+            title,
+            body,
+            labels: [PIN_LABEL],
+          });
+          log.info({ repo, number: made.number, commit, moves: carried.length }, 'opened a pin pull request');
+        } catch (error) {
+          if (error instanceof BranchRefused || (error instanceof PatchRefused && error.kind === 'protected')) {
+            await refused(run, branch, error, null);
+          } else if (error instanceof GitHubError && !PASSING.includes(error.kind)) {
+            await refused(
+              run,
+              branch,
+              new BranchRefused(`GitHub refused a pull request from ${branch} into main: ${error.message}`),
+              null,
+            );
+          } else if (error instanceof GitHubError) {
+            // A limit or an outage: nothing is refused, and the next pass opens it.
+            log.warn({ repo, branch, commit, err: error }, 'the pin pull request was not opened yet: tries next pass');
+            continue;
+          } else {
+            throw error;
+          }
+          wantAll(carried, OPEN_REFUSED);
+        }
       }
     }
 
@@ -1154,9 +1516,26 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       const carries = carriedBy(pull.body);
       return carries.length > 0 && carries.every((name) => named.has(name));
     };
+    // A move the scan holds for its content's day is not gone: it lists again once the day has passed, so what stands
+    // for it stays as it is, neither closed today nor opened again tomorrow. One the scan refused, since no release
+    // read is better than the pin, is gone, and its close says that.
+    const held = heldBy(read.waiting);
     for (const pull of open) {
       if (keep.has(pull.head.ref) || !(every || own(pull))) continue;
-      const sentence = `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: \`main\` has moved its pins, or the scan has nothing left to move them for. Closed; the watch opens another if the scan lists one.`;
+      const carries = carriedBy(pull.body);
+      const waits = carries.filter((name) => held.content.has(name));
+      if (waits.length) {
+        say(
+          `held ${run} ${pull.number}`,
+          { number: pull.number, branch: pull.head.ref, moves: waits },
+          'the scan holds a move of this pull request for its content’s day: it is left open for the scan that lists it',
+        );
+        continue;
+      }
+      const refusedFor = carries.filter((name) => held.noBetter.has(name));
+      const sentence = refusedFor.length
+        ? `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: it read no release of ${refusedFor.map(code).join(' and ')} that is better than the pin, by its findings at each severity, so it lists no fix there today. Closed; the watch opens another if the scan lists one.`
+        : `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: \`main\` has moved its pins, or the scan has nothing left to move them for. Closed; the watch opens another if the scan lists one.`;
       await actions.closePullRequest(repo, pull.number, sentence);
       heads?.delete(repo, pull.head.ref);
       log.info({ repo, number: pull.number }, 'closed a pin pull request with no move left');
@@ -1173,9 +1552,10 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         continue;
       }
       if (found.state !== 'open') {
-        // Closed by Martin: opened again only for a later target than it was written for. Closed by the watch: again.
+        // Closed by Martin: opened again only for a later target than it was written for. Closed by the watch, or by
+        // anyone else: again.
         const same = TARGET_MARK.exec(found.body ?? '')?.[1] === targetMark(issue.target);
-        if (same && !(await closedByApp(found.number))) continue;
+        if (same && (await closedBy(found.number)) === 'martin') continue;
         await actions.reopenIssue(
           repo,
           found.number,
@@ -1187,6 +1567,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     }
     for (const [key, issue] of issues) {
       if (issue.state !== 'open' || wanted.has(key) || !(every || ownIssues.has(key))) continue;
+      // Its move held for its content's day: the issue stays for the scan that lists it again.
+      if ([...held.content].some((name) => segmentOf(name) === key)) continue;
       await actions.closeIssue(
         repo,
         issue.number,

@@ -13,6 +13,8 @@
 /scripts/moves.ts            @mrogan
 /scripts/derive.ts           @mrogan
 /scripts/pins.ts             @mrogan
+/scripts/scan-key.ts         @mrogan
+/scripts/scan-key.test.ts    @mrogan
 # What the gate's proofs run beyond their own files: the pin step, with its git, the pnpm it installs and its reading
 # of an image's registry, the daily scan's code that chooses each move's target, the grammar a target is read by, and
 # the archive its moves are read from
@@ -29,7 +31,7 @@
 /apps/factory/src/vulnerabilities/trivy-pin.ts  @mrogan
 /apps/factory/src/vulnerabilities/versions.ts   @mrogan
 /apps/factory/src/vulnerabilities/routine.ts    @mrogan
-# The seal of the state the scan keeps, which the next scan and the GitHub worker read (ADR 0021)
+# The seal of the state the scan keeps, which the next scan and the GitHub worker read (ADR 0026)
 /apps/factory/src/vulnerabilities/state.ts      @mrogan
 /scripts/copilot-held-runs.ts @mrogan
 /AGENTS.md                   @mrogan

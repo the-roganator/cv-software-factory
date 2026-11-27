@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareTags, compareVersions, majorOf, numbersOf } from '../../src/vulnerabilities/versions.ts';
+import { compareTags, compareVersions, isPrerelease, majorOf, numbersOf } from '../../src/vulnerabilities/versions.ts';
 
 /**
  * Versions read by one rule (versions.ts): what the scan, the pin step and the line each order two versions by.
@@ -78,5 +78,14 @@ describe('a tag', () => {
   it('has no pre-release: nothing sorts before the bare numbers', () => {
     expect(compareTags('24.22.1', '24.22.1-alpine3.24')).toBe(-1);
     expect(compareVersions('24.22.1', '24.22.1-alpine3.24')).toBe(1);
+  });
+});
+
+describe('a pre-release', () => {
+  it('is a version with a hyphen after its numbers, and never one with a build alone', () => {
+    expect(isPrerelease('1.5.0-rc.1')).toBe(true);
+    expect(isPrerelease('v2.0.0-beta')).toBe(true);
+    expect(isPrerelease('1.5.0')).toBe(false);
+    expect(isPrerelease('1.5.0+build-7')).toBe(false);
   });
 });

@@ -26,16 +26,18 @@
 import { z } from 'zod';
 import { ACTIONS_APP, scanOfCheck } from '../gates/counts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
+import { APP_LOGIN } from './actions.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { type DependencyPull, dependencyPulls } from './dependabot.ts';
 import { type DeployBuild, type DeployProposal, type DeployProposals, deployedImage } from './deploys.ts';
 import {
   conflictsOf,
-  failedChecks,
   heldFor,
   listedReviews,
   type Mergeability,
   type MergeQueue,
+  QUEUE_BOTS,
+  queueOwn,
   REVIEW_RUNS,
   type ReviewCheck,
   type ReviewVerdict,
@@ -242,7 +244,7 @@ const QUEUE = `query($owner: String!, $name: String!, $number: Int!) {
         nodes {
           __typename
           ... on AddedToMergeQueueEvent { createdAt actor { login } }
-          ... on RemovedFromMergeQueueEvent { createdAt reason actor { login } beforeCommit { oid } }
+          ... on RemovedFromMergeQueueEvent { createdAt reason actor { __typename login } beforeCommit { oid } }
         }
       }
     }
@@ -270,8 +272,8 @@ const QUEUE_ANSWER = z.object({
               __typename: z.string(),
               createdAt: z.string().optional(),
               reason: z.string().nullable().optional(),
-              // GitHub gives a deleted account as null.
-              actor: z.object({ login: z.string() }).nullable().optional(),
+              // GitHub gives a deleted account as null. Its type says a person from a bot, on a removal.
+              actor: z.object({ __typename: z.string().optional(), login: z.string() }).nullable().optional(),
               beforeCommit: z.object({ oid: SHA }).nullable().optional(),
             }),
           ),
@@ -492,12 +494,20 @@ export class LiveReads implements Reads {
     const entry = pull.mergeQueueEntry;
     // Out of the queue since it last went in: the last of its events is a removal.
     const out = !entry && lastRemoved !== undefined && events.at(-1) === lastRemoved;
-    // Without the head's time, or a removal's, every failure read counts: the count errs towards Martin.
+    // Who made a removal: a person, whom GitHub names as anything but a bot; the queue's own bot or the App, which is
+    // no person; any other bot, or nobody named, unknown.
+    const personOf = (actor: (typeof events)[number]['actor']): boolean | null => {
+      if (!actor) return null;
+      if (actor.__typename !== undefined && actor.__typename !== 'Bot') return true;
+      const login = actor.login.replace(/\[bot\]$/, '');
+      return QUEUE_BOTS.includes(login) || `${login}[bot]` === APP_LOGIN ? false : null;
+    };
+    // Without the head's time, or a removal's, every one of the queue's own read counts: the count errs towards Martin.
     const headAt = Date.parse(pull.commits?.nodes.at(-1)?.commit.committedDate ?? '');
     const failures = events.filter(
       (e) =>
         e.__typename === 'RemovedFromMergeQueueEvent' &&
-        failedChecks(e.reason ?? null) &&
+        queueOwn({ reason: e.reason ?? null, person: personOf(e.actor) }) &&
         !(Date.parse(e.createdAt ?? '') < headAt),
     ).length;
     const removed = out
@@ -507,6 +517,9 @@ export class LiveReads implements Reads {
           reason: lastRemoved.reason ?? null,
           commit: lastRemoved.beforeCommit?.oid ?? null,
           failures,
+          person: personOf(lastRemoved.actor),
+          // Without the head's time, or the time it last went in, it counts as at this head: it errs towards Martin.
+          atHead: !(Date.parse(lastAdded?.createdAt ?? '') < headAt),
         }
       : null;
     const queued = entry

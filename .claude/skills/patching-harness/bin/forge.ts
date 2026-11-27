@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * The forged inputs for the must-not-merge tests N3, N4 and N5 (.claude/skills/patching-harness/TESTS.md), and X1: a pull
+ * The forged inputs for the must-not-merge tests N3 to N5 and N7 to N10 (.claude/skills/patching-harness/TESTS.md), and X1: a pull
  * request of the scratch App's in a copy, shaped as the App's own, whose change is one the judges must refuse. The input is
  * forged; everything that judges it is real (the worker's queue and watches, CI, the review gate, the merge queue,
  * admission). `./copies.sh reset` deletes every branch but main and baseline, so this runs again after each reset.
  *
- *     node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>]
+ *     node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|N9|N10|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--scan <run>]
  *                   [--as unsigned|other-identity]
  *
  *   N3a  backward: the pin watch's branch and title for the postgres move, pinning an older real tag at its digest now
@@ -19,6 +19,10 @@
  *        Dependabot writes them (the commit alone changing), and one third-party action's line moved with them
  *   N8b  the same lines, at a commit of the factory copy's that is not on its main (a closed pull request's head)
  *   N8c  the same lines, at the commit before the one pinned
+ *   N9   another pin's line: the scan's target for one of Kyverno's images, its tag and digest, written on the line
+ *        of another of them, which holds the same tag's text in the same file, under the first's title and label
+ *   N10  the rulesets: a commit of the App's on a branch Martin made outside the prefixes the factory writes, and a
+ *        tag `main` made by the App; GitHub must refuse both, and no pull request is opened
  *   X1a  in the app copy: the scan's runtime-image move (test 10's), made by the copy's own pin step,
  *        with the Node build stage's `FROM` it brings at an older real digest of node under the move's tag, and the
  *        commit's `Pins-made-at` and `Pins-asked` lines claiming that digest, which the gate must not make the move from
@@ -27,7 +31,9 @@
  * It prints one JSON object: the pull request's number, its branch and head, and what it forged, so the harness can find
  * it and read the judges' verdicts at that head (check runs stay with their commit after the branch moves on).
  * `--dry-run` reads only, prints the diff, branch, title and label, and pushes nothing. `--branch` forges on another
- * branch than the App's own (see the notes on timing in the report: the worker rewrites its own branches).
+ * branch than the forgery's own. The harness names each: `factory/forged-<test>` for one the App pushes, under the
+ * prefix the rulesets let the App write and outside the pin watch's (`factory/pin/`), so no watch owns or rewrites it;
+ * `forged/<test>` for one Martin's login pushes.
  *
  * Reads go through `gh` as Martin, and the registry through crane. Writes go through GitHub's API as the scratch App
  * alone (the-roganator-scratch-factory), with an installation token minted here for the one copy forged in, from the
@@ -35,7 +41,9 @@
  * `createCommitOnBranch`, as the worker makes its own, so GitHub signs them as the App's.
  *
  * A workflow file is not the App's to write: it has no `workflows` permission, and GitHub refuses its commit. N7 is
- * that refusal: the forge pushes as the App and prints what GitHub said (`refused`), with no pull request. N8's branch
+ * that refusal: the forge pushes as the App, to a branch the App may write, and prints what GitHub said (`refused`),
+ * with no pull request. N10 is the rulesets' refusal, of a file the App may write on a branch it may not, and of the
+ * tag: `refused` when GitHub refused both, `landed` when either went through. N8's branch
  * is pushed as Martin's gh login, the only one beside Dependabot that can put a workflow change on a branch of the
  * copy, and its pull request is opened by the App, never by Martin, whose own the gate passes by rule. The gate holds
  * such a pull request because Dependabot did not open it, before it reads which commit the calls moved to: what it
@@ -49,6 +57,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { APP, FACTORY } from './catalogue.ts';
+import { rulesetsRefusal } from './decide.ts';
 import { WORK as CLONES, SKILL } from './paths.ts';
 
 const WORK = join(CLONES, 'factory');
@@ -75,6 +84,8 @@ let REPO = FACTORY;
 function repoOk(repo: string) {
   if (!COPIES_ONLY.has(repo)) throw new Error(`forge: ${repo} is not a scratch copy`);
 }
+/** `--scan <run>`: the scan a run stands on, whose moves the forgery copies (set once, in main); without it, main's newest. */
+let SCAN: number | undefined;
 
 function sh(cmd: string, args: string[], input?: string): string {
   return execFileSync(cmd, args, {
@@ -175,11 +186,6 @@ interface Forgery {
   expect: string[];
 }
 
-/** The pin watch's branch for a move (pin-guard.ts's pinBranchFor, read from the copy, as it is the copy's rule). */
-async function pinBranchFor(name: string): Promise<string> {
-  const { pinBranchFor: rule } = await import(join(WORK, 'apps/factory/src/github/pin-guard.ts'));
-  return rule(name);
-}
 /** The watch's title (pins.ts's pinTitle). */
 const pinTitle = (name: string, to: string) =>
   `chore(pin): move ${name.replace(/[`\r\n]/g, '')} to ${to}`.slice(0, 256);
@@ -216,7 +222,9 @@ function postgresLine(major: number, variant: string) {
 }
 /**
  * The move the scan names for postgres, from the latest finished scan on main that lists one; or, with none, the
- * newest tag on the pin's line at its digest now, as the scan resolves a fix (deadlines.ts's newestOf).
+ * newest tag on the pin's line at its digest now. That is the registry's word, not the scan's: the scan lists a fix
+ * only at content it has known a day, so a forgery made on it copies no move the gate will make. The harness forges
+ * only once the scan it stands on lists the move (the catalogue's `needs`).
  */
 function postgresMove(pin: ReturnType<typeof postgresPin>): {
   name: string;
@@ -224,12 +232,9 @@ function postgresMove(pin: ReturnType<typeof postgresPin>): {
   digest: string;
   from: string;
 } {
-  const runs =
-    read<any>('actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&per_page=10').workflow_runs ??
-    [];
   const into = mkdtempSync(join(tmpdir(), 'forge-moves-'));
   try {
-    for (const run of runs.filter((r: any) => r.event !== 'pull_request').slice(0, 3)) {
+    for (const run of scansToRead()) {
       try {
         sh('gh', ['run', 'download', String(run.id), '-R', REPO, '-n', 'moves', '-D', join(into, String(run.id))]);
       } catch {
@@ -252,16 +257,27 @@ function postgresMove(pin: ReturnType<typeof postgresPin>): {
   if (!digest) throw new Error(`postgres:${newest.tag} is listed and not served`);
   return { name: 'postgres', tag: newest.tag, digest, from: 'the registry (no scan on main lists a postgres move)' };
 }
+/**
+ * The scans a forgery reads its move from, newest first: the one the run stands on, where it named one (`--scan`), as
+ * an app run's first scan after a reset lists no image's move and a later push's may replace either; or the three
+ * newest finished scans of main.
+ */
+function scansToRead(): { id: number }[] {
+  if (SCAN !== undefined) return [{ id: SCAN }];
+  const runs =
+    read<any>('actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&per_page=10').workflow_runs ??
+    [];
+  return runs.filter((r: any) => r.event !== 'pull_request').slice(0, 3);
+}
 const repin = (pin: ReturnType<typeof postgresPin>, tag: string, digest: string) => {
   const lines = [...pin.lines];
   lines[pin.index] = `${pin.lead}postgres:${tag}@${digest}`;
   return lines.join('\n');
 };
 
-async function forgePin(test: 'N3a' | 'N3b' | 'N4', head: string, branchOver?: string): Promise<Forgery> {
+function forgePin(test: 'N3a' | 'N3b' | 'N4', head: string, branch: string): Forgery {
   const pin = postgresPin(head);
   const move = postgresMove(pin);
-  const branch = branchOver ?? (await pinBranchFor(move.name));
   const base = { file: POSTGRES_FILE, line: pin.index + 1, was: `${pin.tag}@${pin.digest}` };
   if (test === 'N3a') {
     const older = postgresLine(pin.major, pin.variant)
@@ -349,7 +365,7 @@ function oursUnsigned(as: 'unsigned' | 'other-identity'): string {
   return found;
 }
 
-async function forgeDeploy(head: string, as: 'unsigned' | 'other-identity', branchOver?: string): Promise<Forgery> {
+function forgeDeploy(head: string, as: 'unsigned' | 'other-identity', branch: string): Forgery {
   const file = 'deploy/overlays/local/factory-image/kustomization.yaml';
   const text = fileAt(head, file);
   const lines = text.split('\n');
@@ -363,7 +379,7 @@ async function forgeDeploy(head: string, as: 'unsigned' | 'other-identity', bran
   lines[at] = `- digest: ${digest}`;
   return {
     test: 'N5',
-    branch: branchOver ?? 'deploy/local',
+    branch,
     // The deploy watch's title (deploys.ts's deployTitle) for the factory's pin alone, at main's head.
     title: `chore(deploy): run the factory ${head.slice(0, 7)} on the local cluster`,
     label: 'deploy: local',
@@ -385,6 +401,120 @@ async function forgeDeploy(head: string, as: 'unsigned' | 'other-identity', bran
       'admission (verify-images), were it ever merged',
     ],
   };
+}
+
+// ── N9: one move's target on another pin's line ─────────────────────────────────────────────────────────────────────
+
+/** The pair N9 crosses: two of Kyverno's images, pinned in one file, at one tag's text on the baseline. */
+const CROSSED = { from: 'kyverno: reg.kyverno.io/kyverno/kyverno', onto: 'kyverno: reg.kyverno.io/kyverno/kyvernopre' };
+
+/**
+ * N9: the scan's target for one image, written on the line of another pin that holds the same version's text. The
+ * pin watch and the gate each find a pin by the line the scan named; the forgery is what either would write were that
+ * line another pin's. The title and label are the first move's.
+ */
+function forgeCrossed(head: string, branch: string): Forgery {
+  const { move, run } = scannedMove(CROSSED.from);
+  const { move: other } = scannedMove(CROSSED.onto);
+  const [pin, onto] = [move.pins?.[0], other.pins?.[0]];
+  const to = /^image (\S+@sha256:[0-9a-f]{64})$/.exec(move.to ?? '')?.[1];
+  if (!pin || !onto || !to)
+    throw new Error(`the scan's moves of ${CROSSED.from} and ${CROSSED.onto} name no pin or target`);
+  if (pin.file !== onto.file || pin.line === onto.line || move.from !== other.from)
+    throw new Error(
+      `${CROSSED.from} (${pin.file}:${pin.line}, ${move.from}) and ${CROSSED.onto} (${onto.file}:${onto.line}, ${other.from}) are not two pins of one file at one version: no pair to cross`,
+    );
+  const text = fileAt(head, pin.file);
+  const lines = text.split('\n');
+  const held = new RegExp(
+    `(?<![\\w.-])${String(move.from).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(@sha256:[0-9a-f]{64})?(?![\\w.-])`,
+  );
+  const was = held.exec(lines[onto.line - 1] ?? '')?.[0];
+  if (!was) throw new Error(`${onto.file}:${onto.line} does not hold ${move.from} at ${head.slice(0, 7)}`);
+  lines[onto.line - 1] = (lines[onto.line - 1] as string).replace(held, to);
+  return {
+    test: 'N9',
+    branch,
+    title: pinTitle(move.name, to.split('@')[0] as string),
+    label: 'pin',
+    files: [{ path: pin.file, before: text, after: lines.join('\n') }],
+    forged: {
+      file: pin.file,
+      line: onto.line,
+      was,
+      to,
+      what: `the scan's target for ${CROSSED.from} (line ${pin.line}) written on line ${onto.line}, the pin of ${CROSSED.onto}, which holds the same ${move.from}`,
+      move: move.name,
+      moveFrom: `the scan's run ${run}`,
+    },
+    expect: ['the review gate: not a move (the line written is not the one the scan named for it)'],
+  };
+}
+
+// ── N10: the rulesets ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/** What GitHub said in refusing a call, or undefined when it went through. */
+async function refusalOf(call: () => Promise<any>): Promise<string | undefined> {
+  try {
+    const answer = await call();
+    if (answer?.errors) return answer.errors.map((e: any) => String(e.message ?? JSON.stringify(e))).join('; ');
+    return undefined;
+  } catch (error) {
+    return String((error as Error).message);
+  }
+}
+
+/**
+ * N10: as the App, a commit to a branch Martin's login made outside the prefixes the rulesets leave the factory
+ * (`forged/n10`), of a file the App may write, so only the ruleset can refuse it; and a tag `main`. What it prints
+ * has `landed` when either went through, and otherwise `refused`, GitHub's words for each, which says both were the
+ * rulesets' only when each was refused in its own words (decide.ts's `rulesetsRefusal`); a tag that landed is taken
+ * off again as Martin, if GitHub lets him.
+ */
+async function forgeRulesets(head: string, branch: string, dry: boolean) {
+  const file = 'deploy/base/postgres/kustomization.yaml';
+  const what = `as the App, a commit to ${branch}, a branch Martin made, and a tag \`main\``;
+  const out = {
+    test: 'N10',
+    repo: REPO,
+    base: head,
+    branch,
+    forged: { file, what },
+    expect: ['GitHub: the rulesets `branches` and `tag main`'],
+  };
+  if (dry) return { ...out, dryRun: true };
+  const martin = martinToken();
+  const ref = `heads/${branch}`;
+  let exists = true;
+  try {
+    read(`git/ref/${ref}`);
+  } catch {
+    exists = false;
+  }
+  if (exists) await github('PATCH', `/repos/${REPO}/git/refs/${ref}`, { sha: head, force: true }, undefined, martin);
+  else await github('POST', `/repos/${REPO}/git/refs`, { ref: `refs/${ref}`, sha: head }, undefined, martin);
+  const commit = await refusalOf(() =>
+    github('POST', '/graphql', {
+      query: 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }',
+      variables: {
+        input: {
+          branch: { repositoryNameWithOwner: REPO, branchName: branch },
+          expectedHeadOid: head,
+          message: { headline: "chore(scratch): the App's commit on a branch of Martin's" },
+          fileChanges: {
+            additions: [
+              { path: file, contents: Buffer.from(`# Forged for test N10.\n${fileAt(head, file)}`).toString('base64') },
+            ],
+            deletions: [],
+          },
+        },
+      },
+    }),
+  );
+  const tag = await refusalOf(() => github('POST', `/repos/${REPO}/git/refs`, { ref: 'refs/tags/main', sha: head }));
+  if (tag === undefined)
+    await refusalOf(() => github('DELETE', `/repos/${REPO}/git/refs/tags/main`, undefined, undefined, martin));
+  return { ...out, pushedBy: 'app', at: new Date().toISOString(), ...rulesetsRefusal({ branch, commit, tag }) };
 }
 
 // ── N7 and N8: a workflow's pins ────────────────────────────────────────────────────────────────────────────────────
@@ -416,12 +546,11 @@ function olderAction(files: { path: string; text: string }[]) {
   throw new Error('no workflow pins a third-party action at a commit with a parent');
 }
 
-async function forgeWorkflowPin(head: string, branchOver?: string): Promise<Forgery> {
+function forgeWorkflowPin(head: string, branch: string): Forgery {
   const moved = olderAction(workflowsAt(head));
   return {
     test: 'N7',
-    // A pin branch of the watch's own shape, which the watch never made.
-    branch: branchOver ?? (await pinBranchFor(moved.action)),
+    branch,
     title: pinTitle(moved.action, moved.to.slice(0, 7)),
     label: 'pin',
     files: [{ path: moved.path, before: moved.before, after: moved.after }],
@@ -443,7 +572,7 @@ async function forgeWorkflowPin(head: string, branchOver?: string): Promise<Forg
  * N8: the app's `uses:` lines of the factory copy's workflows, every one moved to `to` with nothing else on the line
  * changed, as Dependabot's pull request for the group moves them; and what makes each variant one the gate must hold.
  */
-async function forgeCalls(test: 'N8a' | 'N8b' | 'N8c', head: string, branchOver?: string): Promise<Forgery> {
+function forgeCalls(test: 'N8a' | 'N8b' | 'N8c', head: string, branch: string): Forgery {
   const called = new RegExp(`^(\\s*uses:\\s*${FACTORY}/\\.github/workflows/[\\w.-]+@)([0-9a-f]{40})(.*)$`);
   const files = workflowsAt(head);
   const pinned = files.flatMap((f) => f.text.split('\n').map((line) => called.exec(line)?.[2])).find(Boolean);
@@ -490,7 +619,7 @@ async function forgeCalls(test: 'N8a' | 'N8b' | 'N8c', head: string, branchOver?
   }
   return {
     test,
-    branch: branchOver ?? `forged/${test.toLowerCase()}`,
+    branch,
     // Dependabot's title for the group (the app's dependabot.yml: prefix `ci`, group `factory`).
     title: `ci: bump the factory group with ${changed.length} updates`,
     files: changed,
@@ -506,14 +635,11 @@ const RUNTIME = 'gcr.io/distroless/nodejs24-debian13';
 /** The build stage's `FROM` of Node: its tag and digest, and what follows. */
 const NODE_FROM = /^FROM node:(\S+)@(sha256:[0-9a-f]{64})(.*)$/m;
 
-/** The newest finished scan of main whose moves name `name`: the move as moves.json gives it, and when it judged. */
+/** The move of `name` in the scan the run stands on, or main's newest finished one with moves: as moves.json gives it, and when it judged. */
 function scannedMove(name: string): { move: any; judged: string; run: number } {
-  const runs =
-    read<any>('actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&per_page=10').workflow_runs ??
-    [];
   const into = mkdtempSync(join(tmpdir(), 'forge-moves-'));
   try {
-    for (const run of runs.filter((r: any) => r.event !== 'pull_request').slice(0, 3)) {
+    for (const run of scansToRead()) {
       try {
         sh('gh', ['run', 'download', String(run.id), '-R', REPO, '-n', 'moves', '-D', join(into, String(run.id))]);
       } catch {
@@ -521,13 +647,18 @@ function scannedMove(name: string): { move: any; judged: string; run: number } {
       }
       const file = JSON.parse(readFileSync(join(into, String(run.id), 'moves.json'), 'utf8'));
       const move = (file.moves as any[]).find((m) => m.name === name);
-      if (!move) throw new Error(`the newest scan with moves, run ${run.id}, makes no move of ${name}`);
-      return { move, judged: file.judged as string, run: run.id as number };
+      if (!move)
+        throw new Error(
+          `${SCAN === undefined ? 'the newest scan with moves' : 'the scan the run stands on'}, run ${run.id}, makes no move of ${name}`,
+        );
+      return { move, judged: file.judged as string, run: run.id };
     }
   } finally {
     rmSync(into, { recursive: true, force: true });
   }
-  throw new Error(`no finished scan of ${REPO}'s main kept its moves`);
+  throw new Error(
+    SCAN === undefined ? `no finished scan of ${REPO}'s main kept its moves` : `scan ${SCAN} of ${REPO} kept no moves`,
+  );
 }
 
 /**
@@ -537,7 +668,7 @@ function scannedMove(name: string): { move: any; judged: string; run: number } {
  * line, a real image of the same repository; and the commit says, in the two lines the gate must not trust, that the pin
  * step was given that digest (X1b: and made the move years before the scan).
  */
-async function forgeRuntime(test: 'X1a' | 'X1b', head: string, branchOver?: string): Promise<Forgery> {
+async function forgeRuntime(test: 'X1a' | 'X1b', head: string, branch: string): Promise<Forgery> {
   const { move: scanned, judged, run } = scannedMove(RUNTIME);
   const pins = await import(join(WORK, 'apps/runner/src/pins.ts'));
   const { moveOf } = await import(join(WORK, 'apps/factory/src/patching/sends.ts'));
@@ -586,7 +717,7 @@ async function forgeRuntime(test: 'X1a' | 'X1b', head: string, branchOver?: stri
     const at = test === 'X1b' ? '2020-01-01T00:00:00.000Z' : new Date(Date.parse(judged)).toISOString();
     return {
       test,
-      branch: branchOver ?? `forged/${test.toLowerCase()}`,
+      branch,
       // The line's title for an image's move (line/moves.ts), as its pull request for test 10 had it.
       title: `fix(deps): move ${RUNTIME}`,
       body: [
@@ -717,19 +848,22 @@ async function main() {
   const branchOver = opt('--branch');
   const as = (opt('--as') ?? 'unsigned') as 'unsigned' | 'other-identity';
   if (
-    !['N3a', 'N3b', 'N4', 'N5', 'N7', 'N8a', 'N8b', 'N8c', 'X1a', 'X1b'].includes(test ?? '') ||
+    !['N3a', 'N3b', 'N4', 'N5', 'N7', 'N8a', 'N8b', 'N8c', 'N9', 'N10', 'X1a', 'X1b'].includes(test ?? '') ||
     !['unsigned', 'other-identity'].includes(as)
   ) {
     console.error(
-      'usage: node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity]',
+      'usage: node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|N9|N10|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity] [--scan <run>]',
     );
     process.exit(2);
   }
+  const scan = opt('--scan');
+  if (scan !== undefined && !/^\d+$/.test(scan)) throw new Error(`--scan ${scan} is no run of the scan's`);
+  SCAN = scan === undefined ? undefined : Number(scan);
   const x1 = test === 'X1a' || test === 'X1b';
   const n8 = test === 'N8a' || test === 'N8b' || test === 'N8c';
   if (x1 || n8) REPO = APP;
-  // N8's branch is Martin's to push, and the App's to open a pull request from; N7's push is the App's own, which
-  // GitHub must refuse.
+  // N8's branch is Martin's to push, and the App's to open a pull request from; every other push is the App's own,
+  // N7's and N10's the ones GitHub must refuse.
   PUSH = n8 ? 'martin' : 'app';
   repoOk(REPO);
   if (branchOver !== undefined && (!/^[\w./-]+$/.test(branchOver) || ['main', 'baseline'].includes(branchOver)))
@@ -738,15 +872,27 @@ async function main() {
   const at = opt('--at');
   if (at !== undefined && !dry) throw new Error("--at is for a dry run: a forgery is made on main's head alone");
   const head = read<any>(`git/ref/heads/${at ?? 'main'}`).object.sha as string;
+  // The forgery's own branch: one the App pushes is under `factory/`, which the rulesets let the App write, and
+  // outside `factory/pin/`, so no watch owns or rewrites it and the only refusal N7 can meet is the workflow file's;
+  // one Martin's login pushes, and the branch of his the App pushes to (N10), is outside every prefix the factory has.
+  const branch =
+    branchOver ??
+    `${PUSH === 'martin' || test === 'N10' ? 'forged/' : 'factory/forged-'}${(test as string).toLowerCase()}`;
+  if (test === 'N10') {
+    console.log(JSON.stringify(await forgeRulesets(head, branch, dry), null, 2));
+    return;
+  }
   const forgery = x1
-    ? await forgeRuntime(test, head, branchOver)
+    ? await forgeRuntime(test, head, branch)
     : n8
-      ? await forgeCalls(test, head, branchOver)
+      ? forgeCalls(test, head, branch)
       : test === 'N7'
-        ? await forgeWorkflowPin(head, branchOver)
-        : test === 'N5'
-          ? await forgeDeploy(head, as, branchOver)
-          : await forgePin(test as 'N3a' | 'N3b' | 'N4', head, branchOver);
+        ? forgeWorkflowPin(head, branch)
+        : test === 'N9'
+          ? forgeCrossed(head, branch)
+          : test === 'N5'
+            ? forgeDeploy(head, as, branch)
+            : forgePin(test as 'N3a' | 'N3b' | 'N4', head, branch);
   const out = {
     test: forgery.test,
     repo: REPO,
@@ -767,7 +913,16 @@ async function main() {
     made = await make(forgery, head);
   } catch (error) {
     if (!(error instanceof Refused)) throw error;
-    // No commit and no pull request: what GitHub said is the forgery's whole outcome.
+    // No commit and no pull request: what GitHub said is the forgery's whole outcome. The branch made for it goes.
+    await refusalOf(() =>
+      github(
+        'DELETE',
+        `/repos/${REPO}/git/refs/heads/${forgery.branch}`,
+        undefined,
+        undefined,
+        PUSH === 'martin' ? martinToken() : undefined,
+      ),
+    );
     console.log(
       JSON.stringify({ ...out, pushedBy: PUSH, refused: error.message, at: new Date().toISOString() }, null, 2),
     );

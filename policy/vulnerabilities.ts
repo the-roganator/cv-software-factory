@@ -69,6 +69,18 @@ export interface Routine {
   days: number;
   /** The same for a major: a chart's next major, or a release its manifest's range does not admit. */
   majorDays: number;
+  /**
+   * How long the scan must have known an image's digest, or a chart's version, before any move lists at it, a fix as
+   * much as a routine update: a tag pushed again is new content, whatever its release has waited.
+   */
+  contentDays: number;
+  /**
+   * How much less than its days a wait may be, in hours, where it counts from the scan's own first sight (an image's
+   * tag and digest, a chart's version): for a daily scan that starts a little early. GitHub starts a scheduled run
+   * minutes either side of its time, so content first seen at 06:05 has waited 23 hours 58 minutes at 06:03 the next
+   * day, and without the slack would wait a second day.
+   */
+  slackHours: number;
   leave: Left[];
 }
 
@@ -76,11 +88,16 @@ export interface Routine {
  * The scan lists a pin that is behind, with no finding, as a routine move once the release it would move to has
  * waited: most malicious releases are pulled within hours, and the first release of a major is the one most often
  * followed by a fix (postgres.js 4.0.0 lost LISTEN after a failed reconnect, and 4.1.0 fixed it a week later). A fix
- * for a finding does not wait here: it has its own waits (pnpm's `minimumReleaseAge`, mise's `minimum_release_age`).
+ * for a finding does not wait those days: it has its own waits (pnpm's `minimumReleaseAge`, mise's
+ * `minimum_release_age`), and for an image or a chart, which have neither, `contentDays`: nothing lands whose content
+ * the scan first saw less than a day ago, since an image's digest and a chart's version are whatever their publisher,
+ * or whoever holds its account, pushed last.
  */
 export const ROUTINE: Routine = {
   days: 3,
   majorDays: 7,
+  contentDays: 1,
+  slackHours: 2,
   leave: [
     {
       repository: 'all',
@@ -107,6 +124,27 @@ export const ROUTINE: Routine = {
     },
   ],
 };
+
+/** A package whose bump merges only after a bench run, and why. */
+export interface Benched {
+  /** The package, as its lockfile names it. */
+  package: string;
+  /** Why its bump waits for the bench. */
+  reason: string;
+}
+
+/**
+ * The packages a fix of which waits for Martin's bench run (`factory line bench`, docs/ON-THE-HOST.md#the-bench): the
+ * scan lists such a fix as an issue for him, with its deadline, and the App opens no pull request for it. A fix that
+ * clears a Critical does not wait: it is a move like any other. Its routine update is left alone (`ROUTINE.leave`).
+ */
+export const BENCHED: Benched[] = [
+  {
+    package: '@anthropic-ai/claude-agent-sdk',
+    reason:
+      'The SDK is the agent loop every step runs in, and the tests replay cassettes, so a change in it shows only on a live step.',
+  },
+];
 
 /** A day, `YYYY-MM-DD`, as a count of days, or undefined for anything else. */
 function day(text: string) {
@@ -159,3 +197,11 @@ export function dismissal(entry: Exception) {
   const text = `Excepted in policy/vulnerabilities.ts until ${entry.expires}: ${entry.reason}`;
   return text.length > 280 ? `${text.slice(0, 279)}…` : text;
 }
+
+/**
+ * The longest ago, in hours, a scan of `main` may have been judged (`moves.json`'s `judged`) and still be judged by:
+ * the scan runs each day, so a day and a half is one run missed. The review gate takes an older one for no judgement,
+ * and a change that would pass by it as a move waits for the next scan (scripts/moves.ts); past it Martin is told
+ * the scan has stopped (`PatchingScanStale`).
+ */
+export const SCAN_MAX_AGE_HOURS = 36;

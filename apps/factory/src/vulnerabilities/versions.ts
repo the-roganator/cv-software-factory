@@ -42,6 +42,9 @@ function parts(version: string) {
   return dash < 0 ? { release: core, pre: undefined } : { release: core.slice(0, dash), pre: core.slice(dash + 1) };
 }
 
+/** Whether a version is a pre-release, as semver marks one: a hyphen after its numbers (`1.5.0-rc.1`). */
+export const isPrerelease = (version: string) => parts(version).pre !== undefined;
+
 /**
  * A version's numbers, each as its digits with no zeros before them: `v1.02.3-rc.1` is `1`, `2`, `3`. A part that
  * starts with no digit is zero.

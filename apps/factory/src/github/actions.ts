@@ -40,7 +40,8 @@ import {
   scratchBranch,
   withCarries,
 } from './deploys.ts';
-import { type IssueAction, IssueGuard, type Opener, openedBy, type QueueAsker } from './issues.ts';
+import { MARK_PAGES, workItemMarkOf } from './issue-mark.ts';
+import { APP_USER, type IssueAction, IssueGuard, type Opener, openedBy, type QueueAsker } from './issues.ts';
 import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
 import {
@@ -522,6 +523,9 @@ const RESOLVE = `mutation($id: ID!) {
 const byApp = (author: { login: string } | null) =>
   author?.login.replace(/\[bot\]$/, '') === APP_LOGIN.replace(/\[bot\]$/, '');
 
+/** How many pages of a hundred an issue's comments or events are read to, before the read fails as not whole. */
+const LIST_PAGES = 10;
+
 /** A comment's body as it is compared: GitHub may keep the line endings it was sent with, or not. */
 const same = (a: string, b: string) => a.replace(/\r\n/g, '\n').trim() === b.replace(/\r\n/g, '\n').trim();
 
@@ -806,7 +810,50 @@ export class LiveActions implements Actions {
     await this.#github.write(repo, 'PATCH', `/repos/${repo}/check-runs/${id}`, checkRunBody(report));
   }
 
+  /**
+   * Opens an issue, once for a work item: one whose body carries a work item's mark (`issue-mark.ts`) is the open
+   * issue of the App's that already carries it, when there is one, and nothing is opened. So a caller that asks again,
+   * its record of the first lost, gets the same issue, saying what it now asks: one whose title or body differs is
+   * written again. Only the App's own: anyone may write the mark in theirs, so GitHub is asked for the issues the App
+   * created (`creator`), which nobody else's can fill the pages of, and each answer is the App's by its id too. Where
+   * `MARK_PAGES` full pages of the App's own open issues still do not end the list, none is not established: the
+   * action fails, opening nothing, and is asked again.
+   */
   async openIssue(repo: string, issue: { title: string; body: string; labels?: string[] }): Promise<number> {
+    const mark = workItemMarkOf(issue.body);
+    const creator = encodeURIComponent(APP_LOGIN);
+    for (let page = 1; mark; page++) {
+      if (page > MARK_PAGES)
+        throw new GitHubError(
+          'conflict',
+          `The App has more than ${MARK_PAGES * 100} open issues in ${repo}: whether one already carries this work item's mark is not known, so none is opened.`,
+          409,
+        );
+      const open = await this.#github.read(
+        repo,
+        `/repos/${repo}/issues?state=open&creator=${creator}&per_page=100&sort=created&direction=desc&page=${page}`,
+        z.array(
+          z.object({
+            number: NUMBER,
+            title: z.string(),
+            body: z.string().nullable().default(null),
+            user: z.object({ id: z.number() }).nullable().default(null),
+            pull_request: z.unknown().optional(),
+          }),
+        ),
+      );
+      const found = open.find(
+        (each) => each.pull_request === undefined && each.user?.id === APP_USER && workItemMarkOf(each.body) === mark,
+      );
+      if (found) {
+        if (found.title !== issue.title || !same(found.body ?? '', issue.body)) {
+          const { title, body } = issue;
+          await this.#github.write(repo, 'PATCH', `/repos/${repo}/issues/${found.number}`, { title, body });
+        }
+        return found.number;
+      }
+      if (open.length < 100) break;
+    }
     const made = await this.#github.write(repo, 'POST', `/repos/${repo}/issues`, issue, z.object({ number: NUMBER }));
     return made.number;
   }
@@ -832,13 +879,15 @@ export class LiveActions implements Actions {
       if (issue.state !== 'open') return;
       // A close whose comment was made and whose closing failed is tried again: the comment is not made twice. Only
       // what was said since the issue last reopened counts: a close of an earlier pass may have said the same.
-      const events = await this.#github.read(
+      const events = await this.#whole(
         repo,
         `/repos/${repo}/issues/${number}/events?per_page=100`,
-        z.array(z.object({ event: z.string(), created_at: z.string() })),
+        z.object({ event: z.string(), created_at: z.string() }),
       );
-      const reopened = events.findLast((event) => event.event === 'reopened')?.created_at ?? null;
-      if (!(await this.#said(repo, number, comment, reopened))) await this.#post(repo, number, comment);
+      // Events past what is read hide when it last reopened: the comment is made, perhaps again, and the issue closes.
+      const reopened = events.items.findLast((event) => event.event === 'reopened')?.created_at ?? null;
+      if (!events.whole) await this.#post(repo, number, comment);
+      else if (!(await this.#said(repo, number, comment, reopened))) await this.#post(repo, number, comment);
     }
     await this.#github.write(repo, 'PATCH', `/repos/${repo}/issues/${number}`, {
       state: 'closed',
@@ -872,16 +921,39 @@ export class LiveActions implements Actions {
     await this.#github.write(repo, 'PATCH', `/repos/${repo}/pulls/${number}`, { state: 'closed' });
   }
 
-  /** Whether an issue's comments since a time (or ever, with none) already say this, word for word. */
+  /**
+   * Whether the App's own comments on an issue since a time (or ever, with none) already say this, word for word. A
+   * comment anyone else made, the same words among them, is not the App's word: it keeps the App from saying nothing.
+   * Nor do more comments than are read: anyone may comment on a public repository, and where the pages read do not
+   * say it, a thread run past `LIST_PAGES` pages is taken as not having said it, so the App says it, perhaps again,
+   * and what follows (a close, a reopening) is done. Said twice is better than an issue no flood of comments lets
+   * close.
+   */
   async #said(repo: string, number: number, body: string, since: string | null): Promise<boolean> {
     const after = since ? `&since=${encodeURIComponent(since)}` : '';
-    const comments = await this.#github.read(
+    const comments = await this.#whole(
       repo,
       `/repos/${repo}/issues/${number}/comments?per_page=100${after}`,
-      z.array(z.object({ body: z.string().nullable() })),
+      z.object({ body: z.string().nullable(), user: z.object({ id: z.number().int() }).nullable().optional() }),
     );
     // As GitHub keeps it: its line endings may be \r\n, and its ends trimmed.
-    return comments.some((made) => same(made.body ?? '', body));
+    return comments.items.some((made) => made.user?.id === APP_USER && same(made.body ?? '', body));
+  }
+
+  /**
+   * Every item of a list GitHub gives a hundred to a page, oldest first, page by page up to `LIST_PAGES`: an issue's
+   * comments or events, whose newest are its last. One that runs past them is not `whole`, and its caller decides
+   * what its first pages are worth: anyone can make a public issue's list that long, so it is an answer to go on
+   * from, never a failure.
+   */
+  async #whole<T>(repo: string, path: string, item: z.ZodType<T>): Promise<{ items: T[]; whole: boolean }> {
+    const all: T[] = [];
+    for (let page = 1; page <= LIST_PAGES; page++) {
+      const body = await this.#github.read(repo, `${path}&page=${page}`, z.array(item));
+      all.push(...body);
+      if (body.length < 100) return { items: all, whole: true };
+    }
+    return { items: all, whole: false };
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

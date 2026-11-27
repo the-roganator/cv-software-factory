@@ -1,10 +1,24 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import {
+  DEPENDABOT_ACTIONS_PREFIX,
+  FACTORY_PREFIX,
+  PIN_NEXT_PREFIX,
+  PIN_PREFIX,
+  RED_TEAM_PREFIX,
+} from '../apps/factory/src/github/branches.ts';
+import { DEPLOYS, scratchBranch } from '../apps/factory/src/github/deploys.ts';
+import { REFUSAL_BRANCH } from '../apps/factory/src/github/refusal.ts';
+import { branchFor } from '../apps/factory/src/line/agents/coder.ts';
 import { APP_SLUG } from '../apps/factory/src/line/gates.ts';
 import { REVIEW_CHECK as REVIEWER_CHECK } from '../apps/factory/src/line/review.ts';
+import { SMOKE_BRANCH } from '../apps/factory/src/runners/smoke.ts';
 import {
   APPS,
+  AUTOMATION_BRANCHES,
+  BRANCH_WRITERS,
+  branches,
   branchPolicies,
   bypassesUsed,
   CODE_SCANNING,
@@ -16,6 +30,8 @@ import {
   forkApprovalProblems,
   GITHUB_ACTIONS,
   inOrderOf,
+  KEY_BRANCH,
+  MARTIN,
   MERGE_QUEUE,
   matches,
   PLATFORM_CHECK,
@@ -26,8 +42,12 @@ import {
   reportLines,
   rules,
   rulesetProblems,
+  rulesets,
   SCAN_STATE_ENVIRONMENT,
+  tagMain,
 } from './github-settings.ts';
+import { QUEUE_BRANCH } from './review-gate.ts';
+import { MARTIN as ROUTED_MARTIN } from './review-routing.ts';
 
 const [checks] = Object.values(REPOSITORIES) as [string[]];
 /** The parameters of one rule of a ruleset. */
@@ -379,5 +399,130 @@ describe('the review environment', () => {
       environmentProblems('review', live, [...main, { id: 2, name: 'gh-readonly-queue/*', type: 'branch' }]),
     ).toEqual(['environment "review" may be used from other branches than main alone']);
     expect(environmentProblems('review', live, [{ id: 3, name: 'main', type: 'tag' }])).toHaveLength(1);
+  });
+});
+
+describe('the ruleset on every branch that is not the automation’s', () => {
+  /** Whether the ruleset holds a ref: included, and under none of its exclusions, as GitHub reads the patterns. */
+  const pattern = (p: string) =>
+    new RegExp(
+      `^${p
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*\/\*/g, '\u0000')
+        .replace(/\*/g, '[^/]*')
+        .replaceAll('\u0000', '.+')}$`,
+    );
+  const { exclude } = branches().conditions.ref_name;
+  const held = (branch: string) =>
+    branch !== KEY_BRANCH && !exclude.some((p) => p !== '~DEFAULT_BRANCH' && pattern(p).test(`refs/heads/${branch}`));
+
+  it('holds every branch but main and the automation’s, for creating, moving and deleting', () => {
+    const ruleset = branches();
+    expect(ruleset.conditions.ref_name).toEqual({ include: ['~ALL'], exclude: AUTOMATION_BRANCHES });
+    expect(exclude).toContain('~DEFAULT_BRANCH');
+    expect(ruleset.rules.map((r) => r.type)).toEqual(['creation', 'update', 'deletion']);
+    expect(ruleset).toMatchObject({ target: 'branch', enforcement: 'active' });
+    for (const branch of ['fix/a-thing', 'probe', 'refusal/other-identity', 'baseline', 'factory', 'deploy/other']) {
+      expect(held(branch), branch).toBe(true);
+    }
+  });
+
+  it('leaves alone every branch the factory’s App, release-please and the merge queue write', () => {
+    const written = [
+      branchFor('1296', 'A wrong price on the product page'),
+      `${PIN_PREFIX}postgres-17.6`,
+      `${PIN_NEXT_PREFIX}postgres-17.6`,
+      `${RED_TEAM_PREFIX}workflow`,
+      `${RED_TEAM_PREFIX}test-1a2b3c4d`,
+      `${branchFor('1296', 'A wrong price')}-afresh`,
+      SMOKE_BRANCH,
+      REFUSAL_BRANCH,
+      ...DEPLOYS.flatMap((target) => [target.branch, scratchBranch(target)]),
+      'release-please--branches--main',
+      'release-please--branches--main--components--worlds-worst-website',
+      'gh-readonly-queue/main/pr-1218-c7d8b3790000000000000000000000000000abcd',
+    ];
+    for (const branch of written) expect(held(branch), branch).toBe(false);
+    // Everything the worker's own guard lets it write is under the one prefix, or a deploy branch.
+    expect(held(`${FACTORY_PREFIX}anything/at/all`)).toBe(false);
+    expect(QUEUE_BRANCH.test(written.at(-1) as string)).toBe(true);
+  });
+
+  it('is written by Martin and by Dependabot, whose branches it holds from everyone else, and by nobody more', () => {
+    expect(MARTIN).toBe(ROUTED_MARTIN);
+    expect(branches().bypass_actors).toEqual([
+      { actor_id: 29110, actor_type: 'Integration', bypass_mode: 'exempt' },
+      { actor_id: MARTIN, actor_type: 'User', bypass_mode: 'exempt' },
+    ]);
+    expect(held(`${DEPENDABOT_ACTIONS_PREFIX}actions-a0ec1d585d`)).toBe(true);
+    expect(held('dependabot/npm_and_yarn/pino-10.5.0')).toBe(true);
+    // The factory's App is not among them, by its id or the scratch cluster's.
+    expect(BRANCH_WRITERS.map((a) => a.actor_id)).not.toContain(APPS.factory.id);
+  });
+
+  it('sees drift in who may bypass it: exactly those two, in any order, and nobody else on any other ruleset', () => {
+    const wanted = branches();
+    const live = (bypass_actors: unknown) => ({ ...structuredClone(wanted), id: 9, bypass_actors });
+    expect(rulesetProblems(live([...BRANCH_WRITERS].reverse()), wanted)).toEqual({ problems: [], unseen: [] });
+    const drift = ['ruleset "branches" is not bypassed by exactly those this script names'];
+    const app = { actor_id: APPS.factory.id, actor_type: 'Integration', bypass_mode: 'exempt' };
+    const admins = { actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' };
+    for (const actors of [
+      [...BRANCH_WRITERS, app],
+      [...BRANCH_WRITERS, admins],
+      [BRANCH_WRITERS[1]],
+      [],
+      null,
+      [BRANCH_WRITERS[0], { ...BRANCH_WRITERS[1], actor_id: 1 }],
+      [BRANCH_WRITERS[0], { ...BRANCH_WRITERS[1], bypass_mode: 'always' }],
+    ]) {
+      expect(rulesetProblems(live(actors), wanted).problems, JSON.stringify(actors)).toEqual(drift);
+    }
+    // The same two on main, or on the tag's ruleset, are drift there.
+    for (const other of [rules(checks), tagMain()]) {
+      expect(
+        rulesetProblems({ ...structuredClone(other), bypass_actors: BRANCH_WRITERS }, other).problems,
+        other.name,
+      ).toEqual([`ruleset "${other.name}" lets someone bypass it`]);
+    }
+  });
+
+  it('sees drift in its branches and its rules', () => {
+    const wanted = branches();
+    const live = () => structuredClone(wanted);
+    const drift = ['ruleset "branches" differs from this script\'s'];
+    const wider = live();
+    wider.conditions.ref_name.exclude.push('refs/heads/fix/**/*');
+    expect(rulesetProblems(wider, wanted).problems).toEqual(drift);
+    const fewer = live();
+    fewer.rules = fewer.rules.filter((r) => r.type !== 'update');
+    expect(rulesetProblems(fewer, wanted).problems).toEqual(drift);
+    expect(rulesetProblems({ ...live(), enforcement: 'evaluate' }, wanted).problems).toEqual(drift);
+  });
+});
+
+describe('the ruleset on a tag named main', () => {
+  it('lets nobody make, move or delete it, and holds no other tag', () => {
+    const ruleset = tagMain();
+    expect(ruleset).toMatchObject({ target: 'tag', enforcement: 'active', bypass_actors: [] });
+    expect(ruleset.conditions.ref_name).toEqual({ include: [`refs/tags/${KEY_BRANCH}`], exclude: [] });
+    expect(ruleset.rules.map((r) => r.type)).toEqual(['creation', 'update', 'deletion']);
+  });
+
+  it('sees drift: a bypass, or a rule gone', () => {
+    const wanted = tagMain();
+    const bypassed = { ...structuredClone(wanted), bypass_actors: [BRANCH_WRITERS[1]] };
+    expect(rulesetProblems(bypassed, wanted).problems).toEqual(['ruleset "tag main" lets someone bypass it']);
+    const fewer = { ...structuredClone(wanted), rules: [{ type: 'deletion' }] };
+    expect(rulesetProblems(fewer, wanted).problems).toEqual(['ruleset "tag main" differs from this script\'s']);
+  });
+});
+
+describe('every ruleset a repository has', () => {
+  it('is main’s, the branches’ and the tag’s, so `--check` knows each and names any other', () => {
+    for (const required of Object.values(REPOSITORIES)) {
+      expect(rulesets(required).map((r) => r.name)).toEqual(['main', 'branches', 'tag main']);
+      expect(rulesets(required)[0]).toEqual(rules(required));
+    }
   });
 });

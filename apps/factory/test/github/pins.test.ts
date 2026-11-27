@@ -12,15 +12,18 @@ import { describe, expect, it } from 'vitest';
 import { type Changed, proveMove } from '../../../../scripts/move.ts';
 import { DryRunActions, LiveActions } from '../../src/github/actions.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
-import { treeSource } from '../../src/github/pin-guard.ts';
+import { pinNextBranch, treeSource } from '../../src/github/pin-guard.ts';
 import {
   branchOf,
   carriedBy,
+  issueOf,
   namedMajor,
   PASS_MS,
   PIN_LABEL,
   type PinScope,
   pinWatch,
+  pullBody,
+  READ_THE_SCAN,
   readPinScope,
 } from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
@@ -31,15 +34,20 @@ import {
   dependabotGroup,
   digest,
   FACTORY,
+  type FakePull,
   FakeRepo,
   FILES,
   factoryMoves,
   move,
   NONE,
   pinBranchOf,
+  scannedAt,
   trivyCritical,
   writes,
 } from './pins-harness.ts';
+
+/** The fixture's day, by a name a suite with files of its own can still reach under its own `day`. */
+const fixtureDay = day;
 
 /** A watch over the fake repository, whose day is what `today` gives, and a clock a test moves on. */
 function harness(
@@ -80,6 +88,11 @@ function harness(
     /** One pass, an hour after the last. */
     pass: async () => {
       clock += PASS_MS;
+      await watch();
+    },
+    /** The poller's next call, a minute on: a pass only when the last did not finish. */
+    poll: async () => {
+      clock += 60_000;
       await watch();
     },
   };
@@ -378,6 +391,37 @@ describe('the pin watch beside Dependabot', () => {
   });
 });
 
+describe('a newer scan of the same moves', () => {
+  it('writes each open pull request’s description again, at the same head, so the review gate judges it by that scan', async () => {
+    // The gate holds a move it would pass by a scan judged too long ago as a wait (scripts/moves.ts's `byAge`), and
+    // judges a head again only when something asks: the description names the scan's run, so the watch's pass over a
+    // newer scan edits it, the edit runs the pull request's workflow, and the gate judges after that.
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    let run = 42_000_000_101;
+    const w = harness(repo, () => day(scanned, factoryMoves(), run));
+    await w.pass();
+    const before = openPins(repo).map((p) => ({ number: p.number, head: repo.refs.get(p.head), body: p.body }));
+    expect(before.length).toBeGreaterThan(0);
+    for (const pull of before) expect(pull.body).toContain('run [42000000101]');
+    // The same pass again changes nothing; the next day's scan, of the same moves, changes each description alone.
+    const sentBy = (from: number) =>
+      w.sent.slice(from).filter((s) => s.method === 'PATCH' && /\/pulls\/\d+$/.test(s.path));
+    let from = w.sent.length;
+    await w.pass();
+    expect(sentBy(from)).toEqual([]);
+    run = 42_000_000_102;
+    from = w.sent.length;
+    await w.pass();
+    expect(sentBy(from)).toHaveLength(before.length);
+    for (const pull of before) {
+      const now = openPins(repo).find((p) => p.number === pull.number);
+      expect(now?.body).toContain('run [42000000102]');
+      expect(repo.refs.get(now?.head ?? '')).toBe(pull.head);
+    }
+  });
+});
+
 describe('the pin watch’s issues', () => {
   it('opens one issue for each move it cannot write, labelled pin, naming no package', async () => {
     const repo = new FakeRepo(FILES);
@@ -398,6 +442,41 @@ describe('the pin watch’s issues', () => {
     expect(cd?.body).toContain('**Deadline** 2026-11-18T06:00:00Z.');
   });
 
+  it('says what a deadline counts where a move within its major leaves results for the major', () => {
+    const repo = new FakeRepo(FILES);
+    const cd = factoryMoves().find((m) => m.name === 'example-cd') as ReadMove;
+    const says = 'The deadline is the earliest among what the move clears and what it leaves that only a major clears';
+    const left = { ...cd.leaves, CRITICAL: 1 };
+    const leaves = { ...cd, leaves: left, forMajor: left };
+    expect(issueOf(leaves, day(repo.main, [leaves])).body).toContain(`**Deadline** ${cd.deadline}. ${says}`);
+    // Nothing left, or a major itself: the deadline is of what it clears, and no more is said.
+    expect(issueOf(cd, day(repo.main, [cd])).body).not.toContain(says);
+    expect(issueOf({ ...leaves, major: true }, day(repo.main, [leaves])).body).not.toContain(says);
+    // What it leaves has no fix (k3s, which has no major in play): nothing is left for a major, and none is spoken of.
+    const unfixed = { ...cd, leaves: left };
+    const issue = issueOf(unfixed, day(repo.main, [unfixed])).body;
+    expect(issue).toContain(`**Deadline** ${cd.deadline}.\n`);
+    expect(issue).not.toMatch(/\bmajor\b/);
+    expect(pullBody([{ move: unfixed, edits: [] }], day(repo.main, [unfixed]))).not.toContain(says);
+    // Its pull request's table says it too, once, under the rows.
+    expect(pullBody([{ move: leaves, edits: [] }], day(repo.main, [leaves]))).toContain(`${cd.deadline} |\n\n${says}`);
+    expect(pullBody([{ move: cd, edits: [] }], day(repo.main, [cd]))).not.toContain(says);
+  });
+
+  it('says a move that waits for the bench waits for Martin’s bench run, with its deadline', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const moves = factoryMoves().map((each) =>
+      each.lockfile && each.lane === 'issue' ? { ...each, bench: true as const } : each,
+    );
+    await harness(repo, () => day(scanned, moves)).pass();
+    const issue = repo.issues.find((i) => i.title.startsWith('Move a package in pnpm-lock.yaml'));
+    expect(issue?.body).toContain(
+      'Its bump merges only after a bench run on Claude (`factory line bench`, docs/ON-THE-HOST.md#the-bench), which is yours to start',
+    );
+    expect(issue?.body).toMatch(/\*\*Deadline\*\* \d{4}-\d{2}-\d{2}T/);
+  });
+
   it('updates an issue rather than opening another, and closes it when its move is gone', async () => {
     const repo = new FakeRepo(FILES);
     const scanned = repo.main;
@@ -413,6 +492,37 @@ describe('the pin watch’s issues', () => {
     moves = moves.filter((m) => m.name !== 'example-cd');
     await w.pass();
     expect(repo.issues.find((i) => i.title.startsWith('Move example-cd'))?.state).toBe('closed');
+  });
+
+  it('leaves an issue open whose move the scan holds for its content’s day, and closes it once it is gone', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const all = factoryMoves();
+    const cd = all.find((m) => m.name === 'example-cd') as ReadMove;
+    const rest = all.filter((m) => m !== cd);
+    let read: Moves = day(scanned, all);
+    const w = harness(repo, () => read);
+    await w.pass();
+    const issue = repo.issues.find((i) => i.title.startsWith('Move example-cd'));
+    expect(issue?.state).toBe('open');
+    const held = {
+      index: 1,
+      name: cd.name,
+      pins: cd.pins,
+      from: cd.from,
+      lockfile: false as const,
+      why: 'content' as const,
+      to: cd.to,
+      until: '2026-11-12T04:15:00Z',
+      clears: cd.clears,
+      findings: [],
+    };
+    read = { ...day(scanned, rest, 42_000_000_102), waiting: [held] };
+    await w.pass();
+    expect(issue?.state).toBe('open');
+    read = { ...day(scanned, rest, 42_000_000_103), waiting: [] };
+    await w.pass();
+    expect(issue?.state).toBe('closed');
   });
 
   it('leaves an issue Martin closed, until its move has a later target', async () => {
@@ -476,12 +586,12 @@ describe('the pin watch’s issues', () => {
   it('opens an issue for a move whose pin’s line it cannot write', async () => {
     const repo = new FakeRepo({
       ...FILES,
-      'deploy/base/telemetry/dashboards.yaml': 'targetRevision: 13.2.7 # was 13.2.7\n',
+      'deploy/base/telemetry/dashboards.yaml': 'chart: example-dashboards\ntargetRevision: 13.2.7 # was 13.2.7\n',
     });
     const scanned = repo.main;
     const moves = factoryMoves()
       .filter((m) => m.name === 'example-dashboards')
-      .map((m) => ({ ...m, pins: [{ file: 'deploy/base/telemetry/dashboards.yaml', line: 1 }] }));
+      .map((m) => ({ ...m, pins: [{ file: 'deploy/base/telemetry/dashboards.yaml', line: 2 }] }));
     await harness(repo, () => day(scanned, moves)).pass();
     expect(appPulls(repo)).toEqual([]);
     expect(repo.issues.map((i) => i.title)).toEqual(['Move example-dashboards to chart example-dashboards 13.7.2']);
@@ -654,7 +764,12 @@ describe('the pin watch, told which moves to take (PIN_WATCH_ONLY)', () => {
     expect(touched.some((path) => path.endsWith(`/${other?.number}`) || path.includes(`/${other?.number}/`))).toBe(
       false,
     );
-    expect(lines.find((l) => /pin watch takes/.test(l.msg))).toMatchObject({ only: ['example-logs'], taken: 1 });
+    // With the scan's run, so a reader of the log knows which scan the pass read.
+    expect(lines.find((l) => l.msg === READ_THE_SCAN)).toMatchObject({
+      run: 42_000_000_101,
+      only: ['example-logs'],
+      taken: 1,
+    });
   });
 
   it('told one name, opens that move’s pull request and no other', async () => {
@@ -732,7 +847,8 @@ describe('one pull request for the day’s moves at one file', () => {
     ...FILES,
     [KYVERNO]: [
       ...IMAGES.flatMap((image) => [`${image}:`, `  tag: v1.19.1@${digest(`${image}/old`)}`]),
-      'chart: 3.5.0',
+      'targetRevision: 3.5.0',
+      'chart: kyverno',
       '',
     ].join('\n'),
   });
@@ -761,6 +877,8 @@ describe('one pull request for the day’s moves at one file', () => {
       findings: critical ? [trivyCritical({ file: KYVERNO, line: 9 })] : [],
     });
   const BRANCH = branchOf(four()[0] as ReadMove);
+  /** The scan's day, with the images it read in this file among those it lists. */
+  const day = (scanned: string, moves: ReadMove[], run?: number) => fixtureDay(scanned, moves, run, files());
 
   /** What the review gate makes of a branch (scripts/move.ts): the day's moves made on main, compared with its head. */
   const gate = (repo: FakeRepo, branch: string, scan: ReadMove[]) => {
@@ -778,7 +896,12 @@ describe('one pull request for the day’s moves at one file', () => {
     const derive = async () => {
       throw new Error('no lockfile moves here');
     };
-    return proveMove(change, scan, { base: (path) => repo.file(repo.main, path), derive }, false);
+    // The images the scan read at the file's pins, each with its digest: a tag alone is known for a move's by it.
+    const scanned = IMAGES.map((image, i) => ({
+      image: `reg.example/kyverno/${image}:v1.19.1@${digest(`${image}/old`)}`,
+      pin: { file: KYVERNO, line: 2 * i + 2 },
+    }));
+    return proveMove(change, scan, { base: (path) => repo.file(repo.main, path), derive, scanned }, false);
   };
 
   it('carries Kyverno’s four images in one, which the gate passes as the scan’s four moves', async () => {
@@ -858,7 +981,7 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(held?.title).toBe('chore(pin): move kyverno to 4.0.0');
     expect(held?.body).toContain('the review gate passes it as `major`');
     expect(held?.body).toContain('at Lights-out; at any other level it waits for you');
-    expect(changed(repo, apart).map((line) => line.after)).toEqual(['chart: 4.0.0']);
+    expect(changed(repo, apart).map((line) => line.after)).toEqual(['targetRevision: 4.0.0']);
     expect(changed(repo, BRANCH)).toHaveLength(4);
     // The gate names each as the level reads it: the major alone is `major`, and the rest are a `move`.
     expect(await gate(repo, apart, moves)).toMatchObject({ rule: 'major' });
@@ -920,7 +1043,7 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([2]);
     expect(changed(repo, apart).map((line) => [line.line, line.after])).toEqual([
       [4, `  tag: v1.20.0@${digest('kyvernopre/v1.20.0')}`],
-      [9, 'chart: 3.6.1'],
+      [9, 'targetRevision: 3.6.1'],
     ]);
     const updates = openPins(repo).find((p) => p.head === apart);
     expect(updates?.title).toBe(`chore(pin): move 2 pins in ${KYVERNO}`);
@@ -1015,6 +1138,78 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([2, 9]);
   });
 
+  /** The chart's pin as the scan says it waits (scanning.ts's `ReadWaiting`), a routine update's or a fix's. */
+  const waits = (over: Partial<NonNullable<Moves['waiting']>[number]> = {}): NonNullable<Moves['waiting']>[number] => ({
+    index: 1,
+    name: 'kyverno',
+    pins: [{ file: KYVERNO, line: 9 }],
+    from: '3.5.0',
+    lockfile: false,
+    why: 'content',
+    to: 'chart kyverno 3.6.2',
+    until: '2026-11-12T04:15:00Z',
+    clears: NONE,
+    routine: true,
+    findings: [],
+    ...over,
+  });
+
+  it('leaves a pull request open whose move the scan holds for its content’s day, and writes nothing to it', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    let read: Moves = day(scanned, [behind()]);
+    const w = harness(repo, () => read);
+    await w.pass();
+    const [pull] = openPins(repo);
+    const before = JSON.stringify(pull);
+    // The next scan lists no move of the pin, and says it waits: the pull request is not closed for a day.
+    read = { ...day(scanned, [], 42_000_000_102), waiting: [waits()] };
+    await w.pass();
+    expect(openPins(repo)).toEqual([pull]);
+    expect(JSON.stringify(pull)).toBe(before);
+    // The day it lists again, the same pull request carries it.
+    read = day(scanned, [behind('chart kyverno 3.6.2')], 42_000_000_103);
+    await w.pass();
+    expect(appPulls(repo).map((p) => [p.number, p.state])).toEqual([[pull?.number, 'open']]);
+    expect(pull?.title).toBe('chore(pin): move kyverno to 3.6.2');
+  });
+
+  it('closes one whose move is gone: not listed by a scan that does not say what waits, or says nothing waits', async () => {
+    for (const waiting of [undefined, [], [waits({ name: 'another-chart' })]]) {
+      const repo = new FakeRepo(files());
+      const scanned = repo.main;
+      let read: Moves = day(scanned, [behind()]);
+      const w = harness(repo, () => read);
+      await w.pass();
+      const [pull] = openPins(repo);
+      read = { ...day(scanned, [], 42_000_000_102), ...(waiting ? { waiting } : {}) };
+      await w.pass();
+      expect(pull?.state).toBe('closed');
+      expect(pull?.comments?.at(-1)).toContain(
+        '`main` has moved its pins, or the scan has nothing left to move them for.',
+      );
+    }
+  });
+
+  it('closes one whose target the scan refused as no better than the pin, and says that', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    const fix = { ...behind(), clears: { ...NONE, HIGH: 1 }, deadline: '2026-11-18T06:00:00Z' };
+    let read: Moves = day(scanned, [fix]);
+    const w = harness(repo, () => read);
+    await w.pass();
+    const [pull] = openPins(repo);
+    const refused = waits({ why: 'no-better', to: undefined, until: undefined, routine: undefined });
+    read = { ...day(scanned, [], 42_000_000_102), waiting: [{ ...refused, clears: { ...NONE, HIGH: 1 } }] };
+    await w.pass();
+    expect(pull?.state).toBe('closed');
+    const said = pull?.comments?.at(-1) ?? '';
+    expect(said).toContain(
+      'it read no release of `kyverno` that is better than the pin, by its findings at each severity, so it lists no fix there today.',
+    );
+    expect(said).not.toContain('`main` has moved its pins');
+  });
+
   it('makes the Makefile’s pin of Argo CD’s chart, its version alone, as any pin of the worker’s lane', async () => {
     const MAKEFILE = ['CLUSTER := software-factory', 'ARGOCD_CHART := 10.15.0', 'up:', '\thelm upgrade argocd', ''];
     const owners = '/.github/ @mrogan\n/deploy/ @mrogan\n/Makefile @mrogan\n';
@@ -1047,7 +1242,7 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(branchOf(fix)).toMatch(/^factory\/pin\/makefile-[0-9a-f]{8}$/);
   });
 
-  it('records the guard’s refusal of any other line of the Makefile, and opens nothing', async () => {
+  it('writes no move on any other line of the Makefile: an issue, and nothing for the guard to refuse', async () => {
     const MAKEFILE = ['OTHER_CHART := 10.15.0', 'ARGOCD_CHART := 10.15.0', ''];
     const repo = new FakeRepo({ ...FILES, Makefile: MAKEFILE.join('\n') });
     const scanned = repo.main;
@@ -1060,8 +1255,58 @@ describe('one pull request for the day’s moves at one file', () => {
     const w = harness(repo, () => day(scanned, [other]));
     await w.pass();
     expect(appPulls(repo)).toEqual([]);
-    expect(w.records()).toHaveLength(1);
-    expect(JSON.stringify(w.records())).toContain('is not the Makefile’s pin of Argo CD’s chart');
+    expect(w.records()).toEqual([]);
+    expect(repo.issues.map((i) => i.title)).toEqual(['Move argo-cd to chart argo-cd 10.16.2']);
+    expect(repo.issues[0]?.body).toContain("Makefile:1 is not argo-cd's pin at 10.15.0 now: main moved since the scan");
+  });
+
+  describe('a move is written only on its own pin, by the check the gate makes it again by', () => {
+    it('writes no image’s move on a neighbouring image at the same tag, and the day’s other moves go on', async () => {
+      // The scan's line now holds another image of the chart, at the same tag: the same text, another pin.
+      const repo = new FakeRepo(files());
+      const scanned = repo.main;
+      const [first, ...rest] = four() as [ReadMove, ...ReadMove[]];
+      const strayed = { ...first, pins: [{ file: KYVERNO, line: 4 }] };
+      const moves = [strayed, ...rest.slice(1)];
+      // What the scan read: each image at its own line, the strayed move's at line 2 still.
+      const today = () => {
+        const read = day(scanned, moves);
+        return { ...read, file: read.file && { ...read.file, scanned: scannedAt(files(), four()) } };
+      };
+      await harness(repo, today).pass();
+      const [pull] = openPins(repo);
+      expect(changed(repo, BRANCH).map((line) => line.line)).toEqual([6, 8]);
+      expect(carriedBy(pull?.body).sort()).toEqual(
+        rest
+          .slice(1)
+          .map((m) => m.name)
+          .sort(),
+      );
+      expect(repo.issues).toHaveLength(1);
+      expect(repo.issues[0]?.body).toContain(`${KYVERNO}:4 is not ${first.name}'s pin at v1.19.1 now`);
+      // The gate, given the same move and the same images read, refuses it in the same words.
+      const forged = repo.commitOn(repo.main, {
+        [KYVERNO]: (repo.file(repo.main, KYVERNO) as string).replace(
+          `v1.19.1@${digest('kyvernopre/old')}`,
+          first.to.replace('image ', ''),
+        ),
+      });
+      repo.refs.set('forged', forged);
+      expect(await gate(repo, 'forged', moves)).toEqual({
+        reason: expect.stringContaining(`${KYVERNO}:4 is not ${first.name}'s pin at v1.19.1 now`),
+      });
+    });
+
+    it('writes a values file’s tag only where the scan read the move’s image at that digest', async () => {
+      const repo = new FakeRepo(files());
+      const scanned = repo.main;
+      // The scan listed no image at the pins: a tag alone is no one's, as it is to the gate.
+      const unread = () => fixtureDay(scanned, four(), undefined, {});
+      await harness(repo, unread).pass();
+      expect(appPulls(repo)).toEqual([]);
+      expect(repo.issues).toHaveLength(4);
+      expect(repo.issues[0]?.body).toContain('main moved since the scan');
+    });
   });
 
   it('leaves out a move whose line has changed since the scan, and one that is an issue, and carries the rest', async () => {
@@ -1114,10 +1359,281 @@ describe('one pull request for the day’s moves at one file', () => {
     expect(appPulls(repo)).toHaveLength(2);
   });
 
+  it('leaves out a move whose merge was undone on main, and the rest of its file’s moves go on without it', async () => {
+    const repo = new FakeRepo(files());
+    const before = repo.file('main', KYVERNO) as string;
+    let scanned = repo.main;
+    const [first, ...rest] = four();
+    let moves = [first as ReadMove];
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    const pull = openPins(repo)[0] as (typeof repo.pulls)[number];
+    const sha = repo.push({ [KYVERNO]: repo.file(BRANCH, KYVERNO) as string });
+    Object.assign(pull, { state: 'closed', merged_at: '2026-11-11T09:00:00Z', merge_commit_sha: sha });
+    repo.push({ [KYVERNO]: before });
+    scanned = repo.main;
+    moves = [first as ReadMove, ...rest];
+    await w.pass();
+    const [open] = openPins(repo);
+    expect(carriedBy(open?.body).sort()).toEqual(rest.map((m) => m.name).sort());
+    expect(repo.issues.filter((i) => i.state === 'open' && i.body.includes('undone on `main`'))).toHaveLength(1);
+  });
+
   it('reads no mark it did not write as a move it carries', () => {
     expect(carriedBy(undefined)).toEqual([]);
     expect(carriedBy('<!-- factory: pin-moves %5B%22a%22%2C7%5D -->')).toEqual(['a']);
     expect(carriedBy('<!-- factory: pin-moves %7B%7D -->')).toEqual([]);
     expect(carriedBy('<!-- factory: pin-moves %E0%A4%A -->')).toEqual([]);
+  });
+});
+
+/** A log whose lines a test reads. */
+function capture() {
+  const lines: { level: number; msg: string; branch?: string; move?: string; number?: number }[] = [];
+  return { lines, log: pino({ level: 'info' }, { write: (line: string) => void lines.push(JSON.parse(line)) }) };
+}
+
+const DASHBOARDS = 'deploy/base/telemetry/dashboards.yaml';
+const dashboards = () => factoryMoves().filter((m) => m.name === 'example-dashboards');
+const issueFor = (repo: FakeRepo, key: string) =>
+  repo.issues.find((i) => i.body.includes(`<!-- factory: pin-issue ${key} -->`));
+/** The commits the watch made for a pin branch through the App's commit API: each on the branch beside it, then moved. */
+const commitsTo = (sent: Sent[], branch: string) =>
+  sent.filter(
+    (s) =>
+      s.path === '/graphql' &&
+      (s.body as { variables?: { input?: { branch?: { branchName?: string } } } }).variables?.input?.branch
+        ?.branchName === pinNextBranch(branch),
+  );
+
+/** Merges a branch's pull request as the queue does: its files on main in one commit, which GitHub names on it. */
+function merge(repo: FakeRepo, branch: string) {
+  const pull = repo.pulls.find((p) => p.head === branch && p.state === 'open');
+  if (!pull) throw new Error(`No open pull request from ${branch}.`);
+  const sha = repo.push({ [DASHBOARDS]: repo.file(branch, DASHBOARDS) as string });
+  Object.assign(pull, { state: 'closed', merged_at: '2026-11-11T09:00:00Z', merge_commit_sha: sha });
+  return pull;
+}
+
+describe('a move whose merge was undone on main', () => {
+  it('is left unmade until its target changes, said once and as one issue, and made at the new target', async () => {
+    const repo = new FakeRepo(FILES);
+    const before = repo.file('main', DASHBOARDS) as string;
+    let scanned = repo.main;
+    let moves = dashboards();
+    const said = capture();
+    const w = harness(repo, () => day(scanned, moves), { log: said.log });
+    const branch = pinBranchOf('example-dashboards');
+    await w.pass();
+    merge(repo, branch);
+    // The day's scan still lists the move main now has: the watch waits, as it does for any line changed since.
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(repo.issues).toEqual([]);
+
+    // Martin reverts it on main, and the next scan lists the same move again.
+    repo.push({ [DASHBOARDS]: before });
+    scanned = repo.main;
+    const made = commitsTo(w.sent, branch).length;
+    await w.pass();
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(commitsTo(w.sent, branch)).toHaveLength(made);
+    const issue = issueFor(repo, 'example-dashboards');
+    expect(issue?.state).toBe('open');
+    expect(issue?.body).toContain('leaves unmade');
+    expect(issue?.body).toContain('its merge was then undone on `main`');
+    expect(said.lines.filter((line) => line.msg.includes('undone on main'))).toMatchObject([
+      { level: 30, move: 'example-dashboards', branch },
+    ]);
+
+    // A worker that has just started finds the same, from GitHub alone.
+    const restarted = harness(repo, () => day(scanned, moves));
+    await restarted.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(writes(restarted.sent)).toEqual([]);
+
+    // A later target is another move: made, and its issue closed.
+    moves = moves.map((m) => ({ ...m, to: 'chart example-dashboards 13.8.0' }));
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([branch]);
+    expect(issue?.state).toBe('closed');
+  });
+
+  it('makes the move again on a main whose history no longer has the merge, and with the merge put back does nothing', async () => {
+    const repo = new FakeRepo(FILES);
+    const baseline = repo.main;
+    const w = harness(repo, () => day(baseline, dashboards()));
+    const branch = pinBranchOf('example-dashboards');
+    await w.pass();
+    merge(repo, branch);
+    // Main written again from the commit before the merge: nothing was undone on it.
+    repo.refs.set('main', baseline);
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([branch]);
+    expect(repo.issues).toEqual([]);
+  });
+});
+
+describe('a pin branch someone else holds', () => {
+  it('is not written under another’s pull request: refused for that branch, with an issue, and the other moves go on', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const branch = pinBranchOf('example-dashboards');
+    const theirs = repo.commitOn('main', { [DASHBOARDS]: 'spec: theirs\n' });
+    repo.refs.set(branch, theirs);
+    const other = repo.addPull({ head: branch, user: 'someone', title: 'Not the App’s' });
+    const w = harness(repo, () => day(scanned, factoryMoves()));
+    await w.pass();
+    await w.pass();
+    // Their branch is where they left it, and nothing was committed to it.
+    expect(repo.refs.get(branch)).toBe(theirs);
+    expect(commitsTo(w.sent, branch)).toEqual([]);
+    // Every other move of the day has its pull request.
+    expect(openPins(repo).filter((p) => p.user !== 'someone').length).toBe(
+      new Set(
+        factoryMoves()
+          .filter((m) => m.lane === 'worker' || m.lane === 'cluster')
+          .map((m) => branchOf(m)),
+      ).size - 1,
+    );
+    expect(w.records().filter((r) => r.payload?.mechanism === 'github-guard')).toMatchObject([
+      { payload: { output: expect.stringContaining(`Pull request #${other.number}, which the App did not open`) } },
+    ]);
+    const issue = issueFor(repo, 'example-dashboards');
+    expect(issue?.state).toBe('open');
+    expect(issue?.body).toContain('A pull request the App did not open is open from the branch');
+
+    // Once theirs is closed the watch makes the move, and closes the issue.
+    other.state = 'closed';
+    await w.pass();
+    expect(openPins(repo).some((p) => p.head === branch && p.user !== 'someone')).toBe(true);
+    expect(issue?.state).toBe('closed');
+  });
+
+  it('costs only its own branch when GitHub refuses the pull request, and commits no more until the next pass', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const branch = pinBranchOf('example-dashboards');
+    let refuses = true;
+    const routes = repo.routes.bind(repo);
+    repo.routes = (...args) => {
+      const all = routes(...args);
+      const open = all.find((r) => r.method === 'POST' && r.path === `/repos/${FACTORY}/pulls`);
+      return [
+        {
+          method: 'POST',
+          path: `/repos/${FACTORY}/pulls`,
+          answer: (request) =>
+            refuses && (request.body as { head: string }).head === branch
+              ? { status: 422, body: { message: 'Validation Failed' } }
+              : (open as NonNullable<typeof open>).answer(request),
+        },
+        ...all,
+      ];
+    };
+    const w = harness(repo, () => day(scanned, factoryMoves()));
+    await w.pass();
+    expect(openPins(repo).some((p) => p.head === branch)).toBe(false);
+    expect(openPins(repo).length).toBeGreaterThan(1);
+    expect(issueFor(repo, 'example-dashboards')?.body).toContain('GitHub refused the pull request');
+    expect(issueFor(repo, 'example-cd')?.state).toBe('open');
+    expect(w.records().filter((r) => r.payload?.mechanism === 'github-guard')).toMatchObject([
+      { payload: { output: expect.stringContaining('GitHub refused a pull request') } },
+    ]);
+    // The pass finished: the poller's next calls, each a minute on, commit nothing.
+    await w.poll();
+    await w.poll();
+    expect(commitsTo(w.sent, branch)).toHaveLength(1);
+    refuses = false;
+    await w.pass();
+    expect(openPins(repo).some((p) => p.head === branch)).toBe(true);
+    expect(issueFor(repo, 'example-dashboards')?.state).toBe('closed');
+  });
+});
+
+describe('a close that is not Martin’s', () => {
+  it('holds nothing: a pin pull request anyone else closed is opened again, and one Martin closed waits', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const said = capture();
+    const w = harness(repo, () => day(scanned, dashboards()), { log: said.log });
+    const branch = pinBranchOf('example-dashboards');
+    await w.pass();
+    const [first] = openPins(repo);
+    Object.assign(first as object, { state: 'closed', closed_by: 'someone' });
+    await w.pass();
+    const [second] = openPins(repo);
+    expect(second?.head).toBe(branch);
+    expect(second?.number).not.toBe(first?.number);
+    expect(said.lines.filter((line) => line.msg.includes('someone but Martin closed'))).toMatchObject([
+      { number: first?.number },
+    ]);
+    Object.assign(second as object, { state: 'closed', closed_by: 'mrogan' });
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+  });
+
+  it('remembers Martin’s close past a hundred later closed pull requests on the branch', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const w = harness(repo, () => day(scanned, dashboards()));
+    await w.pass();
+    const [first] = openPins(repo);
+    Object.assign(first as object, { state: 'closed', closed_by: 'mrogan' });
+    // Later pull requests from the branch, closed since: anyone's, each newer than his.
+    for (let i = 0; i < 150; i++)
+      repo.pulls.push({ ...(first as FakePull), number: 5000 + i, body: '', user: 'someone', closed_by: 'someone' });
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+  });
+
+  it('makes no move on a branch with more closed pull requests than it reads, and says so', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const said = capture();
+    const w = harness(repo, () => day(scanned, dashboards()), { log: said.log });
+    const branch = pinBranchOf('example-dashboards');
+    const closed: FakePull = {
+      number: 0,
+      title: 'Another',
+      body: '',
+      state: 'closed',
+      merged_at: null,
+      user: 'someone',
+      head: branch,
+      labels: [],
+      mergeable: null,
+      closed_by: 'someone',
+    };
+    for (let i = 0; i < 3000; i++) repo.pulls.push({ ...closed, number: 5000 + i });
+    await w.pass();
+    await w.pass();
+    // Held, not made again: what Martin closed or undid there may be past what was read.
+    expect(openPins(repo)).toEqual([]);
+    expect(
+      said.lines.filter((line) => line.msg.includes('more closed pull requests than the watch reads')),
+    ).toMatchObject([{ branch }]);
+    const issue = issueFor(repo, 'example-dashboards');
+    expect(issue?.state).toBe('open');
+    expect(issue?.body).toContain('more closed pull requests than the watch reads');
+    // One fewer page, and it is read whole: the move is made.
+    repo.pulls.splice(0, 100);
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([branch]);
+  });
+
+  it('holds no issue closed either: one anyone else closed is opened again for the same target', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const w = harness(repo, () => day(scanned, factoryMoves()));
+    await w.pass();
+    const cd = issueFor(repo, 'example-cd');
+    Object.assign(cd as object, { state: 'closed', closed_by: 'someone' });
+    await w.pass();
+    expect(cd?.state).toBe('open');
+    Object.assign(cd as object, { state: 'closed', closed_by: 'mrogan' });
+    await w.pass();
+    expect(cd?.state).toBe('closed');
   });
 });

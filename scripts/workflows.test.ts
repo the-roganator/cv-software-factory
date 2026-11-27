@@ -10,7 +10,7 @@ import { ENVIRONMENTS, KEY_BRANCH, SCAN_STATE_ENVIRONMENT } from './github-setti
 /**
  * Every workflow, as GitHub reads it (spec 6, guardrails 1 and 2): none runs a pull request's code where a secret is,
  * none runs on a machine of its own, and only two hold an App's key, each from an environment only main may use, and
- * each checking out nothing but main's own files. A third holds the key the scan seals its state with (ADR 0021), in
+ * each checking out nothing but main's own files. A third holds the key the scan seals its state with (ADR 0026), in
  * the one job of it no pull request reaches, from an environment only main may use, and gives it to one step.
  */
 const DIR = '.github/workflows';
@@ -39,6 +39,7 @@ const CHECKED_OUT: Record<string, string[]> = {
     'mise.toml',
     'mise.lock',
     'apps/factory/src/repositories.ts',
+    'policy/branches.ts',
     'policy/repositories.ts',
     'scripts/github-settings.ts',
   ],
@@ -48,6 +49,7 @@ const CHECKED_OUT: Record<string, string[]> = {
     'scripts/review-gate.ts',
     'scripts/review-routing.ts',
     'apps/factory/src/repositories.ts',
+    'policy/branches.ts',
     'policy/repositories.ts',
     'policy/review-verdict.ts',
   ],

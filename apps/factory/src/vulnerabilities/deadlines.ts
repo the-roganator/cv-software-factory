@@ -45,7 +45,9 @@
  * - **A fix that exists and is no move today** is said in `moves.json`'s `waiting` (moves.ts), by its pin: one that
  *   waits for its content, with its target and when it comes due, and one whose releases are no better than the pin
  *   (`heldOf`); with each routine update of an image that waits for its content alone (routine.ts). The state names
- *   each such result's place there, so the list is held to it as the moves are.
+ *   each such result's place there, with the targets it waits for and their days (`waits`), and a routine update's
+ *   release (`routine`), so a reader holds to it each place, each count, each wait for content's target and day, and
+ *   each routine update's pin and target; the rest of an entry is the artifact's alone (scanning.ts's `waitingOf`).
  * - **The clock starts** on the later of the fix being installable and the day the finding was first seen: the day the
  *   state gives its place, or, read from the alerts, the creation of its alert; a finding with neither before today is
  *   first seen today. A rename keeps its clock: when an item is new to the list, and a finding of the same package and

@@ -14,7 +14,8 @@
  * made them. Absent, there are none; there and not opening for that run and its commit, the read fails.
  *
  * `moves.json` also lists each pin with somewhere to go and no move that day (`waiting`), where the scan says so: read
- * with the findings the state names there (`Moves.waiting`), and absent for a scan that does not say.
+ * with the findings the state names there (`Moves.waiting`), held to the state as far as it says (`waitingOf`), and
+ * absent for a scan that does not say.
  *
  * Both are the scan's by where they are, one run's, and each is held to the other: a state that does not open with
  * the repository's key for that run, a finding in a move past the list, or a count that differs from `moves.json`'s,
@@ -55,6 +56,7 @@ import {
   type State,
   StateError,
   type StateRoutine,
+  type StateWait,
 } from '../vulnerabilities/state.ts';
 import { type ZipError, zipEntry } from '../vulnerabilities/zip.ts';
 import { type GitHub, GitHubError } from './client.ts';
@@ -128,7 +130,11 @@ export interface ReadMove extends PublicMove {
   findings: MoveFinding[];
 }
 
-/** A pin that waits as `moves.json` gives it (moves.ts's `Waiting`), with what the state holds. */
+/**
+ * A pin that waits as `moves.json` gives it (moves.ts's `Waiting`), with what the state holds. Its `findings`, and
+ * for a wait for content its `to` and `until`, are the state's word, as are a routine update's `name`, `from`, `pins`
+ * and `to`; any other field is the artifact's alone (`waitingOf`), to show and not to act on past what a move's is.
+ */
 export interface ReadWaiting extends Waiting {
   /** Its place in `moves.json`'s `waiting`, from 1. */
   index: number;
@@ -641,11 +647,20 @@ export function joined(
 }
 
 /**
- * `moves.json`'s pins that wait, each with its findings from the state, and each held to it, as a move is: a finding
- * names a place on the list, and none that is in a move; every entry has as many findings as it counts, those its
- * move would clear and those it would leave for a major together, and none of them twice; a routine update's has none, and is a release the state recorded for that pin and gave no move. So what
- * waits is the sealed state's word as much as the artifact's. A state that names a place and a file with no list do
- * not agree. Nothing where the file has no list: that scan does not say.
+ * `moves.json`'s pins that wait, each with its findings from the state, and each held to it as far as the state says:
+ *
+ * - its place: a finding names a place on the list, and none that is in a move; none is listed twice;
+ * - how many results wait there: as many findings as it counts, those its move would clear and those it would leave
+ *   for a major together, as a move's count is held;
+ * - that it waits for its content (`why`), with what for and until when (`to`, `until`): a target one of its findings
+ *   waits for in the state, and that target's day there (`StateFinding.waits`);
+ * - a routine update's, which has no finding: a release the state recorded for that pin and gave no move, by its
+ *   `name`, `from` and `pins`, with a `to` among the content that record waits for.
+ *
+ * The rest is the artifact's alone, as it is of a move that is no lockfile's and not routine: its `name`, `pins` and
+ * `from` where findings wait; that it was refused as `no-better`, of which the state keeps nothing; how its count
+ * divides (`clears` from `leaves`, and by severity); its `deadline`; and a routine update's `until`. A state that
+ * names a place and a file with no list do not agree. Nothing where the file has no list: that scan does not say.
  */
 function waitingOf(repo: string, file: MovesFile, state: State): ReadWaiting[] | undefined {
   const named = state.findings.find((each) => each.waiting !== undefined);
@@ -654,12 +669,14 @@ function waitingOf(repo: string, file: MovesFile, state: State): ReadWaiting[] |
     return undefined;
   }
   const findings: ReadWaiting['findings'][] = file.waiting.map(() => []);
+  const waits: StateWait[][] = file.waiting.map(() => []);
   for (const [at, each] of state.findings.entries()) {
     if (each.waiting === undefined) continue;
     const list = findings[each.waiting - 1];
     if (!list || each.move !== undefined)
       throw disagrees(repo, `the state's finding ${at + 1} waits at place ${each.waiting} of ${file.waiting.length}`);
     list.push({ advisory: each.advisory, package: each.package, severity: each.severity });
+    waits[each.waiting - 1]?.push(...(each.waits ?? []));
   }
   const seen = new Set<string>();
   return file.waiting.map((entry, i): ReadWaiting => {
@@ -671,13 +688,35 @@ function waitingOf(repo: string, file: MovesFile, state: State): ReadWaiting[] |
     const counted = total(entry.clears) + (entry.leaves ? total(entry.leaves) : 0);
     if (own.length !== counted)
       throw disagrees(repo, `${where} counts ${counted} results and the state gives it ${own.length}`);
-    if (
-      entry.routine &&
-      !(state.routine ?? []).some((r) => r.move === undefined && r.name === entry.name && r.from === entry.from)
-    )
-      throw disagrees(repo, `${where}, a routine update's, is no release the state recorded as waiting`);
+    if (entry.routine) {
+      const pins = JSON.stringify([...entry.pins].sort(byPin));
+      const records = (state.routine ?? []).filter(
+        (r) =>
+          r.move === undefined &&
+          r.name === entry.name &&
+          r.from === entry.from &&
+          JSON.stringify(r.pins.map(({ file, line }) => ({ file, line })).sort(byPin)) === pins,
+      );
+      if (!records.length)
+        throw disagrees(repo, `${where}, a routine update's, is no release the state recorded as waiting`);
+      if (!records.some((r) => (r.content ?? []).some((each) => sameTarget(each.target, entry.to))))
+        throw disagrees(repo, `${where}, a routine update's, waits for content the state did not record for it`);
+    } else if (entry.why === 'content') {
+      const until = Date.parse(entry.until ?? '');
+      if (!(waits[i] ?? []).some((each) => sameTarget(each.target, entry.to) && Date.parse(each.day) === until))
+        throw disagrees(
+          repo,
+          `${where} waits for a target, or until a day, the state records for none of its findings`,
+        );
+    }
     return { ...entry, index: i + 1, findings: own };
   });
+}
+
+/** Whether a target the state wrote is the one `moves.json` names, each as the grammar writes it (fixes.ts). */
+function sameTarget(kept: string, named: string | undefined): boolean {
+  const target = readTarget(kept);
+  return target !== undefined && named !== undefined && targetText(target) === named;
 }
 
 const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

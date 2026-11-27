@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as policy from '../../../../policy/vulnerabilities.ts';
+import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import type { Alert } from '../../src/vulnerabilities/alerts.ts';
 import {
   aquaRepository,
@@ -256,7 +257,22 @@ async function judge(world: World, now = NOW) {
   const judgement = verdict(rows);
   /** How the run ends after its upload: its last lines and its exit code. */
   const ends = () => ending({ passes: judgement.passes, lines: judgement.lines.slice(3), unread, missed });
-  return { rows, fixes, judged, looked, unread, excepted, missed, asked, lines, kept, ends, held, verdict: judgement };
+  return {
+    rows,
+    fixes,
+    judged,
+    looked,
+    unread,
+    excepted,
+    missed,
+    asked,
+    lines,
+    kept,
+    ends,
+    held,
+    waits,
+    verdict: judgement,
+  };
 }
 
 /** A Trivy report of an image made at the time given, with the findings given. */
@@ -3071,6 +3087,33 @@ describe('a day’s moves.json', () => {
         clears: high,
       },
     ]);
+    // The state the scan seals bears that list out, as the GitHub worker reads the two (scanning.ts's `joined`): each
+    // result's place, and for each pin the target a result of it waits for and that target's day.
+    const order = waiting(first.judged, first.held);
+    const at = new Map(order.flatMap((each, index) => each.results.map((result) => [result, index + 1] as const)));
+    const tags = new Map(
+      moves(first.judged, context).flatMap((move, index) =>
+        move.results.map((result) => [result, { index: index + 1, run: '19234567890' }] as const),
+      ),
+    );
+    const sealed = stateOf(
+      REPOSITORY,
+      '19234567890',
+      first.rows,
+      first.judged.map((each) => ({ ...each.finding, move: tags.get(fingerprint(each.finding)) })),
+      [],
+      first.waits,
+      first.judged.map((each) => at.get(fingerprint(each.finding))),
+    );
+    const run = { id: 19234567890 } as ScanRun;
+    const again = () => JSON.parse(JSON.stringify(file)) as typeof file;
+    expect(joined(REPOSITORY, run, again(), sealed).waiting?.map((each) => each.findings.length)).toEqual([1, 1]);
+    // And no other target, and no other day.
+    const [chart, image] = file.waiting ?? [];
+    const moved = { ...again(), waiting: [{ ...chart, to: 'chart example 14.3.2 (a major)' }, image] } as typeof file;
+    expect(() => joined(REPOSITORY, run, moved, sealed)).toThrow(/place 1 waits for a target, or until a day/);
+    const later = { ...again(), waiting: [chart, { ...image, until: '2026-11-12T02:30:00Z' }] } as typeof file;
+    expect(() => joined(REPOSITORY, run, later, sealed)).toThrow(/place 2 waits for a target, or until a day/);
   });
 
   it('marks a chart’s later major a major whether or not its pinned version is written with a v', async () => {

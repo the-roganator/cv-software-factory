@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Routine } from '../../../../policy/vulnerabilities.ts';
 import * as policy from '../../../../policy/vulnerabilities.ts';
 import { REPOSITORIES } from '../../src/github/config.ts';
+import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import {
   assess,
   type PackageVersions,
@@ -11,7 +12,7 @@ import {
   verdict,
 } from '../../src/vulnerabilities/deadlines.ts';
 import { readTarget } from '../../src/vulnerabilities/fixes.ts';
-import { APP, isRoutine, moves, movesFile, pinsOf, table } from '../../src/vulnerabilities/moves.ts';
+import { APP, isRoutine, moves, movesFile, pinsOf, table, waiting } from '../../src/vulnerabilities/moves.ts';
 import { directs, leftAlone, recorded, routine, summary, TAGS } from '../../src/vulnerabilities/routine.ts';
 import type { Finding } from '../../src/vulnerabilities/sarif.ts';
 import type { Handoff, ReadTarget } from '../../src/vulnerabilities/scan.ts';
@@ -329,6 +330,32 @@ describe('an image’s pin that is behind', () => {
         until: NOW + 4.5 * DAY,
       },
     ]);
+    // The state's record of the release bears that out, as the GitHub worker reads the two (scanning.ts's `joined`):
+    // the pin, and the digest among the content the record waits for.
+    const read = (day: typeof dropped, change: (entry: Record<string, unknown>) => void = () => {}) => {
+      const waits = waiting([], [], day.listing.waits);
+      const file = JSON.parse(
+        JSON.stringify(
+          movesFile([], { repository: REPOSITORY, now: NOW }, '1', [], undefined, undefined, { unread: 0 }, waits),
+        ),
+      ) as ReturnType<typeof movesFile>;
+      for (const entry of file.waiting ?? []) change(entry as unknown as Record<string, unknown>);
+      const state = {
+        version: 1 as const,
+        repository: REPOSITORY,
+        run: '1',
+        findings: [],
+        routine: recorded(day.records, []),
+      };
+      return joined(REPOSITORY, { id: 1 } as ScanRun, file, state).waiting;
+    };
+    expect(read(dropped)).toEqual([expect.objectContaining({ name: 'example/image', routine: true, findings: [] })]);
+    expect(() => read(dropped, (entry) => Object.assign(entry, { to: `image 2.18.1@${digest('f')}` }))).toThrow(
+      /a routine update's, waits for content the state did not record for it/,
+    );
+    expect(() =>
+      read(dropped, (entry) => Object.assign(entry, { pins: [{ file: 'deploy/other.yaml', line: 1 }] })),
+    ).toThrow(/a routine update's, is no release the state recorded as waiting/);
     // A tag still inside its own days waits for those, not for its content; and a move listed waits for nothing.
     expect(day0.listing.waits).toBeUndefined();
     expect(day3.listing.waits).toBeUndefined();
@@ -343,6 +370,7 @@ describe('an image’s pin that is behind', () => {
         until: NOW + 4 * DAY,
       }),
     ]);
+    expect(read(first)).toHaveLength(1);
     expect(dropped.records[0]?.content).toEqual([
       { target: `image 2.18.1@${digest('c')}`, seen: '2026-11-13T16:30:00Z' },
     ]);

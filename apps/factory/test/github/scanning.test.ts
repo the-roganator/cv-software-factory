@@ -549,13 +549,28 @@ describe('the scan’s moves', () => {
     const [first] = day.state.findings;
     if (!first) throw new Error('the fixture has no finding');
     const { move: _, fix: __, ...open } = first;
-    day.state.findings.push({ ...open, advisory: 'CVE-2099-40001', package: 'libwaits', severity: 'HIGH', waiting: 1 });
+    day.state.findings.push({
+      ...open,
+      advisory: 'CVE-2099-40001',
+      package: 'libwaits',
+      severity: 'HIGH',
+      waiting: 1,
+      waits: [
+        {
+          from: '1.0.0',
+          target: `image 1.0.1@sha256:${'3'.repeat(64)}`,
+          seen: '2026-11-10T06:15:00Z',
+          day: '2026-11-11T04:15:00Z',
+        },
+      ],
+    });
     day.state.routine.push({
       name: 'ghcr.io/example/behind',
       from: '2.0.0',
       to: `image 2.1.0@sha256:${'4'.repeat(64)}`,
       pins: [{ file: 'deploy/behind/Dockerfile', line: 1 }],
       seen: '2026-11-07T06:15:00Z',
+      content: [{ target: `image 2.1.0@sha256:${'4'.repeat(64)}`, seen: '2026-11-10T06:15:00Z' }],
     });
     day.moves.waiting = [
       {
@@ -664,6 +679,30 @@ describe('the scan’s moves', () => {
     await fails(
       wrong((day) => day.state.routine.pop()),
       /place 2, a routine update's, is no release the state recorded as waiting/,
+    );
+    // A wait for content to another target, or until another day, than the state records for a finding there; and
+    // one the state records no wait for at all.
+    const unrecorded = /place 1 waits for a target, or until a day, the state records for none of its findings/;
+    await fails(
+      wrong((day) => Object.assign(day.moves.waiting[0], { to: `image 1.0.1@sha256:${'9'.repeat(64)}` })),
+      unrecorded,
+    );
+    await fails(
+      wrong((day) => Object.assign(day.moves.waiting[0], { until: '2026-11-10T04:15:00Z' })),
+      unrecorded,
+    );
+    await fails(
+      wrong((day) => delete (day.state.findings.at(-1) as StateFinding).waits),
+      unrecorded,
+    );
+    // A routine update's wait at other pins than its record's, or for content its record does not wait for.
+    await fails(
+      wrong((day) => Object.assign(day.moves.waiting[1], { pins: [{ file: 'deploy/other/Dockerfile', line: 1 }] })),
+      /place 2, a routine update's, is no release the state recorded as waiting/,
+    );
+    await fails(
+      wrong((day) => Object.assign(day.moves.waiting[1], { to: `image 2.1.0@sha256:${'9'.repeat(64)}` })),
+      /place 2, a routine update's, waits for content the state did not record for it/,
     );
     // A pin listed twice for one reason.
     await fails(

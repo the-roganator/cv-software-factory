@@ -498,7 +498,13 @@ describe('the scan’s moves as the gate reads them, with what waits', () => {
   const waitingState = (): State => {
     const state: State = fixture('state.json');
     const { move: _, fix: __, ...open } = state.findings[0] as State['findings'][number];
-    state.findings.push({ ...open, advisory: 'CVE-2099-40001', package: 'libwaits', waiting: 1 });
+    state.findings.push({
+      ...open,
+      advisory: 'CVE-2099-40001',
+      package: 'libwaits',
+      waiting: 1,
+      waits: [{ from: held.from, target: held.to, seen: '2026-11-10T06:15:00Z', day: held.until }],
+    });
     return state;
   };
 
@@ -527,6 +533,11 @@ describe('the scan’s moves as the gate reads them, with what waits', () => {
     await expect(scanMoves(APP, 'token', text, forged)).rejects.toThrow(
       /the pin that waits at place 1 counts 1 results and the state gives it 0/,
     );
+    // What it waits for, and until when, are the state's too: another target is no wait of that finding's.
+    const moved = { ...held, to: `image 1.0.1@sha256:${'9'.repeat(64)}` };
+    await expect(
+      scanMoves(APP, 'token', text, github({ ...fixture('moves.json'), waiting: [moved] }, waitingState())),
+    ).rejects.toThrow(/place 1 waits for a target, or until a day, the state records for none of its findings/);
     const dropped = github(fixture('moves.json'), waitingState());
     await expect(scanMoves(APP, 'token', text, dropped)).rejects.toThrow(
       /the state names a pin that waits and moves\.json lists none/,

@@ -691,9 +691,6 @@ svg.chart {
   border-top: 1px solid var(--line);
   font: 1.9cqw / 1.3 var(--font-mono);
 }
-.lockfile div:first-child {
-  border-top: 0;
-}
 .lockfile .plus {
   color: var(--ok);
 }
@@ -1137,6 +1134,9 @@ svg.chart {
   align-items: center;
   gap: 1.2cqw;
   color: var(--text-2);
+}
+.lockfile div:first-child {
+  border-top: 0;
 }
 .vis .ticks .glyph {
   width: max(10px, 2.4cqw);

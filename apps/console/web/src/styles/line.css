@@ -282,10 +282,7 @@ button.srow:hover {
   border-left: var(--stroke-rule) solid var(--tone);
   border-radius: var(--radius-rule) var(--radius-small) var(--radius-small) var(--radius-rule);
 }
-/* What left today is dimmed, title and all; the first of it sits under a stronger hairline, with no label. */
-.srow.left > span:nth-child(2) {
-  color: var(--text-muted);
-}
+/* The first of what left today sits under a stronger hairline, with no label. */
 .srow.first-left {
   border-top-color: var(--line-strong);
 }
@@ -471,6 +468,10 @@ button.srow:hover {
 }
 .add:hover span {
   transform: scale(1.1);
+}
+/* What left today is dimmed, title and all. */
+.srow.left > span:nth-child(2) {
+  color: var(--text-muted);
 }
 .add:disabled {
   cursor: default;

@@ -119,12 +119,12 @@ button.pill.fresh {
   background: transparent;
   cursor: pointer;
 }
+button.pill.fresh:disabled {
+  cursor: default;
+}
 button.pill.fresh:hover:not(:disabled) {
   border-color: var(--text-muted);
   color: var(--text);
-}
-button.pill.fresh:disabled {
-  cursor: default;
 }
 .pill.fresh .glyph.end {
   width: 10px;
@@ -207,9 +207,6 @@ button.pill.fresh:disabled {
   color: var(--text);
   font-size: 13.5px;
   text-decoration: none;
-}
-.menu a:hover {
-  background: var(--surface);
 }
 
 /*
@@ -461,6 +458,9 @@ button.pill.fresh:disabled {
 }
 .links a {
   color: var(--text);
+}
+.menu a:hover {
+  background: var(--surface);
 }
 
 /*

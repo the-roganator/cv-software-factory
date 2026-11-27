@@ -229,6 +229,10 @@
 .ch:last-child {
   align-items: flex-end;
 }
+/* A citation's text, under a review's finding: among the step labels' spans, between those it outranks and those that outrank it. */
+.cites span:not(.n) {
+  color: var(--text-2);
+}
 /* Past twelve chapters, only the chosen one and the ends keep their labels. */
 .ch.crowd span {
   visibility: hidden;
@@ -470,10 +474,6 @@ details[open] .more {
   padding: 9px 0;
   border-top: 1px solid var(--line);
 }
-.facts-dl dt:first-of-type,
-.facts-dl dd:first-of-type {
-  border-top: 0;
-}
 .facts-dl dt {
   padding-right: 16px;
   color: var(--text-muted);
@@ -679,9 +679,6 @@ table.models {
 }
 .seen-by li .mono {
   font-size: 11px;
-  color: var(--text-muted);
-}
-.seen-by li.unseen > span:nth-child(2) {
   color: var(--text-muted);
 }
 .models small + small {
@@ -1007,8 +1004,8 @@ table.scope th {
 .remark .cites b {
   font-weight: 500;
 }
-.cites span:not(.n) {
-  color: var(--text-2);
+.seen-by li.unseen > span:nth-child(2) {
+  color: var(--text-muted);
 }
 
 /* The side column: a local model's row, the attempt the gates are for, and the signals beside the gates. */
@@ -1093,6 +1090,11 @@ table.scope th {
 }
 .spec-dl dd {
   margin: 0;
+}
+/* The facts' first row has no hairline above it. */
+.facts-dl dt:first-of-type,
+.facts-dl dd:first-of-type {
+  border-top: 0;
 }
 .contradicts {
   margin-top: 12px;

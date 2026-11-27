@@ -459,13 +459,33 @@ create() {
   settings
 }
 
+# A reset that summoned Dependabot leaves a commit of its own on a copy's main (summon_dependabot): no part of the
+# baseline, and the pin of the images is a newer push that Dependabot's pull requests are older than again. So a main
+# that is the baseline and such commits alone is put back at the baseline; one with anything else on it is refused.
+SUMMONED="chore(scratch): ask Dependabot to look now"
+back_to_baseline() { # <copy> <its clone> <the baseline's commit> <main's commit>
+  local copy=$1 dir=$2 base=$3 main=$4 beyond pushed=0
+  [[ $main != "$base" ]] || return 0
+  beyond=$(gh api "repos/$copy/compare/$base...$main" \
+    -q '[.status, .behind_by, ([.commits[].commit.message | split("\n")[0]] | unique | join("|"))] | @tsv') || return 1
+  [[ $beyond == $'ahead\t0\t'"$SUMMONED" ]] || return 1
+  say "$copy: main is the baseline and a commit that summoned Dependabot: put back at the baseline"
+  ruleset "$copy" disabled
+  git -C "$dir" push -q --force "https://github.com/$copy" "$base:refs/heads/main" || pushed=1
+  ruleset "$copy" active
+  return "$pushed"
+}
+
 # Each copy's build, on its main, makes its own images, signed by its own build.yml; the overlays then name them.
 pin_images() {
   local f a
   f=$(git ls-remote "https://github.com/$FACTORY_COPY" refs/heads/main | cut -f1)
   a=$(git ls-remote "https://github.com/$APP_COPY" refs/heads/main | cut -f1)
-  [[ $f == "$(cat "$WORK/factory.sha")" && $a == "$(cat "$WORK/app.sha")" ]] ||
+  back_to_baseline "$FACTORY_COPY" "$WORK/factory" "$(cat "$WORK/factory.sha")" "$f" &&
+    back_to_baseline "$APP_COPY" "$WORK/app" "$(cat "$WORK/app.sha")" "$a" ||
     die "the copies' main is not the baseline in work/: build, then reset, then pin-images"
+  f=$(cat "$WORK/factory.sha")
+  a=$(cat "$WORK/app.sha")
   worker 0
   # Both copies' builds at once: neither reads the other's.
   local started=()
@@ -719,7 +739,7 @@ summon_dependabot() { # [factory|app]
   perl -ni -e 'print unless /^# Dependabot was last asked to look on /' "$dir/$file"
   echo "# Dependabot was last asked to look on $(date -u +%FT%TZ)." >>"$dir/$file"
   git -C "$dir" add "$file"
-  git -C "$dir" -c commit.gpgsign=true commit -q -m "chore(scratch): ask Dependabot to look now" \
+  git -C "$dir" -c commit.gpgsign=true commit -q -m "$SUMMONED" \
     -m "Scratch copy for the patching tests: not the real repository." ||
     die "the commit that summons Dependabot was not made (is a signing key set?)"
   ruleset "$copy" disabled

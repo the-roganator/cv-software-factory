@@ -90,7 +90,8 @@ Accepted by Martin on 25 November 2026.
 fixes every advisory but the excepted one, and the next the release that fixes that too. 21 is proven live as far as the
 gates, the issue and the same pull request taking the new target, and its merge by the line's unit tests alone, as no
 real package gives a second target without advisories of its own. 23's issue gives whichever reason holds that day: weaker provenance
-for 2.2.2, or a release younger than the minimum age for a day after a later one is published. 22 is Dependabot's pull request for Postgres's image beside
+for 2.2.2, a release younger than the minimum age for a day after a later one is published, or a newer release pnpm
+resolved past the one the scan listed, which has not waited its days. 22 is Dependabot's pull request for Postgres's image beside
 test 1, and the one left alone its pull request for Playwright on a base from before the baseline, some two hundred
 files `main` never has every line of. Dependabot may close its own pull request before the worker's pass does, or move
 to another line than the App did: the run then says which and gives no verdict, as that shows nothing of the worker.

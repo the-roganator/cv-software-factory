@@ -22,8 +22,9 @@ import { SCAN_MAX_AGE_HOURS } from '../../../../policy/vulnerabilities.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { ADMIN_ACTIONS, type AdminAction } from '../line/admin-actions.ts';
 import { NUMBER_PATTERN, RELEASE_ENDINGS } from '../line/metrics.ts';
-import { PATCHING_KINDS, type PatchingKind } from '../line/patching-alerts.ts';
+import { PATCHING_KINDS, type PatchingKind, SENSE_MAX_AGE_HOURS } from '../line/patching-alerts.ts';
 import { SECURITY_KINDS, type SecurityKind } from '../line/security.ts';
+import { KEEP_DAY_HOURS } from '../patching/schedule.ts';
 import { TARGETS, type Target } from '../probes/health.ts';
 import {
   METRICS_FROM_THE_ADMIN_SERVICE,
@@ -271,7 +272,12 @@ const PATCHING_WORDS: Record<PatchingKind, { summary: string; description: strin
   'move-waits': {
     summary: 'A move waits on you',
     description:
-      'A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you.',
+      'A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, it is in a line no longer built, or the sense found something running that no scan read. Patching in the console has it under Yours to do by hand.',
+  },
+  'move-stopped': {
+    summary: 'A move was tried and stopped',
+    description:
+      'The factory tried a move and cannot take it further by itself: its pull request’s checks failed on every try, the merge queue took it out on every try, or it conflicts with main; the scan’s pin step refused it, its branch is held, or GitHub refused its pull request; or no release is better than the pin, and the finding has a deadline. Patching in the console has it under Tried and stopped.',
   },
   'move-due-soon': {
     summary: 'A move is due within a day',
@@ -293,11 +299,32 @@ const PATCHING_WORDS: Record<PatchingKind, { summary: string; description: strin
 /** The alert that the scan has stopped, in either repository: its newest is too old to judge a move by. */
 export const SCAN_STALE = 'PatchingScanStale';
 
+/** The alert that the dependency sense has stopped: no day has arrived in `SENSE_MAX_AGE_HOURS`. */
+export const SENSE_STALE = 'PatchingSenseStale';
+
 /**
- * How long a scan is stale before Martin hears: a cluster that was off for longer than a scan may age wakes with the
- * last day it read, and the sense reads the day's within minutes of starting.
+ * How long the scan or the sense is stale before Martin hears: a cluster that was off for longer than either may age
+ * wakes with the last day it read, and the sense reads within minutes of starting.
  */
 export const SCAN_STALE_FOR = '15m';
+
+/**
+ * How long, once stale, its alert fires, and then stops though the cause stands: shorter than Alertmanager's four
+ * hours before it sends again (`repeat_interval`, `prometheus.yaml`), so a stopped scan or sense is one message. It is
+ * told again only once it has ended, or once a line that starts again finds it still stale.
+ */
+export const STALE_TOLD_FOR = '3h';
+
+/** A stale series' alert: past `SCAN_STALE_FOR`, and within `STALE_TOLD_FOR` of that. */
+const staleExpr = (series: string) =>
+  `max(last_over_time(${fromTheLine(series)}[${PUSHED_FRESH}])) > ${seconds(SCAN_STALE_FOR)} < ${seconds(SCAN_STALE_FOR) + seconds(STALE_TOLD_FOR)}`;
+
+/** A duration in minutes or hours, as these rules write them, in seconds. */
+function seconds(duration: string): number {
+  const match = /^(\d+)([mh])$/.exec(duration);
+  if (!match) throw new Error(`${duration} is no duration in minutes or hours`);
+  return Number(match[1]) * (match[2] === 'h' ? 3600 : 60);
+}
 
 /**
  * The kinds of security event that reach the phone whatever the switch says: switching alerts off, so the last message
@@ -610,10 +637,13 @@ const RECENT = '5m';
  * - an alert for each kind of security event, at its kind's level (`SECURITY_LEVELS`), the first of a kind included,
  *   from the line's count of them in the store, which starts at 0; several of a kind within five minutes are one alert;
  * - a notification for each move Martin hears of (`PATCHING_WORDS`), from the line's count of the dependency sense's
- *   days and its merges, each once for each move: a new High or Critical fix, a move that waits on him, one within a
- *   day of its deadline, one past it, and the app's vulnerable dependency fixed without him; never a finding with no fix;
- * - a notification while either repository's newest scan is older than a move may be judged by (`SCAN_MAX_AGE_HOURS`), for
- *   `SCAN_STALE_FOR`: the scan has stopped, or the sense's reads of it have. It ends when a newer scan is read;
+ *   days and its merges, each once for each move: a new High or Critical fix, a move that waits on him, one tried and
+ *   stopped, one within a day of its deadline, one past it, and the app's vulnerable dependency fixed without him;
+ *   never a finding with no fix;
+ * - a notification once either repository's newest scan is older than a move may be judged by (`SCAN_MAX_AGE_HOURS`), for
+ *   `SCAN_STALE_FOR`: the scan has stopped, or the sense's reads of it have. It ends when a newer scan is read; and
+ *   once the sense has appended no day in `SENSE_MAX_AGE_HOURS`, for as long: it has stopped. Each is told once
+ *   (`STALE_TOLD_FOR`);
  * - a page when that count has gone missing for ten minutes, having been there in the six hours before, or the line
  *   has not been able to read the store for five: no security event would reach him meanwhile;
  * - a page when a change the admin service makes (the flags, the app's Rollout, a session) stands for two minutes with
@@ -661,16 +691,28 @@ export function martinRules(): Rule[] {
     ...security,
     ...patching,
     {
-      // Whether either repository's newest scan is too old, as the line says of the sense's days by its clock
+      // How long either repository's newest scan has been too old, as the line says of the sense's days by its clock
       // (`staleScans`), read as its other gauges are. No day at all leaves no series, and nothing fires. Its words
       // name no repository, as no alert to Martin carries a label's value: the scan's runs say which.
       alert: SCAN_STALE,
-      expr: `max(last_over_time(${fromTheLine('line_patching_scan_stale')}[${PUSHED_FRESH}])) == 1`,
-      for: SCAN_STALE_FOR,
+      expr: staleExpr('line_patching_scan_stale_seconds'),
+      for: '0s',
       labels: { level: LEVELS.notify },
       annotations: {
         summary: 'The vulnerability scan has stopped',
         description: `In one of the two repositories, the newest scan of main the dependency sense has read judged its moves more than ${SCAN_MAX_AGE_HOURS} hours ago: the daily scan is not running, fails before it judges, or the sense cannot read it. Until a newer one is read the review gate passes no move there, and nothing new is found. The scan’s runs in each repository and the dependency sense’s log say which.`,
+      },
+    },
+    {
+      // How long the sense has gone without a day, as the line says of its days by its clock (`senseStaleFor`). No day
+      // at all leaves no series, and nothing fires.
+      alert: SENSE_STALE,
+      expr: staleExpr('line_patching_sense_stale_seconds'),
+      for: '0s',
+      labels: { level: LEVELS.notify },
+      annotations: {
+        summary: 'The dependency sense has stopped',
+        description: `The dependency sense has appended no day in ${SENSE_MAX_AGE_HOURS} hours, though it reads each hour and appends one at least every ${KEEP_DAY_HOURS}: it is not running, or every read fails. Patching in the console shows the last day it read and nothing newer of the moves or their pull requests, and no move found meanwhile is told to you. The dependency sense’s log says why.`,
       },
     },
     {

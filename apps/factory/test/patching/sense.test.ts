@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { type InboxSignal, MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
-import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
+import { MOST_MOVES, MOST_PINS, MOST_PULLS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
 import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
@@ -10,7 +10,7 @@ import { type Database, freshDatabase } from '../../../../packages/store/test/da
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { GitHubWorker, GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { inbox } from '../../src/outbox.ts';
-import { dayOf, sameDay } from '../../src/patching/day.ts';
+import { dayOf, type PatchPull, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
 import { waitAfter } from '../../src/patching/schedule.ts';
 import {
@@ -24,7 +24,19 @@ import {
 } from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
-import { APP, APP_COUNTS, agreeing, appMoves, digest, FACTORY, FACTORY_COUNTS, factoryMoves, pod } from './fixtures.ts';
+import {
+  APP,
+  APP_COUNTS,
+  agreeing,
+  appMoves,
+  appPulls,
+  digest,
+  FACTORY,
+  FACTORY_COUNTS,
+  factoryMoves,
+  factoryPulls,
+  pod,
+} from './fixtures.ts';
 
 let database: Database;
 const logged: { level: number; msg: string; failed?: string[] }[] = [];
@@ -47,20 +59,26 @@ const kube = (pods: unknown[]): Kube => ({
 function senses(change: Partial<Senses> = {}, pods: unknown[] = agreeing()): Senses {
   return {
     moves: async (repo) => (repo === FACTORY ? factoryMoves() : appMoves()),
+    pulls: async (repo) => (repo === FACTORY ? factoryPulls() : appPulls()),
     running: () => runningContainers(kube(pods)),
     ...change,
   };
 }
 
-const sense = (s: Senses, sql = database.patching) =>
+const READ = '2026-11-11T05:30:00.000Z';
+
+const sense = (s: Senses, sql = database.patching, at = READ) =>
   new PatchingSense({
     sql,
     events: new EventWriter(sql, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }),
     senses: s,
     repositories: [FACTORY, APP],
     log,
-    now: () => new Date('2026-11-11T05:30:00Z'),
+    now: () => new Date(at),
   });
+
+/** `hours` after the day's first read. */
+const later = (hours: number) => new Date(Date.parse(READ) + hours * 3_600_000).toISOString();
 
 const days = () =>
   database.owner<{ payload: unknown; public: { payload: unknown }; appended_by: string; summary: string }[]>`
@@ -102,6 +120,91 @@ describe('the dependency sense', () => {
       lane: 'worker',
       lockfile: false,
     });
+  });
+
+  it('carries each repository’s waiting pins and the pull requests and issues of its moves, and when it read', async () => {
+    expect((await sense(senses()).pass()).pass).toBe('appended');
+    const [day] = await days();
+    const payload = PAYLOADS['patching.read'].parse(day?.payload);
+    expect(payload.read).toBe(READ);
+    const [factory, app] = payload.repositories;
+    expect(factory?.waiting).toEqual([
+      {
+        name: 'docker.io/example/cache',
+        pins: [{ file: 'deploy/base/cache/statefulset.yaml', line: 21 }],
+        from: '8.2.1',
+        why: 'no-better',
+        clears: { critical: 0, high: 1, medium: 0, low: 0, unknown: 0 },
+        deadline: '2026-11-25T04:57:00Z',
+      },
+      {
+        name: 'docker.io/example/queue',
+        pins: [{ file: 'deploy/base/queue/deployment.yaml', line: 9 }],
+        from: '7.4.0',
+        why: 'content',
+        to: `image 7.4.1@${digest(12)}`,
+        until: '2026-11-12T04:57:00Z',
+        clears: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+        routine: true,
+      },
+    ]);
+    expect(factory?.pulls).toEqual(factoryPulls().pulls);
+    expect(app).toMatchObject({ waiting: [], pulls: [] });
+    // The public view keeps the lockfile's package, and what its issue waits for, out.
+    expect(JSON.stringify(day?.public.payload)).not.toContain('example-parser');
+    expect(JSON.stringify(day?.public.payload)).not.toContain('1211');
+  });
+
+  it('appends nothing when only the time it read changes, and the day again once the last is 12 hours old', async () => {
+    expect((await sense(senses()).pass()).pass).toBe('appended');
+    expect((await sense(senses(), database.patching, later(1)).pass()).pass).toBe('unchanged');
+    expect((await sense(senses(), database.patching, later(11.99)).pass()).pass).toBe('unchanged');
+    expect((await sense(senses(), database.patching, later(12)).pass()).pass).toBe('appended');
+    expect((await sense(senses(), database.patching, later(13)).pass()).pass).toBe('unchanged');
+    const reads = (await days()).map((d) => PAYLOADS['patching.read'].parse(d.payload).read);
+    expect(reads).toEqual([READ, later(12)]);
+  });
+
+  it('appends a new day when a pull request’s state changes, though the scan’s moves do not', async () => {
+    await sense(senses()).pass();
+    const { repository, pulls } = factoryPulls();
+    const passed = pulls.map((p) =>
+      p.number === 1224
+        ? { ...p, checks: { state: 'passed' as const, try: 1, of: 3, failed: [] }, hold: undefined, queued: true }
+        : p,
+    );
+    const changed = senses({ pulls: async (repo) => (repo === FACTORY ? { repository, pulls: passed } : appPulls()) });
+    expect((await sense(changed, database.patching, later(1)).pass()).pass).toBe('appended');
+    expect((await sense(changed, database.patching, later(2)).pass()).pass).toBe('unchanged');
+    expect(await days()).toHaveLength(2);
+  });
+
+  it('appends nothing when the pull requests’ read fails, or answers for another repository', async () => {
+    for (const change of [
+      { pulls: async () => Promise.reject(new GitHubWorkerError(500, 'failed', 'GitHub answered 502')) },
+      { pulls: async (repo: string) => (repo === APP ? factoryPulls() : factoryPulls()) },
+    ] satisfies Partial<Senses>[])
+      expect(await sense(senses(change)).pass()).toMatchObject({ pass: 'failed' });
+    expect(await days()).toEqual([]);
+    const said = logged.filter((l) => l.level === 50);
+    expect(said[0]?.failed).toEqual([
+      `the pull requests of ${FACTORY}: GitHub answered 502`,
+      `the pull requests of ${APP}: GitHub answered 502`,
+    ]);
+    expect(said[1]?.failed).toEqual([`the pull requests of ${APP}: the worker answered for ${FACTORY}`]);
+  });
+
+  it("reads again shortly when the worker's door refused only the pull requests' read", async () => {
+    const door = Object.assign(new Error('connect ECONNREFUSED 10.43.117.70:8083'), { code: 'ECONNREFUSED' });
+    const s = sense(senses({ pulls: async () => Promise.reject(door) }));
+    expect(await s.pass()).toEqual({
+      pass: 'refused',
+      why: [
+        `the pull requests of ${FACTORY}: connect ECONNREFUSED 10.43.117.70:8083`,
+        `the pull requests of ${APP}: connect ECONNREFUSED 10.43.117.70:8083`,
+      ],
+    });
+    expect(await days()).toEqual([]);
   });
 
   it('keeps a lockfile move’s package out of the public view', async () => {
@@ -203,16 +306,16 @@ describe('the dependency sense', () => {
   });
 
   it('says when to read next and what --once exits with, for each pass', () => {
-    const now = Date.parse('2026-11-11T06:00:00Z');
-    const day = (finished: string) =>
-      ({ pass: 'appended', day: { repositories: [{ run: { finished } }] } }) as unknown as Pass;
-    expect(nextAfter({ pass: 'refused', why: [] }, now)).toEqual({ next: 'shortly', why: 'refused' });
-    expect(nextAfter({ pass: 'failed', failed: [] }, now)).toEqual({ next: 'hour', why: 'failed' });
-    expect(nextAfter({ pass: 'not-real' }, now)).toEqual({ next: 'daily' });
-    expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toEqual({ next: 'daily' });
-    expect(nextAfter(day('2026-11-10T04:58:00Z'), now)).toEqual({ next: 'hour', why: 'stale' });
+    const day = { pass: 'appended', day: { repositories: [] } } as unknown as Pass;
+    expect(nextAfter({ pass: 'refused', why: [] })).toEqual({ next: 'shortly' });
+    expect(nextAfter({ pass: 'failed', failed: [] })).toEqual({ next: 'hour' });
+    expect(nextAfter({ pass: 'not-real' })).toEqual({ next: 'hour' });
+    expect(nextAfter(day)).toEqual({ next: 'hour' });
+    expect(nextAfter({ pass: 'unchanged', day: day.pass === 'appended' ? day.day : (null as never) })).toEqual({
+      next: 'hour',
+    });
     expect([
-      exitCode(day('2026-11-11T04:58:00Z')),
+      exitCode(day),
       exitCode({ pass: 'not-real' }),
       exitCode({ pass: 'failed', failed: [] }),
       exitCode({ pass: 'refused', why: [] }),
@@ -336,23 +439,30 @@ describe('the dependency sense', () => {
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
         const { repo } = JSON.parse(body) as { repo: string };
-        const result = req.url?.endsWith('/moves') ? (repo === FACTORY ? factoryMoves() : appMoves()) : [];
+        const result = req.url?.endsWith('/moves')
+          ? repo === FACTORY
+            ? factoryMoves()
+            : appMoves()
+          : req.url?.endsWith('/pulls')
+            ? repo === FACTORY
+              ? factoryPulls()
+              : appPulls()
+            : [];
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ result }));
       });
     });
     const s = sense(
       senses({
         moves: (repo) => new GitHubWorker(url).read('moves', repo, {}),
+        pulls: (repo) => new GitHubWorker(url).read('pulls', repo, {}),
       }),
     );
-    const started = Date.now();
     try {
       // Listening only once the first pass is over, however long it took, so that pass is always refused.
       const first = await s.pass();
       expect(first.pass).toBe('refused');
-      const { next } = nextAfter(first, started);
       // Taken again within the minute, not the hour a failed pass waits.
-      expect(waitAfter(started, (5 * 60 + 30) * 60_000, next)).toBeLessThanOrEqual(60_000);
+      expect(waitAfter(nextAfter(first).next)).toBeLessThanOrEqual(60_000);
       ({ url } = await listenLocal(worker));
       expect((await s.pass()).pass).toBe('appended');
       expect(await days()).toHaveLength(1);
@@ -375,7 +485,11 @@ describe("the event's lanes", () => {
 });
 
 describe('the day, made from the reads', () => {
-  const read = (moves = factoryMoves()) => [{ moves }, { moves: appMoves() }];
+  const read = (moves = factoryMoves()) => [
+    { moves, pulls: factoryPulls().pulls },
+    { moves: appMoves(), pulls: appPulls().pulls },
+  ];
+  const at = new Date(READ);
   const withMove = (change: Partial<ReadMove>) => {
     const moves = factoryMoves();
     return { ...moves, moves: [{ ...(moves.moves[0] as ReadMove), ...change }] };
@@ -384,15 +498,15 @@ describe('the day, made from the reads', () => {
   it('is the same day when only the order of pods made again changes its rows', () => {
     const row = (namespace: string, pod: string, image: string) =>
       ({ row: 'unlisted-image', namespace, pod, container: 'c', image, digest: digest(13) }) as const;
-    const before = dayOf(read(), 2, [row('factory', 'a-1', 'nginx:1'), row('factory', 'b-2', 'redis:7')]);
-    const after = dayOf(read(), 2, [row('factory', 'b-2', 'redis:7'), row('factory', 'c-3', 'nginx:1')]);
+    const before = dayOf(read(), 2, [row('factory', 'a-1', 'nginx:1'), row('factory', 'b-2', 'redis:7')], at);
+    const after = dayOf(read(), 2, [row('factory', 'b-2', 'redis:7'), row('factory', 'c-3', 'nginx:1')], at);
     expect(sameDay(after, before)).toBe(true);
-    expect(sameDay(dayOf(read(), 2, [row('factory', 'c-3', 'nginx:2')]), before)).toBe(false);
+    expect(sameDay(dayOf(read(), 2, [row('factory', 'c-3', 'nginx:2')], at), before)).toBe(false);
   });
 
   it('holds a move pinned in more places than the day keeps, and a lockfile move with no version to move to', () => {
     const pins = Array.from({ length: MOST_PINS + 5 }, (_, i) => ({ file: `.github/workflows/w${i}.yml`, line: 3 }));
-    const many = dayOf(read(withMove({ pins })), 0, []);
+    const many = dayOf(read(withMove({ pins })), 0, [], at);
     expect(PAYLOADS['patching.read'].parse(many).repositories[0]?.moves[0]?.pins).toHaveLength(MOST_PINS);
     const moves = factoryMoves();
     const lockfile = moves.moves[1] as ReadMove;
@@ -400,7 +514,7 @@ describe('the day, made from the reads', () => {
       ...moves,
       moves: [{ ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), to: '' } }],
     };
-    expect(PAYLOADS['patching.read'].safeParse(dayOf(read(none), 0, [])).success).toBe(true);
+    expect(PAYLOADS['patching.read'].safeParse(dayOf(read(none), 0, [], at)).success).toBe(true);
   });
 
   it('holds a routine update, which clears nothing and has no deadline, and a lockfile’s with its package apart', () => {
@@ -412,7 +526,7 @@ describe('the day, made from the reads', () => {
       ...moves,
       moves: [{ ...image, clears: none, leaves: none, deadline: undefined, newToday: 0, findings: [] }, undated],
     };
-    const day = dayOf(read(routine), 0, []);
+    const day = dayOf(read(routine), 0, [], at);
     const parsed = PAYLOADS['patching.read'].parse(day).repositories.find((each) => each.repository === FACTORY);
     expect(parsed?.moves.map((move) => [move.clears, move.deadline])).toEqual([
       [{ critical: 0, high: 0, medium: 0, low: 0, unknown: 0 }, undefined],
@@ -432,7 +546,7 @@ describe('the day, made from the reads', () => {
     });
     expect(JSON.stringify(view)).not.toContain(lockfile.withheld?.package);
     // A move that is a fix one day and merely behind the next is another day.
-    expect(sameDay(day, dayOf(read(), 0, []))).toBe(false);
+    expect(sameDay(day, dayOf(read(), 0, [], at))).toBe(false);
   });
 
   it('is the same day whatever copies of a row run: a Deployment scaled appends nothing', () => {
@@ -445,8 +559,8 @@ describe('the day, made from the reads', () => {
         image: 'nginx:1',
         digest: digest(13),
       }) as const;
-    const two = dayOf(read(), 2, [row('try-a'), row('try-b')]);
-    const three = dayOf(read(), 3, [row('try-a'), row('try-b'), row('try-c')]);
+    const two = dayOf(read(), 2, [row('try-a'), row('try-b')], at);
+    const three = dayOf(read(), 3, [row('try-a'), row('try-b'), row('try-c')], at);
     expect(sameDay(three, two)).toBe(true);
   });
 
@@ -472,7 +586,7 @@ describe('the day, made from the reads', () => {
       image: `nginx:1.${i}`,
       digest: digest(13),
     }));
-    const day = dayOf(read(many), rows.length, rows);
+    const day = dayOf(read(many), rows.length, rows, at);
     expect(PAYLOADS['patching.read'].safeParse(day).success).toBe(true);
     expect(day.repositories[0]?.moves).toHaveLength(MOST_MOVES);
     expect(day.rows).toHaveLength(MOST_ROWS);
@@ -480,13 +594,48 @@ describe('the day, made from the reads', () => {
       ...moves,
       moves: [{ ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), from: '' } }],
     };
-    expect(PAYLOADS['patching.read'].safeParse(dayOf(read(empty), 0, [])).success).toBe(true);
+    expect(PAYLOADS['patching.read'].safeParse(dayOf(read(empty), 0, [], at)).success).toBe(true);
+  });
+
+  it('holds the open pull requests and those settled in the last 28 days, the open first past its cap', () => {
+    const [pin, , merged] = factoryPulls().pulls as [PatchPull, PatchPull, PatchPull];
+    const old = { ...merged, number: 900, settled: '2026-10-13T05:29:00Z' };
+    const recent = { ...merged, number: 901, settled: '2026-10-14T05:31:00Z' };
+    const day = dayOf(
+      [
+        { moves: factoryMoves(), pulls: [pin, old, recent] },
+        { moves: appMoves(), pulls: [] },
+      ],
+      0,
+      [],
+      at,
+    );
+    expect(day.repositories[0]?.pulls.map((p) => p.number)).toEqual([1224, 901]);
+    const many = Array.from({ length: MOST_PULLS + 5 }, (_, i) => ({
+      ...merged,
+      number: 2000 + i,
+      settled: new Date(Date.parse('2026-11-01T00:00:00Z') + i * 60_000).toISOString(),
+    }));
+    const full = dayOf(
+      [
+        { moves: factoryMoves(), pulls: [...many, pin] },
+        { moves: appMoves(), pulls: [] },
+      ],
+      0,
+      [],
+      at,
+    );
+    const kept = full.repositories[0]?.pulls ?? [];
+    expect(kept).toHaveLength(MOST_PULLS);
+    expect(kept[0]?.number).toBe(1224);
+    expect(kept[1]?.number).toBe(2000 + MOST_PULLS + 4);
+    expect(PAYLOADS['patching.read'].safeParse(full).success).toBe(true);
   });
 
   it('says a cancelled or unfinished scan did not fail', () => {
     for (const conclusion of ['cancelled', 'skipped', null]) {
       const moves = factoryMoves();
-      const day = dayOf(read({ ...moves, run: { ...moves.run, conclusion } }), 0, []);
+      const day = dayOf(read({ ...moves, run: { ...moves.run, conclusion } }), 0, [], at);
       expect(day.repositories[0]?.failed, String(conclusion)).toEqual([]);
     }
   });
@@ -501,8 +650,8 @@ describe('the day, made from the reads', () => {
         image: `nginx:1.${i}`,
         digest: digest(13),
       }));
-    const a = dayOf(read(), 0, rows('a'));
-    const b = dayOf(read(), 0, rows('z'));
+    const a = dayOf(read(), 0, rows('a'), at);
+    const b = dayOf(read(), 0, rows('z'), at);
     expect(sameDay(b, a)).toBe(true);
     expect(a.rows).toHaveLength(MOST_ROWS);
   });

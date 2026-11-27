@@ -215,6 +215,9 @@ describe('the dependency sense', () => {
     const s = sense(senses({ pulls: async () => Promise.reject(unread) }));
     expect((await s.pass()).pass).toBe('refused');
     expect(await days()).toEqual([]);
+    // A worker from before the read was served, still answering while a deploy replaces it.
+    const old = Object.assign(new Error('No such read.'), { status: 404, kind: 'not-found' });
+    expect((await sense(senses({ pulls: async () => Promise.reject(old) })).pass()).pass).toBe('refused');
   });
 
   it('keeps a lockfile move’s package out of the public view', async () => {

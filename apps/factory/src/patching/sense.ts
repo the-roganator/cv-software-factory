@@ -70,12 +70,14 @@ export function refused(error: unknown): boolean {
 }
 
 /**
- * Whether the GitHub worker answered that it has not read the pull requests yet: it has just started, and its watches
- * have not each made a pass. Taken again shortly, as a refused connection is.
+ * Whether the GitHub worker answered that it cannot give the read yet: it has just started, and its watches have not
+ * each made a pass (503, `not-read-yet`); or a worker from before the read was served still answers, as one does for a
+ * moment while a deploy replaces it beside the sense (404, `not-found`). Taken again shortly, as a refused connection
+ * is, so a deploy costs the day minutes and not an hour; past `MOST_REFUSED` it counts as failed.
  */
 export function unread(error: unknown): boolean {
   const e = error as { status?: unknown; kind?: unknown };
-  return e?.status === 503 && e.kind === 'not-read-yet';
+  return (e?.status === 503 && e.kind === 'not-read-yet') || (e?.status === 404 && e.kind === 'not-found');
 }
 
 /**

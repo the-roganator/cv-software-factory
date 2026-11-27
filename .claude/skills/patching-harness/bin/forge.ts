@@ -5,7 +5,7 @@
  * forged; everything that judges it is real (the worker's queue and watches, CI, the review gate, the merge queue,
  * admission). `./copies.sh reset` deletes every branch but main and baseline, so this runs again after each reset.
  *
- *     node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|N9|N10|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>]
+ *     node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|N9|N10|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--scan <run>]
  *                   [--as unsigned|other-identity]
  *
  *   N3a  backward: the pin watch's branch and title for the postgres move, pinning an older real tag at its digest now
@@ -84,6 +84,8 @@ let REPO = FACTORY;
 function repoOk(repo: string) {
   if (!COPIES_ONLY.has(repo)) throw new Error(`forge: ${repo} is not a scratch copy`);
 }
+/** `--scan <run>`: the scan a run stands on, whose moves the forgery copies (set once, in main); without it, main's newest. */
+let SCAN: number | undefined;
 
 function sh(cmd: string, args: string[], input?: string): string {
   return execFileSync(cmd, args, {
@@ -230,12 +232,9 @@ function postgresMove(pin: ReturnType<typeof postgresPin>): {
   digest: string;
   from: string;
 } {
-  const runs =
-    read<any>('actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&per_page=10').workflow_runs ??
-    [];
   const into = mkdtempSync(join(tmpdir(), 'forge-moves-'));
   try {
-    for (const run of runs.filter((r: any) => r.event !== 'pull_request').slice(0, 3)) {
+    for (const run of scansToRead()) {
       try {
         sh('gh', ['run', 'download', String(run.id), '-R', REPO, '-n', 'moves', '-D', join(into, String(run.id))]);
       } catch {
@@ -257,6 +256,18 @@ function postgresMove(pin: ReturnType<typeof postgresPin>): {
   const digest = digestOf(`docker.io/library/postgres:${newest.tag}`);
   if (!digest) throw new Error(`postgres:${newest.tag} is listed and not served`);
   return { name: 'postgres', tag: newest.tag, digest, from: 'the registry (no scan on main lists a postgres move)' };
+}
+/**
+ * The scans a forgery reads its move from, newest first: the one the run stands on, where it named one (`--scan`), as
+ * an app run's first scan after a reset lists no image's move and a later push's may replace either; or the three
+ * newest finished scans of main.
+ */
+function scansToRead(): { id: number }[] {
+  if (SCAN !== undefined) return [{ id: SCAN }];
+  const runs =
+    read<any>('actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&per_page=10').workflow_runs ??
+    [];
+  return runs.filter((r: any) => r.event !== 'pull_request').slice(0, 3);
 }
 const repin = (pin: ReturnType<typeof postgresPin>, tag: string, digest: string) => {
   const lines = [...pin.lines];
@@ -624,14 +635,11 @@ const RUNTIME = 'gcr.io/distroless/nodejs24-debian13';
 /** The build stage's `FROM` of Node: its tag and digest, and what follows. */
 const NODE_FROM = /^FROM node:(\S+)@(sha256:[0-9a-f]{64})(.*)$/m;
 
-/** The newest finished scan of main whose moves name `name`: the move as moves.json gives it, and when it judged. */
+/** The move of `name` in the scan the run stands on, or main's newest finished one with moves: as moves.json gives it, and when it judged. */
 function scannedMove(name: string): { move: any; judged: string; run: number } {
-  const runs =
-    read<any>('actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&per_page=10').workflow_runs ??
-    [];
   const into = mkdtempSync(join(tmpdir(), 'forge-moves-'));
   try {
-    for (const run of runs.filter((r: any) => r.event !== 'pull_request').slice(0, 3)) {
+    for (const run of scansToRead()) {
       try {
         sh('gh', ['run', 'download', String(run.id), '-R', REPO, '-n', 'moves', '-D', join(into, String(run.id))]);
       } catch {
@@ -639,13 +647,18 @@ function scannedMove(name: string): { move: any; judged: string; run: number } {
       }
       const file = JSON.parse(readFileSync(join(into, String(run.id), 'moves.json'), 'utf8'));
       const move = (file.moves as any[]).find((m) => m.name === name);
-      if (!move) throw new Error(`the newest scan with moves, run ${run.id}, makes no move of ${name}`);
-      return { move, judged: file.judged as string, run: run.id as number };
+      if (!move)
+        throw new Error(
+          `${SCAN === undefined ? 'the newest scan with moves' : 'the scan the run stands on'}, run ${run.id}, makes no move of ${name}`,
+        );
+      return { move, judged: file.judged as string, run: run.id };
     }
   } finally {
     rmSync(into, { recursive: true, force: true });
   }
-  throw new Error(`no finished scan of ${REPO}'s main kept its moves`);
+  throw new Error(
+    SCAN === undefined ? `no finished scan of ${REPO}'s main kept its moves` : `scan ${SCAN} of ${REPO} kept no moves`,
+  );
 }
 
 /**
@@ -839,10 +852,13 @@ async function main() {
     !['unsigned', 'other-identity'].includes(as)
   ) {
     console.error(
-      'usage: node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|N9|N10|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity]',
+      'usage: node forge.ts <N3a|N3b|N4|N5|N7|N8a|N8b|N8c|N9|N10|X1a|X1b> [--dry-run [--at <branch>]] [--branch <name>] [--as unsigned|other-identity] [--scan <run>]',
     );
     process.exit(2);
   }
+  const scan = opt('--scan');
+  if (scan !== undefined && !/^\d+$/.test(scan)) throw new Error(`--scan ${scan} is no run of the scan's`);
+  SCAN = scan === undefined ? undefined : Number(scan);
   const x1 = test === 'X1a' || test === 'X1b';
   const n8 = test === 'N8a' || test === 'N8b' || test === 'N8c';
   if (x1 || n8) REPO = APP;

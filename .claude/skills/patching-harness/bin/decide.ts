@@ -1135,11 +1135,35 @@ export function shownAs(file: MovesFile | undefined, name: string): Shown {
   return waiting.some((each) => each?.name === name && each?.why === WAITS_FOR_CONTENT) ? 'waiting' : 'absent';
 }
 /**
- * The moves a run's tests stand on that a scan does not list: with any, and the scan the first after a reset, which
- * has no state, their content may be waiting its day, and the run scans once more, on the state the first left.
+ * The moves a run's tests and forgeries stand on that a scan lacks: those it lists no move of, and those it lists a
+ * move of while it says the pin's content waits its day, as the move that content brings is not the one listed (an
+ * image whose digest waits is listed for a bare version of what it carries, which the pin step does not make). With
+ * any, and the scan the first after a reset, which has no state, the run scans once more, on the state the first left.
  */
-export const notListed = (needed: readonly string[], moves: readonly { name: string }[] | undefined): string[] =>
-  needed.filter((name) => !(moves ?? []).some((move) => move.name === name));
+export const notListed = (needed: readonly string[], file: MovesFile | undefined): string[] =>
+  needed.filter((name) => shownAs(file, name) !== 'listed' || shownAs({ ...file, moves: [] }, name) === 'waiting');
+/**
+ * Why a forgery could not be made, from what forge.ts wrote as it died: its error's own words, without the stack
+ * and the source line Node prints around them. The test then has no verdict, and its line says this.
+ */
+export function forgeFault(stderr: string): string {
+  const lines = stderr.split('\n');
+  const at = lines.findLastIndex((line) => /^\w*Error: /.test(line));
+  // The error's message, which may run over lines, as far as its stack or the blank line after it.
+  const rest = at < 0 ? [] : lines.slice(at);
+  const end = rest.findIndex((line, i) => i > 0 && (!line.trim() || /^\s+at /.test(line)));
+  const said =
+    at < 0
+      ? lines.find((line) => line.trim())
+      : rest
+          .slice(0, end < 0 ? rest.length : end)
+          .join(' ')
+          .replace(/^\w*Error: /, '');
+  return `the forgery could not be made: ${(said ?? '').trim().replace(/\s+/g, ' ') || 'forge.ts said nothing'}`.slice(
+    0,
+    400,
+  );
+}
 /**
  * Content first seen today waits a day (test 28): the first scan after the reset, with no state to read, lists no
  * move of it and says it waits for its content's day; no pull request of the App's is opened for it before the scan

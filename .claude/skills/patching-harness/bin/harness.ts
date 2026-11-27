@@ -48,6 +48,7 @@ import {
   duplicateVerdict,
   extraSpoils,
   factoryBusy,
+  forgeFault,
   holdBroken,
   holdDecided,
   isRoutine,
@@ -2471,20 +2472,21 @@ function run(state: State) {
     save(state);
   }
   // The first scan after a reset has no state, so every image's digest and chart's version it finds is first seen
-  // that day and waits a day: it lists none of them. Where it lacks a move the run's tests stand on, the run stands on
-  // the scan after it, which reads the state the first left, its sightings put days back by the copy's own scan
-  // (staged/factory/28-…, `SCRATCH_CONTENT_SEEN_DAYS_AGO`). A run that made no reset, or whose first scan lists every
-  // move, reads one scan.
+  // that day and waits a day: it lists none of them, and where the pin has a lesser move (an image's, to a bare version
+  // of what it carries) it lists that and says the content waits. Where it lacks a move the run's tests stand on, or
+  // one a forgery beside them copies (`needs`), the run stands on the scan after it, which reads the state the first
+  // left, its sightings put days back by the copy's own scan (staged/factory/28-…, `SCRATCH_CONTENT_SEEN_DAYS_AGO`).
+  // A run that made no reset, or whose first scan has every move, reads one scan.
   const needed = [
     ...new Set(tests.flatMap((t) => [...t.moves, ...(t.needs ?? []), ...(t.waits ? [t.waits.move] : [])])),
   ];
-  const lacking = notListed(needed, state.scan1.moves);
+  const lacking = notListed(needed, fileOf(state.scan1));
   const afresh = Boolean(state.reset) && !has('--no-reset') && !has('--no-scan');
   if (!state.scan0 && !state.pods0 && afresh && state.scan1.moves && lacking.length) {
     state.scan0 = state.scan1;
     say(
       state,
-      `scan ${state.scan0.id}, the first after the reset, has no state and does not list ${lacking.join(', ')}: content first seen today waits a day. The run stands on the scan after it, which reads the state it left`,
+      `scan ${state.scan0.id}, the first after the reset, has no state and lacks the move of ${lacking.join(', ')}: content first seen today waits a day. The run stands on the scan after it, which reads the state it left`,
     );
     state.scan1 = dispatchScan(state, repo);
     save(state);
@@ -2493,14 +2495,14 @@ function run(state: State) {
     say(state, `scan ${scan.id} ${scan.conclusion}: ${scan.moves?.length ?? 'no'} moves`);
     save(state);
   }
-  // A move still not listed is said now, with any warning of the scan's that names its pin: a fix none of whose
-  // candidates is better than the pin is no move, and the scan says so by name.
-  const absent = state.pods0 ? [] : notListed(needed, state.scan1.moves);
+  // A move still lacking (not listed, or listed while its content waits) is said now, with any warning of the scan's
+  // that names its pin: a fix none of whose candidates is better than the pin is no move, and the scan says so by name.
+  const absent = state.pods0 ? [] : notListed(needed, fileOf(state.scan1));
   if (absent.length) {
     const said = scanWarnings(repo, state.scan1, absent);
     say(
       state,
-      `scan ${state.scan1.id} lists no move of ${absent.join(', ')}${said.length ? `; it warns: ${said.join(' | ')}` : ', and warns of none of them by name'}`,
+      `scan ${state.scan1.id} lacks the move of ${absent.join(', ')}${said.length ? `; it warns: ${said.join(' | ')}` : ', and warns of none of them by name'}`,
     );
   }
   // A test of a pin's major whose scan lists a move within the major first has no major to judge: it is dropped,
@@ -2538,15 +2540,18 @@ function run(state: State) {
     say(state, `the line is ${line}, with new work off: a stopped line queues no move`);
     save(state);
   }
-  // The forgeries, once the scan they copy is in: each on a branch of its own, which no watch owns or rewrites.
-  for (const test of tests) {
+  // The forgeries, once the scan they copy is in, each told that scan, the one the run stands on: each on a branch of
+  // its own, which no watch owns or rewrites. One that cannot be made is a fault of the set-up, not the code: its test
+  // is dropped with the forge's own words, and the run's other tests go on.
+  for (const test of [...tests]) {
     if (test.pr.by !== 'forged' || state.forged?.[test.id] || has('--no-forge')) continue;
     if (test.id !== test.pr.forge)
       throw new Error(`${test.id} is forged as ${test.pr.forge}: the forge names its branch by its own`);
     try {
       // Each on the forge's own branch for it: under `factory/` for one the App pushes, which the rulesets let it
       // write and no watch owns; `forged/` for one Martin's login pushes.
-      const out = sh('node', [join(BIN, 'forge.ts'), test.pr.forge], { cwd: BIN, timeout: 300_000 });
+      const from = state.scan1.moves ? ['--scan', String(state.scan1.id)] : [];
+      const out = sh('node', [join(BIN, 'forge.ts'), test.pr.forge, ...from], { cwd: BIN, timeout: 300_000 });
       const made = JSON.parse(out.slice(out.indexOf('{')));
       state.forged = {
         ...state.forged,
@@ -2565,7 +2570,10 @@ function run(state: State) {
             : `forged ${test.id}: #${made.number} at ${String(made.head).slice(0, 7)} on ${made.branch} (${made.forged?.what ?? ''})`,
       );
     } catch (error) {
-      say(state, `forging ${test.id} failed: ${String((error as any)?.stderr || error).slice(0, 300)}`);
+      const why = forgeFault(String((error as any)?.stderr || error));
+      state.dropped = { ...state.dropped, [test.id]: why };
+      tests.splice(tests.indexOf(test), 1);
+      say(state, `pre-flight, no verdict for ${test.id}, which is dropped from this run: ${why}`);
     }
     save(state);
   }

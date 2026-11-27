@@ -13,6 +13,7 @@ import {
   duplicateVerdict,
   extraSpoils,
   factoryBusy,
+  forgeFault,
   type HoldFacts,
   holdBroken,
   holdDecided,
@@ -1224,9 +1225,52 @@ describe('content that waits a day', () => {
     expect(shownAs(undefined, 'postgres')).toBe('unsaid');
   });
   it('names the moves a scan does not list', () => {
-    expect(notListed(['postgres', 'k3s'], [{ name: 'k3s' }])).toEqual(['postgres']);
+    expect(notListed(['postgres', 'k3s'], { moves: [{ name: 'k3s' }] })).toEqual(['postgres']);
     expect(notListed(['postgres'], undefined)).toEqual(['postgres']);
-    expect(notListed([], [])).toEqual([]);
+    expect(notListed(['postgres'], {})).toEqual(['postgres']);
+    expect(notListed([], { moves: [] })).toEqual([]);
+  });
+  it("names a move a scan lists while it says its content waits: the listed one is not the content's", () => {
+    // The app's first scan after a reset: the runtime image listed for Node's bare version, its digest waiting.
+    const first = {
+      moves: [{ name: 'gcr.io/distroless/nodejs24-debian13', to: 'version 24.22.1' }, { name: 'node' }],
+      waiting: [
+        { name: 'gcr.io/distroless/nodejs24-debian13', why: 'content' },
+        { name: 'ghcr.io/anchore/syft', why: 'content' },
+        { name: 'node', why: 'no-better' },
+      ],
+    };
+    expect(notListed(['gcr.io/distroless/nodejs24-debian13', 'node', 'ghcr.io/anchore/syft'], first)).toEqual([
+      'gcr.io/distroless/nodejs24-debian13',
+      'ghcr.io/anchore/syft',
+    ]);
+    // The scan after it, on the state put back: listed, and nothing of it waits.
+    const second = {
+      moves: [{ name: 'gcr.io/distroless/nodejs24-debian13', to: 'image nonroot@sha256:675c' }],
+      waiting: [],
+    };
+    expect(notListed(['gcr.io/distroless/nodejs24-debian13'], second)).toEqual([]);
+  });
+  it("gives a forgery's failure in the error's own words, never the stack", () => {
+    const died = [
+      'file:///work/bin/forge.ts:663',
+      "  if (typeof move === 'string') throw new Error('not one the pin step makes');",
+      '                                      ^',
+      '',
+      "Error: the scan's gcr.io/distroless/nodejs24-debian13 move is not one the pin step makes: a bare version",
+      '    at forgeRuntime (file:///work/bin/forge.ts:663:39)',
+      '    at async main (file:///work/bin/forge.ts:877:7)',
+      '',
+      'Node.js v24.22.3',
+    ].join('\n');
+    expect(forgeFault(died)).toBe(
+      "the forgery could not be made: the scan's gcr.io/distroless/nodejs24-debian13 move is not one the pin step makes: a bare version",
+    );
+    expect(forgeFault('Error: spawnSync node ETIMEDOUT')).toBe(
+      'the forgery could not be made: spawnSync node ETIMEDOUT',
+    );
+    expect(forgeFault('\nkilled\n')).toBe('the forgery could not be made: killed');
+    expect(forgeFault('')).toBe('the forgery could not be made: forge.ts said nothing');
   });
   it('passes when the first scan after the reset says it waits and the one on its state lists it', () => {
     const verdict = waitedVerdict({

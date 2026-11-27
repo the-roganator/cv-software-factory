@@ -11,7 +11,8 @@
  * The furthest target is one within the pin's major, where any result has a fix there (`withinMajor`): a result only
  * a major clears is then one the move leaves, and the major is listed on a later day, once the pin has moved; until
  * then the move's deadline is the earliest of both, so what waits for the major is still alerted on. Where no result
- * has a fix within the major, the move is the major.
+ * has a fix within the major, the move is the major; and so it is for a chart where the move within the major would
+ * leave for the major something worse than anything it clears (a High left where only Mediums and Lows are cleared).
  *
  * A pin that is merely behind, with no finding (routine.ts's `Behind`), is a routine move: it clears nothing, has no
  * deadline and no results, and is listed after the findings' moves, by name, a lockfile's last in an order that says
@@ -44,9 +45,9 @@
  * A fix that exists and is no move today is in `waiting` (`Waiting`), beside the moves, with why: its target's content
  * has not waited its day (`content`), or no release read is better than the pin (`no-better`); and so is a routine
  * update of an image whose tag has waited and whose content has not. One that waits for its content names the move
- * the pin will have, by the moves' own rule: the furthest target within its major, where any result that waits has
- * one there, and what only a major clears is what it leaves. A reader that takes "no move lists it" to mean "fixed"
- * or "gone" reads `waiting` first.
+ * the pin will have, by the moves' own rule (`withinMajor`): the furthest target within its major, where any result
+ * that waits has one there and none worse waits for a chart's major, and what only a major clears is what it leaves.
+ * A reader that takes "no move lists it" to mean "fixed" or "gone" reads `waiting` first.
  *
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
@@ -197,10 +198,27 @@ const further = (a: Target, b: Target) => {
   return compare(versionOf(a), versionOf(b)) || order(versionOf(a), versionOf(b));
 };
 
+/** A result's place among the severities, the worst first; and the worst place of a list, or none for an empty one. */
+const rank = (each: Judged) => SEVERITIES.indexOf(each.severity);
+const worst = (list: Judged[]) => Math.min(...list.map(rank));
+
 /**
  * The results of one pin that its move clears. Where any has a fix within the pin's major, those alone: one only a
  * major clears (a chart's next major, a package's version on a major no copy is at) is left, and its major is a later
  * day's move, once the pin has moved. Where none has, all of them, and the move is the major.
+ *
+ * A chart's move is the major, too, where the move within the major would leave something worse than it clears: the
+ * worst severity among the results only the chart's major clears is strictly worse than the worst among those with a
+ * fix within the major (a High left where Mediums and Lows are cleared, a Critical left where the worst cleared is a
+ * High). The move then clears them all. Only the worst of each side is compared, never how many: a High cleared and
+ * a High left is the move within the major. A result with no fix is on neither side, and an excepted one is none of
+ * the group: both callers leave it out before they group.
+ *
+ * A package's move is never preferred to its major so. Its target is a version for each line a copy is on
+ * (`furthest`), and the pin step moves each copy to the target on its own line and leaves a target no copy is on the
+ * line of (`movePackage`, apps/runner/src/pins.ts): a major for one copy would need a target that says which copy it
+ * is for, and a copy only a parent's range brings crosses no major without an override. A package's major is listed
+ * once its copy has moved within its major, or at once where it has no fix there.
  */
 export function withinMajor<T>(
   group: T[],
@@ -216,7 +234,10 @@ export function withinMajor<T>(
     return target?.kind === 'version' && each.kind === 'lockfile' && isMajor(target, each.from);
   };
   const within = group.filter((each) => !crosses(each));
-  return within.length ? within : group;
+  if (!within.length) return group;
+  const judged = (list: T[]) => list.map((one) => of(one).each);
+  const forChartsMajor = group.filter((one) => crosses(one) && of(one).target?.kind === 'chart');
+  return worst(judged(forChartsMajor)) < worst(judged(within)) ? group : within;
 }
 
 /**
@@ -278,7 +299,7 @@ export function moves(results: Judged[], context: Context, behind: Behind[] = []
     const target = each.finding.fix?.target;
     if (!target) continue;
     // One pin is one move, to the furthest target any of its results needs within its major, or to the major where
-    // none has a fix within it; a line no longer built is a move apart.
+    // none has a fix within it or a chart's would leave worse than it clears; a line no longer built is a move apart.
     const key = JSON.stringify([pinKey(each), target.kind === 'unbuilt']);
     const group = groups.get(key);
     if (group) group.push(each);
@@ -429,7 +450,8 @@ export interface Wait {
  * One that waits for its content says the move the pin will have, by the rule a move is made by: the furthest target
  * of the results held within its major, where any is (`withinMajor`, `furthest`), when that target comes due, and
  * those results as what it clears. A result only a major clears waits with them, as what the move leaves: it keeps
- * its place in the entry and its deadline, and is counted apart. Where none is held within the major, the major.
+ * its place in the entry and its deadline, and is counted apart. Where none is held within the major, or a chart's
+ * major is held for something worse than anything held within it, the major, which clears them all.
  */
 export function waiting(results: Judged[], held: (Held | undefined)[], routine: RoutineWait[] = []): Wait[] {
   const groups = new Map<string, { each: Judged; held: Held }[]>();
@@ -522,9 +544,9 @@ export interface Waiting {
   why: WaitingWhy;
   /**
    * For `content`: fixes.ts's text of the target its move will take, the furthest within the pin's major where any
-   * result that waits has a fix there (`withinMajor`), and when that target comes due, UTC to the second, the slack
-   * of a daily scan taken off (state.ts's `waitMs`). Content pushed again before then waits its own day, and the move
-   * lists at the newest that has waited.
+   * result that waits has a fix there and none worse waits for a chart's major (`withinMajor`), and when that target
+   * comes due, UTC to the second, the slack of a daily scan taken off (state.ts's `waitMs`). Content pushed again
+   * before then waits its own day, and the move lists at the newest that has waited.
    */
   to?: string | undefined;
   until?: string | undefined;

@@ -1311,14 +1311,15 @@ export const lineTooEarly = (last: string | undefined): string | undefined =>
 
 /**
  * Why a test of a pin's major (4a, 4b) has no verdict on a scan, or nothing where it has: the scan lists a move of the
- * pin that is no major. A release within the pin's major clears some of its findings, so that move comes first, and
- * merges at Guarded as any move does; the major is listed only by a scan after it has merged, from the release it
- * reached (moves.ts's `withinMajor`). The run then has no major of that pin to see held, or merged at Lights-out. A
- * pin whose every fix is a major lists the major at once, and the test is judged as ever.
+ * pin that is no major. A release within the pin's major clears some of its findings and leaves nothing worse than
+ * it clears for the major, so that move comes first, and merges at Guarded as any move does; the major is listed only
+ * by a scan after it has merged, from the release it reached (moves.ts's `withinMajor`). The run then has no major of
+ * that pin to see held, or merged at Lights-out. A pin whose every fix is a major, or whose move within the major
+ * would leave worse than it clears, lists the major at once, and the test is judged as written.
  */
 export function majorNotFirst(move: (Pick<ListedMove, 'name' | 'from' | 'to'> & { major?: boolean }) | undefined) {
   if (move?.major !== false) return undefined;
-  return `the scan lists ${move.name} from ${move.from} to ${move.to}, a move within its major, which comes before the major where a release there clears any of the pin's findings: no major of ${move.name} to judge until that has merged (pin it at its major's newest release to stage one)`;
+  return `the scan lists ${move.name} from ${move.from} to ${move.to}, a move within its major, which comes before the major where a release there clears some of the pin's findings and leaves none worse for the major: no major of ${move.name} to judge until that has merged (pin it at its major's newest release to stage one)`;
 }
 
 /**

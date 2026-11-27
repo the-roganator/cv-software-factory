@@ -181,8 +181,9 @@ export interface Test {
    */
   waits?: { move: string };
   /**
-   * Its move is within the pin's major, where a major clears more: the first scan names no major for it, and a scan
-   * after the merge lists the major as a move of its own, from the release this one moved to.
+   * Its move is within the pin's major, where a major clears more and nothing worse than this move clears: the first
+   * scan names no major for it, and a scan after the merge lists the major as a move of its own, from the release
+   * this one moved to.
    */
   thenMajor?: boolean;
 }
@@ -235,8 +236,8 @@ export const TESTS: Test[] = [
     campaign: 'factory',
     moves: ['prometheus'],
     pr: { by: 'pin' },
-    // 29.35.0, with findings a later 29.x clears and one only 30.x does: the move is within the major, and the major
-    // is a move of its own once the pin has moved.
+    // 29.35.0, with findings a later 29.x clears and some only 30.x does, none of them worse than the worst 29.x
+    // clears: the move is within the major, and the major is a move of its own once the pin has moved.
     thenMajor: true,
     deployed: { kind: 'chart', apps: ['prometheus'] },
   },
@@ -250,10 +251,12 @@ export const TESTS: Test[] = [
     deployed: { kind: 'chart', apps: ['otel-collector', 'pod-logs'] },
   },
   {
-    // A major is the pin's first move only where no release within its major clears any of its findings: where one
-    // does, the scan lists that move first, and 4a and 4b are dropped from the run with no verdict (decide.ts's
-    // `majorNotFirst`), as the major lists only once that has merged. loki 18.13.7 has 18.17.1 behind it, and grafana
-    // 13.2.7 has 13.7.0: which comes first is the scan's to say, from each candidate's own report.
+    // A major is the pin's first move where no release within its major clears any of its findings, or where one
+    // does and would leave for the major something worse than anything it clears (moves.ts's `withinMajor`). Where
+    // the move within the major stands, the scan lists it first, and 4a and 4b are dropped from the run with no
+    // verdict (decide.ts's `majorNotFirst`), as the major lists only once that has merged. loki 18.13.7 has 18.17.1
+    // behind it, and grafana 13.2.7 has 13.7.0: which comes first is the scan's to say, from each candidate's own
+    // report.
     id: '4a',
     title: 'loki chart, a major',
     repo: FACTORY,

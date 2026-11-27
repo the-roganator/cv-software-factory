@@ -298,8 +298,6 @@ export function whyWords(row: PatchingRow, who: Who): string {
         return `${passed ? capital(passed) : opener(pull as Pull)}, and its required checks failed ${pull?.checks ? `on each of its ${count(pull.checks.of)} tries` : 'on every try'}, so the worker stopped trying. What failed is in the run.`;
       case 'queue-spent':
         return `${passed ? capital(passed) : opener(pull as Pull)}, and the merge queue took it out on each try, so the worker stopped adding it.`;
-      case 'conflict':
-        return `${named(pull)} conflicts with main, so the merge queue cannot take it.`;
       case 'refused':
         return `${routine ? 'A routine update the pin step refused' : 'The scan’s pin step refused it'}: ${REFUSAL[pull?.refusal ?? 'other']}. The worker made it an issue, ${named(pull)}, which says the kind of refusal, never the tool’s words.`;
       case 'branch-held':
@@ -330,6 +328,8 @@ export function whyWords(row: PatchingRow, who: Who): string {
   const stopped = row.stopped ? ' The line is stopped, so the worker queues it once the line starts again.' : '';
   switch (state.kind) {
     case 'opened':
+      if (pull?.hold === 'conflict')
+        return `${named(pull)} conflicts with main, so the worker makes the move again on main’s head within the hour. Nothing is asked of ${you(who)}.${leaves}`;
       return `${pull ? opener(pull) : 'It opened'}${passedIt ? `, and ${passedIt}` : pull?.hold === 'verdict' ? ', and the review gate has not judged its head yet' : ''}.${routine ? ' A routine update, opened apart from the fixes, so it never holds one up.' : ''}${stopped}${leaves}`;
     case 'checks':
       return `${pull ? opener(pull) : 'It opened'}${passedIt ? ` and ${passedIt}` : ''}. Its checks are running${pull?.checks ? `, try ${pull.checks.try} of ${pull.checks.of}` : ''}; it merges by itself once they pass.${stopped}${leaves}`;
@@ -401,8 +401,12 @@ export function wayOf(row: PatchingRow): Way | undefined {
   });
   switch (state.why) {
     case 'level':
-    case 'held':
       return at('Review', 'Approve its head commit there: the worker then adds it to the merge queue.');
+    case 'held':
+      return at(
+        'Review',
+        'Read it there, and add it to the merge queue yourself if it should go: a pull request the gate held is yours to add, even once you approve it.',
+      );
     case 'martin':
       return at(
         'Review',
@@ -433,11 +437,6 @@ export function wayOf(row: PatchingRow): Way | undefined {
       return at(
         'Open',
         'Read why the queue took it out there, put it right on its branch, or add it to the queue by hand.',
-      );
-    case 'conflict':
-      return at(
-        'Open',
-        'Put the conflict with main right on its branch there: the worker queues it once it merges cleanly.',
       );
     case 'refused':
       return at('Open', REFUSAL_DOES[pull.refusal ?? 'other']);

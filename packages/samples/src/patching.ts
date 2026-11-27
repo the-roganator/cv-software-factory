@@ -62,8 +62,8 @@ const lockfile = (
   ...fields,
   package: { name: pkg.name, from: pkg.from, to: pkg.to, pins: [{ file: 'pnpm-lock.yaml', line: pkg.line }] },
 });
-/** A pull request's or issue's move, by the day's name, and a lockfile's package apart. */
-const carries = (name: string, pkg?: string) => ({ name, ...(pkg && { package: pkg }) });
+/** A pull request's or issue's move, by the day's name, whether it is a lockfile's, and a lockfile's package apart. */
+const carries = (name: string, pkg?: string) => ({ name, lockfile: pkg !== undefined, ...(pkg && { package: pkg }) });
 const checks = (
   state: 'running' | 'passed' | 'failed',
   attempt: number,
@@ -379,6 +379,15 @@ const FACTORY_PULLS: Pull[] = [
     state: 'open',
     checks: checks('passed', 1),
     hold: 'martin',
+  },
+  // The pin watch's issue for the same routine workflow pin: the row stands by Dependabot's, which is his to merge.
+  {
+    kind: 'issue',
+    number: 1351,
+    moves: [carries('example/setup-tool')],
+    opened: '2026-10-05T04:39:00.000Z',
+    state: 'open',
+    issue: 'workflow',
   },
   {
     kind: 'issue',

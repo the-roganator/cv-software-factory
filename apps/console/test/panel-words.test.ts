@@ -17,7 +17,7 @@ import {
 import type { GuardrailRow, GuardrailsView } from '../web/src/projection/guardrails.ts';
 import { project } from '../web/src/projection/index.ts';
 import { foldItems } from '../web/src/projection/items.ts';
-import { type PatchingView, patchingView } from '../web/src/projection/patching.ts';
+import { dayView, type PatchingView, patchingView } from '../web/src/projection/patching.ts';
 import { ATTACKS, ATTACKS_END, END, SAMPLES } from './projection/support.ts';
 
 const ALL = () => true;
@@ -212,5 +212,47 @@ describe('what Patching’s rows say', () => {
         'Its package is withheld while it has an open finding, and so is what it waits for. Martin sees both, signed in.',
       );
     }
+  });
+});
+
+describe('the words of a pull request the gate held, and one that conflicts', () => {
+  const sample = SAMPLES.findLast((e) => e.type === 'patching.read');
+  if (sample?.type !== 'patching.read') throw new Error('the samples have no patching.read');
+  const factory = sample.payload.repositories[0];
+  const move = factory?.moves.find((m) => m.name === 'example-traces');
+  if (!factory || !move) throw new Error('the samples have no example-traces');
+  const rowWith = (hold: 'held' | 'conflict') => {
+    const pull = {
+      kind: 'pin' as const,
+      number: 1400,
+      moves: [{ name: 'example-traces', lockfile: false }],
+      opened: '2026-10-06T04:30:00.000Z',
+      state: 'open' as const,
+      rule: 'move' as const,
+      hold,
+    };
+    const day = {
+      ...sample.payload,
+      rows: [],
+      repositories: [{ ...factory, moves: [move], waiting: [], pulls: [pull] }],
+    };
+    const view = read(dayView(day, END, []));
+    const row = view.rows[0];
+    if (!row) throw new Error('no row');
+    return row;
+  };
+
+  it('leaves a held one for Martin to add to the queue, even once approved', () => {
+    expect(wayOf(rowWith('held'))?.does).toBe(
+      'Read it there, and add it to the merge queue yourself if it should go: a pull request the gate held is yours to add, even once you approve it.',
+    );
+  });
+
+  it('says one that conflicts is made again on main by itself, and asks nothing', () => {
+    const row = rowWith('conflict');
+    expect(row.waits).toBe(false);
+    expect(whyWords(row, { martin: true })).toBe(
+      '#1400 conflicts with main, so the worker makes the move again on main’s head within the hour. Nothing is asked of you.',
+    );
   });
 });

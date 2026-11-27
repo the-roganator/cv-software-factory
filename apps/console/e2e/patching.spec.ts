@@ -51,8 +51,8 @@ test('the summary counts every open finding and what the moves clear at a glance
   await expect(open.locator('.sr')).toHaveText('All open: 12 Critical, 1,392 High, 11,141 Medium, 4,178 Low');
   await expect(open.locator('.crit')).toHaveText('C12');
   await expect(clears.locator('> span').first()).toHaveText('The moves clear');
-  await expect(clears.locator('.clr > span[aria-hidden]')).toHaveText(['C−10', 'H−264', 'M−1.1K', 'L−407']);
-  await expect(clears.locator('.sr')).toHaveText('The moves clear 10 Critical, 264 High, 1,089 Medium, 407 Low');
+  await expect(clears.locator('.clr > span[aria-hidden]')).toHaveText(['C−9', 'H−260', 'M−1.1K', 'L−406']);
+  await expect(clears.locator('.sr')).toHaveText('The moves clear 9 Critical, 260 High, 1,088 Medium, 406 Low');
   await expect(shown.locator('.sum-lines li')).toHaveText([
     '1 unscanned image running',
     'Next due in 8 h: example/scanner-proxy',
@@ -122,7 +122,7 @@ test('a visitor reads what waits on Martin by what he does, what moves by itself
     'Judged: the factory’s 05:16 · the app’s 05:20 · pull requests read 06:12 · 1 fix waits its day (example/cache, below)',
   );
   await expect(panel(page).locator('.patch-stale')).toHaveCount(0);
-  await expect(panel(page).locator('.patch-counts b')).toHaveText(['15,056', '1,770', '0', '0']);
+  await expect(panel(page).locator('.patch-counts b')).toHaveText(['15,056', '1,763', '0', '0']);
   await expect(panel(page).locator('.pm-head .clr-head span')).toHaveText(['C', 'H', 'M', 'L']);
   await expect(panel(page).locator('.pm-total .clr > span[aria-hidden]')).toHaveText(['C12', 'H1.4K', 'M11K', 'L4.2K']);
   await expect(panel(page).getByRole('link', { name: /Code scanning/ })).toHaveCount(0);

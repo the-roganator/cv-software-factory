@@ -84,6 +84,14 @@ describe('Needs you’s Patching card, from the samples', () => {
     expect(patchingNeed(patchingDay(broken), END)?.since).toBe(Date.parse('2026-10-06T05:00:00.000Z'));
   });
 
+  it('looks back no further than 28 days for since when, however many days have waited', () => {
+    const days = Array.from({ length: 40 }, (_, i) =>
+      readAt(new Date(Date.parse('2026-09-01T05:00:00.000Z') + i * 24 * H).toISOString(), last().payload),
+    );
+    const lastAt = Date.parse(days.at(-1)?.ts ?? '');
+    expect(patchingNeed(patchingDay(days), lastAt)?.since).toBe(lastAt - 28 * 24 * H);
+  });
+
   it('is in Needs you’s view, at the view’s time', () => {
     expect(needsView(foldItems(SAMPLES), END, undefined, patchingDay(SAMPLES)).patching?.waiting).toBe(16);
     expect(needsView(foldItems(SAMPLES), END).patching).toBeUndefined();

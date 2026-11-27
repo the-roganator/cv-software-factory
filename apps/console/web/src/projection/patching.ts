@@ -249,7 +249,7 @@ export type PatchingView =
        * it counted them: nothing here works it out from anything else.
        */
       open: Counts | undefined;
-      /** What the rows still to move clear, by severity: the sum of their counts. */
+      /** What the rows still to move clear, by severity: the sum of their counts, but a withheld lockfile move's. */
       clears: Counts;
       /** Whether the cluster was compared with the lists, and how many containers. */
       compared: boolean;
@@ -605,20 +605,23 @@ function doneOf(day: Day, at: number, earlier: readonly Earlier[]): PatchingRow[
    * A move as the last day that listed it by a time had it: by its name, and its package where both give one. A
    * visitor's lockfile move has no package to tell it from the others of its file: it is withheld, joined to none.
    */
-  const find = (repository: string, name: string, pkg: string | undefined, by: number) => {
+  const find = (repository: string, name: string, lockfile: boolean, pkg: string | undefined, by: number) => {
     for (const { day: d, at: when } of [...days].reverse()) {
       if (when > by) continue;
       const r = d.repositories.find((each) => each.repository === repository);
       const move = r?.moves.find(
-        (m) => m.name === name && (!m.lockfile || (pkg !== undefined && m.package?.name === pkg)),
+        (m) =>
+          m.name === name && m.lockfile === lockfile && (!lockfile || (pkg !== undefined && m.package?.name === pkg)),
       );
       if (move) return move;
-      if (r?.moves.some((m) => m.name === name && m.lockfile)) return 'lockfile' as const;
+      if (lockfile && r?.moves.some((m) => m.name === name && m.lockfile)) return 'lockfile' as const;
     }
-    return undefined;
+    return lockfile ? ('lockfile' as const) : undefined;
   };
   const rows: PatchingRow[] = [];
   const carried = new Set<string>();
+  // A withheld pull request has no number to key it by: its place among them does.
+  let unnumbered = 0;
   for (const r of day.repositories) {
     const run = runPage(r).url;
     for (const pull of r.pulls) {
@@ -626,16 +629,19 @@ function doneOf(day: Day, at: number, earlier: readonly Earlier[]): PatchingRow[
       if (pull.kind === 'dependabot' && pull.state === 'closed') continue;
       const settled = Date.parse(pull.settled);
       if (settled < from) continue;
+      const which = pull.number ?? `withheld ${++unnumbered}`;
       pull.moves.forEach((m, i) => {
         carried.add(identity(r.repository, { name: m.name, package: m.package ? { name: m.package } : undefined }));
         // The move as it was listed before it settled, or as the last day lists it.
-        const found = find(r.repository, m.name, m.package, settled) ?? find(r.repository, m.name, m.package, at);
+        const found =
+          find(r.repository, m.name, m.lockfile, m.package, settled) ??
+          find(r.repository, m.name, m.lockfile, m.package, at);
         const move = found === 'lockfile' ? undefined : found;
         // A move the worker closed for a newer target goes on under it, where the day lists it still.
-        const now = r.moves.find((each) => !each.lockfile && carriesMove(pull, each.name, undefined));
+        const now = r.moves.find((each) => !each.lockfile && carriesMove(pull, each.name, false, undefined));
         const goesOn =
           pull.state === 'closed' && now?.to && move && now.to !== move.to ? targetWords(now.to) : undefined;
-        const key = `done ${r.repository} #${pull.number ?? '-'} ${i}`;
+        const key = `done ${r.repository} #${which} ${i}`;
         rows.push(doneRow(r.repository, move, m.name, pull, settled, key, run, goesOn, found === 'lockfile'));
       });
     }
@@ -731,7 +737,12 @@ export function dayView(
   const conclusions = day.repositories.map((r) => r.run.conclusion);
   const scanned = rows.filter((row) => row.source.kind === 'move' || row.source.kind === 'waiting');
   const counted = [...scanned, ...scanned.flatMap((row) => row.held)];
-  const clearing = counted.filter((row) => row.clears && total(row.clears) > 0);
+  // A lockfile's move whose package the events withhold is left out of every sum, so nothing it clears can be
+  // worked out from them: a visitor never reads what a lockfile's package clears.
+  const summed = counted.filter(
+    (row) => !(row.source.kind === 'move' && row.source.lockfile && row.name === undefined),
+  );
+  const clearing = summed.filter((row) => row.clears && total(row.clears) > 0);
   const scanDay: ScanDay = {
     passed: failed.length === 0 && conclusions.every((c) => c === 'success'),
     failed,
@@ -789,7 +800,7 @@ export function dayView(
       clearingMoves: clearing.length,
     },
     open: openOf(day.repositories),
-    clears: counted.reduce((n, row) => (row.clears ? plus(n, row.clears) : n), NONE),
+    clears: summed.reduce((n, row) => (row.clears ? plus(n, row.clears) : n), NONE),
     compared: day.compared,
     containers: day.containers,
   };

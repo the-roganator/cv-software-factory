@@ -66,7 +66,6 @@ export type WaitWhy =
   | 'closed'
   | 'checks-spent'
   | 'queue-spent'
-  | 'conflict'
   | 'refused'
   | 'branch-held'
   | 'open-refused'
@@ -94,7 +93,6 @@ export const GROUP_OF: Record<WaitWhy, PatchGroup> = {
   closed: 'held',
   'checks-spent': 'stuck',
   'queue-spent': 'stuck',
-  conflict: 'stuck',
   refused: 'stuck',
   'branch-held': 'stuck',
   'open-refused': 'stuck',
@@ -136,16 +134,32 @@ const moves = (state: Extract<Standing, { place: 'moves' }>['state'], pull?: Pul
 });
 
 /** Whether a pull request or issue carries a move: by its name, and a lockfile's by its package where both have one. */
-export function carriesMove(pull: Pull, name: string, pkg: string | undefined): boolean {
-  return pull.moves.some((m) => m.name === name && (pkg === undefined || m.package === undefined || m.package === pkg));
+export function carriesMove(pull: Pull, name: string, lockfile: boolean, pkg: string | undefined): boolean {
+  return pull.moves.some(
+    (m) =>
+      m.lockfile === lockfile && m.name === name && (pkg === undefined || m.package === undefined || m.package === pkg),
+  );
 }
 
-/** Which of several open ones a row stands by: one withheld, then an issue, then the App's, then Dependabot's. */
-const RANK = (pull: Pull) => (pull.withheld ? 0 : pull.kind === 'issue' ? 1 : pull.kind === 'pin' ? 2 : 3);
+/**
+ * Which of several open ones a row stands by: one withheld; then Dependabot's that is Martin's to merge, as a
+ * third-party action's is, before the issue the pin watch opens for the same routine workflow pin; then an issue, then
+ * the App's, then Dependabot's.
+ */
+const RANK = (pull: Pull) =>
+  pull.withheld
+    ? 0
+    : pull.kind === 'dependabot' && pull.hold === 'martin'
+      ? 1
+      : pull.kind === 'issue'
+        ? 2
+        : pull.kind === 'pin'
+          ? 3
+          : 4;
 
 /** The open pull request or issue a row stands by, and the newest settled one, of those that carry it. */
-function pullsFor(repository: Repository, name: string, pkg: string | undefined) {
-  const carrying = repository.pulls.filter((pull) => carriesMove(pull, name, pkg));
+function pullsFor(repository: Repository, name: string, lockfile: boolean, pkg: string | undefined) {
+  const carrying = repository.pulls.filter((pull) => carriesMove(pull, name, lockfile, pkg));
   const open = carrying.filter((pull) => pull.state === 'open').sort((a, b) => RANK(a) - RANK(b))[0];
   const settled = carrying
     .filter((pull) => pull.state !== 'open' && !(pull.kind === 'dependabot' && pull.state === 'closed'))
@@ -155,7 +169,13 @@ function pullsFor(repository: Repository, name: string, pkg: string | undefined)
 
 /** An open pull request's or issue's standing. */
 function openStanding(pull: Pull, lane: MoveLane): Standing {
-  if (pull.withheld) return waits('withheld', pull);
+  // The public view keeps of a lockfile's pull request that waits on Martin (an issue, or a hold) only what it is and
+  // where it stands; one that moves by itself keeps its rule, checks and place in the queue.
+  if (pull.withheld) {
+    const moving = pull.kind !== 'issue' && (pull.rule || pull.checks || pull.queued);
+    if (!moving) return waits('withheld', pull);
+    return moves(pull.queued ? 'queue' : pull.checks?.state === 'running' ? 'checks' : 'opened', pull);
+  }
   // Only the cluster's own command applies a new k3s, whatever its pull request's checks say.
   if (lane === 'cluster') return waits('cluster', pull);
   if (pull.kind === 'issue') return waits(pull.issue ?? 'other', pull);
@@ -168,8 +188,10 @@ function openStanding(pull: Pull, lane: MoveLane): Standing {
     case 'label':
     case 'checks-spent':
     case 'queue-spent':
-    case 'conflict':
       return waits(pull.hold, pull);
+    // The pin watch commits the move again on main's head within the hour: nothing for Martin to do.
+    case 'conflict':
+      return moves('opened', pull);
     case 'verdict':
       return moves('opened', pull);
     case 'stopped':
@@ -192,7 +214,7 @@ export const unbuilt = (move: Pick<ScanMove, 'to'>) => move.to.startsWith('anoth
  */
 export function standingOf(repository: Repository, move: ScanMove): Standing {
   const pkg = move.lockfile ? move.package?.name : undefined;
-  const { open, settled } = pullsFor(repository, move.name, pkg);
+  const { open, settled } = pullsFor(repository, move.name, move.lockfile, pkg);
   if (open) return openStanding(open, move.lane);
   const judged = repository.judged === null ? Number.NEGATIVE_INFINITY : Date.parse(repository.judged);
   if (settled?.state === 'merged' && Date.parse(settled.settled ?? '') >= judged)
@@ -213,7 +235,7 @@ export function standingOf(repository: Repository, move: ScanMove): Standing {
 
 /** Where a pin that waits stands: its content's day, by itself; no release better than the pin, on Martin. */
 export function waitingStanding(repository: Repository, waiting: Waiting): Standing {
-  const { open } = pullsFor(repository, waiting.name, undefined);
+  const { open } = pullsFor(repository, waiting.name, false, undefined);
   if (open) return openStanding(open, 'worker');
   return waiting.why === 'content' ? moves('day') : waits('no-better');
 }
@@ -408,27 +430,43 @@ export interface PatchingDay {
   since: number | undefined;
 }
 
-/** The sense's last day in the events, from its role, for Needs you. */
+/** How far back the card looks for since when something has waited: Done's 28 days. */
+const SINCE_DAYS = 28;
+
+/**
+ * The sense's last day in the events, from its role, for Needs you. Since when something has waited is found walking
+ * back from it, day by day, to the first with nothing waiting, and no further back than 28 days: the sense appends a
+ * day each hour that anything changes, so the whole history is never read again.
+ */
 export function patchingDay(events: readonly PublicEvent[]): PatchingDay | undefined {
-  let last: PatchingDay | undefined;
+  let i = events.length - 1;
+  while (i >= 0 && !isSensesDay(events[i] as PublicEvent)) i--;
+  const lastEvent = events[i] as PublicEvent<'patching.read'> | undefined;
+  if (!lastEvent) return undefined;
+  const rows = waitingRows(lastEvent.payload);
   let since: number | undefined;
-  for (const event of events) {
-    if (!isSensesDay(event)) continue;
-    const day = event.payload;
-    const rows = waitingRows(day);
-    since = rows.length > 0 ? (since ?? Date.parse(event.ts)) : undefined;
-    last = {
-      read: readAt(event),
-      rows,
-      scans: day.repositories.map((r) => ({
-        repository: r.repository,
-        judged: r.judged === null ? undefined : Date.parse(r.judged),
-        run: `https://github.com/${r.repository}/actions/runs/${r.run.id}`,
-      })),
-      since,
-    };
+  if (rows.length > 0) {
+    since = Date.parse(lastEvent.ts);
+    const from = since - SINCE_DAYS * DAY;
+    for (let j = i - 1; j >= 0; j--) {
+      const event = events[j] as PublicEvent;
+      if (!isSensesDay(event)) continue;
+      const at = Date.parse(event.ts);
+      if (at < from || waitingRows(event.payload).length === 0) break;
+      since = at;
+    }
   }
-  return last;
+  const day = lastEvent.payload;
+  return {
+    read: readAt(lastEvent),
+    rows,
+    scans: day.repositories.map((r) => ({
+      repository: r.repository,
+      judged: r.judged === null ? undefined : Date.parse(r.judged),
+      run: `https://github.com/${r.repository}/actions/runs/${r.run.id}`,
+    })),
+    since,
+  };
 }
 
 /** Whether the sense's read is old enough to say so, at t. */

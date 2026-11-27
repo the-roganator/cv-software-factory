@@ -122,6 +122,14 @@ describe('Patching, as a visitor reads the samples', () => {
     expect(view.done.find((row) => row.pull?.number === 1327)).toMatchObject({ clears: undefined, name: undefined });
   });
 
+  it('leaves a withheld lockfile move out of every sum, so what it clears cannot be worked out from them', () => {
+    expect(view.clears).toEqual({ critical: 9, high: 260, medium: 1088, low: 406, unknown: 0 });
+    expect(view.figures).toMatchObject({ cleared: 1763, clearingMoves: 14 });
+    const martins = read(patchingView(FULL, foldItems(FULL), END));
+    expect(martins.clears).toEqual({ critical: 10, high: 264, medium: 1089, low: 407, unknown: 0 });
+    expect(martins.figures).toMatchObject({ cleared: 1770, clearingMoves: 18 });
+  });
+
   it('shortens each target to what a row has room for', () => {
     expect(view.rows.find((row) => row.name === 'example-logs')?.to).toBe('21.1.1, a major');
     expect(view.rows.find((row) => row.name === 'k3s')?.to).toBe('v1.34.5+k3s1');
@@ -219,7 +227,7 @@ function oneMove(move: Partial<Move>, pulls: Pull[], fields: Partial<Repository>
 const pin = (fields: Partial<Pull>): Pull => ({
   kind: 'pin',
   number: 1400,
-  moves: [{ name: 'example-traces' }],
+  moves: [{ name: 'example-traces', lockfile: false }],
   opened: '2026-10-06T04:30:00.000Z',
   state: 'open',
   ...fields,
@@ -241,7 +249,6 @@ describe('where a move stands, from its pull request or issue', () => {
     ['label', 'held'],
     ['checks-spent', 'stuck'],
     ['queue-spent', 'stuck'],
-    ['conflict', 'stuck'],
   ] as const)('a pull request held for %s waits in %s', (hold, group) => {
     const { row } = only(oneMove({}, [pin({ hold })]));
     expect(row).toMatchObject({ waits: true, group, state: { kind: 'waits', why: hold, group } });
@@ -262,6 +269,31 @@ describe('where a move stands, from its pull request or issue', () => {
   ] as const)('an issue that asks for %s waits in %s', (why, group) => {
     const { row } = only(oneMove({}, [issue(why, why === 'refused' ? { refusal: 'young' } : {})]));
     expect(row).toMatchObject({ waits: true, group });
+  });
+
+  it('moves by itself while its pull request conflicts with main: the pin watch makes the move again on main', () => {
+    const { row } = only(oneMove({}, [pin({ hold: 'conflict', rule: 'move' })]));
+    expect(row).toMatchObject({ waits: false, state: { kind: 'opened' } });
+  });
+
+  it('stands by Dependabot’s pull request that is Martin’s to merge before the pin watch’s issue for the same pin', () => {
+    const dependabot = pin({ kind: 'dependabot', number: 1350, hold: 'martin' });
+    const { row } = only(oneMove({ lane: 'issue' }, [issue('workflow', { number: 1351 }), dependabot]));
+    expect(row).toMatchObject({ group: 'approve', pull: { number: 1350 } });
+  });
+
+  it('joins a pull request to a move by whether it is a lockfile’s, not by name alone', () => {
+    const named = pin({ hold: 'level', moves: [{ name: 'example-traces', lockfile: true }] });
+    expect(only(oneMove({}, [named])).row?.pull).toBeUndefined();
+  });
+
+  it('waits on Martin by a withheld pull request that waits, and moves by one that moves', () => {
+    const lockfile: Partial<Move> = { name: 'a package in `pnpm-lock.yaml`', lockfile: true };
+    const moves = [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }];
+    const base = { kind: 'pin', moves, opened: '2026-10-06T00:00:00.000Z', state: 'open', withheld: true } as Pull;
+    expect(only(oneMove(lockfile, [base])).row).toMatchObject({ group: 'martin' });
+    const queued = { ...base, rule: 'move', queued: true } as Pull;
+    expect(only(oneMove(lockfile, [queued])).row).toMatchObject({ waits: false, state: { kind: 'queue' } });
   });
 
   it('moves by itself while the gate has not judged it, its checks run, or it is in the merge queue', () => {
@@ -320,7 +352,9 @@ describe('where a move stands, from its pull request or issue', () => {
       lockfile: true,
       package: { name: '@example/a', from: '1.0.0', to: '1.0.1', pins: [{ file: 'pnpm-lock.yaml', line: 9 }] },
     };
-    const other = issue('bench', { moves: [{ name: 'a package in `pnpm-lock.yaml`', package: '@example/b' }] });
+    const other = issue('bench', {
+      moves: [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true, package: '@example/b' }],
+    });
     expect(only(oneMove(lockfile, [other])).row?.waits).toBe(false);
     const { package: _withheld, ...publicMove } = lockfile;
     const withheld = { kind: 'issue', moves: other.moves, opened: other.opened, state: 'open', withheld: true } as Pull;
@@ -379,7 +413,8 @@ describe('a move undone on main', () => {
     package: { name: pkg, from: '1.0.0', to: '1.0.1', pins: [{ file: 'pnpm-lock.yaml', line: 9 }] },
   });
   const moves = [lockfile('@example/a'), lockfile('@example/b'), lockfile('@example/c')];
-  const carries = (...pkgs: string[]) => pkgs.map((p) => ({ name: 'a package in `pnpm-lock.yaml`', package: p }));
+  const carries = (...pkgs: string[]) =>
+    pkgs.map((p) => ({ name: 'a package in `pnpm-lock.yaml`', lockfile: true, package: p }));
 
   it('holds what its issue carries with it, in one row', () => {
     const day = oneMove({}, [issue('reverted', { moves: carries('@example/a', '@example/b') })], { moves });
@@ -425,6 +460,18 @@ describe('Done in the last 28 days', () => {
     const old = pin({ state: 'merged', settled: '2026-09-01T00:00:00.000Z' });
     const dependabot = pin({ kind: 'dependabot', state: 'closed', settled: '2026-10-06T00:00:00.000Z' });
     expect(read(dayView(oneMove({}, [old, dependabot], { moves: [] }), END, [])).done).toEqual([]);
+  });
+
+  it('names no number for a lockfile’s pull request the public view withholds, closed without a merge', () => {
+    const moves = [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }];
+    const closed = (day: string) =>
+      ({ kind: 'pin', moves, opened: '2026-10-04', state: 'closed', settled: day, withheld: true }) as unknown as Pull;
+    const view = read(dayView(oneMove({}, [closed('2026-10-05'), closed('2026-10-06')], { moves: [] }), END, []));
+    expect(view.done.map((row) => [row.name, row.pull?.number])).toEqual([
+      [undefined, undefined],
+      [undefined, undefined],
+    ]);
+    expect(new Set(view.done.map((row) => row.key)).size).toBe(2);
   });
 
   it('says a pull request a person closed as closed, and the App’s as no longer listed', () => {

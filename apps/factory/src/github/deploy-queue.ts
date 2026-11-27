@@ -91,6 +91,10 @@
  *   Dependabot's next rebase.
  *
  * In a dry run this watch does nothing: the pull request is one GitHub has, and a dry run adds nothing there.
+ *
+ * The pin and workflow pin queues say what they decide of each head for the read `pulls` (`pull-states.ts`): the gate's
+ * rule there, its required checks with the try, whether it is in the queue, and why not (`PATCH_HOLDS`), each wait by
+ * the same decision that holds it here.
  */
 import type { Autonomy } from '@software-factory/events';
 import type { Logger } from 'pino';
@@ -125,6 +129,7 @@ import {
 import { guardPinBranch } from './pin-guard.ts';
 import { PIN_LABEL, PIN_REPOS, type PinScope } from './pins.ts';
 import type { Watch } from './poller.ts';
+import { checksAt, gateHold, type PullSource, type PullStates, type QueueSay, ruleAt } from './pull-states.ts';
 import { type CheckRun, finished, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import { refusalOf } from './server.ts';
@@ -451,8 +456,12 @@ async function writeAgain(
   const { number } = pull;
   const head = pull.head.sha;
   const failed = latest.filter(failedRun);
-  if (!actions.commitAgain || !heads.set || attempt.ranOut || failed.some((run) => run.app !== ACTIONS_APP))
+  if (!actions.commitAgain || !heads.set || attempt.ranOut || failed.some((run) => run.app !== ACTIONS_APP)) {
+    state.note(number, head, { hold: 'checks-spent' });
     return state.wait(number, head, wait);
+  }
+  // Each case below runs the checks again, but where it says they are out of tries.
+  state.note(number, head, { hold: 'checks' });
   const going = latest.filter((run) => !finished(run)).map((run) => run.name);
   if (going.length)
     return state.wait(number, head, { waits: 'checks', why: `${wait.why}; waiting for ${going.join(', ')}` });
@@ -465,6 +474,7 @@ async function writeAgain(
     if (actions.comment && !(await spentSaid(github, repo, number, head, SPENT_RUNS_MARK)))
       await actions.comment(repo, number, spentRunsComment(head, names));
     attempt.ranOut = true;
+    state.note(number, head, { hold: 'checks-spent' });
     log.warn(
       { repo, number, head, checks: names },
       `the ${kind} pull request's checks failed in ${RUN_TRIES} runs: it waits for Martin`,
@@ -481,6 +491,7 @@ async function writeAgain(
     }
     // Refused, or a failure that will not pass: the head is Martin's, and says why in the log.
     attempt.ranOut = true;
+    state.note(number, head, { hold: 'checks-spent' });
     log.warn(
       { repo, number, head, err: error },
       `the ${kind} pull request's head was not written again: it waits for Martin`,
@@ -514,6 +525,8 @@ export interface DeployQueueDependencies {
    * a failed check is recorded there as the watch's (`set`); without `set`, none is written.
    */
   heads: Pick<WatchedHeads, 'get'> & Partial<Pick<WatchedHeads, 'set'>>;
+  /** Where the pin and workflow pin queues say what they decided of each pull request, for the read `pulls`. */
+  pulls?: PullStates | undefined;
   log: Logger;
 }
 
@@ -539,6 +552,7 @@ export interface WorkflowPinQueueDependencies {
   actions: Pick<Actions, 'enqueuePullRequest' | 'dryRun'>;
   recorder?: RefusalRecorder | undefined;
   level: LevelReader;
+  pulls?: PullStates | undefined;
   log: Logger;
 }
 
@@ -570,13 +584,25 @@ interface Attempt {
 
 /**
  * What one watch keeps of the pull requests it queues, each by number: the head it last tried and what it last said of
- * it, so it tries each head once and says each wait once. Only the current head of each is kept.
+ * it, so it tries each head once and says each wait once. Only the current head of each is kept. A watch of moves
+ * (`source`) also says what it decided of each head, for the read `pulls` (`note`).
  */
-function queueState(deps: DeployQueueDependencies, repo: string, kind: string) {
+function queueState(deps: DeployQueueDependencies, repo: string, kind: string, source?: PullSource) {
   const { log } = deps;
   const tried = new Map<number, Attempt>();
   const said = new Map<number, string>();
+  const pulls = source ? deps.pulls : undefined;
   return {
+    /** Whether what the queue decides is said for the read `pulls`. */
+    noting: pulls !== undefined,
+    /** What the queue decided of a head: in place of what it said there before when `replace`, else added to it. */
+    note(number: number, head: string, say: QueueSay, replace = false) {
+      pulls?.say(repo, number, head, say, replace);
+    },
+    /** The pass made, with the pull requests it read as open. */
+    passed(open: ReadonlySet<number>) {
+      if (source === 'pin-queue' || source === 'workflow-queue') pulls?.passedQueue(repo, source, open);
+    },
     attempt(number: number, head: string): Attempt {
       const at = `${number} ${head}`;
       const kept = tried.get(number);
@@ -631,23 +657,44 @@ async function queueOne(
     reads.requiredChecks(repo, 'main'),
     reads.mergeability(repo, number),
   ]);
+  if (state.noting) {
+    // What the head is, said afresh each pass: the gate's rule there, and its checks, of the tries the worker gives.
+    const judged = ruleAt(verdict, head);
+    const names = required.filter((name) => name !== REVIEW_CHECK);
+    const of = theirs === undefined && actions.commitAgain ? RUN_TRIES : 1;
+    const checks = await checksAt(github, repo, head, latestRequired(runs, required), names, of);
+    state.note(number, head, { ...(judged ? { rule: judged } : {}), ...(names.length ? { checks } : {}) }, true);
+  }
   const gate = verdictWait(verdict, head, rules);
-  if (gate) return state.wait(number, head, gate);
+  if (gate) {
+    if (state.noting)
+      state.note(number, head, { hold: await gateHold(github, repo, number, verdict, head, theirs !== undefined) });
+    return state.wait(number, head, gate);
+  }
   // The rule it passed by, one of `rules`: the verdict was read for this head.
   const rule = verdict.judged?.rule as QueueRule;
   const checks = checksWait(runs, required);
   if (checks?.waits === 'failed') {
-    if (theirs !== undefined) return state.wait(number, head, { waits: 'failed', why: `${checks.why}: ${theirs}` });
+    if (theirs !== undefined) {
+      state.note(number, head, { hold: 'checks-spent' });
+      return state.wait(number, head, { waits: 'failed', why: `${checks.why}: ${theirs}` });
+    }
     return writeAgain(deps, state, repo, kind, pull, attempt, latestRequired(runs, required), checks);
   }
-  if (checks) return state.wait(number, head, checks);
+  if (checks) {
+    state.note(number, head, { hold: 'checks' });
+    return state.wait(number, head, checks);
+  }
   if (mergeable.head !== head || mergeable.conflicts !== false) {
     const why = mergeable.conflicts ? 'it conflicts with main' : 'GitHub has not said whether it conflicts';
+    // GitHub not having said yet is no conflict: it says on a later pass.
+    if (mergeable.conflicts) state.note(number, head, { hold: 'conflict' });
     return state.wait(number, head, { waits: 'conflict', why });
   }
   const queue = await reads.mergeQueue(repo, number);
   if (queue.head === head && queue.queued) {
     attempt.queued = true;
+    state.note(number, head, { queued: true });
     return;
   }
   // Out of the queue, or never in it. Taken out by the queue itself (a failed check, a group ahead that failed, a
@@ -661,6 +708,7 @@ async function queueOne(
     if (actions.comment && !(await spentSaid(github, repo, number, head)))
       await actions.comment(repo, number, spentComment(head, failedOnQueue(queue), out.reason));
     attempt.done = true;
+    state.note(number, head, { hold: 'queue-spent' });
     log.warn(
       { repo, number, head, failures: out.failures, reason: out.reason },
       `the merge queue took the ${kind} pull request out itself ${QUEUE_TRIES} times: it waits for Martin`,
@@ -674,6 +722,7 @@ async function queueOne(
     if (actions.comment && !(await spentSaid(github, repo, number, head, REMOVED_MARK)))
       await actions.comment(repo, number, removedComment(head, out));
     attempt.done = true;
+    state.note(number, head, { hold: 'dequeued' });
     log.warn(
       { repo, number, head, reason: out.reason, by: out.by },
       `someone took the ${kind} pull request out of the merge queue: it waits for Martin`,
@@ -689,17 +738,26 @@ async function queueOne(
   // none read is stopped, at Supervised (`level.ts`).
   if (level) {
     const allowed = levelWait(await level(), rule);
-    if (allowed) return state.wait(number, head, allowed);
+    if (allowed) {
+      if (allowed.waits === 'stopped' || allowed.waits === 'level') state.note(number, head, { hold: allowed.waits });
+      return state.wait(number, head, allowed);
+    }
   }
   // Read the last thing before the enqueue, so what it confirms (who labelled a pin move) is as fresh as it can be:
   // GitHub's enqueue takes no condition on a label: a label taken off in the one request between is not seen, and
   // nothing takes a pull request out of the queue once it is in. Martin takes it out by hand.
   const confirmed = await confirm?.();
-  if (confirmed) return state.wait(number, head, confirmed);
+  if (confirmed) {
+    // What is confirmed last is who labelled a pin move: a label someone else took off, now or on an earlier pull
+    // request of the move, or events that cannot be read whole, which hold as a label taken off.
+    state.note(number, head, { hold: 'label' });
+    return state.wait(number, head, confirmed);
+  }
 
   try {
     const entry = await actions.enqueuePullRequest(repo, number, head);
     attempt.queued = true;
+    state.note(number, head, { queued: true });
     log.info(
       { repo, number, head, rule, position: entry.position, ...(failed ? { again: out.failures } : {}) },
       `added the ${kind} pull request to the merge queue`,
@@ -710,6 +768,7 @@ async function queueOne(
       return;
     }
     attempt.done = true;
+    state.note(number, head, { hold: 'martin' });
     // The guard's refusal of an issue the App did not open is kept by the guard; a branch's, a deploy's or GitHub's
     // 403 is kept here, as the worker's door keeps one.
     const refusal =
@@ -836,7 +895,7 @@ async function openPulls(deps: { github: GitHub; log: Logger }, repo: string, ki
 export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: PinScope = []): Watch {
   const { github } = deps;
   if (!PIN_REPOS.includes(repo)) throw new Error(`The worker does not queue ${repo}'s pin moves.`);
-  const state = queueState(deps, repo, 'pin');
+  const state = queueState(deps, repo, 'pin', 'pin-queue');
 
   /** Every event of a pull request, page by page, up to `EVENT_PAGES`; whole only when no event lies past them. */
   const eventsOf = async (number: number): Promise<{ events: LabelEvents; whole: boolean }> => {
@@ -905,7 +964,8 @@ export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: Pi
   };
 
   return async () => {
-    if (only !== '*' && only.length === 0) return;
+    // Told no move, it queues none: its pass is made, with nothing to say.
+    if (only !== '*' && only.length === 0) return state.passed(new Set());
     const pulls = await openPulls(deps, repo, 'pin');
     const candidates = pulls.filter((p) => pinBranch(p.head.ref) || p.labels.some((l) => l.name === PIN_LABEL));
     state.keep(new Set(candidates.map((p) => p.number)));
@@ -916,6 +976,8 @@ export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: Pi
       if (attempt.done) continue;
       const notOne = pinPullWait(repo, pull) ?? headWait(deps.heads, repo, pull, 'not-a-pin');
       if (notOne) {
+        // No pin move of the watch's at this head, or not yet one it wrote: nothing is said of it.
+        state.note(number, head, {}, true);
         state.wait(number, head, notOne);
         continue;
       }
@@ -932,6 +994,7 @@ export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: Pi
         deps.log.warn({ repo, number, head, err: error }, 'could not read the pin pull request: tries again next pass');
       });
     }
+    state.passed(new Set(candidates.map((p) => p.number)));
   };
 }
 
@@ -985,12 +1048,14 @@ export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: 
     },
     recorder: deps.recorder,
     heads: { get: () => undefined },
+    pulls: deps.pulls,
     log: deps.log,
   };
-  const state = queueState(queue, repo, 'workflow pin');
+  const state = queueState(queue, repo, 'workflow pin', 'workflow-queue');
 
   return async () => {
-    if (deps.actions.dryRun) return;
+    // A dry run queues nothing, and says nothing of what it would have.
+    if (deps.actions.dryRun) return state.passed(new Set());
     const pulls = await openPulls(deps, repo, 'workflow pin');
     const candidates = pulls.filter(
       (p) => p.user?.id === DEPENDABOT_USER && p.head.ref.startsWith(DEPENDABOT_ACTIONS_PREFIX),
@@ -1005,6 +1070,7 @@ export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: 
       if (attempt.done) continue;
       const notOne = workflowPinPullWait(repo, pull);
       if (notOne) {
+        state.note(number, head, {}, true);
         state.wait(number, head, notOne);
         continue;
       }
@@ -1019,5 +1085,6 @@ export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: 
         );
       });
     }
+    state.passed(new Set(candidates.map((p) => p.number)));
   };
 }

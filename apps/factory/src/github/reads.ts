@@ -47,6 +47,7 @@ import {
   verdictOf,
 } from './merging.ts';
 import { CODEOWNERS_PATHS, protectedFrom } from './paths.ts';
+import { type PullStates, PullsUnread, type RepositoryPulls } from './pull-states.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import type { Registry } from './registry.ts';
 import { defaultBranch, type Moves, ScanReads, type StateKeys } from './scanning.ts';
@@ -79,6 +80,8 @@ export interface CheckRun {
   completedAt: string | null;
   /** The check's own one-line title, when it gave one. */
   title: string | null;
+  /** The GitHub Actions run it is a job of, by its id, from the link GitHub gives it; absent for any other app's. */
+  run?: number;
   /**
    * What a run that failed said was wrong (`failedAnnotations`): each of its annotations at the failure level, with
    * the file it named. Absent from a run that has not failed, and from one GitHub never read, such as a dry run's.
@@ -192,6 +195,12 @@ export interface Reads {
   moves(repo: string): Promise<Moves>;
   /** The open pull requests Dependabot made, each with the pin and version its branch names. */
   dependencyPulls(repo: string): Promise<DependencyPull[]>;
+  /**
+   * Every pull request and issue that carries one of the scan's moves, as the worker's watches last saw them: open, or
+   * settled in the last 28 days (`pull-states.ts`). Fails until the watches have read the repository once since the
+   * worker started; reads without it, as the line's own stand-ins are, read none.
+   */
+  pulls?(repo: string): Promise<RepositoryPulls>;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -224,9 +233,16 @@ const CHECK_RUNS = z.object({
       started_at: z.string().nullable().optional(),
       completed_at: z.string().nullable().optional(),
       output: z.object({ title: z.string().nullable().optional() }).optional(),
+      details_url: z.string().nullable().optional(),
     }),
   ),
 });
+
+/** The Actions run a check run is a job of, from the link GitHub gives it: `…/actions/runs/<id>/job/<job>`. */
+export function actionsRunOf(detailsUrl: string | null | undefined): number | undefined {
+  const id = Number(/\/actions\/runs\/(\d+)(?:\/|$)/.exec(detailsUrl ?? '')?.[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
 
 /**
  * A pull request's place in the merge queue, and the last twenty times it went in or came out, oldest first. GitHub's
@@ -385,6 +401,7 @@ export class LiveReads implements Reads {
   readonly #sources: ReleaseSources | undefined;
   readonly #recorder: RefusalRecorder | undefined;
   readonly #scan: ScanReads;
+  readonly #pulls: PullStates | undefined;
   /**
    * Each held pull request's refusal, kept and signed once, by repository, run, pull request and head, however often
    * it is read: one run's verdict can judge every pull request of a stack, and each held one has a refusal of its own.
@@ -393,14 +410,20 @@ export class LiveReads implements Reads {
 
   /**
    * Without `sources`, as in a test of the line's other reads, the release reads fail. Without `recorder`, a verdict
-   * that holds a pull request is read without its refusal. Without `stateKeys`, the scan's moves cannot be read.
+   * that holds a pull request is read without its refusal. Without `stateKeys`, the scan's moves cannot be read. Without
+   * `pulls`, which the watches write, the pull requests that carry moves cannot be read.
    */
   constructor(
     github: GitHub,
     sources?: ReleaseSources,
-    { recorder, stateKeys }: { recorder?: RefusalRecorder; stateKeys?: StateKeys } = {},
+    {
+      recorder,
+      stateKeys,
+      pulls,
+    }: { recorder?: RefusalRecorder; stateKeys?: StateKeys; pulls?: PullStates | undefined } = {},
   ) {
     this.#github = github;
+    this.#pulls = pulls;
     this.#sources = sources;
     this.#recorder = recorder;
     this.#scan = new ScanReads(github, stateKeys ? { keys: stateKeys } : {});
@@ -408,6 +431,11 @@ export class LiveReads implements Reads {
 
   async moves(repo: string): Promise<Moves> {
     return this.#scan.moves(repo);
+  }
+
+  async pulls(repo: string): Promise<RepositoryPulls> {
+    if (!this.#pulls) throw new PullsUnread("This worker's watches keep no pull requests: it reads none of them.");
+    return this.#pulls.read(repo);
   }
 
   async dependencyPulls(repo: string): Promise<DependencyPull[]> {
@@ -581,6 +609,8 @@ export class LiveReads implements Reads {
           completedAt: run.completed_at ?? null,
           title: run.output?.title ?? null,
         };
+        const actionsRun = run.app?.slug === ACTIONS_APP ? actionsRunOf(run.details_url) : undefined;
+        if (actionsRun !== undefined) read.run = actionsRun;
         if (!finished(run)) return read;
         const failed = outcomeOf(run.conclusion) === 'failure' && latest.get(run.name) === run.id;
         const counted = actions(run) && scans.get(run.name) === run.id;

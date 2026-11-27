@@ -39,6 +39,7 @@ import { REVIEW_CHECK } from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import { plainPath } from './paths.ts';
 import { PIN_LABEL, PIN_REPOS } from './pins.ts';
+import { PullsUnread } from './pull-states.ts';
 import type { Reads } from './reads.ts';
 import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
 import { DIGEST, RegistryError } from './registry.ts';
@@ -478,17 +479,21 @@ const READS = {
   mergeability: z.strictObject({ number }),
   moves: z.strictObject({}),
   dependencyPulls: z.strictObject({}),
+  pulls: z.strictObject({}),
 } satisfies Record<keyof Reads, z.ZodType>;
 
 type ReadName = keyof typeof READS;
 
-/** The reads the dependency sense's door serves (`factory patching`): the scan's moves. */
-export const PATCHING_READS: readonly ReadName[] = ['moves'];
+/**
+ * The reads the dependency sense's door serves (`factory patching`): the scan's moves, and the pull requests and issues
+ * that carry them.
+ */
+export const PATCHING_READS: readonly ReadName[] = ['moves', 'pulls'];
 
 /** The reads a worker may ask for, each with its arguments after the repository, and what it gives back. */
 export type { ReadName };
 export type ReadArgs = { [K in ReadName]: z.input<(typeof READS)[K]> };
-export type ReadResult<K extends ReadName> = Awaited<ReturnType<Reads[K]>>;
+export type ReadResult<K extends ReadName> = Awaited<ReturnType<NonNullable<Reads[K]>>>;
 
 const READ_CALLS: {
   [K in ReadName]: (reads: Reads, repo: string, args: z.infer<(typeof READS)[K]>) => Promise<unknown>;
@@ -512,6 +517,10 @@ const READ_CALLS: {
   mergeability: (r, repo, { number }) => r.mergeability(repo, number),
   moves: (r, repo) => r.moves(repo),
   dependencyPulls: (r, repo) => r.dependencyPulls(repo),
+  pulls: async (r, repo) => {
+    if (!r.pulls) throw new PullsUnread('This worker reads no pull requests that carry moves.');
+    return r.pulls(repo);
+  },
 };
 
 /** An object without its undefined fields, as the actions' optional fields expect: absent, never undefined. */
@@ -742,6 +751,10 @@ export function createWorkerServer({
       if (error instanceof DeployRefused) {
         log.warn({ ...about, message: error.message }, 'a deploy was refused');
         return send(res, 422, { error: 'deploy-refused', message: error.message, ...refusal });
+      }
+      if (error instanceof PullsUnread) {
+        log.info({ ...about, message: error.message }, 'the pull requests are not read yet');
+        return send(res, 503, { error: 'not-read-yet', message: error.message });
       }
       if (error instanceof RegistryError) {
         log.warn({ ...about, status: error.status, message: error.message }, 'ghcr.io failed a read');

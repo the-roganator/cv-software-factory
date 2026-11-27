@@ -61,6 +61,8 @@ and is no part of the test.
 | N6 | A workflow pin, with or without a finding | stay an issue for Martin: no pull request of the App's, at any level |
 | N7 | Forged: a pull request that moves a workflow pin, claiming a move | be held by the gate, at Lights-out too |
 | N8 | Forged: 20's change, with a third-party action's line in it, or a commit not on the factory's `main`, or behind the old one | be held by the gate |
+| N9 | Forged: a move's target written on another pin's line, which holds the same version (two of Kyverno's four) | be held by the gate, and never queued |
+| N10 | Forged: the App's commit on a branch Martin made, and a tag `main` | be refused by GitHub, both |
 
 N7 is held before the gate sees it: the App has no permission to write a workflow file, and GitHub refuses its push,
 which is the test's pass; were the push to land, the gate must hold its pull request. N8 is proven live for one hold
@@ -79,6 +81,10 @@ Accepted by Martin on 25 November 2026.
 | 24 | App: a move nobody can make (the devcontainer's base) | be an issue in the app's repository, and no pull request |
 | W3b | App: an image move `main` already has | close its ticket as done, as W3 |
 | W5 | The store restarting under the log watcher's send | no worker logs an error, and the report arrives once |
+| 25 | Factory: a move that would merge, with Martin's review asking for changes on it (k3d's, as 14) | be held by the gate, which says he asked, and never queued |
+| 26 | Factory: the line stopped, at Guarded with auto-merge on | no move queued, the worker saying the line is stopped; the deploy pin still merges |
+| 27 | Factory: a merged move Martin put back on `main` (k3s's, as 14) | be listed again by the scan, with no pull request for it again, and an issue that says it was undone on `main` |
+| 28 | Factory: an image's fix first seen by the scan today (Postgres's, as 1) | not be listed that day, the scan's `waiting` naming the pin with why `content`; the scan lists it once it has known the content a day |
 
 21's target moves on because the run lifts an exception the baseline stages: the first scan names the release that
 fixes every advisory but the excepted one, and the next the release that fixes that too. 21 is proven live as far as the

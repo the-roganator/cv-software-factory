@@ -277,7 +277,7 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 		$(KUBECTL) -n website create configmap share-key --from-file=public-key=/dev/stdin --dry-run=client -o yaml | \
 		$(KUBECTL) apply -f - >/dev/null && echo "  The app has the generator's public key, in share-key."
 
-# The key each repository's scan seals its state with (apps/factory/src/vulnerabilities/state.ts, ADR 0021): 32 random
+# The key each repository's scan seals its state with (apps/factory/src/vulnerabilities/state.ts, ADR 0026): 32 random
 # bytes for each, made once, through stdin and never a file on the Mac. The cluster's copy, the Secret scan-state-key in
 # `factory`, is the GitHub worker's and the one this reads; each repository's `scan-state` environment, which only main
 # may use (scripts/github-settings.ts makes it), is given the same key again each time, as SCAN_STATE_KEY. A key made

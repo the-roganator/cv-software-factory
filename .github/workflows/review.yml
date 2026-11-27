@@ -5,12 +5,13 @@
 # commit that descends from the one it replaces, or of Dependabot's in the app's repository, which calls these
 # workflows, every changed line a call of them, each moved from one commit to one later commit on this repository's
 # main, each workflow called declaring to its callers at the later commit what it declared at the earlier, or the bump
-# is Martin's (it reads what a workflow declares, not what it needs: ADR 0023); a move, in either repository and whoever
+# is Martin's (it reads what a workflow declares, not what it needs: ADR 0027); a move, in either repository and whoever
 # opened it, exactly the moves the scan of main asked for and nothing else (below), named `major` when one crosses a
 # major and clears no Critical; and, in the app's repository alone, the App's pull request with no risk tags, which the
 # gate works out from the diff and test integrity's run, or, while the caller's AUTONOMY variable is `lights-out`, one
 # whose tags are not a release, an improvement or a path CODEOWNERS on main gives Martin. Anything else is held for
-# Martin. Its summary names the rule and the tags in a block the line reads (policy/review-verdict.ts). This applies
+# Martin, and so is anything at all while his latest review asks for changes. Its summary names the rule and the tags
+# in a block the line reads (policy/review-verdict.ts). This applies
 # whatever the pull request's base: a stacked one, into the branch below it, is held to main's required checks. A check
 # on a commit is every open pull request's whose head it is, so the head is judged on all of them, and passes only when
 # each does, whichever pull request asked. A pull request it finds open always gets a verdict. The queue's commit is
@@ -30,7 +31,10 @@
 # finished run on main, its `moves.json` and the state it sealed (scripts/moves.ts), makes each move the pull request
 # touches on main's tip as its maker does (the pin watch's edit, or the pin step for a lockfile's package, a tool mise
 # pins and an image that brings another pin with it), and compares the result with what the merge makes, byte for byte.
-# Anything that differs is no move, and the gate says what. Whether a move crosses a major, and what it clears, are the
+# Anything that differs is no move, and the gate says what. A move is written only on the pin the scan named: a line
+# main has since given another pin is refused. A scan judged more than SCAN_MAX_AGE_HOURS ago
+# (policy/vulnerabilities.ts) is no judgement, and what would pass by it waits for the next. Whether a move crosses a
+# major, and what it clears, are the
 # scan's, never the pull request's. The level is not the gate's: policy/line.ts's ENQUEUES says at which level a `move`
 # and a `major` are queued. Working a move out reads the pull request's head, as data, which the job holding the App's
 # key never does: the `move` job does it, with no key of the App's and read-only permissions, from main's whole checkout
@@ -82,8 +86,10 @@
 #   workflow's last run for the pull request, which reads his reviews afresh.
 # - Dependabot's: GitHub gives a run Dependabot starts no Actions secrets, and its docs disagree on whether a
 #   `workflow_run` after one counts as Dependabot's. If it does, the gate says its verdict on Dependabot's opening and
-#   pushes and posts nothing. Its pull requests wait for Martin's approval either way, and his review's run is his, so
-#   the check posts then.
+#   pushes and posts nothing. Most of its pull requests wait for Martin's approval either way, and his review's run is
+#   his, so the check posts then. Those the gate passes without him (in the app's repository an exact pin of these
+#   workflows, ADR 0027; in either, a change that is exactly the scan's moves) have a check only from a run that is
+#   given the key.
 # - A pull request with a merge conflict: GitHub runs no `pull_request` workflow on it until the conflict is resolved,
 #   which is a push, and that run asks the gate.
 name: review
@@ -185,6 +191,7 @@ jobs:
             scripts/review-gate.ts
             scripts/review-routing.ts
             apps/factory/src/repositories.ts
+            policy/branches.ts
             policy/repositories.ts
             policy/review-verdict.ts
           sparse-checkout-cone-mode: false

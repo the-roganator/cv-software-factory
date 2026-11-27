@@ -2,6 +2,7 @@
  * The patching tests (../TESTS.md), one entry each: what the harness looks for and what "deployed" means
  * for it. The list is Martin's; an entry here says only how the outcome is read from GitHub and the scratch cluster.
  */
+import { BOTH_REFUSED } from './decide.ts';
 
 export const FACTORY = 'the-roganator/cv-software-factory-scratch';
 export const APP = 'the-roganator/cv-worlds-worst-website-scratch';
@@ -83,7 +84,10 @@ export interface Test {
   refused?: { names: string[]; says: RegExp[]; never: RegExp[] };
   /** For a test that ends out of tries: how long a run watches at least, from the scan, to see nothing comes after. */
   watchMin?: number;
-  /** A forgery GitHub must refuse at the push: what its refusal must say. With it, the refusal is the pass. */
+  /**
+   * A forgery GitHub must refuse at the push: what its refusal must say. With it, the refusal is the pass. The App
+   * pushes it (to a branch under `factory/`, which the rulesets let the App write, where the refusal is to be another's).
+   */
   refusedPush?: RegExp;
   /** A forgery's: the gate's words must say this, so it was held for what it forged and not for another reason. */
   heldFor?: RegExp;
@@ -155,7 +159,54 @@ export interface Test {
   newer?: { package: string; first: string; later: string; lifts: string[]; gates?: string[] };
   /** The store restarted under a report left through the app's widget: no scan, no reset, a step of its own. */
   restart?: boolean;
+  /** A forgery's: the scan's moves it copies, by name, which the scan it is forged from must list. */
+  needs?: string[];
+  /**
+   * Martin asks for changes on its pull request as soon as it opens, while its required checks still run (the run
+   * posts the review as his login): the gate must then hold it, in words that say he asked, and the worker never
+   * queue it. Its move is one that would otherwise merge, and another test's too (`moves`), so never beside that one.
+   */
+  asksChanges?: boolean;
+  /**
+   * After the move of test `of` has merged and the run's confirming scan is read, the run puts that merge's pins back
+   * on main as Martin (`./copies.sh revert-move`) and scans again: the scan lists the move again, the worker opens no
+   * pull request for it, and an issue of the App's says the move was undone on main.
+   */
+  reverted?: { of: string };
+  /**
+   * Content first seen at this run's reset waits its day: the first scan after the reset, which has no state, lists
+   * no move of `move` and says it waits for its content's day, no pull request of the App's is opened for it before
+   * the scan after, and that scan, which reads the first's state with its sightings put days back
+   * (staged/factory/28-…), lists it.
+   */
+  waits?: { move: string };
+  /**
+   * Its move is within the pin's major, where a major clears more and nothing worse than this move clears: the first
+   * scan names no major for it, and a scan after the merge lists the major as a move of its own, from the release
+   * this one moved to.
+   */
+  thenMajor?: boolean;
 }
+
+/** What the gate's hold says when Martin's latest review asks for changes (scripts/review-routing.ts's `verdict`). */
+export const ASKED_FOR_CHANGES = /Martin asked for changes/;
+/**
+ * What the gate's hold says of a change that writes a pin's line otherwise than the scan's move does: that it is no
+ * move, which in the factory's repository reads "Not an exact pin (…), nor a move: …" and in the app's "not a move: …"
+ * (review-routing.ts's `route`), or, where its own edit meets another pin on the scan's line, that main moved
+ * (pins.ts's `strayed`). words.test.ts holds them to the gate's own.
+ */
+export const NOT_THE_MOVE = /\b(not|nor) a move: |main moved since the scan/i;
+/**
+ * N10's line when GitHub refused both pushes by the rulesets, the commit by `branches` and the tag by `tag main`, each
+ * judged by its own words (decide.ts's `rulesetsRefusal`): one refusal beside any other error does not begin so.
+ */
+export const RULESET_REFUSAL = new RegExp(`^${BOTH_REFUSED}: `);
+/** Two of Kyverno's four images, pinned in one file at one tag's text: the pair N9 crosses. */
+const KYVERNO = 'kyverno: reg.kyverno.io/kyverno/kyverno';
+const KYVERNO_PRE = 'kyverno: reg.kyverno.io/kyverno/kyvernopre';
+/** The app's runtime image, whose move X1 forges on (test 10's). */
+export const RUNTIME = 'gcr.io/distroless/nodejs24-debian13';
 
 const LOCKFILE = 'a package in `deploy/overlays/local/factory-image/kustomization.yaml` and `pnpm-lock.yaml`';
 /** The app's lockfile move of a development dependency, which no image holds: W4's semver alone, on the baseline. */
@@ -185,6 +236,9 @@ export const TESTS: Test[] = [
     campaign: 'factory',
     moves: ['prometheus'],
     pr: { by: 'pin' },
+    // 29.35.0, with findings a later 29.x clears and some only 30.x does, none of them worse than the worst 29.x
+    // clears: the move is within the major, and the major is a move of its own once the pin has moved.
+    thenMajor: true,
     deployed: { kind: 'chart', apps: ['prometheus'] },
   },
   {
@@ -197,6 +251,12 @@ export const TESTS: Test[] = [
     deployed: { kind: 'chart', apps: ['otel-collector', 'pod-logs'] },
   },
   {
+    // A major is the pin's first move where no release within its major clears any of its findings, or where one
+    // does and would leave for the major something worse than anything it clears (moves.ts's `withinMajor`). Where
+    // the move within the major stands, the scan lists it first, and 4a and 4b are dropped from the run with no
+    // verdict (decide.ts's `majorNotFirst`), as the major lists only once that has merged. loki 18.13.7 has 18.17.1
+    // behind it, and grafana 13.2.7 has 13.7.0: which comes first is the scan's to say, from each candidate's own
+    // report.
     id: '4a',
     title: 'loki chart, a major',
     repo: FACTORY,
@@ -481,8 +541,9 @@ export const TESTS: Test[] = [
     deployed: { kind: 'none' },
   },
   {
-    // Why pnpm refuses it changes with the registry: weaker provenance for 2.2.2 alone, and a release too young for a
-    // day after each later one (2.2.3 came out on 25 November 2026). The issue must give whichever reason holds.
+    // Why the pin step cannot make it changes with the registry: weaker provenance for 2.2.2 alone; a release too
+    // young for a day after each later one (2.2.3 came out on 25 November 2026); and after that day a newer release
+    // pnpm resolves in 2.2.2's place, past the scan's target. The issue must give whichever reason holds.
     // lefthook, 2.2.1 on every baseline with 2.2.2 out, which was published without the provenance its earlier
     // releases had: pnpm refuses it, the pin step leaves it out, and the day's other routine lockfile updates ride
     // without it in the pull request test 15 stands on too.
@@ -509,6 +570,43 @@ export const TESTS: Test[] = [
     lane: 'none',
     says: /no longer built/,
     pr: { by: 'pin' },
+    deployed: { kind: 'none' },
+  },
+  {
+    // k3d's two images, one pin in mise.lock, as test 14b: a move that merges unattended at Guarded, here with
+    // Martin's review asking for changes on it from the minute it opens. Run in A, where 14b is not.
+    id: '25',
+    title: 'Martin asked for changes on a pin move',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: ['ghcr.io/k3d-io/k3d-tools', 'ghcr.io/k3d-io/k3d-proxy'],
+    pr: { by: 'pin' },
+    asksChanges: true,
+    heldFor: ASKED_FOR_CHANGES,
+    mustNot: true,
+    deployed: { kind: 'none' },
+  },
+  {
+    // k3s's move, test 14a's, which nothing in the cluster runs: put back on main once it has merged and the run's
+    // confirming scan is read, so 14a's own verdict is in before it.
+    id: '27',
+    title: 'a move Martin reverted is not made again',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    pr: { by: 'none' },
+    reverted: { of: '14a' },
+    deployed: { kind: 'none' },
+  },
+  {
+    // Postgres's fix, test 1's: an image, so its digest is content the scan first sees at the run's reset.
+    id: '28',
+    title: 'content first seen today waits a day',
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    pr: { by: 'none' },
+    waits: { move: 'postgres' },
     deployed: { kind: 'none' },
   },
   {
@@ -694,6 +792,7 @@ export const TESTS: Test[] = [
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'X1a' },
+    needs: [RUNTIME],
     heldFor: /not a move: Dockerfile:\d+ /,
     deployed: { kind: 'none' },
     mustNot: true,
@@ -706,6 +805,7 @@ export const TESTS: Test[] = [
     campaign: 'app',
     moves: [],
     pr: { by: 'forged', forge: 'X1b' },
+    needs: [RUNTIME],
     heldFor: /not a move: Dockerfile:\d+ /,
     deployed: { kind: 'none' },
     mustNot: true,
@@ -748,6 +848,7 @@ export const TESTS: Test[] = [
     campaign: 'factory',
     moves: [],
     pr: { by: 'forged', forge: 'N3a' },
+    needs: ['postgres'],
     deployed: { kind: 'none' },
     mustNot: true,
   },
@@ -758,6 +859,7 @@ export const TESTS: Test[] = [
     campaign: 'factory',
     moves: [],
     pr: { by: 'forged', forge: 'N3b' },
+    needs: ['postgres'],
     deployed: { kind: 'none' },
     mustNot: true,
   },
@@ -768,6 +870,7 @@ export const TESTS: Test[] = [
     campaign: 'factory',
     moves: [],
     pr: { by: 'forged', forge: 'N4' },
+    needs: ['postgres'],
     deployed: { kind: 'none' },
     mustNot: true,
   },
@@ -778,6 +881,34 @@ export const TESTS: Test[] = [
     campaign: 'factory',
     moves: [],
     pr: { by: 'forged', forge: 'N5' },
+    deployed: { kind: 'none' },
+    mustNot: true,
+  },
+  {
+    // Kyverno's four images are one file's pins at one tag's text. The scan's target for one, its tag and digest,
+    // written on another's line, under the first's title and label: the gate makes the scan's move itself and holds
+    // what differs from it.
+    id: 'N9',
+    title: "forged: a move's target written on another pin's line",
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    pr: { by: 'forged', forge: 'N9' },
+    needs: [KYVERNO, KYVERNO_PRE],
+    heldFor: NOT_THE_MOVE,
+    deployed: { kind: 'none' },
+    mustNot: true,
+  },
+  {
+    // The App's key against the rulesets: a commit of the App's on a branch Martin made outside the prefixes the
+    // factory writes, and a tag `main`. GitHub must refuse both; either that lands fails the test.
+    id: 'N10',
+    title: "forged: the App's push to Martin's branch, and a tag main",
+    repo: FACTORY,
+    campaign: 'factory',
+    moves: [],
+    pr: { by: 'forged', forge: 'N10' },
+    refusedPush: RULESET_REFUSAL,
     deployed: { kind: 'none' },
     mustNot: true,
   },

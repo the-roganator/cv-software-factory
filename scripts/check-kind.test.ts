@@ -352,7 +352,7 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
     expect(platform(change, anyone)).toBe('none');
   });
 
-  it.each(both)('runs none for the App’s deploy pin of our own images, on a %s (ADR 0017)', (_, run) => {
+  it.each(both)('runs none for the App’s deploy pin of our own images, on a %s (ADR 0027)', (_, run) => {
     expect(platform({ [CONSOLE]: moved(CONSOLE), [FACTORY]: moved(FACTORY) }, run)).toBe('none');
   });
 

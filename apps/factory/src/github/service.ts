@@ -99,7 +99,7 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
       );
     }
     // This repository's local deploy pull request is added to the merge queue once the gate passes it as an exact pin
-    // and its checks are green (ADR 0017), recorded instead in a dry run; the app's is the line's.
+    // and its checks are green (ADR 0027), recorded instead in a dry run; the app's is the line's.
     for (const target of QUEUED_DEPLOYS.filter((t) => config.repositories.includes(t.repo))) {
       poller.watch(
         `queue ${target.branch} in ${target.repo}`,
@@ -119,7 +119,7 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
         pinWatch({ github, reads: liveReads, actions, recorder, ...recorded, log, only }, repo),
       );
       // Each of those pull requests is added to the merge queue once the gate passes it by a rule the autonomy level
-      // queues and its checks are green (ADR 0017), recorded instead in a dry run; only a move the watch is told to
+      // queues and its checks are green (ADR 0027), recorded instead in a dry run; only a move the watch is told to
       // take, as it opens only those. One the gate held is Martin's, as is all else.
       poller.watch(
         `queue pins in ${repo}`,

@@ -16,8 +16,8 @@
  *   - Node (`node`): `mise.toml`'s version, `mise.lock`'s entry, with the checksum of each platform's download from
  *     Node's own `SHASUMS256.txt`, and each `FROM` of a Node image, its tag moved where it names the version and its
  *     digest the registry's for that tag. Not before the release is as old as `mise.toml`'s `minimum_release_age`.
- *   - a base image (`docker`): each `FROM` of the image at the move's `from`, given its `to`, once the registry says
- *     the tag is that digest. An image that runs Node brings its Node: where the image at that digest runs another
+ *   - a base image (`docker`): each `FROM` of the image at the move's `from`, given its `to`, once the registry
+ *     serves that digest under the image's repository. An image that runs Node brings its Node: where the image at that digest runs another
  *     release than `mise.toml` pins, Node moves to it as above, and the image to the move's digest.
  *   - a tool mise pins (`tool`): its version in `mise.lock`, and then `mise lock <tool>`, which writes each
  *     platform's download and checksum for that version, within the range `mise.toml` gives it. Not before the
@@ -385,7 +385,8 @@ export const movedRange = (spec: string, version: string): string =>
  * Moves a package: each manifest's range that does not admit the target first, then `pnpm update` at every depth,
  * under the app's own policy. A copy the parents' ranges hold below the target holds the work item for an override:
  * the copy the move names, and any on the target's line (its major, or below 1.0 its minor); one on another line is no
- * part of the move.
+ * part of the move. Of several targets, one on a line no copy is at is left while another has its copy to move: the
+ * scan lists it once that move is made.
  *
  * A fix's target is a floor: pnpm takes the newest release the range admits at or above it. A routine update's is
  * exact (`pnpm update <name>@<target>`): the scan listed that release once it had waited its days, and a newer one
@@ -401,12 +402,16 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   const tos = move.to.split(',').map((each) => each.trim());
   const froms = move.from.split(',').map((each) => each.trim());
   if (tos.length > 1 || froms.length > 1) {
-    for (const to of [...tos].sort(compareVersions)) {
+    const copies = [...tos].sort(compareVersions).map((to) => {
       if (!VERSION.test(to)) throw new PinsRefused(`${to} is not a version, so ${move.name} cannot move to it.`);
-      const from = froms.find((each) => VERSION.test(each) && lineOf(each) === lineOf(to));
-      if (!from) throw new PinsRefused(`${move.name} is at no version on the line of ${to}: ${move.from}.`);
-      await movePackage(dir, { ...move, from, to }, pnpm);
-    }
+      return { to, from: froms.find((each) => VERSION.test(each) && lineOf(each) === lineOf(to)) };
+    });
+    // A target on a line no copy is at is no part of this move while another target has its copy: that one is made,
+    // and the scan lists the rest once it has. With no copy on any target's line, the move is refused.
+    const unmet = copies.find((each) => each.from === undefined);
+    if (unmet && copies.every((each) => each.from === undefined))
+      throw new PinsRefused(`${move.name} is at no version on the line of ${unmet.to}: ${move.from}.`);
+    for (const { to, from } of copies) if (from !== undefined) await movePackage(dir, { ...move, from, to }, pnpm);
     return;
   }
   if (!VERSION.test(move.to)) throw new PinsRefused(`${move.to} is not a version, so ${move.name} cannot move to it.`);
@@ -459,10 +464,12 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   if (move.routine) {
     // The manifests' copy alone is the move's: exactly the target, and a parent's copy where its range puts it.
     const got = [...new Set(importedVersions(after, move.name).map((each) => each.version))];
+    // A release past the target, which pnpm took where it would not take the target: said with both releases, in the
+    // words the worker reads the kind of the refusal from (`refusalKind`, apps/factory/src/github/pins.ts).
     const past = got.filter((v) => compareVersions(v, move.to) > 0);
     if (past.length) {
       throw new PinsRefused(
-        `${move.name} resolves to ${past.join(', ')}, past ${move.to}: a routine update moves to the release the scan listed, and no further.`,
+        `pnpm resolved ${move.name} to ${past.join(', ')}, past the ${move.to} asked for: a routine update moves to the release the scan listed, and no further.`,
       );
     }
     if (got.length !== 1 || got[0] !== move.to) {
@@ -552,6 +559,24 @@ const asRegistry =
   (get: Get): DigestOf =>
   (image, tag) =>
     digestOf(image, tag, get);
+
+/**
+ * Refuses a digest of an image its registry does not serve now under the image's own repository: the manifest is asked
+ * for by the digest itself, by HEAD (no pull is counted), and the registry must name that digest in its answer. One
+ * that is gone, that another repository alone has, or that the registry does not answer for, is refused.
+ */
+export async function servedAt(image: string, digest: string, get: Get): Promise<void> {
+  const gone = (why: string) =>
+    new PinsRefused(`Its registry no longer has ${image} at ${digest}, asked for by that digest (${why}).`);
+  let served: string;
+  try {
+    served = await digestOf(image, digest, get);
+  } catch (error) {
+    const said = (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? '';
+    throw gone(/\((\d{3})\)\.$/.exec(said)?.[1] ?? (said.slice(0, 200) || 'no answer'));
+  }
+  if (served !== digest) throw gone(`it answers with ${served}`);
+}
 
 /** The key of a tag's answer among those a step was given (`remembering`): `image:tag`. */
 export const askedKey = (image: string, tag: string) => `${image}:${tag}`;
@@ -742,8 +767,12 @@ export async function moveNode(
 }
 
 /**
- * Moves a base image: each `FROM` of it at `from` to `to`, a tag and its digest, once its registry agrees (`digest`:
- * made again to be compared, the answer the one who made it first had). `from` is
+ * Moves a base image: each `FROM` of it at `from` to `to`, a tag and its digest, once its registry serves that digest
+ * under the image's own repository, asked for by the digest (`servedAt`). The tag need not serve it now: the scan lists
+ * a move at the newest digest of the tag that has waited its day (`ROUTINE.contentDays`, policy/vulnerabilities.ts),
+ * which a tag rebuilt since no longer serves. What ties the digest to the tag is the scan alone: its sealed state
+ * records that the tag served the digest and when, and the review gate makes the move from the same sealed
+ * `moves.json`. A digest the registry does not have under that repository, or does not answer for, is refused. `from` is
  * what the image is pinned at now: a tag with its digest, or the tag alone, as the daily scan names a pin
  * (`moves.json`'s `from`), which then moves each `FROM` of the image at that tag, whatever its digest.
  *
@@ -766,10 +795,7 @@ export async function moveImage(
   const [toTag, toDigest] = move.to.split('@');
   if (!toTag || !toDigest || !DIGEST.test(toDigest))
     throw new PinsRefused(`${move.to} is not a tag with its digest, so ${move.name} cannot move to it.`);
-  const registry = await digest(move.name, toTag);
-  if (registry !== toDigest) {
-    throw new PinsRefused(`${move.name}:${toTag} is ${registry} in its registry, not ${toDigest}.`);
-  }
+  await servedAt(move.name, toDigest, get);
   const pinned = runsNode(move.name)
     ? await readFile(join(dir, 'mise.toml'), 'utf8').then(pinnedNode, () => undefined)
     : undefined;
@@ -782,7 +808,7 @@ export async function moveImage(
   let there = false;
   const moved = await moveFroms(
     dir,
-    // The digest the registry was just asked for, and agreed was the move's: never a second answer.
+    // The digest the registry was just asked for by itself, the move's: never a tag's answer now.
     (image, tag, pinned) => {
       if (image !== move.name) return undefined;
       if ((move.from.includes('@') ? `${tag}@${pinned}` : tag) === move.from) return { tag: toTag, digest: toDigest };

@@ -142,6 +142,7 @@ import { sendCounts } from '../counts.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { spentComment } from '../github/deploy-queue.ts';
 import { type Carry, DEPLOYS, type DeployProposal, MAX_CARRIES } from '../github/deploys.ts';
+import { workItemMark } from '../github/issue-mark.ts';
 import { askedIn } from '../github/made.ts';
 import { failedChecks } from '../github/merging.ts';
 import { finished, outcomeOf } from '../github/reads.ts';
@@ -358,6 +359,22 @@ const VERIFY_LEASE_SECONDS = 2700;
 /** How long the line waits before trying a handback's effects again: doubling from 30 seconds, to 10 minutes. */
 const retryAfterMs = (tries: number) => Math.min(30_000 * 2 ** (tries - 1), 600_000);
 
+/**
+ * The GitHub worker's refusal to write an issue again (`guardIssueAsked` in `github/server.ts`): it carries the pin
+ * watch's label, which someone gave it, or is a pull request. Asking again would be refused again.
+ */
+const issueRefused = (error: unknown) => error instanceof GitHubWorkerError && error.kind === 'branch-refused';
+
+/**
+ * The dependency signal (its seq) the agents are told up to: the one the row names as the one the work item's issue
+ * was last written from, so no agent's public words name a move or an advisory the issue does not. As a rule it is the
+ * newest, since the issue is written again before any step (`issueBehind`); it is older when the issue could not be
+ * written again. None, and so the newest signal, for a dry run's issue, which GitHub never had, and for a row that
+ * names no signal.
+ */
+const toldUpTo = (item: Pick<QueueItem, 'issue' | 'issueSignal'>): number | undefined =>
+  item.issue !== null && item.issue < DRY_RUN_NUMBERS_FROM && item.issueSignal !== null ? item.issueSignal : undefined;
+
 /** A move's ticket, not an improvement's: one whose issue is written from its dependency signal. */
 const movedBy = (state: WorkItemState) =>
   !state.request && state.ticket !== undefined && 'ecosystem' in state.ticket.fingerprint;
@@ -400,6 +417,11 @@ export class Line {
   #gatesReadAt = Number.NEGATIVE_INFINITY;
   /** The merged work items whose volume this worker has deleted, until a step makes one again. */
   readonly #volumeGone = new Set<string>();
+  /**
+   * The dependency signal (its seq) each move's issue could not be written again for, by work item: not asked again
+   * until triage joins another. A line that restarts asks once more, and is answered the same.
+   */
+  readonly #unwritten = new Map<string, number>();
   #deployReadAt = Number.NEGATIVE_INFINITY;
   #releaseReadAt = Number.NEGATIVE_INFINITY;
   readonly #flags: FlagPass;
@@ -1031,8 +1053,10 @@ export class Line {
           ? await this.#openImprovementIssue(workItem)
           : await this.#openIssue(workItem, state, dependency?.signal);
         // The row names the issue first, with the signal it was written from, so a pass after a failure here goes on
-        // with it and never opens a second public issue; one whose record failed records it on the next pass, before
-        // the planner (`record-issue`), from that same signal.
+        // with it; one whose record failed records it on the next pass, before the planner (`record-issue`), from
+        // that same signal. A failure before the row names it (the store restarting, or the worker's answer lost) asks
+        // the GitHub worker again on the next pass, which finds the issue by the work item's mark, opens no second,
+        // and leaves it saying what that pass asks, from the signal the row then names.
         await this.#queue.setIssue(workItem, issue, movedBy(state) ? (dependency?.seq ?? 0) : null);
         this.#o.log.info({ workItem, issue }, 'opened the work item’s issue');
         if (issue < DRY_RUN_NUMBERS_FROM) await this.#recordIssue(workItem, state, issue, dependency?.signal);
@@ -1054,19 +1078,23 @@ export class Line {
         const own = state.ticket;
         if (!dependency || !own) return false;
         const { body } = moveIssue(workItem, own, await this.#publicTicket(workItem, state), dependency.signal);
-        // One GitHub no longer has, or that the App may no longer change, is left as it is, and logged: asking again
-        // would not help, so the row names this signal as the one it was last written for, and it is not asked again
-        // until triage joins another. Nothing is recorded: the issue names what it named, and the agents no more.
+        // One GitHub no longer has, or that the App may no longer change, or that the GitHub worker refuses to write
+        // (someone gave it the pin watch's label), is left as it is, and logged: asking again would not help, so it is
+        // not asked again for this signal (`#unwritten`). The row goes on naming the signal the issue was last written
+        // from, and nothing is recorded: the issue names what it named, and the agents are told no more (`toldUpTo`).
         const written = await this.#o.github
           .act('updateIssue', this.#o.repo, { number: next.issue, body }, { workItem })
           .then(() => true)
           .catch((error: unknown) => {
-            if (!issueGone(error)) throw error;
+            if (!issueGone(error) && !issueRefused(error)) throw error;
             this.#o.log.warn({ workItem, issue: next.issue, err: error }, 'the issue cannot be written again');
             return false;
           });
+        if (!written) {
+          this.#unwritten.set(workItem, dependency.seq);
+          return;
+        }
         await this.#queue.setIssue(workItem, next.issue, dependency.seq);
-        if (!written) return;
         this.#o.log.info({ workItem, issue: next.issue }, 'wrote the work item’s issue again, for the newest scan');
         await this.#recordIssue(workItem, state, next.issue, dependency.signal, true);
         return;
@@ -1910,16 +1938,18 @@ export class Line {
    * to it (a target that changed since the work item opened joins as a later signal), or as it was opened when no
    * signal names one. None for any other work item. A routine update, as that signal says of it (an outdated
    * dependency, where a vulnerable one's names what the scan found), is marked so: the pin step moves it to exactly
-   * its target, as the review gate makes it again (scripts/move.ts).
+   * its target, as the review gate makes it again (scripts/move.ts). With `upTo`, no signal after it is read: the move
+   * is the one the work item's issue names (`toldUpTo`).
    */
-  async #moveOf(workItem: string): Promise<Step['move']> {
+  async #moveOf(workItem: string, upTo?: number): Promise<Step['move']> {
     type Named = { name: string; ecosystem: Ecosystem; from: string; to: string };
+    const told = upTo === undefined ? this.#o.sql`` : this.#o.sql`and seq <= ${upTo}`;
     const [row] = await this.#o.sql<{ moved: Named | null; symptom: string | null; dependency: Named | null }[]>`
       select (select payload->'move' from events
-               where work_item = ${workItem} and type = 'signal.received' and payload ? 'move'
+               where work_item = ${workItem} and type = 'signal.received' and payload ? 'move' ${told}
                order by seq desc limit 1) as moved,
              (select payload->>'symptom' from events
-               where work_item = ${workItem} and type = 'signal.received' and payload ? 'move'
+               where work_item = ${workItem} and type = 'signal.received' and payload ? 'move' ${told}
                order by seq desc limit 1) as symptom,
              (select payload->'dependency' from events
                where work_item = ${workItem} and type = 'work-item.opened' order by seq limit 1) as dependency`;
@@ -2036,7 +2066,7 @@ export class Line {
       const checkout = pr ? await github.read('checkout', repo, { sha: commit }) : { commit, commits: [] };
       // A dependency's move is the pin step's to write, before the coder's first round, and before each round that
       // builds its pull request afresh: any other round starts from the pull request's head, which has the pins.
-      const move = agent === 'coder' && !pr ? await this.#moveOf(workItem) : undefined;
+      const move = agent === 'coder' && !pr ? await this.#moveOf(workItem, toldUpTo(item)) : undefined;
       // Made as the scan made it, as the review gate makes it again.
       const made = move ? await this.#madeAs(repo) : undefined;
       // A move whose spec asks for nothing but the move is the pin step's alone: no agent runs, and the line makes the
@@ -2338,7 +2368,7 @@ export class Line {
       failure: item.failure,
       ticket: () => this.#toldTicket(workItem, state),
       request: () => this.#publicRequest(workItem),
-      signals: () => this.#signals(workItem),
+      signals: () => this.#signals(workItem, toldUpTo(item)),
       scanCounts: (commit) => this.#scanCounts(workItem, commit),
       flagsTaken: () => flagsTaken(this.#o.sql, workItem),
       read: (read, args) => this.#o.github.read(read, this.#o.repo, args),
@@ -2418,7 +2448,8 @@ export class Line {
   /**
    * Opens the ticket's issue in the app's repository, from the ticket's public view; a move's from the ticket's own
    * payload and its newest dependency signal's scan (`moveIssue`), since the issue is where its package and advisories
-   * first become public.
+   * first become public. Every issue's body ends in the work item's mark (`github/issue-mark.ts`): asked again for the
+   * same work item, the GitHub worker gives back the issue it opened, and opens no second.
    */
   async #openIssue(workItem: string, state: WorkItemState, signal: Signal | undefined): Promise<number> {
     const ticket = await this.#publicTicket(workItem, state);
@@ -2443,6 +2474,8 @@ export class Line {
       ...(ticket.traces.length ? [`- Traces: ${ticket.traces.map((t) => `\`${t}\``).join(', ')}`] : []),
       '',
       'The factory is working on it: its fix will come as a pull request that refers here. The issue closes when the fix is verified in production.',
+      '',
+      workItemMark(workItem),
     ].join('\n');
     return this.#o.github.act('openIssue', this.#o.repo, { title: ticket.title, body }, { workItem });
   }
@@ -2490,6 +2523,8 @@ export class Line {
       quoted,
       '',
       'The factory is planning it: Martin approves its spec before any code is written, and its change comes as a pull request that refers here, behind a feature flag that stays off until he turns it on.',
+      '',
+      workItemMark(workItem),
     ].join('\n');
     return this.#o.github.act('openIssue', this.#o.repo, { title: request.title, body }, { workItem });
   }
@@ -2786,19 +2821,26 @@ export class Line {
    * dependency's signal is told from its payload, which names the package and the advisories its public view may
    * withhold: by the time an agent runs, the work item's issue has named them (`#openIssue`), and every word of it is
    * a fixed field the schema bounds, never an advisory's text. Of a dependency's signals only the newest is told: triage
-   * joins a changed target or changed findings as a later signal, and the move is to that one (`#moveOf`).
+   * joins a changed target or changed findings as a later signal, and the move is to that one (`#moveOf`). With `upTo`,
+   * the newest is the newest up to it, and none after it is told: the one the work item's issue names (`toldUpTo`).
    */
-  async #signals(workItem: string): Promise<Signal[]> {
+  async #signals(workItem: string, upTo?: number): Promise<Signal[]> {
     const rows = await this.#o.sql<
-      { payload: PayloadOf<'signal.received'>; public: { payload: PayloadOf<'signal.received'> } }[]
+      { seq: string; payload: PayloadOf<'signal.received'>; public: { payload: PayloadOf<'signal.received'> } }[]
     >`
-      select payload, public from events where work_item = ${workItem} and type = 'signal.received' order by seq`;
+      select seq, payload, public from events
+      where work_item = ${workItem} and type = 'signal.received' order by seq`;
     const told = rows
-      .map((row) => (row.payload.sense === 'dependency' ? row.payload : row.public.payload))
-      .filter((payload) => payload.sense !== 'report' && !payload.report)
-      .map(({ report: _report, ...signal }) => signal);
-    const newest = told.findLast((signal) => signal.sense === 'dependency');
-    return newest ? told.filter((signal) => signal.sense !== 'dependency' || signal === newest) : told;
+      .map((row) => ({
+        seq: Number(row.seq),
+        payload: row.payload.sense === 'dependency' ? row.payload : row.public.payload,
+      }))
+      .filter(({ payload }) => payload.sense !== 'report' && !payload.report)
+      .map(({ seq, payload: { report: _report, ...signal } }) => ({ seq, signal }));
+    const newest = told.findLast(
+      ({ seq, signal }) => signal.sense === 'dependency' && (upTo === undefined || seq <= upTo),
+    );
+    return told.filter((each) => each.signal.sense !== 'dependency' || each === newest).map(({ signal }) => signal);
   }
 
   /** What the scan gates counted on a commit, as `gate.finished` recorded it: the last record of each check. */
@@ -2838,11 +2880,13 @@ export class Line {
   /**
    * Whether triage has joined a dependency signal to a move since the one its row names as the one its issue was last
    * written for (`Facts.scanSince`). Asked of the store only for a move with a signal and a recorded issue, unmerged.
+   * Not for a signal the issue could not be written for (`#unwritten`): it is asked again when triage joins another.
    */
   async #scanSince(item: QueueItem, state: WorkItemState): Promise<boolean> {
     if (!state.scanned || state.merged || item.issue === null || state.issueRecorded !== item.issue) return false;
     const newest = await this.#dependencySignal(item.workItem);
-    return newest !== undefined && newest.seq !== item.issueSignal;
+    if (newest === undefined || newest.seq === this.#unwritten.get(item.workItem)) return false;
+    return newest.seq !== item.issueSignal;
   }
 
   async #facts(item: QueueItem, events: readonly LineEvent[]): Promise<Facts> {

@@ -1217,7 +1217,7 @@ export const PAYLOADS = {
     number: pullRequest,
     /** The head that was queued. */
     commit,
-    /** GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `dequeued`, … */
+    /** GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `stack_invalidated`, `manual` */
     reason: text(60),
     /** Who took it out, as GitHub names them: `github-merge-queue` when the queue did. */
     by: text(39).optional(),
@@ -1286,7 +1286,7 @@ export const PAYLOADS = {
       rule: z.enum(V.GATE_RULES).optional(),
       /** On `queued`, its place in the queue, as GitHub gave it, when it gave one. */
       position: z.number().int().positive().optional(),
-      /** On `dequeued`, GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `dequeued`, … */
+      /** On `dequeued`, GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `stack_invalidated`, `manual` */
       reason: text(60).optional(),
       /** On `passed` and refused, what the GitHub worker said. */
       said: text(300).optional(),

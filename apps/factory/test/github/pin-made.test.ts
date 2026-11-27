@@ -16,7 +16,15 @@ import { WatchedHeads } from '../../src/github/branches.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
 import { groupKey, groupOf, type MadeGroup, madeByStep, stepOf, toolAt, writtenBy } from '../../src/github/made.ts';
 import { pinBranchFor } from '../../src/github/pin-guard.ts';
-import { carriedBy, PASS_MS, PIN_LABEL, type PinScope, pinWatch } from '../../src/github/pins.ts';
+import {
+  carriedBy,
+  issueOf,
+  PASS_MS,
+  PIN_LABEL,
+  type PinScope,
+  pinWatch,
+  STEP_REFUSED,
+} from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { client, quiet, type Sent } from './fake.ts';
@@ -363,6 +371,43 @@ describe('the moves the scan made with the pin step', () => {
     });
   });
 
+  it('says of a routine update pnpm resolved past its target that the newer release has not waited, naming it, and asks nothing', async () => {
+    const repo = new FakeRepo(files());
+    const scanned = repo.main;
+    // The step's own line (apps/runner/src/pins.ts, `movePackage`), as the scan sealed it.
+    const reason =
+      'pnpm resolved example-b to 2.0.2, past the 2.0.1 asked for: a routine update moves to the release the scan listed, and no further.';
+    const update: ReadMove = {
+      ...npm(1, 'example-b', '2.0.0', '2.0.1', 8),
+      mark: 'markb0000000',
+      clears: NONE,
+      deadline: undefined,
+    };
+    const group = lockGroup({ routine: true, moves: [], refused: [{ move: 1, reason }], changed: [], steps: [] });
+    const read = today(scanned, [update], 42_000_000_101);
+    const moves: Moves = {
+      ...read,
+      made: { version: 1, repository: read.repository, run: '42000000101', commit: scanned, groups: [group] },
+    };
+    const w = harness(repo, () => moves);
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    expect(repo.issues).toHaveLength(1);
+    const body = repo.issues[0]?.body ?? '';
+    expect(body).toContain(
+      'The scan’s pin step could not make it on the commit it read: it asked pnpm for the release the scan listed, and pnpm resolved a newer one, `2.0.2`, which has not waited the days a routine update waits. Nothing is asked of you: the watch makes the move on a later day’s scan, once the scan lists that release.',
+    );
+    expect(body).toContain('**A routine update** `example-b` to `2.0.1`');
+    // The step's line is the worker's log's, never the issue's.
+    expect(body).not.toMatch(/asked for|no further|log says which/);
+    expect(w.lines.find((line) => line.reason)).toMatchObject({ level: 40, move: 1, reason });
+    // A move a finding asks for never has this refusal; were its reason read so, its issue would name no release.
+    const fix = { ...update, clears: { ...NONE, HIGH: 1 }, deadline: '2026-12-01' };
+    const said = issueOf(fix, moves, STEP_REFUSED, 'resolved', '2.0.2');
+    expect(said.body).toContain('pnpm resolved a newer one, which has not waited');
+    expect(said.body).not.toMatch(/example-b|2\.0\.2/);
+  });
+
   it('keeps one issue for a routine major pnpm refused, day after day and release after release, naming its package and release', async () => {
     const repo = new FakeRepo(files());
     const scanned = repo.main;
@@ -644,5 +689,45 @@ describe('the moves the scan made with the pin step', () => {
         'chore(pin): move mcr.microsoft.com/playwright to v1.65.1-noble',
       ]);
     });
+  });
+});
+
+describe('a move the pin step made, whose merge was undone on main', () => {
+  it('holds its group, which the step makes whole, with an issue for each of its moves, until the move’s target changes', async () => {
+    const repo = new FakeRepo(files());
+    let scanned = repo.main;
+    let group = lockGroup({
+      moves: [1],
+      changed: [{ path: 'pnpm-lock.yaml', text: LOCK.replace('a@1.0.0', 'a@1.0.1') }],
+    });
+    group.steps = group.steps.slice(0, 1);
+    let moves = scan().slice(0, 1);
+    const w = harness(repo, () => made(scanned, moves, [group]));
+    await w.pass();
+    const [pull] = openPins(repo);
+    expect(pull?.head).toBe(LOCK_BRANCH);
+    // Merged, then reverted on main; the next day's scan lists it again, with another package beside it.
+    const merged = repo.push({ 'pnpm-lock.yaml': repo.file(LOCK_BRANCH, 'pnpm-lock.yaml') as string });
+    Object.assign(pull as object, { state: 'closed', merged_at: '2026-11-11T09:00:00Z', merge_commit_sha: merged });
+    repo.push({ 'pnpm-lock.yaml': LOCK });
+    scanned = repo.main;
+    group = lockGroup();
+    moves = scan().slice(0, 2);
+    await w.pass();
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    const open = repo.issues.filter((i) => i.state === 'open');
+    expect(open.map((i) => i.body.includes('its merge was then undone on `main`')).sort()).toEqual([false, true]);
+    expect(open.find((i) => !i.body.includes('its merge was then undone'))?.body).toContain(
+      'together with a move whose merge was undone on `main`',
+    );
+    expect(w.lines.filter((line) => String(line.msg).includes('undone on main'))).toHaveLength(1);
+
+    // A later release of the package undone is another move: the group is made, and both issues close.
+    group = lockGroup({ changed: [{ path: 'pnpm-lock.yaml', text: MOVED.replace('a@1.0.1', 'a@1.0.2') }] });
+    group.steps = [{ ...(group.steps[0] as MadeGroup['steps'][number]), after: ['1.0.2'] }, ...group.steps.slice(1)];
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual([LOCK_BRANCH]);
+    expect(repo.issues.filter((i) => i.state === 'open')).toEqual([]);
   });
 });

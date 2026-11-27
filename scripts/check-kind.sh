@@ -20,7 +20,7 @@
 # `scripts/check-kind.sh platform` says instead whether platform.yml's cluster runs, `cluster` or `none`: `cluster` when
 # HEAD changes from HEAD^1 any input, which is any path outside the classes a cluster is not made from (is_input, below:
 # a path no one listed is an input), unless the kind is `deploy`, whose images were built from commits already merged
-# and whose merge decides nothing (ADR 0017). Anything it cannot tell is `cluster`. In the
+# and whose merge decides nothing (ADR 0027). Anything it cannot tell is `cluster`. In the
 # merge queue, a `cluster` is `matched` instead when platform.yml's own job made one from the same inputs at the queued
 # pull request's head and passed there (passed_at_head, below), and the job is skipped. Its log says the inputs' hash.
 #
@@ -148,7 +148,7 @@ changes_platform() {
 
 # In the merge queue, a cluster made at the pull request's head stands for the queue's commit when the cluster would be
 # made from the same inputs. An input is read as git holds it, its mode, type and object, so a mode, a symlink or a
-# deletion differs; the App's deploy pins of our own images are read with their digests written the same, as ADR 0017
+# deletion differs; the App's deploy pins of our own images are read with their digests written the same, as ADR 0027
 # reads them, where their move alone makes no cluster either.
 # How long a pass at the head stands: what the cluster pulls that no input pins by digest (the app's main, which the
 # website follows, each chart at its version, k3s at its tag, the runner's image) moves by itself.

@@ -42,7 +42,8 @@ export const PROOFS = {
   bypass: {
     for:
       "`scripts/github-settings.ts --check --see-bypass` with Martin's `gh`, which sees each ruleset's bypass list: " +
-      'it fails if a list is unseen or names anyone, or a push bypassed a ruleset in the last week.',
+      'it fails if a list is unseen or names anyone but the two writers the `branches` ruleset exempts, Martin and ' +
+      'Dependabot, or a push bypassed a ruleset in the last week.',
     mechanism: 'ruleset',
   },
   'ci:gates-deterministic': {

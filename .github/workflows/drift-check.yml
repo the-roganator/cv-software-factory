@@ -55,6 +55,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/repositories.ts
+            policy/branches.ts
             policy/repositories.ts
             scripts/github-settings.ts
           sparse-checkout-cone-mode: false

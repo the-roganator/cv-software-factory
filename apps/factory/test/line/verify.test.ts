@@ -781,6 +781,48 @@ describe('Verify by the scan', () => {
     });
   });
 
+  /** A pin the scan says waits, as the worker reads it: an image's, with the finding the state names there. */
+  const held = (over: Partial<NonNullable<Moves['waiting']>[number]> = {}): NonNullable<Moves['waiting']>[number] => ({
+    index: 1,
+    name: 'ghcr.io/example/base',
+    pins: [{ file: 'Dockerfile', line: 1 }],
+    from: '1.2.1',
+    lockfile: false,
+    why: 'content',
+    to: `image 1.2.2@sha256:${'5'.repeat(64)}`,
+    until: '2026-11-11T04:15:00Z',
+    clears: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+    findings: [{ advisory: 'GHSA-0000-0000-0001', package: 'invented-pkg', severity: 'HIGH' }],
+    ...over,
+  });
+
+  it('persists on a finding whose fix the scan holds as no move today, for its content’s day or as no better', async () => {
+    // No move lists the finding, and the scan says it waits: it is open, not fixed.
+    for (const why of ['content', 'no-better'] as const) {
+      const day = { ...recorded(true), waiting: [held({ why })] };
+      expect(await look(move, released, options({ scans: scans(day) }))).toMatchObject({
+        kind: 'finished',
+        verification: { outcome: 'persists', evidence: { after: { critical: 0, high: 1, low: 0 } } },
+      });
+    }
+    // A pin that waits with none of the move's findings, and no name of its own, says nothing of it.
+    const other = held({ findings: [{ advisory: 'CVE-2099-40001', package: 'libother', severity: 'HIGH' }] });
+    expect(
+      await look(move, released, options({ scans: scans({ ...recorded(true), waiting: [other] }) })),
+    ).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+  });
+
+  it('reads a scan that says nothing waits, and one that does not say what waits, by its moves alone', async () => {
+    for (const day of [{ ...recorded(true), waiting: [] }, recorded(true)]) {
+      expect(await look(move, released, options({ scans: scans(day) }))).toMatchObject({
+        verification: { outcome: 'cleared' },
+      });
+    }
+    expect(recorded(true)).not.toHaveProperty('waiting');
+  });
+
   it('waits while the scan’s last run on main is of a commit that does not carry the release', async () => {
     const other = { ...released, version: 'd'.repeat(40) };
     expect(await look(move, other, options({ scans: scans(recorded(true)) }))).toEqual({
@@ -905,6 +947,22 @@ describe('Verify by the scan', () => {
     });
     const image = { ...routine, move: { ...routine.move, ecosystem: 'docker' } } as FirstSignal;
     expect(await look(image, released, options({ scans: scans(whole(listed())) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+  });
+
+  it('persists while the scan holds the routine update for its content’s day: its pin is where it was', async () => {
+    const image = { ...routine, move: { ...routine.move, ecosystem: 'docker' } } as FirstSignal;
+    const waits = held({ name: 'invented-pkg', from: '2.0.0', routine: true, findings: [] });
+    const day = (waiting: NonNullable<Moves['waiting']>) => scans({ ...whole(recorded(true)), waiting });
+    expect(await look(image, released, options({ scans: day([waits]) }))).toMatchObject({
+      verification: { outcome: 'persists' },
+    });
+    // Held from the version it moved to, it is a later update's wait; and with nothing held it has cleared.
+    expect(await look(image, released, options({ scans: day([{ ...waits, from: '2.0.3' }]) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+    expect(await look(image, released, options({ scans: day([]) }))).toMatchObject({
       verification: { outcome: 'cleared' },
     });
   });

@@ -10,6 +10,7 @@ import type { Contradicted } from '../../src/gates/contradicts.ts';
 import { described } from '../../src/github/actions.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { DeployBuild, DeployProposal } from '../../src/github/deploys.ts';
+import { workItemMarkOf } from '../../src/github/issue-mark.ts';
 import type { Annotation, CheckRun, Comparison, PullRequestState } from '../../src/github/reads.ts';
 import type { Moves } from '../../src/github/scanning.ts';
 import type {
@@ -184,6 +185,8 @@ export class FakeGitHub implements GitHubPort {
   readonly #queueFailures = new Map<number, { head: string; failures: number }>();
   /** The number GitHub gives each issue the line opens: a dry run's are `DRY_RUN_NUMBERS_FROM` up. */
   issueNumber = 41;
+  /** The issues GitHub made, each as it now reads. */
+  readonly issues: { number: number; body: string }[] = [];
   #commits = 0;
 
   /** The merge queue taking a pull request out without merging it, with GitHub's reason and the checks that failed. */
@@ -229,8 +232,19 @@ export class FakeGitHub implements GitHubPort {
 
   #act(action: ActionName, args: Record<string, unknown>): unknown {
     switch (action) {
-      case 'openIssue':
+      case 'openIssue': {
+        // As the worker's door: an issue whose body carries a work item's mark is the one already made with it, saying
+        // what is asked now, and no second is made.
+        const body = String(args.body);
+        const mark = workItemMarkOf(body);
+        const had = mark ? this.issues.find((each) => workItemMarkOf(each.body) === mark) : undefined;
+        if (had) {
+          had.body = body;
+          return had.number;
+        }
+        this.issues.push({ number: this.issueNumber, body });
         return this.issueNumber;
+      }
       case 'setBranch': {
         // A pull request's branch moved takes its head with it.
         for (const pr of this.pulls.values()) if (pr.head.ref === args.branch) pr.head.sha = String(args.sha);

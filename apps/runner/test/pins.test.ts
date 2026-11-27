@@ -191,7 +191,7 @@ describe('a package’s move', () => {
     const past = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
     const newer = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.1', '4.2.1')));
     await expect(writePins(past, routine, tools(newer.pnpm))).rejects.toThrow(
-      'vitest resolves to 5.1.1, past 5.1.0: a routine update moves to the release the scan listed, and no further.',
+      'pnpm resolved vitest to 5.1.1, past the 5.1.0 asked for: a routine update moves to the release the scan listed, and no further.',
     );
     // The same lockfile is a fix's move made: its target is a floor.
     await writePins(
@@ -427,12 +427,35 @@ snapshots:
     expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'semver')).toEqual(['5.7.2', '7.8.6']);
   });
 
+  it('makes the move of the copy that has a target on its line, and leaves a target no copy is on the line of', async () => {
+    // One copy, with one fix in its major and one on the next: the in-major move, and the major is a later day's.
+    const alone = (version: string) =>
+      TWICE('0.0.0', version)
+        .replace('  semver@0.0.0:\n    resolution: {integrity: sha512-old}\n\n', '')
+        .replace('  semver@0.0.0: {}\n\n', '');
+    expect(lockedVersions(alone('5.7.1'), 'semver')).toEqual(['5.7.1']);
+    const single = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': alone('5.7.1') });
+    const one = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), alone('5.7.2')));
+    await writePins(single, { ecosystem: 'npm', name: 'semver', from: '5.7.1', to: '5.7.2,6.0.1' }, tools(one.pnpm));
+    expect(one.runs).toEqual([['update', 'semver', '--depth', 'Infinity']]);
+    expect(lockedVersions(read(single, 'pnpm-lock.yaml'), 'semver')).toEqual(['5.7.2']);
+    // Two copies, one with a fix on its line and one whose fix is a major away.
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': TWICE('5.7.1', '7.5.1') });
+    const { pnpm, runs } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), TWICE('5.7.1', '7.5.2')));
+    await writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '6.0.1,7.5.2' }, tools(pnpm));
+    expect(runs).toEqual([['update', 'semver', '--depth', 'Infinity']]);
+    expect(lockedVersions(read(dir, 'pnpm-lock.yaml'), 'semver')).toEqual(['5.7.1', '7.5.2']);
+  });
+
   it('refuses a target with no copy on its line, and one that is not a version', async () => {
     const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': TWICE('5.7.1', '7.5.1') });
     const { pnpm, runs } = fakePnpm(() => {});
     await expect(
-      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '6.0.1,7.5.2' }, tools(pnpm)),
+      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '6.0.1,8.0.0' }, tools(pnpm)),
     ).rejects.toThrow('semver is at no version on the line of 6.0.1: 5.7.1, 7.5.1.');
+    await expect(
+      writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1', to: '6.0.1,8.0.0' }, tools(pnpm)),
+    ).rejects.toThrow('semver is at no version on the line of 6.0.1: 5.7.1.');
     await expect(
       writePins(dir, { ecosystem: 'npm', name: 'semver', from: '5.7.1, 7.5.1', to: '5.7.2,latest' }, tools(pnpm)),
     ).rejects.toThrow('latest is not a version');
@@ -667,7 +690,11 @@ describe('Node’s move', () => {
       [`${base}/blobs/${sha256(layers[1] as Buffer)}`, layers[1] as Buffer],
     ]);
     const get: Get = async (url, init) => {
-      if (url === `${base}/manifests/nonroot`)
+      // The tag, and the index asked for by its digest, as a registry answers a HEAD: with the digest it serves.
+      if (
+        url === `${base}/manifests/nonroot` ||
+        (init?.method === 'HEAD' && url === `${base}/manifests/${sha256(index)}`)
+      )
         return new Response(null, { headers: { 'docker-content-digest': sha256(index) } });
       const blob = blobs.get(url);
       if (blob) return new Response(new Uint8Array(blob));
@@ -934,26 +961,73 @@ function tar(files: [string, string][], prefix = ''): Buffer {
 }
 
 describe('a base image’s move', () => {
-  it('takes the digest only from the registry, and refuses a target the registry does not have at that tag', async () => {
-    const get: Get = async () =>
-      new Response(null, { headers: { 'docker-content-digest': `sha256:${'5'.repeat(64)}` } });
-    expect(await digestOf('gcr.io/distroless/nodejs24-debian13', 'nonroot', get)).toBe(`sha256:${'5'.repeat(64)}`);
-    const dir = checkout({ Dockerfile: `FROM gcr.io/distroless/static:nonroot@sha256:${'2'.repeat(64)}\n` });
-    const move = {
+  describe('to a digest its registry serves under the image’s repository, asked for by the digest', () => {
+    const sha = (c: string) => `sha256:${c.repeat(64)}`;
+    const STATIC = 'https://gcr.io/v2/distroless/static/manifests';
+    /**
+     * A registry: the tag `nonroot` of distroless's static image serves 7 now; the repository still has 5, which the
+     * tag served before; 6 it never had; and 8 is another repository's alone.
+     */
+    const asked: [string, string][] = [];
+    const get: Get = async (url, init) => {
+      asked.push([init?.method ?? 'GET', url]);
+      const served = (digest: string) => new Response(null, { headers: { 'docker-content-digest': digest } });
+      if (url === `${STATIC}/nonroot` || url === `${STATIC}/${sha('7')}`) return served(sha('7'));
+      if (url === `${STATIC}/${sha('5')}`) return served(sha('5'));
+      if (url === `https://gcr.io/v2/distroless/base/manifests/${sha('8')}`) return served(sha('8'));
+      return new Response(null, { status: 404 });
+    };
+    const DOCKERFILE = `FROM gcr.io/distroless/static:nonroot@${sha('2')}\n`;
+    const move = (to: string) => ({
       ecosystem: 'docker' as const,
       name: 'gcr.io/distroless/static',
-      from: `nonroot@sha256:${'2'.repeat(64)}`,
-      to: `nonroot@sha256:${'6'.repeat(64)}`,
+      from: `nonroot@${sha('2')}`,
+      to: `nonroot@${to}`,
+    });
+    const made = async (to: string) => {
+      const dir = checkout({ Dockerfile: DOCKERFILE });
+      await writePins(dir, move(to), { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir });
+      return read(dir, 'Dockerfile');
     };
-    await expect(writePins(dir, move, { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir })).rejects.toThrow(
-      /is sha256:5{64} in its registry/,
-    );
-    await writePins(
-      dir,
-      { ...move, to: `nonroot@sha256:${'5'.repeat(64)}` },
-      { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir },
-    );
-    expect(read(dir, 'Dockerfile')).toBe(`FROM gcr.io/distroless/static:nonroot@sha256:${'5'.repeat(64)}\n`);
+
+    it('makes a move to a digest that has waited, though the tag serves a newer one now', async () => {
+      asked.length = 0;
+      expect(await made(sha('5'))).toBe(`FROM gcr.io/distroless/static:nonroot@${sha('5')}\n`);
+      // Asked by the digest alone, by HEAD, so no pull is counted; the tag is never asked.
+      expect(asked).toEqual([['HEAD', `${STATIC}/${sha('5')}`]]);
+      expect(await made(sha('7'))).toBe(`FROM gcr.io/distroless/static:nonroot@${sha('7')}\n`);
+    });
+
+    it('refuses a digest the registry does not have under that repository, writing nothing', async () => {
+      const dir = checkout({ Dockerfile: DOCKERFILE });
+      await expect(writePins(dir, move(sha('6')), { pnpm: fakePnpm(() => {}).pnpm, get, aside: dir })).rejects.toThrow(
+        /Its registry no longer has gcr\.io\/distroless\/static at sha256:6{64}, asked for by that digest \(404\)/,
+      );
+      expect(read(dir, 'Dockerfile')).toBe(DOCKERFILE);
+    });
+
+    it('refuses a digest another repository of the same registry has, and this one has not', async () => {
+      expect(await digestOf('gcr.io/distroless/base', sha('8'), get)).toBe(sha('8'));
+      await expect(made(sha('8'))).rejects.toThrow(
+        /Its registry no longer has gcr\.io\/distroless\/static at sha256:8{64}/,
+      );
+    });
+
+    it('refuses a registry that does not answer, or answers with another digest', async () => {
+      const down: Get = async () => {
+        throw new Error('getaddrinfo ENOTFOUND gcr.io');
+      };
+      const other: Get = async () => new Response(null, { headers: { 'docker-content-digest': sha('7') } });
+      for (const [registry, why] of [
+        [down, /ENOTFOUND/],
+        [other, /it answers with sha256:7{64}/],
+      ] as const) {
+        const dir = checkout({ Dockerfile: DOCKERFILE });
+        const tools = { pnpm: fakePnpm(() => {}).pnpm, get: registry, aside: dir };
+        await expect(writePins(dir, move(sha('5')), tools)).rejects.toThrow(why);
+        expect(read(dir, 'Dockerfile')).toBe(DOCKERFILE);
+      }
+    });
   });
 
   it('moves a pin the scan names by its tag alone, whatever its digest, and no other tag of the image', async () => {

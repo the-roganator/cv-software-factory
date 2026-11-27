@@ -13,7 +13,7 @@
 # which is every path but a few classes no cluster is made from (docs, tests, the sources of images built on main and
 # pinned by digest, other workflows, .claude/, .devcontainer/, the lockfile and manifests), so a file no one listed
 # makes one; but never the factory's App's deploy pin of our own images, which were built from commits already merged
-# (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
+# (ADR 0027). Otherwise the job is skipped, which the ruleset counts as passed.
 # In the merge queue it is skipped too when this workflow's `cluster from the change` made a cluster from the same inputs at the pull
 # request's head and passed there, within a day: check-kind.sh says how it tells, from git and GitHub's check runs alone.
 # The repository variable PLATFORM_SKIP set to `off` makes a cluster in the queue every time.

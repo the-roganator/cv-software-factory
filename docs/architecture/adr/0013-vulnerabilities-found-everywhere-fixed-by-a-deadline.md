@@ -36,7 +36,7 @@ On each push to `main`, a job submits Syft's SBOM of the lockfile to GitHub's de
 
 ### Deadlines
 
-A finding's severity is the higher of the scanner's rating and that of the project that published the fix, as milestone 7's Patching decisions set. The publisher's rating counts wherever a machine can read one; where it cannot, the scanner's stands alone. Its deadline counts from the day its fix can be installed: the first fixed version's publish time in its registry, plus pnpm's day for a package, or the patched image's release. No first finding counts from before the day it is first scanned. Both are worked out from the registry, and kept from one run to the next in the scan's sealed state (ADR 0021), or read from the code-scanning alerts where it has none:
+A finding's severity is the higher of the scanner's rating and that of the project that published the fix, as milestone 7's Patching decisions set. The publisher's rating counts wherever a machine can read one; where it cannot, the scanner's stands alone. Its deadline counts from the day its fix can be installed: the first fixed version's publish time in its registry, plus pnpm's day for a package, or the patched image's release. No first finding counts from before the day it is first scanned. Both are worked out from the registry, and kept from one run to the next in the scan's sealed state (ADR 0026), or read from the code-scanning alerts where it has none:
 
 | Severity | Fixed within |
 |---|---|
@@ -56,7 +56,7 @@ The file is code-owned, and the scan reads it from this repository's `main`, not
 ### Who fixes it
 
 - **The app:** the line, as milestone 7's Patching (Part D) sets out.
-- **The factory's lockfile, its toolchain, its images and the platform:** the factory's App, by a pull request for the day's moves at a set of files that moves those pins and nothing else, which the review gate passes when it is exactly the scan's moves, made again by the gate on `main` (ADR 0022). What the App cannot write is Martin's, from an issue a session can take as it stands: a workflow's pin, the Makefile's, and a move pnpm or mise refused.
+- **The factory's lockfile, its toolchain, its images and the platform:** the factory's App, by a pull request for the day's moves at a set of files that moves those pins and nothing else, which the review gate passes when it is exactly the scan's moves, made again by the gate on `main` (ADR 0027). What the App cannot write is Martin's, from an issue a session can take as it stands: a workflow's pin, the Makefile's, and a move pnpm or mise refused.
 
 The daily scan fails on a new High or Critical finding whose fix can be installed, on one due within a day, and on any deadline passed. A new one with no such fix is counted in its log and fails nothing: nobody can act on it, so a scan that fails on a finding always has something to move. Its log, which anyone can read in a public repository, gives counts by severity and deadline; the packages and advisories are in code scanning, which only those with access to the repository's security findings see. A failed scheduled run is GitHub's own notice to Martin, who alone changes the workflows, with no new secret in CI. From Part D, the factory reads each day's results with its App and alerts him at Notify, through Alertmanager.
 

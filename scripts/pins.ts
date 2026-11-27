@@ -17,6 +17,9 @@
  * It prints what it made by group and count alone, and a move the step refused by its place in `moves.json`: never a
  * package or the step's words, which the sealed file keeps for the worker's log.
  */
+// First, before any other import, so it is evaluated first: it takes the key out of the environment.
+import './scan-key.ts';
+
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,10 +42,7 @@ import type { MovesFile } from '../apps/factory/src/vulnerabilities/moves.ts';
 import { open, readKey, STATE_KEY } from '../apps/factory/src/vulnerabilities/state.ts';
 import { askedList, lockedVersions, type Move as PinStepMove } from '../apps/runner/src/pins.ts';
 import { type Derivation, deriveOn, gitIn } from './derive.ts';
-
-/** The state's key, read once and out of the environment before anything runs. */
-const KEY = process.env[STATE_KEY];
-delete process.env[STATE_KEY];
+import { SCAN_KEY } from './scan-key.ts';
 
 /** The lanes whose moves the pin watch commits (github/pins.ts). */
 const PULL_LANES = new Set(['worker', 'cluster']);
@@ -159,8 +159,8 @@ async function main(argv: string[]) {
     console.error('Usage: node scripts/pins.ts <moves.json> <state.sealed> <checkout> <out>');
     process.exit(2);
   }
-  if (!KEY) throw new Error(`the pins job holds no ${STATE_KEY} to read the scan's state with`);
-  const key = readKey(KEY);
+  if (!SCAN_KEY) throw new Error(`the pins job holds no ${STATE_KEY} to read the scan's state with`);
+  const key = readKey(SCAN_KEY);
   const repository = process.env.GITHUB_REPOSITORY ?? '';
   const run = process.env.GITHUB_RUN_ID ?? '';
   const file = MOVES_FILE_SCHEMA.parse(JSON.parse(readFileSync(movesPath, 'utf-8'))) as MovesFile;

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Routine } from '../../../../policy/vulnerabilities.ts';
 import * as policy from '../../../../policy/vulnerabilities.ts';
 import { REPOSITORIES } from '../../src/github/config.ts';
+import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import {
   assess,
   type PackageVersions,
@@ -10,8 +11,9 @@ import {
   stateOf,
   verdict,
 } from '../../src/vulnerabilities/deadlines.ts';
-import { APP, isRoutine, moves, movesFile, pinsOf, table } from '../../src/vulnerabilities/moves.ts';
-import { directs, leftAlone, recorded, routine, summary } from '../../src/vulnerabilities/routine.ts';
+import { readTarget } from '../../src/vulnerabilities/fixes.ts';
+import { APP, isRoutine, moves, movesFile, pinsOf, table, waiting } from '../../src/vulnerabilities/moves.ts';
+import { directs, leftAlone, recorded, routine, summary, TAGS } from '../../src/vulnerabilities/routine.ts';
 import type { Finding } from '../../src/vulnerabilities/sarif.ts';
 import type { Handoff, ReadTarget } from '../../src/vulnerabilities/scan.ts';
 import { newKey, open, readKey, type StateRoutine, seal } from '../../src/vulnerabilities/state.ts';
@@ -25,7 +27,12 @@ const NOW = Date.parse('2026-11-10T04:30:00Z');
 const REPOSITORY = 'the-roganator/cv-software-factory';
 const ago = (days: number, now = NOW) => new Date(now - days * DAY).toISOString();
 const digest = (letter: string) => `sha256:${letter.repeat(64)}`;
-const POLICY: Routine = { days: 3, majorDays: 7, leave: [] };
+const POLICY: Routine = { days: 3, majorDays: 7, contentDays: 1, slackHours: 0, leave: [] };
+/** The tag a record's target names. */
+const readTag = (to: string) => {
+  const target = readTarget(to);
+  return target?.kind === 'image' ? target.tag : undefined;
+};
 
 interface World {
   targets: ReadTarget[];
@@ -46,6 +53,8 @@ interface World {
   releases?: { version: string; date: string }[];
   /** Lookups that fail, by what is asked (`tags example/image`). */
   down?: string[];
+  /** Digests the registry no longer has, asked for by themselves. */
+  gone?: string[];
   policy?: Routine | undefined;
   last?: StateRoutine[];
   repository?: string;
@@ -57,6 +66,12 @@ function sourcesOf(world: World) {
   const ask = (what: string) => {
     asked.push(what);
     if (world.down?.includes(what)) throw new Error(`${what}: 503 for example-secret`);
+  };
+  // A digest asked for by itself is that digest, while the registry has it; a tag's is what the world serves.
+  const digestOf = (reference: string) => {
+    const own = /@(sha256:[0-9a-f]{64})$/.exec(reference)?.[1];
+    if (own && world.gone?.includes(own)) throw new Error(`${reference}: MANIFEST_UNKNOWN`);
+    return own ?? world.digests?.[reference] ?? digest('d');
   };
   const sources: Sources = {
     published: async () => undefined,
@@ -74,11 +89,11 @@ function sourcesOf(world: World) {
     },
     async served(reference) {
       ask(`served ${reference}`);
-      return world.digests?.[reference] ?? digest('d');
+      return digestOf(reference);
     },
     async digest(reference) {
       ask(`digest ${reference}`);
-      return world.digests?.[reference] ?? digest('d');
+      return digestOf(reference);
     },
     manifests: async () => ({ digest: digest('f'), platforms: [] }),
     async chartVersions(_repo, chart) {
@@ -231,7 +246,7 @@ describe('an image’s pin that is behind', () => {
     expect(asked).toEqual(['served example/base:stable']);
   });
 
-  it('lists a tag rebuilt every day on the third day, at the digest it serves that day', async () => {
+  it('lists a tag rebuilt every day on the third day, at the newest digest it has known a day', async () => {
     const rolling = image(`gcr.io/distroless/static:nonroot@${digest('a')}`);
     const serving = (letter: string, last?: StateRoutine[]): World => ({
       targets: [rolling],
@@ -242,23 +257,167 @@ describe('an image’s pin that is behind', () => {
     const day1 = await listed(serving('c', day0.records), NOW + DAY);
     const day2 = await listed(serving('d', day1.records), NOW + 2 * DAY);
     expect([day0, day1, day2].map((day) => day.routine.length)).toEqual([0, 0, 0]);
-    // One record a day, of that day's digest, with the day the pin was first seen behind its tag.
+    // One record, with the day the pin was first seen behind its tag; of the digests the tag served, the newest that
+    // has waited its day, which a move would list at, and the one that waits.
     expect(day2.records).toEqual([
       {
         name: 'gcr.io/distroless/static',
         from: 'nonroot',
-        to: `image nonroot@${digest('d')}`,
+        to: `image nonroot@${digest('c')}`,
         pins: [{ file: 'deploy/x.yaml', line: 12 }],
         held: [digest('a')],
         seen: '2026-11-10T04:30:00Z',
+        content: [
+          { target: `image nonroot@${digest('c')}`, seen: '2026-11-11T04:30:00Z' },
+          { target: `image nonroot@${digest('d')}`, seen: '2026-11-12T04:30:00Z' },
+        ],
       },
     ]);
+    // The third day's digest is minutes old: the move lists at the second day's, asked for by itself.
     const day3 = await listed(serving('e', day2.records), NOW + 3 * DAY);
-    expect(day3.routine[0]).toMatchObject({ to: { kind: 'image', tag: 'nonroot', digest: digest('e') } });
-    expect(day3.records).toEqual([{ move: 1, ...day2.records[0], to: `image nonroot@${digest('e')}` }]);
-    // Still listed the next day, at that day's digest, while the pin has not moved.
+    expect(day3.routine[0]).toMatchObject({ to: { kind: 'image', tag: 'nonroot', digest: digest('d') } });
+    expect(day3.asked).toEqual([
+      'served gcr.io/distroless/static:nonroot',
+      `served gcr.io/distroless/static@${digest('d')}`,
+    ]);
+    expect(day3.records).toEqual([
+      {
+        move: 1,
+        ...day2.records[0],
+        to: `image nonroot@${digest('d')}`,
+        content: [
+          { target: `image nonroot@${digest('d')}`, seen: '2026-11-12T04:30:00Z' },
+          { target: `image nonroot@${digest('e')}`, seen: '2026-11-13T04:30:00Z' },
+        ],
+      },
+    ]);
+    // Still listed the next day, a day behind the tag, while the pin has not moved.
     const day4 = await listed(serving('f', day3.records), NOW + 4 * DAY);
-    expect(day4.routine[0]?.to).toMatchObject({ digest: digest('f') });
+    expect(day4.routine[0]?.to).toMatchObject({ digest: digest('e') });
+    // A tag that stops being rebuilt lists at what it serves once that has waited its day.
+    const day5 = await listed(serving('f', day4.records), NOW + 5 * DAY);
+    expect(day5.routine[0]?.to).toMatchObject({ digest: digest('f') });
+    expect(day5.asked).toEqual(['served gcr.io/distroless/static:nonroot']);
+  });
+
+  it('never lists at a digest pushed after the tag’s wait: at the one it has known a day, or not yet', async () => {
+    const world = (letter: string, last?: StateRoutine[], over: Partial<World> = {}): World => ({
+      targets: [PINNED],
+      tags: { 'example/image': ['2.17.0', '2.18.1'] },
+      digests: { 'example/image:2.18.1': digest(letter) },
+      ...(last ? { last } : {}),
+      ...over,
+    });
+    const day0 = await listed(world('b'));
+    const day3 = await listed(world('b', day0.records), NOW + 3 * DAY);
+    expect(day3.routine[0]?.to).toEqual({ kind: 'image', tag: '2.18.1', digest: digest('b') });
+    // The tag is pushed again, its three days served: the move stays at what waited them.
+    const pushed = await listed(world('c', day3.records), NOW + 3.5 * DAY);
+    expect(pushed.routine.map((move) => move.to)).toEqual([{ kind: 'image', tag: '2.18.1', digest: digest('b') }]);
+    // Where the registry no longer has that digest there is no move that day, and the new one lists once it has
+    // waited its own.
+    const dropped = await listed(world('c', day3.records, { gone: [digest('b')] }), NOW + 3.5 * DAY);
+    expect(dropped.routine).toEqual([]);
+    expect(dropped.listing.counts).toMatchObject({ waiting: 1, unread: 0 });
+    // The listing says the pin waits for its content, by the digest that comes due first, and when.
+    expect(dropped.listing.waits).toEqual([
+      {
+        kind: 'third-party',
+        name: 'example/image',
+        pins: [{ file: PINNED.file, line: PINNED.line }],
+        from: '2.17.0',
+        to: { kind: 'image', tag: '2.18.1', digest: digest('c') },
+        until: NOW + 4.5 * DAY,
+      },
+    ]);
+    // The state's record of the release bears that out, as the GitHub worker reads the two (scanning.ts's `joined`):
+    // the pin, and the digest among the content the record waits for.
+    const read = (day: typeof dropped, change: (entry: Record<string, unknown>) => void = () => {}) => {
+      const waits = waiting([], [], day.listing.waits);
+      const file = JSON.parse(
+        JSON.stringify(
+          movesFile([], { repository: REPOSITORY, now: NOW }, '1', [], undefined, undefined, { unread: 0 }, waits),
+        ),
+      ) as ReturnType<typeof movesFile>;
+      for (const entry of file.waiting ?? []) change(entry as unknown as Record<string, unknown>);
+      const state = {
+        version: 1 as const,
+        repository: REPOSITORY,
+        run: '1',
+        findings: [],
+        routine: recorded(day.records, []),
+      };
+      return joined(REPOSITORY, { id: 1 } as ScanRun, file, state).waiting;
+    };
+    expect(read(dropped)).toEqual([expect.objectContaining({ name: 'example/image', routine: true, findings: [] })]);
+    expect(() => read(dropped, (entry) => Object.assign(entry, { to: `image 2.18.1@${digest('f')}` }))).toThrow(
+      /a routine update's, waits for content the state did not record for it/,
+    );
+    expect(() =>
+      read(dropped, (entry) => Object.assign(entry, { pins: [{ file: 'deploy/other.yaml', line: 1 }] })),
+    ).toThrow(/a routine update's, is no release the state recorded as waiting/);
+    // A tag still inside its own days waits for those, not for its content; and a move listed waits for nothing.
+    expect(day0.listing.waits).toBeUndefined();
+    expect(day3.listing.waits).toBeUndefined();
+    // A state written before it kept each digest's day has none: the tag has waited, and its content waits from now.
+    const old = day0.records.map(({ content: _, ...record }) => record);
+    const first = await listed(world('b', old), NOW + 3 * DAY);
+    expect(first.routine).toEqual([]);
+    expect(first.listing.waits).toEqual([
+      expect.objectContaining({
+        name: 'example/image',
+        to: { kind: 'image', tag: '2.18.1', digest: digest('b') },
+        until: NOW + 4 * DAY,
+      }),
+    ]);
+    expect(read(first)).toHaveLength(1);
+    expect(dropped.records[0]?.content).toEqual([
+      { target: `image 2.18.1@${digest('c')}`, seen: '2026-11-13T16:30:00Z' },
+    ]);
+    expect((await listed(world('c', dropped.records), NOW + 4 * DAY)).routine).toEqual([]);
+    const next = await listed(world('c', dropped.records), NOW + 4.5 * DAY);
+    expect(next.routine[0]?.to).toEqual({ kind: 'image', tag: '2.18.1', digest: digest('c') });
+  });
+
+  it('counts a digest’s day from wherever the state first has it, and gives one from a state without them a day', async () => {
+    const old: StateRoutine[] = [
+      {
+        name: 'example/image',
+        from: '2.17.0',
+        to: `image 2.18.1@${digest('b')}`,
+        pins: [{ file: 'deploy/x.yaml', line: 12 }],
+        held: [digest('a')],
+        seen: ago(5),
+      },
+    ];
+    const world: World = { targets: [PINNED], ...newer(0), waited: undefined, last: old };
+    // A record written before the digests were kept: the tag has waited, and its digest is first seen today.
+    const first = await listed(world);
+    expect(first.routine).toEqual([]);
+    expect(first.records[0]).toMatchObject({
+      seen: '2026-11-05T04:30:00Z',
+      content: [{ seen: '2026-11-10T04:30:00Z' }],
+    });
+    expect((await listed({ ...world, last: first.records }, NOW + DAY)).routine).toHaveLength(1);
+    // A digest a finding's fix has waited on (state.ts's `sightings`) is no newer to the routine update.
+    const { sources } = sourcesOf(world);
+    const judged = await assess(
+      { repository: REPOSITORY, started: ago(0), cache: '/nowhere', findings: [], excepted: [], targets: [PINNED] },
+      sources,
+      NOW,
+    );
+    const listing = await routine({
+      repository: REPOSITORY,
+      targets: [PINNED],
+      sources,
+      lookups: judged.lookups,
+      policy: POLICY,
+      last: old,
+      seen: new Map([[digest('b'), NOW - 2 * DAY]]),
+      minimumReleaseAge: 24 * 60,
+      now: NOW,
+    });
+    expect(listing.behind.map((each) => each.to)).toEqual([{ kind: 'image', tag: '2.18.1', digest: digest('b') }]);
   });
 
   it('starts a rebuilt tag’s wait again only once the pin has moved', async () => {
@@ -276,10 +435,11 @@ describe('an image’s pin that is behind', () => {
         pins: [{ file: 'deploy/x.yaml', line: 12 }],
         held: [digest('a')],
         seen: ago(3),
+        content: [{ target: `image nonroot@${digest('e')}`, seen: ago(1) }],
       },
     ];
-    // While the pin holds what it held, the record is its own: listed still, at what the tag serves today.
-    expect((await listed(at('a', 'f', old))).routine[0]?.to).toMatchObject({ digest: digest('f') });
+    // While the pin holds what it held, the record is its own: listed still, at the digest that has waited its day.
+    expect((await listed(at('a', 'f', old))).routine[0]?.to).toMatchObject({ digest: digest('e') });
     // The pin moved to what was listed, and the tag serves that: nothing behind, and no record kept.
     const moved = await listed(at('e', 'e', old));
     expect(moved.listing.counts.current).toBe(1);
@@ -352,6 +512,14 @@ describe('an image’s pin that is behind', () => {
     expect((await listed({ targets: [PINNED], ...newer(3) })).routine).toHaveLength(1);
   });
 
+  it('counts the third day though that day’s scan starts minutes early, by the policy’s slack and no more', async () => {
+    const slack = { ...POLICY, slackHours: 2 };
+    // First seen at 04:32 three days ago and read at 04:30 today: three of the daily scan's days.
+    const early = await listed({ targets: [PINNED], ...newer(3 - 2 / 1440), policy: slack });
+    expect(early.routine).toHaveLength(1);
+    expect((await listed({ targets: [PINNED], ...newer(3 - 3 / 24), policy: slack })).routine).toEqual([]);
+  });
+
   it('keeps the day it first saw a tag in the state, and lists nothing with no state to read', async () => {
     const world = { targets: [PINNED], ...newer(0), waited: undefined };
     const first = await listed(world);
@@ -364,6 +532,7 @@ describe('an image’s pin that is behind', () => {
         pins: [{ file: 'deploy/x.yaml', line: 12 }],
         held: [digest('a')],
         seen: '2026-11-10T04:30:00Z',
+        content: [{ target: `image 2.18.1@${digest('b')}`, seen: '2026-11-10T04:30:00Z' }],
       },
     ]);
     // The next days' runs read the record back: listed on the third day, never before, and the day never moves.
@@ -384,7 +553,7 @@ describe('an image’s pin that is behind', () => {
     expect(asked).toEqual(['tags example/image', 'served example/image:2.18.1']);
   });
 
-  it('lists a newer tag that is built again while it waits, at the digest it serves the day it lists', async () => {
+  it('lists a newer tag that is built again while it waits, at the newest digest it has known a day', async () => {
     const serving = (letter: string, last?: StateRoutine[]): World => ({
       targets: [PINNED],
       tags: { 'example/image': ['2.17.0', '2.18.1'] },
@@ -393,21 +562,69 @@ describe('an image’s pin that is behind', () => {
     });
     const day0 = await listed(serving('b'));
     const day1 = await listed(serving('c', day0.records), NOW + DAY);
-    const day2 = await listed(serving('d', day1.records), NOW + 2 * DAY);
+    const day2 = await listed(serving('1', day1.records), NOW + 2 * DAY);
     expect([day0, day1, day2].map((day) => day.routine.length)).toEqual([0, 0, 0]);
     expect(day2.records).toEqual([
-      expect.objectContaining({ to: `image 2.18.1@${digest('d')}`, seen: '2026-11-10T04:30:00Z' }),
+      expect.objectContaining({ to: `image 2.18.1@${digest('c')}`, seen: '2026-11-10T04:30:00Z' }),
     ]);
     const day3 = await listed(serving('e', day2.records), NOW + 3 * DAY);
-    expect(day3.routine[0]?.to).toEqual({ kind: 'image', tag: '2.18.1', digest: digest('e') });
-    // A tag newer still is another release, first seen the day it appears.
+    expect(day3.routine[0]?.to).toEqual({ kind: 'image', tag: '2.18.1', digest: digest('1') });
+    // A tag newer still is another release, first seen the day it appears: the pin takes the newest that has waited.
     const next = serving('e', day3.records);
     next.tags = { 'example/image': ['2.17.0', '2.18.1', '2.19.0'] };
     const day4 = await listed(next, NOW + 4 * DAY);
-    expect(day4.routine).toEqual([]);
-    expect(day4.records.map((record) => [record.to, record.seen])).toEqual([
-      [`image 2.19.0@${digest('d')}`, '2026-11-14T04:30:00Z'],
+    expect(day4.routine.map((move) => move.to)).toEqual([{ kind: 'image', tag: '2.18.1', digest: digest('e') }]);
+    expect(day4.records.map((record) => [record.to, record.seen, record.move])).toEqual([
+      [`image 2.18.1@${digest('e')}`, '2026-11-10T04:30:00Z', 1],
+      [`image 2.19.0@${digest('d')}`, '2026-11-14T04:30:00Z', undefined],
     ]);
+    // Once the newer tag has waited the pin takes it, and the older tag's record is dropped.
+    const day7 = await listed({ ...next, last: day4.records }, NOW + 7 * DAY);
+    expect(day7.routine.map((move) => move.to)).toEqual([{ kind: 'image', tag: '2.19.0', digest: digest('d') }]);
+    expect(day7.records.map((record) => record.to)).toEqual([`image 2.19.0@${digest('d')}`]);
+  });
+
+  it('moves a line that tags every day to the newest tag that has waited three days', async () => {
+    const tagged = (count: number, last?: StateRoutine[]): World => ({
+      targets: [PINNED],
+      tags: { 'example/image': ['2.17.0', ...Array.from({ length: count }, (_, i) => `2.17.${i + 1}`)] },
+      ...(last ? { last } : {}),
+    });
+    let last: StateRoutine[] | undefined;
+    const days: (string | undefined)[] = [];
+    for (let day = 0; day < 6; day++) {
+      const found = await listed(tagged(day + 1, last), NOW + day * DAY);
+      days.push(found.routine[0]?.to?.kind === 'image' ? found.routine[0].to.tag : undefined);
+      last = found.records;
+    }
+    // The first day's tag on the fourth day, and each day after the tag three days old: never the line's newest.
+    expect(days).toEqual([undefined, undefined, undefined, '2.17.1', '2.17.2', '2.17.3']);
+    // The state has the tag listed and those that wait, and no tag older.
+    expect(last?.map((record) => readTag(record.to))).toEqual(['2.17.3', '2.17.4', '2.17.5', '2.17.6']);
+    // A tag the registry no longer lists is waited on no longer.
+    const pulled = tagged(6, last);
+    pulled.tags = { 'example/image': ['2.17.0', '2.17.1', '2.17.2', '2.17.4', '2.17.5', '2.17.6'] };
+    const without = await listed(pulled, NOW + 5 * DAY);
+    expect(without.routine).toEqual([]);
+    expect(without.records.map((record) => readTag(record.to))).toEqual(['2.17.4', '2.17.5', '2.17.6']);
+  });
+
+  it('keeps a pin no more tags than a few: a line that tags faster takes no newer one up until one comes due', async () => {
+    const at = (count: number, last?: StateRoutine[]): World => ({
+      targets: [PINNED],
+      tags: { 'example/image': ['2.17.0', ...Array.from({ length: count }, (_, i) => `2.17.${i + 1}`)] },
+      ...(last ? { last } : {}),
+    });
+    // A new tag every run, twelve runs in two days.
+    let last: StateRoutine[] | undefined;
+    for (let run = 0; run < 12; run++) last = (await listed(at(run + 1, last), NOW + (run / 6) * DAY)).records;
+    expect(last?.map((record) => readTag(record.to))).toEqual(Array.from({ length: TAGS }, (_, i) => `2.17.${i + 1}`));
+    // The newest of those that has waited lists, and the next run takes the line's newest up in the room it left.
+    const due = await listed(at(13, last), NOW + (3 + 3 / 6) * DAY);
+    expect(due.routine.map((move) => move.to)).toMatchObject([{ tag: '2.17.4' }]);
+    expect(due.records.map((record) => readTag(record.to))).toEqual(['2.17.4', '2.17.5', '2.17.6', '2.17.7', '2.17.8']);
+    const after = await listed(at(13, due.records), NOW + (3 + 4 / 6) * DAY);
+    expect(after.records.map((record) => readTag(record.to))).toContain('2.17.13');
   });
 
   it('waits, for an image that runs another Node, until mise may install that Node, as its fix does', async () => {
@@ -489,7 +706,9 @@ describe('an image’s pin that is behind', () => {
       excepted: [],
       targets: [PINNED],
     };
-    const judged = await assess(handoff, scanned, NOW);
+    // The fix judged with no day for its content to wait, which this run alone could not show.
+    const unwaited = { ...policy, ROUTINE: { ...policy.ROUTINE, contentDays: 0 } };
+    const judged = await assess(handoff, scanned, NOW, undefined, unwaited);
     const context = { repository: REPOSITORY, app: false, now: NOW };
     const taken = pinsOf(moves(judged.judged, context));
     const asked: string[] = [];
@@ -831,6 +1050,8 @@ describe('a lockfile’s package that is behind', () => {
     });
     expect((await listed(world(2.99))).routine).toEqual([]);
     expect((await listed(world(3))).routine).toHaveLength(1);
+    // npm's day is the registry's, not the scan's first sight: the slack of a scan that starts early is not taken off.
+    expect((await listed({ ...world(2.99), policy: { ...POLICY, slackHours: 2 } })).routine).toEqual([]);
     expect((await listed(world(4, 5 * 1440))).routine).toEqual([]);
     expect((await listed(world(5, 5 * 1440))).routine).toHaveLength(1);
   });
@@ -1120,6 +1341,11 @@ describe('the policy’s wait, and what it leaves alone', () => {
     const { days, majorDays, leave } = policy.ROUTINE;
     expect(Number.isInteger(days) && days >= 1).toBe(true);
     expect(Number.isInteger(majorDays) && majorDays >= days).toBe(true);
+    // The slack is for a scan that starts a little early: hours, and far less than the shortest wait.
+    const { contentDays, slackHours } = policy.ROUTINE;
+    expect(slackHours).toBeGreaterThanOrEqual(0);
+    expect(slackHours).toBeLessThanOrEqual(6);
+    expect(contentDays === 0 || slackHours < contentDays * 24).toBe(true);
     for (const entry of leave) {
       expect(['all', ...REPOSITORIES]).toContain(entry.repository);
       // A package, or an image's repository with neither tag nor digest: one or the other.

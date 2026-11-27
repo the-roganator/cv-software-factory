@@ -16,6 +16,7 @@ import {
   type PinScope,
   pinWatch,
   refusalKind,
+  resolvedPast,
 } from '../../src/github/pins.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { APP_REPOSITORY, FACTORY_REPOSITORY } from '../../src/repositories.ts';
@@ -255,6 +256,15 @@ describe('the kind of a refusal of the pin step’s', () => {
     );
     // Anything `mise lock` refused.
     expect(refusalKind('mise refused k3d@9.9.9: mise ERROR no release 9.9.9')).toBe('lock');
+    // The step's own, of a routine update pnpm resolved past its target (apps/runner/test/pins-exact.test.ts).
+    const past =
+      'pnpm resolved lefthook to 2.2.3, past the 2.2.2 asked for: a routine update moves to the release the scan listed, and no further.';
+    expect(refusalKind(past)).toBe('resolved');
+    expect(resolvedPast(past)).toBe('2.2.3');
+    expect(resolvedPast(past.replace('2.2.3', '2.2.3, 3.0.0-rc.1'))).toBe('2.2.3, 3.0.0-rc.1');
+    expect(resolvedPast('pnpm refused lefthook@2.2.2: High-risk trust downgrade (possible package takeover)')).toBe(
+      undefined,
+    );
   });
 
   it('claims nothing of what it does not know, a package named for a guard among it', () => {
@@ -266,6 +276,10 @@ describe('the kind of a refusal of the pin step’s', () => {
       'pnpm refused minimum_release_age@1.0.0: No matching version found',
       'pnpm refused trust-downgrade@1.0.0: GET https://registry.npmjs.org/trust-downgrade: Not Found - 404',
       'pnpm refused allowbuilds@2.0.0: it failed, and said nothing of why',
+      // The step's other refusal of a routine update's copy, and a line that only has the words in it.
+      'lefthook resolves to 2.2.0 where a manifest names it, not to 2.2.2: a routine update moves to exactly the release the scan listed.',
+      'pnpm refused resolved@1.0.0: pnpm resolved it to 1.0.1, past the 1.0.0 asked for: a routine update',
+      'pnpm resolved lefthook to `x` [y](z), past the 2.2.2 asked for: a routine update moves to the release the scan listed, and no further.',
       '',
     ])
       expect(refusalKind(reason), reason).toBe('other');

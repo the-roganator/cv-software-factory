@@ -53,6 +53,28 @@ describe('the review gate (ADR 0014)', () => {
     expect(verdict(fork, [review(MARTIN, 'APPROVED')])).toMatchObject({ pass: true });
   });
 
+  it('waits for his approval of one he opened from a branch the automation writes', () => {
+    // The App's key writes these, so what is on one is not his by his having opened the pull request.
+    for (const ref of [
+      'factory/pin/deploy-base-x.yaml-0a1b2c3d',
+      'factory/pin-next/x',
+      'factory/deploy/local',
+      'factory/fix-1027',
+      'deploy/local',
+      'release-please--branches--main',
+      'gh-readonly-queue/main/pr-9-abc',
+    ]) {
+      const his = { ...pr(MARTIN), head: { sha: HEAD, ref, repo: { full_name: 'o/r' } } };
+      expect(verdict(his, []), ref).toEqual({ pass: false, title: `Waits for Martin to approve ${HEAD.slice(0, 7)}` });
+      expect(verdict(his, [review(MARTIN, 'APPROVED')]), ref).toMatchObject({ rule: 'martin-approved-head' });
+    }
+    // A branch only he writes, however near the name.
+    for (const ref of ['factory', 'factory-x/y', 'deploy/other', 'fix/factory/x', 'main']) {
+      const his = { ...pr(MARTIN), head: { sha: HEAD, ref, repo: { full_name: 'o/r' } } };
+      expect(verdict(his, []), ref).toMatchObject({ pass: true, rule: 'martin-opened' });
+    }
+  });
+
   it("holds anyone else's until Martin approves its head", () => {
     expect(verdict(pr(APP), [])).toMatchObject({ pass: false });
     expect(verdict(pr(null), [])).toMatchObject({ pass: false });
@@ -433,7 +455,7 @@ describe("the review gate's workflows", () => {
     expect(gate).not.toMatch(/inputs/);
     // The gate's modules, and nothing of the pull request's, from main's sparse checkout; cosign for an exact pin.
     expect(gate).toMatch(
-      /sparse-checkout: \|\n {12}mise\.toml\n {12}mise\.lock\n {12}scripts\/review-gate\.ts\n {12}scripts\/review-routing\.ts\n {12}apps\/factory\/src\/repositories\.ts\n {12}policy\/repositories\.ts\n {12}policy\/review-verdict\.ts\n/,
+      /sparse-checkout: \|\n {12}mise\.toml\n {12}mise\.lock\n {12}scripts\/review-gate\.ts\n {12}scripts\/review-routing\.ts\n {12}apps\/factory\/src\/repositories\.ts\n {12}policy\/branches\.ts\n {12}policy\/repositories\.ts\n {12}policy\/review-verdict\.ts\n/,
     );
     expect(gate).toContain('install_args: node cosign');
   });
@@ -557,8 +579,10 @@ describe('judging a pull request through the API', () => {
     // A read that failed is a hold, not a wait: it may fail for ever, and nothing runs the gate again for it.
     expect(said.pending).toBeUndefined();
     // Martin's own still passes: his say needs no review.
-    const his = { ...theirs, user: { id: MARTIN } };
+    const his = { ...theirs, user: { id: MARTIN }, head: { ...theirs.head, ref: 'fix/a-thing' } };
     expect(await judge(run, his)).toMatchObject({ pass: true, rule: 'martin-opened' });
+    // From the App's branch his own is judged as anyone's, and unread it is held.
+    expect(await judge(run, { ...theirs, user: { id: MARTIN } })).toMatchObject({ pass: false, rule: 'held' });
   });
 
   it('holds it when the annotations GitHub gives are not as many as the run says, more or fewer', async () => {
@@ -737,6 +761,7 @@ describe('judging a pull request through the API', () => {
         [`10@${EARLIER}`, { rule: 'major', title }],
         [`11@${HEAD}`, { reason: 'no' }],
         [`12@${HEAD}`, { none: 'none' }],
+        [`13@${HEAD}`, { pending: 'the scan of main it would pass by was judged 40 hours ago' }],
       ]);
       expect(readAnswers(writeAnswers(answers))).toEqual(answers);
       expect(readAnswers('{}')).toEqual(new Map());
@@ -830,6 +855,39 @@ describe('judging a pull request through the API', () => {
       expect(said).toMatchObject({ pass: false, rule: 'held' });
       expect(said.pending).toBeUndefined();
       expect(said.title).toContain("Not an exact pin of the factory's workflows: 2222222 is not on the factory's main");
+    });
+
+    it('reads the calls at what merges: a call main gained since the branch was made holds it in the merge queue', async () => {
+      // The head moves every call it has; main has since gained a third, at the old commit, which the queue's commit
+      // for it holds beside the two it moves.
+      const asked = bumped({
+        [`/contents/.github/workflows?ref=${EARLIER}`]: [
+          { name: 'codeql.yml', path: '.github/workflows/codeql.yml', type: 'file' },
+          { name: 'review.yml', path: '.github/workflows/review.yml', type: 'file' },
+          { name: 'gates.yml', path: '.github/workflows/gates.yml', type: 'file' },
+        ],
+        [`/contents/.github/workflows/gates.yml?ref=${EARLIER}`]: caller('gates', OLD),
+      });
+      expect(await judge(run, bump)).toMatchObject({ pass: true, rule: 'exact-pin' });
+      expect(asked.some((path) => path.endsWith('/gates.yml'))).toBe(false);
+      const queued = await judge({ ...run, queue: { number: 9, commit: EARLIER } }, bump);
+      expect(queued).toMatchObject({ pass: false, rule: 'held' });
+      expect(queued.title).toBe(
+        "Not an exact pin of the factory's workflows: .github/workflows/gates.yml on the merge queue's commit bbbbbbb still calls the factory at 1111111: every call moves together: waits for Martin to approve aaaaaaa",
+      );
+      // The queue's commit for another pull request, a stack's top, says nothing of this one's calls: its head does.
+      expect(await judge({ ...run, queue: { number: 10, commit: EARLIER } }, bump)).toMatchObject({ pass: true });
+      // Once the queue's commit has that call at the new commit too, it passes, the workflow it calls read with the rest.
+      bumped({
+        [`/contents/.github/workflows?ref=${EARLIER}`]: [
+          { name: 'gates.yml', path: '.github/workflows/gates.yml', type: 'file' },
+        ],
+        [`/contents/.github/workflows/gates.yml?ref=${EARLIER}`]: caller('gates', NEW),
+      });
+      expect(await judge({ ...run, queue: { number: 9, commit: EARLIER } }, bump)).toMatchObject({
+        pass: true,
+        rule: 'exact-pin',
+      });
     });
 
     it('holds one whose workflow declares otherwise to its caller at the new commit, or is gone there, for Martin', async () => {

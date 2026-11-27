@@ -12,8 +12,12 @@
  * repository itself (state.ts's `latest`): its `moves.json` joined with the state it sealed, as the GitHub worker joins
  * them (github/scanning.ts's `joined`), so a lockfile's move has its package and versions. Nothing a pull request can
  * change. The key comes from SCAN_STATE_KEY, which review.yml takes from the `scan-state` environment only main may
- * use; it is read once and taken out of the environment, so no tool this runs has it. `scanMoves` is the one place the
- * moves come from.
+ * use; it is read once and taken out of the environment before anything this imports is evaluated (scripts/scan-key.ts),
+ * so no dependency and no tool this runs has it. `scanMoves` is the one place the moves come from.
+ *
+ * A scan judged longer ago than `SCAN_MAX_AGE_HOURS` (policy/vulnerabilities.ts) is no judgement: a change that would
+ * pass by it is not judged yet, a wait for the next scan, in a pull request's run and the merge queue's alike. One that
+ * would not pass by it is refused as it is, so a scan that has stopped holds up nothing but moves.
  *
  * The pin step's derivation (`derive`) is the line's own code (apps/runner/src/pins.ts) on a checkout of main's tip,
  * as scripts/derive.ts runs it for the scan too: with the pnpm the gate's mise.lock holds and the mise every workflow
@@ -27,6 +31,9 @@
  *
  * A reader that fails, or runs past its time, is a refusal that says what it could not read, and never a package.
  */
+// First, before any other import, so it is evaluated first: it takes the key out of the environment.
+import './scan-key.ts';
+
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,9 +53,11 @@ import {
 } from '../apps/factory/src/vulnerabilities/state.ts';
 import { zipEntry } from '../apps/factory/src/vulnerabilities/zip.ts';
 import type { Move as PinStepMove } from '../apps/runner/src/pins.ts';
+import { SCAN_MAX_AGE_HOURS } from '../policy/vulnerabilities.ts';
 import { askedKey, type Derivation, deriveOn, gitBytesIn, gitIn } from './derive.ts';
 import { type Changed, exactText, hunkLines, proveMove, rawEntries, type ScanMove } from './move.ts';
 import { type GitHub, type MoveAnswer, main, type PullRequest, type Run } from './review-gate.ts';
+import { SCAN_KEY } from './scan-key.ts';
 
 /** When every move's reads have ended, from the job's start: inside the job's time, with room for its answers. */
 export const MOVES_MS = 12 * 60_000;
@@ -56,10 +65,6 @@ const STARTED = Date.now();
 
 /** The most `moves.json` may hold. */
 const MAX_MOVES_BYTES = 8 * 1024 * 1024;
-
-/** The state's key, read once and out of the environment before anything runs. */
-const KEY = process.env[STATE_KEY];
-delete process.env[STATE_KEY];
 
 const cause = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 200) ?? '';
@@ -71,6 +76,37 @@ export interface ScanDay {
   judged: number;
   /** The digest each tag of an image was found at by the scan's step, by `askedKey`: none where it made no move. */
   asked: Map<string, string>;
+  /** The images the scan read, each at its pin (`moves.json`'s `scanned`): what an image's move is from. */
+  scanned?: MovesFile['scanned'] | undefined;
+  /** The pins the scan says wait (`moves.json`'s `waiting`): no move, and what a change at one is told. */
+  waiting?: MovesFile['waiting'] | undefined;
+}
+
+/** How far ahead of the gate's clock a scan's time may be and still be read as now: two clocks' difference. */
+const CLOCK_SKEW_MS = 5 * 60_000;
+
+/**
+ * Why a scan is no judgement by its time, as a wait says it, or nothing while it is one: judged longer ago than
+ * `SCAN_MAX_AGE_HOURS`, at no time the gate can read, or at a time still to come. `moves.json` says when it was
+ * judged, and the scan's seal does not hold that time: one that names a day to come would never grow old.
+ */
+export function tooOld(judged: number, now = Date.now()): string | undefined {
+  const next = "the next scan's moves settle it";
+  if (judged - now > CLOCK_SKEW_MS)
+    return `the scan of main it would pass by says it was judged at a time still to come, which is no judgement: ${next}`;
+  const hours = (now - judged) / 3_600_000;
+  if (hours <= SCAN_MAX_AGE_HOURS) return undefined;
+  const ago = Number.isFinite(hours) ? `${Math.floor(hours)} hours ago` : 'at no time the gate can read';
+  return `the scan of main it would pass by was judged ${ago}, and one judged more than ${SCAN_MAX_AGE_HOURS} hours ago is no judgement: ${next}`;
+}
+
+/**
+ * A move's answer by a scan judged then: only what would pass waits for a newer scan, and a refusal by an old one is a
+ * refusal still.
+ */
+export function byAge(said: MoveAnswer, judged: number, now = Date.now()): MoveAnswer {
+  const old = 'rule' in said ? tooOld(judged, now) : undefined;
+  return old ? { pending: old } : said;
 }
 
 /**
@@ -108,7 +144,7 @@ export function derivationOf(
 export async function scanMoves(
   repo: string,
   token: string,
-  keyText = KEY,
+  keyText = SCAN_KEY,
   api: StateApi = realStateApi(token),
 ): Promise<ScanDay> {
   if (!keyText) throw new Error(`the move job holds no ${STATE_KEY} to read the scan's state with`);
@@ -122,8 +158,14 @@ export async function scanMoves(
   if (!bytes) throw new Error(`run ${kept.run}'s moves hold no ${MOVES_FILE}`);
   const file = MOVES_FILE_SCHEMA.parse(JSON.parse(bytes.toString('utf-8'))) as MovesFile;
   const run: ScanRun = { id: Number(kept.run), event: '', conclusion: null, headSha: '', updatedAt: '', url: '' };
-  const { moves } = joined(repo, run, file, openKept(sealed, key, repo));
-  return { moves, judged: Date.parse(file.judged), asked: await askedOf(api, repo, kept.run, key) };
+  const { moves, waiting } = joined(repo, run, file, openKept(sealed, key, repo));
+  return {
+    moves,
+    ...(waiting ? { waiting } : {}),
+    judged: Date.parse(file.judged),
+    asked: await askedOf(api, repo, kept.run, key),
+    scanned: file.scanned,
+  };
 }
 
 /** Each repository's moves, read once a run. */
@@ -248,12 +290,13 @@ export async function readMove(each: Run, pr: PullRequest, github: GitHub): Prom
         // Every file an edit pins, at main's tip: a pin the change leaves unmoved is read from there.
         const files = [...new Set(scan.flatMap((move) => move.pins.map((pin) => pin.file)))];
         const texts = new Map(await Promise.all(files.map(async (path) => [path, await two.base(path)] as const)));
-        return await proveMove(
+        const said = await proveMove(
           two.changed,
           scan,
-          { base: (path) => texts.get(path), derive: two.derive },
+          { base: (path) => texts.get(path), derive: two.derive, scanned: day.scanned, waiting: day.waiting },
           each.repo === APP_REPOSITORY,
         );
+        return byAge(said, day.judged);
       })(),
       expired,
     ]);

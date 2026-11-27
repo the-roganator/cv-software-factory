@@ -104,7 +104,7 @@ function walk(starts: string[]) {
 }
 
 /**
- * The runner's files a move's proof runs, the pin step's own derivation of a lockfile (ADR 0022): they call no model,
+ * The runner's files a move's proof runs, the pin step's own derivation of a lockfile (ADR 0027): they call no model,
  * and the walk still follows each of their imports, so one that came to reach a model would fail here.
  */
 const PIN_STEP = ['apps/runner/src/pins.ts', 'apps/runner/src/git.ts', 'apps/runner/scripts/install-pnpm.ts'];

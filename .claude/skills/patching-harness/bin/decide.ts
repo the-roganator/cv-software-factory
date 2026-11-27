@@ -2,8 +2,9 @@
  * What the harness decides from what it has read, apart from the reading, so each decision is tested
  * (decide.test.ts): whether a scan's move is a routine one, whether a pull request must be read again, when a test's
  * failure is certain before its limit, how long "nothing after" is, what the app's pins of the factory's workflows
- * say, whether a hold still stands, and what an issue, a ticket or Dependabot's pull request must show. Nothing here
- * reads GitHub, the cluster or a file.
+ * say, whether a hold still stands, what an issue, a ticket or Dependabot's pull request must show, what Martin's
+ * request for changes, a stopped line, a move put back on main and content that waits a day must each leave, and
+ * whether a major follows a move within it. Nothing here reads GitHub, the cluster or a file.
  */
 import { createHash } from 'node:crypto';
 
@@ -488,13 +489,15 @@ export interface IssueWants {
 /**
  * Why the pin step refused a move, as the worker's issue says each kind (apps/factory/src/github/pins.ts's `REFUSED`),
  * but its catch-all, which says no reason: a release too young, one with weaker provenance, an install script not
- * allowed, a copy only an override would move, a release mise could not lock.
+ * allowed, a copy only an override would move, a routine update pnpm resolved to a newer release than the scan
+ * listed, a release mise could not lock.
  */
 export const REFUSAL_KINDS: Record<string, RegExp> = {
   young: /younger than the minimum age/,
   provenance: /weaker provenance/,
   script: /an install script/,
   override: /an override/,
+  resolved: /pnpm resolved a newer one/,
   lock: /mise could not lock/,
 };
 /**
@@ -827,4 +830,532 @@ export function restartVerdict(o: {
     pass: true,
     why: `the store was away under the report; the log watcher warned, and reached it again; in the inbox once, after ${o.arrivedS ?? '?'} s; no worker logged an error`,
   };
+}
+
+// ── Martin asks for changes on a move that would merge ──────────────────────────────────────────────────────────────
+
+/** How the timeline names a review, as a touch: the run's own, on the test that asks for changes, is no one's hand. */
+export const REVIEW_TOUCH = /^reviewed by /;
+/**
+ * A pin move Martin asked for changes on (test 25): the run posted his review while a required check still ran, so no
+ * pass of the worker could have queued the head first; the gate then held it in words that say he asked, at a head
+ * with every check in and green, and the worker said it waits for the verdict (`decided`, as `holdDecided` has it), or
+ * a hold decided at an earlier head stands (`heldAt`). Merged, queued, or touched by anything but that review, it fails.
+ * With the checks already in when the review was posted there is no verdict: the window was open, whatever came of it.
+ */
+export function changesVerdict(o: {
+  pulls: readonly (HoldFacts & { gateWords?: string | undefined })[];
+  /** The review the run posted: on which head, and the required checks still running then. */
+  review: { number: number; head: string; pending: string[] } | undefined;
+  says: RegExp;
+  /** Whether the hold is decided at the head as it stands, or was at an earlier one. */
+  decided: boolean;
+  heldAt?: { head: string } | undefined;
+}): { pass: boolean; why: string } {
+  const fail = (why: string) => ({ pass: false, why: why.slice(0, 420) });
+  if (!o.pulls.length) return fail('no pull request opened for the move, so there was nothing to ask changes on');
+  if (o.pulls.length > 1) return fail(`${o.pulls.length} pull requests, not one`);
+  const [pull] = o.pulls as [(typeof o.pulls)[number]];
+  const tag = `#${pull.number}`;
+  if (pull.state === 'merged') return fail(`${tag} merged, though Martin asked for changes`);
+  if (pull.queuedBy)
+    return fail(`${tag} was added to the merge queue by ${pull.queuedBy}, though Martin asked for changes`);
+  if (!o.review) return fail(`${tag}: the review that asks for changes was not posted`);
+  if (!o.review.pending.length)
+    return fail(
+      `no verdict: every required check of ${tag} was in when the review was posted, so the worker could have queued it first`,
+    );
+  const others = pull.touched.filter((touch) => !REVIEW_TOUCH.test(touch));
+  if (others.length) return fail(`${tag} touched: ${others.join('; ')}`);
+  if (pull.state !== 'open') return fail(`${tag} is ${pull.state}`);
+  const window = `asked while ${o.review.pending.join(', ')} still ran`;
+  if (o.heldAt && !(pull.rule !== undefined && !pull.gatePending && pull.rule !== 'held'))
+    return { pass: true, why: `${tag} held, decided at ${o.heldAt.head.slice(0, 7)}, never queued; ${window}` };
+  if (pull.pending.length) return fail(`${tag} not settled: waiting on ${pull.pending.join(', ')}`);
+  if (pull.rule !== 'held' || pull.gatePending)
+    return fail(
+      `${tag}: the gate ${pull.gatePending ? `waits (${pull.gatePending})` : `passed it as ${pull.rule}`}, though Martin asked for changes`,
+    );
+  if (!o.says.test(pull.gateWords ?? ''))
+    return fail(`${tag} held, but not because he asked: ${pull.gateWords ?? 'no words'}`);
+  if (!o.decided) return fail(`${tag} held by the gate; waiting for its checks and the worker's word that it waits`);
+  return {
+    pass: true,
+    why: `${tag} held by the gate (${(pull.gateWords ?? '').slice(0, 80)}), never queued; ${window}`,
+  };
+}
+
+// ── What the worker says a pull request waits for ───────────────────────────────────────────────────────────────────
+
+/** The worker's wait while the line is stopped (deploy-queue.ts's `QueueWait` and `levelWait`). */
+export const STOPPED_WAIT = { waits: 'stopped', why: /the line is stopped/ };
+/** The worker's wait for the autonomy level, at Supervised (deploy-queue.ts's `levelWait`). */
+export const SUPERVISED_WAIT = { waits: 'level', why: /at Supervised / };
+/** A wait's words for a rule the level would queue at Guarded: a move, as `levelWait` names the rule. */
+export const OF_A_MOVE = /\ba move waits\b/;
+
+export interface QueueWord {
+  waits: string;
+  why: string;
+}
+/** The worker's last word on why each head waits to be queued, from its log, by `<number> <head>`. */
+export function queueWords(log: string): Map<string, QueueWord> {
+  const words = new Map<string, QueueWord>();
+  for (const line of log.split('\n')) {
+    if (!line.includes('pull request waits to be queued')) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.number && entry.head && entry.waits)
+        words.set(`${entry.number} ${entry.head}`, { waits: String(entry.waits), why: String(entry.why ?? '') });
+    } catch {}
+  }
+  return words;
+}
+/**
+ * Why the open move pull requests do not all wait as a phase of batch D wants, or nothing when they do: each unqueued,
+ * its checks in, and the worker's last word at its head the phase's. `stopped`: the line's stop, and of one at least
+ * that it is a move, which Guarded would queue, so the stop alone holds it. `supervised`: the level's, at Supervised.
+ * `either`: one or the other, as both are in force.
+ */
+export function waitsFault(
+  pulls: readonly { number: number; head: string; queued: boolean; pending: number }[],
+  words: ReadonlyMap<string, QueueWord>,
+  want: 'stopped' | 'supervised' | 'either',
+): string | undefined {
+  if (!pulls.length) return 'no move has a pull request open';
+  const is = (word: QueueWord | undefined, wait: { waits: string; why: RegExp }) =>
+    word?.waits === wait.waits && wait.why.test(word.why);
+  for (const pull of pulls) {
+    const tag = `#${pull.number}`;
+    if (pull.queued) return `${tag} is in the merge queue`;
+    if (pull.pending) return `${tag} has ${pull.pending} checks still running`;
+    const word = words.get(`${pull.number} ${pull.head}`);
+    const fits = (want !== 'supervised' && is(word, STOPPED_WAIT)) || (want !== 'stopped' && is(word, SUPERVISED_WAIT));
+    if (!fits)
+      return `${tag} at ${pull.head.slice(0, 7)}: the worker ${word ? `says it waits for ${word.waits} (${word.why})` : 'has said nothing of it'}, not that ${want === 'stopped' ? 'the line is stopped' : want === 'supervised' ? 'it waits at Supervised' : 'the line is stopped or it waits at Supervised'}`;
+  }
+  if (want === 'stopped' && !pulls.some((p) => OF_A_MOVE.test(words.get(`${p.number} ${p.head}`)?.why ?? '')))
+    return NO_MOVE_STOPPED;
+  return undefined;
+}
+/** `waitsFault`'s word when every pull request waits for the stop and none is a move, which Guarded would queue. */
+const NO_MOVE_STOPPED = 'none of them is a move Guarded would queue, so the stop is not what holds them';
+
+/** The worker's wait for the gate's verdict: a head the gate held, or has not judged (deploy-queue.ts's `QueueWait`). */
+export const VERDICT_WAIT = 'verdict';
+/** How long a reading of batch D waits for the worker's word on the head that replaces one whose target moved. */
+export const MOVED_WAIT_MS = 10 * 60_000;
+/** A move's pull request as a phase of batch D reads it: its newest head, its title there, the queue, its checks. */
+export interface WaitingPull {
+  number: number;
+  head: string;
+  title: string;
+  queued: boolean;
+  pending: number;
+}
+/**
+ * The pin whose target moved under a pull request during the run, and how that shows, or nothing. A release published
+ * mid-run moves the next scan's target; the gate, which makes the move from that scan, rightly holds the head that
+ * names the old one, the worker rightly says it waits for the verdict, and the pin watch then writes the pull request
+ * again for the new target. Two sights of that: the worker's word at the newest head is `verdict` and the newest
+ * scan's move of the pin its title names is to another target; or the worker has said nothing of the newest head and
+ * said `verdict` of an earlier one, which that head replaced. A `verdict` at the newest head whose title names the
+ * scan's own target is the gate holding it for another reason, and is not this.
+ */
+export function movedUnder(
+  pull: Pick<WaitingPull, 'number' | 'head' | 'title'>,
+  words: ReadonlyMap<string, QueueWord>,
+  moves: readonly Pick<ListedMove, 'name' | 'to'>[] | undefined,
+): { pin: string; how: string } | undefined {
+  const named = /^chore\(pin\): move (.+) to (\S+)$/.exec(pull.title);
+  const tag = `#${pull.number} at ${pull.head.slice(0, 7)}`;
+  const word = words.get(`${pull.number} ${pull.head}`);
+  if (!word) {
+    const earlier = [...words].find(
+      ([key, said]) => key.startsWith(`${pull.number} `) && said.waits === VERDICT_WAIT,
+    )?.[0];
+    if (!earlier) return undefined;
+    return {
+      pin: named?.[1] ?? `#${pull.number}`,
+      how: `${tag} replaced ${earlier.split(' ')[1]?.slice(0, 7)}, which the gate held, and the worker has said nothing of it yet`,
+    };
+  }
+  if (word.waits !== VERDICT_WAIT || !named) return undefined;
+  const targets = (moves ?? []).filter((m) => m.name === named[1]).flatMap((m) => targetOf(m.to) ?? []);
+  if (!targets.length || targets.includes(named[2] as string)) return undefined;
+  return {
+    pin: named[1] as string,
+    how: `${tag} moves it to ${named[2]}, the newest scan's move is to ${targets.join(' or ')}, and the gate holds the head until the pin watch writes it again`,
+  };
+}
+/**
+ * A phase of batch D, read: `waits`, every move's pull request waits as the phase wants (`waitsFault` finds no fault);
+ * `fault`, one does not, which fails the phase; or `moved`, the only ones that do not are those a target moved under
+ * (`movedUnder`), which is not the stop's failure or the level's. The reading then waits for the worker's word on the
+ * newest head (`MOVED_WAIT_MS`) and reads again, and with still no such word the phase has no verdict, in `why`. A
+ * pull request in the merge queue fails the phase whatever moved, and so does a fault of any other pull request.
+ */
+export function waitsReading(
+  pulls: readonly WaitingPull[],
+  words: ReadonlyMap<string, QueueWord>,
+  want: 'stopped' | 'supervised' | 'either',
+  moves: readonly Pick<ListedMove, 'name' | 'to'>[] | undefined,
+): { reads: 'waits' } | { reads: 'fault' | 'moved'; why: string } {
+  const fault = waitsFault(pulls, words, want);
+  if (!fault) return { reads: 'waits' };
+  const queued = pulls.find((p) => p.queued);
+  if (queued) return { reads: 'fault', why: `#${queued.number} is in the merge queue` };
+  const moved = pulls.flatMap((p) => {
+    const under = movedUnder(p, words, moves);
+    return under ? [{ pull: p, ...under }] : [];
+  });
+  if (!moved.length) return { reads: 'fault', why: fault };
+  const rest = pulls.filter((p) => !moved.some((m) => m.pull === p));
+  const other = rest.length ? waitsFault(rest, words, want) : undefined;
+  // With the moved one set aside the rest may hold no move Guarded would queue: that is its absence, not a fault.
+  if (other && other !== NO_MOVE_STOPPED) return { reads: 'fault', why: other };
+  return {
+    reads: 'moved',
+    why: moved.map((m) => `no verdict: ${m.pin}'s target moved during the run: ${m.how}`).join('; '),
+  };
+}
+
+// ── The rulesets' two refusals ──────────────────────────────────────────────────────────────────────────────────────
+
+/** The rulesets N10 stands on, as scripts/github-settings.ts names them (words.test.ts holds the two together). */
+export const N10_RULESETS: readonly { name: string; target: string }[] = [
+  { name: 'branches', target: 'branch' },
+  { name: 'tag main', target: 'tag' },
+];
+/**
+ * Why N10 cannot be judged on a copy, from the rulesets GitHub lists for it, or nothing when each it stands on is
+ * there and enforced: a reset applies no settings, and without the ruleset a push that lands shows only that.
+ */
+export function rulesetsFault(
+  copy: string,
+  live: readonly { name?: string; target?: string; enforcement?: string }[],
+): string | undefined {
+  const lacks = N10_RULESETS.filter(
+    (want) => !live.some((r) => r.name === want.name && r.target === want.target && r.enforcement === 'active'),
+  ).map((want) => {
+    const there = live.find((r) => r.name === want.name);
+    return `"${want.name}" (${there ? `${there.enforcement ?? 'not enforced'}` : 'none'})`;
+  });
+  return lacks.length
+    ? `${copy} has no active ruleset ${lacks.join(' or ')}, which N10 stands on: run ./copies.sh settings`
+    : undefined;
+}
+/** GitHub's refusal of a commit a ruleset forbids on a branch, as `createCommitOnBranch` answers it. */
+export const COMMIT_REFUSED = /Cannot update this protected ref|Repository rule violations?/i;
+/** GitHub's refusal to create a ref a ruleset forbids: a 422, and not the 422 of a ref that is already there. */
+export const TAG_REFUSED = /\b422\b(?![\s\S]*already exists)/i;
+/** How N10's line begins when both pushes were refused, each by the rulesets: what the catalogue's test reads. */
+export const BOTH_REFUSED = 'refused by the rulesets, each in its own words';
+/**
+ * What N10's two pushes came to, from what GitHub said of each (nothing where one went through): `landed` when
+ * either went through; otherwise `refused`, which begins `BOTH_REFUSED` only when the App's commit to Martin's branch
+ * was refused in the `branches` ruleset's words and the tag `main` with the `tag main` ruleset's 422. Any other error
+ * of either (a token GitHub would not take, a head that moved, a tag left there) is no refusal by a ruleset, and the
+ * line names which. Both are quoted.
+ */
+export function rulesetsRefusal(o: {
+  branch: string;
+  commit: string | undefined;
+  tag: string | undefined;
+}): { refused: string } | { landed: string } {
+  const quote = (said: string) => said.replace(/\s+/g, ' ').trim().slice(0, 180);
+  const said = [
+    o.commit === undefined ? '' : `the commit was refused: ${quote(o.commit)}`,
+    o.tag === undefined ? '' : `the tag was refused: ${quote(o.tag)}`,
+  ].filter(Boolean);
+  const landed = [
+    o.commit === undefined ? `the App's commit to ${o.branch}` : '',
+    o.tag === undefined ? 'the tag `main`' : '',
+  ].filter(Boolean);
+  if (landed.length) return { landed: [`${landed.join(' and ')} went through`, ...said].join('; ') };
+  const other = [
+    COMMIT_REFUSED.test(o.commit ?? '') ? '' : 'the commit',
+    TAG_REFUSED.test(o.tag ?? '') ? '' : 'the tag',
+  ].filter(Boolean);
+  return {
+    refused: other.length
+      ? `${said.join('; ')}; no ruleset's refusal of ${other.join(' or of ')}`
+      : `${BOTH_REFUSED}: ${said.join('; ')}`,
+  };
+}
+
+// ── A move put back on main ─────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What the App's issue says of a move whose merge was undone on `main`, as GitHub gives its body: Markdown, with
+ * `main` in backticks (apps/factory/src/github/pins.ts's `issueOf`, for `REVERTED`; words.test.ts holds the two together).
+ */
+export const REVERTED_SAYS = /its merge was then undone on `main`/;
+/** The mark of a line that is neither a pass nor a failure: the run could not judge, for no fault of the code's. */
+export const NO_VERDICT = 'NO VERDICT';
+/**
+ * How often the worker's pin watch reads the scan's moves (apps/factory/src/github/pins.ts's `PASS_MS`; words.test.ts
+ * holds the two together): between two reads a new scan is unknown to it, however often the worker polls. It reads at
+ * once only as it starts.
+ */
+export const PIN_PASS_MS = 60 * 60_000;
+/**
+ * How long a run waits for the pin watch to read a scan it must have read before anything is judged on it: one whole
+ * period of the watch, which is how long a watch that was not restarted may take, and ten minutes more for a restart
+ * of the worker that falls inside it (a deploy pin's rollout, or the run's own, each of which starts the period again
+ * with a read). The run restarts the worker once the scan is in, so the read is usually a minute away.
+ */
+export const PIN_PASS_LIMIT_MS = PIN_PASS_MS + 10 * 60_000;
+/** What the pin watch logs once a scan when a pass has read its moves, with the scan's run (pins.ts's `READ_THE_SCAN`). */
+export const READ_THE_SCAN = /^the pin watch takes the moves it was told to/;
+/**
+ * The pin watch's first pass over a repository on a scan, or on one after it, from the worker's log: when, and which
+ * run it read. A scan's run ids only grow, so a later run of the same workflow is a later scan of the same `main`.
+ */
+export function watchRead(log: string, repo: string, scan: number): { at: string; run: number } | undefined {
+  const reads: { at: string; run: number }[] = [];
+  for (const line of log.split('\n')) {
+    if (!line.includes('the pin watch takes')) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (!READ_THE_SCAN.test(String(entry.msg)) || entry.repo !== repo) continue;
+      if (typeof entry.run !== 'number' || entry.run < scan) continue;
+      reads.push({ at: new Date(entry.time).toISOString(), run: entry.run });
+    } catch {}
+  }
+  return reads.sort((a, b) => a.at.localeCompare(b.at))[0];
+}
+/**
+ * A move Martin reverted (test 27): the move merged, its pins were put back on `main`, and the scan after lists it
+ * again from the version it had. Nothing is judged until the pin watch is known to have made a pass on that scan,
+ * since a watch that has not read it opens nothing either: by its own word in its log (`read`), by its issue for the
+ * move, or by a pull request for it, which fails the test at once. From the first of those the App is watched for a
+ * few of the worker's passes (`settleMs`): it passes with no pull request that carries the move and an issue of the
+ * App's that says its merge was undone on `main`, and fails when the watch read the scan and wrote no such issue.
+ * With no sign of a pass by the end of the watch (`PIN_PASS_LIMIT_MS`) there is no verdict.
+ */
+export function revertedVerdict(o: {
+  of: string;
+  /** The move as the first scan listed it, and its merged pull request. */
+  move: Pick<ListedMove, 'name' | 'from'> | undefined;
+  merged: number | undefined;
+  /** The commit that put it back, and the moves of the scan after it. */
+  revert: string | undefined;
+  scan: { id: number; moves: readonly Pick<ListedMove, 'name' | 'from'>[] | undefined } | undefined;
+  /** The App's pull requests opened since the revert that carry the move, and its issues for it since. */
+  pulls: readonly number[];
+  issues: readonly { number: number; author: string; body: string; at?: string | undefined }[];
+  app: string;
+  /** The pin watch's pass on that scan or a later one, as its log has it (`watchRead`). */
+  read: { at: string; run: number } | undefined;
+  /** When the run last looked. */
+  watchedUntil: string | undefined;
+  settleMs: number;
+}): { pass: boolean; why: string; mark?: string } {
+  const fail = (why: string) => ({ pass: false, why: why.slice(0, 420) });
+  if (!o.move || o.merged === undefined)
+    return fail(`no verdict: test ${o.of}'s move did not merge, so there was nothing to put back`);
+  if (!o.revert) return fail(`#${o.merged} merged, and its pins were not put back on main`);
+  const so = `#${o.merged} merged and was put back on main at ${o.revert.slice(0, 7)}`;
+  if (o.pulls.length) return fail(`${so}; the App opened #${o.pulls.join(', #')} for it again`);
+  if (!o.scan?.moves) return fail(`${so}; the scan after it left no moves`);
+  if (!o.scan.moves.some((m) => m.name === o.move?.name && m.from === o.move.from))
+    return fail(`no verdict: ${so}, and scan ${o.scan.id} does not list ${o.move.name} from ${o.move.from} again`);
+  const own = o.issues.filter((issue) => issue.author === o.app);
+  const said = own.find((issue) => REVERTED_SAYS.test(issue.body));
+  // The first sign that the watch made a pass on the scan: its log's word, or its issue for the move.
+  const signs = [o.read?.at, ...own.map((issue) => issue.at)].filter((at): at is string => Boolean(at)).sort();
+  const until = o.watchedUntil ?? '';
+  if (!o.read && !own.length)
+    return {
+      ...fail(`no verdict: ${so}; the pin watch had not read scan ${o.scan.id} by ${until || 'the end of the run'}`),
+      mark: NO_VERDICT,
+    };
+  const watchedMs = signs[0] && until ? Date.parse(until) - Date.parse(signs[0]) : 0;
+  const minutes = Math.round(watchedMs / 60_000);
+  const lists = `scan ${o.scan.id} lists it again`;
+  const read = o.read ? `the pin watch read scan ${o.read.run} at ${o.read.at}` : 'the pin watch made a pass';
+  if (!said && own.length)
+    return fail(
+      `${so}; ${lists} and no pull request opened, but issue #${own.map((i) => i.number).join(', #')} does not say it was undone on main`,
+    );
+  if (watchedMs < o.settleMs)
+    return fail(
+      `${so}; ${lists}, ${read}${said ? ` and issue #${said.number} says so` : ''}; watching for ${said ? 'a pull request' : 'its issue'} (${minutes} min)`,
+    );
+  if (!said) return fail(`${so}; ${lists}, and ${read} and opened no pull request, but no issue of the App's says so`);
+  return {
+    pass: true,
+    why: `${so}; ${lists}, ${read}, the App opened no pull request for it in the ${minutes} minutes after, and issue #${said.number} says its merge was undone on main`,
+  };
+}
+// ── Content that waits a day ────────────────────────────────────────────────────────────────────────────────────────
+
+/** The scan's document, `moves.json`: its moves, and the pins it says wait (`WAITING_KEY`). */
+export interface MovesFile {
+  moves?: readonly { name: string; from?: string; to?: string; major?: boolean }[];
+  [key: string]: unknown;
+}
+/**
+ * The key `moves.json` lists what waits under (moves.ts's `MovesFile.waiting`): each pin with somewhere to go and no
+ * move, by its name, with why. A scan from before it said so has no such key, and does not say.
+ */
+export const WAITING_KEY = 'waiting';
+/** Why a pin waits for its content's day, as an entry under `WAITING_KEY` says it (moves.ts's `WaitingWhy`). */
+export const WAITS_FOR_CONTENT = 'content';
+/**
+ * How a scan shows a move of a name: `listed`; `waiting`, held for its content's day; `absent`, neither, by a scan
+ * that says what waits (refused as no better than the pin among them); or `unsaid`, not listed by a scan that does
+ * not say what waits, which is no word that it does.
+ */
+export type Shown = 'listed' | 'waiting' | 'absent' | 'unsaid';
+export function shownAs(file: MovesFile | undefined, name: string): Shown {
+  if (file?.moves?.some((move) => move.name === name)) return 'listed';
+  const waiting = file?.[WAITING_KEY];
+  if (!Array.isArray(waiting)) return 'unsaid';
+  return waiting.some((each) => each?.name === name && each?.why === WAITS_FOR_CONTENT) ? 'waiting' : 'absent';
+}
+/**
+ * The moves a run's tests and forgeries stand on that a scan lacks: those it lists no move of, and those it lists a
+ * move of while it says the pin's content waits its day, as the move that content brings is not the one listed (an
+ * image whose digest waits is listed for a bare version of what it carries, which the pin step does not make). With
+ * any, and the scan the first after a reset, which has no state, the run scans once more, on the state the first left.
+ */
+export const notListed = (needed: readonly string[], file: MovesFile | undefined): string[] =>
+  needed.filter((name) => shownAs(file, name) !== 'listed' || shownAs({ ...file, moves: [] }, name) === 'waiting');
+/**
+ * Why a forgery could not be made, from what forge.ts wrote as it died: its error's own words, without the stack
+ * and the source line Node prints around them. The test then has no verdict, and its line says this.
+ */
+export function forgeFault(stderr: string): string {
+  const lines = stderr.split('\n');
+  const at = lines.findLastIndex((line) => /^\w*Error: /.test(line));
+  // The error's message, which may run over lines, as far as its stack or the blank line after it.
+  const rest = at < 0 ? [] : lines.slice(at);
+  const end = rest.findIndex((line, i) => i > 0 && (!line.trim() || /^\s+at /.test(line)));
+  const said =
+    at < 0
+      ? lines.find((line) => line.trim())
+      : rest
+          .slice(0, end < 0 ? rest.length : end)
+          .join(' ')
+          .replace(/^\w*Error: /, '');
+  return `the forgery could not be made: ${(said ?? '').trim().replace(/\s+/g, ' ') || 'forge.ts said nothing'}`.slice(
+    0,
+    400,
+  );
+}
+/**
+ * Content first seen today waits a day (test 28): the first scan after the reset, with no state to read, lists no
+ * move of it and says it waits for its content's day; no pull request of the App's is opened for it before the scan
+ * after, which, on the first's state with its sightings put back, lists it. Listed by the first, the wait did not
+ * hold. Not said to wait by the first (a scan that does not say what waits among them), or listed by neither, nothing
+ * shows it was the wait that kept it out: no verdict.
+ */
+export function waitedVerdict(o: {
+  move: string;
+  /** How the first scan after the reset shows it; undefined when the run made no reset, or read one scan alone. */
+  first: { id: number; shown: Shown } | undefined;
+  /** Whether the scan after it lists it. */
+  second: { id: number; listed: boolean } | undefined;
+  /** The App's pull requests that carry the move, opened before the second scan began. */
+  early?: readonly number[] | undefined;
+}): { pass: boolean; why: string } {
+  const fail = (why: string) => ({ pass: false, why });
+  if (!o.second) return fail('the scan has not finished');
+  if (!o.first)
+    return o.second.listed
+      ? fail(
+          `scan ${o.second.id}, the first this run read, lists ${o.move}: no scan before it showed it waiting (no reset, or a state kept)`,
+        )
+      : fail(`no verdict: scan ${o.second.id} does not list ${o.move}, and no scan after it was read`);
+  if (o.first.shown === 'listed')
+    return fail(`scan ${o.first.id}, the first after the reset, lists ${o.move}: its content did not wait`);
+  if (o.early?.length)
+    return fail(
+      `#${o.early.join(', #')} was opened for ${o.move} before scan ${o.second.id}, while its content had not waited`,
+    );
+  if (o.first.shown === 'unsaid')
+    return fail(
+      `no verdict: scan ${o.first.id} does not list ${o.move} and does not say what waits (its moves.json has no \`${WAITING_KEY}\`): nothing shows the wait kept it out`,
+    );
+  if (o.first.shown === 'absent')
+    return fail(
+      `no verdict: scan ${o.first.id} neither lists ${o.move} nor says it waits for its content's day: nothing shows the wait kept it out`,
+    );
+  if (!o.second.listed)
+    return fail(
+      `no verdict: scan ${o.first.id} says ${o.move} waits, and scan ${o.second.id} on its state does not list it (is SCRATCH_CONTENT_SEEN_DAYS_AGO set, and staged/factory/28-… on the baseline?)`,
+    );
+  return {
+    pass: true,
+    why: `scan ${o.first.id}, with no state, lists no move of ${o.move} and says it waits for its content's day; no pull request was opened for it before scan ${o.second.id}, which, on its state with the sightings put back, lists it`,
+  };
+}
+
+// ── The line under an app's test, before its scan ───────────────────────────────────────────────────────────────────
+
+/**
+ * Why the line must be stopped before an app test's scans, from the store's last start or stop, or nothing when it is
+ * stopped or was never started: a running line looks again at a ticket as it takes it, and after each release, by
+ * the app's newest scan, and the first scan after a reset, which has no state, lists no image's move. The findings of
+ * a move not listed are in no move, which that look reads as cleared where the scan does not say what waits (the
+ * app's, at a commit of the workflow from before it did), and the restored ticket would close unworked.
+ */
+export const lineTooEarly = (last: string | undefined): string | undefined =>
+  last === 'line.started'
+    ? 'the restored line is running before the scan the run stands on is in, and would read the first, stateless scan'
+    : undefined;
+
+// ── A move within the major, and then the major ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Why a test of a pin's major (4a, 4b) has no verdict on a scan, or nothing where it has: the scan lists a move of the
+ * pin that is no major. A release within the pin's major clears some of its findings and leaves nothing worse than
+ * it clears for the major, so that move comes first, and merges at Guarded as any move does; the major is listed only
+ * by a scan after it has merged, from the release it reached (moves.ts's `withinMajor`). The run then has no major of
+ * that pin to see held, or merged at Lights-out. A pin whose every fix is a major, or whose move within the major
+ * would leave worse than it clears, lists the major at once, and the test is judged as written.
+ */
+export function majorNotFirst(move: (Pick<ListedMove, 'name' | 'from' | 'to'> & { major?: boolean }) | undefined) {
+  if (move?.major !== false) return undefined;
+  return `the scan lists ${move.name} from ${move.from} to ${move.to}, a move within its major, which comes before the major where a release there clears some of the pin's findings and leaves none worse for the major: no major of ${move.name} to judge until that has merged (pin it at its major's newest release to stage one)`;
+}
+
+/**
+ * Why a move that must stay within its pin's major, with the major to follow (test 2), does not: the first scan names
+ * a major for it; or, once it has merged, no later scan lists a move of its name from the release it moved to that is
+ * a major, or says one waits. Nothing while no later scan is read, and nothing when one does.
+ */
+export function majorNextFault(
+  first: Pick<ListedMove, 'name' | 'to'> & { major?: boolean },
+  later: readonly ({ id: number } & MovesFile)[],
+): string | undefined {
+  if (first.major) return `the scan names a major for ${first.name}, ${first.to}, and not a move within its major`;
+  if (!later.length) return undefined;
+  const reached = targetOf(first.to);
+  for (const scan of later) {
+    const next = (scan.moves ?? []).find((m) => m.name === first.name && m.from === reached);
+    if (next?.major) return undefined;
+    if (next) return `scan ${scan.id} lists ${first.name} from ${reached} to ${next.to}, which is no major`;
+    if (shownAs({ [WAITING_KEY]: scan[WAITING_KEY] }, first.name) === 'waiting') return undefined;
+  }
+  return `scan ${later.map((s) => s.id).join(', ')} lists no major of ${first.name} from ${reached ?? first.to} as a move of its own`;
+}
+/**
+ * Which later scan gives a move within its major the major that follows it (test 2), and how: `listed`, as a move of
+ * its own from the release the first reached, by any of them; or said to wait for its content's day, which is not yet
+ * a move. Each is the scan's own word after the merge, and a verdict says which it stood on.
+ */
+export function majorNext(
+  first: Pick<ListedMove, 'name' | 'to'>,
+  later: readonly ({ id: number } & MovesFile)[],
+): { scan: number; listed: boolean } | undefined {
+  const reached = targetOf(first.to);
+  const lists = later.find((scan) =>
+    (scan.moves ?? []).some((m) => m.name === first.name && m.from === reached && m.major),
+  );
+  if (lists) return { scan: lists.id, listed: true };
+  const waits = later.find((scan) => shownAs({ [WAITING_KEY]: scan[WAITING_KEY] }, first.name) === 'waiting');
+  return waits ? { scan: waits.id, listed: false } : undefined;
 }

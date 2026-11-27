@@ -109,6 +109,7 @@ import {
   closedByPerson,
   dependabotCarries,
   dependabotHold,
+  namedMove,
   type PatchIssue,
   type PinRefusal,
   type PullMove,
@@ -778,9 +779,21 @@ export function issueWhyOf(body: string | null | undefined): IssueWhy | undefine
   return undefined;
 }
 
-/** The move an issue's description names, as the App wrote it in its first sentence (`issueOf`). */
-export function issueMoveOf(body: string | null | undefined): string | undefined {
-  return /lists a move [^`\n]*?: `([^`\n]+)`/.exec(body ?? '')?.[1];
+/**
+ * The move an issue's description names, as the App wrote it (`issueOf`): its name from the first sentence, which
+ * writes it as code and so without its backticks. A lockfile's, known by its key (`issueKey`), is named again as the
+ * scan names it (`publicMove`, moves.ts), from the files its pins list.
+ */
+export function issueMoveOf(body: string | null | undefined): PullMove | undefined {
+  const text = body ?? '';
+  if (ISSUE_MARK.exec(text)?.[1]?.startsWith('lockfile-')) {
+    const pins = text.split('**Pins**')[1]?.split('\n\n')[1] ?? '';
+    const files = [...pins.matchAll(/^- `([^`\n]+)`$/gm)].map((each) => each[1] as string);
+    if (!files.length) return undefined;
+    return { name: `a package in ${files.map((file) => `\`${file}\``).join(' and ')}`, lockfile: true };
+  }
+  const name = /lists a move [^`\n]*?: `([^`\n]+)`/.exec(text)?.[1];
+  return name === undefined ? undefined : namedMove(name);
 }
 
 /** The key an issue is found again by: the move's name, or for a lockfile's, its mark, which names no package. */
@@ -1225,7 +1238,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     const at = now();
     const iso = new Date(at).toISOString();
     const listedAt = new Map(seen.listed.map((item) => [item.number, item]));
-    const named = (names: readonly string[]): PullMove[] => names.map((name) => ({ name }));
+    const named = (names: readonly string[]): PullMove[] => names.map(namedMove);
     // A branch's moves: those the pass carries there; else those its description names, as the day has them.
     const movesOn = (branch: string, body: string | null | undefined): PullMove[] => {
       const carried = seen.groups.get(branch);
@@ -1278,8 +1291,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       }
       const today = whyByNumber.get(item.number);
       const why = today?.why ?? issueWhyOf(item.body) ?? { issue: 'other' };
-      const name = today ? undefined : issueMoveOf(item.body);
-      const moves = today ? [pullMove(today.move)] : name ? [{ name }] : [];
+      const written = today ? undefined : issueMoveOf(item.body);
+      const moves = today ? [pullMove(today.move)] : written ? [written] : [];
       if (!moves.length) continue;
       const open = acted?.did === 'reopened' || (item.state === 'open' && acted?.did !== 'closed');
       const settled = acted?.did === 'closed' ? acted.at : (item.closed_at ?? undefined);

@@ -40,10 +40,14 @@ import {
 } from '../../src/github/pins.ts';
 import {
   dependabotCarries,
+  lockfileName,
+  namedMove,
   type PatchPull,
   type PullSource,
   PullStates,
   PullsUnread,
+  pullMove,
+  pullMoves,
   pullSources,
   type Seen,
 } from '../../src/github/pull-states.ts';
@@ -62,7 +66,7 @@ const HEAD = 'c'.repeat(40);
 const pinSeen = (number: number, over: Partial<Seen> = {}): Seen => ({
   kind: 'pin',
   number,
-  moves: [{ name: 'zap' }],
+  moves: [{ name: 'zap', lockfile: false }],
   opened: at(NOW - DAY),
   state: 'open',
   ...over,
@@ -73,7 +77,7 @@ function parses(pulls: readonly PatchPull[]) {
   const [first, ...rest] = PATCHING.payload.repositories;
   return PAYLOADS['patching.read'].safeParse({
     ...PATCHING.payload,
-    repositories: [{ ...first, pulls }, ...rest],
+    repositories: [{ ...first, pulls }, ...rest.map((each) => ({ ...each, pulls: [] }))],
   });
 }
 
@@ -108,7 +112,7 @@ describe('the record of pull requests that carry moves', () => {
     expect(first).toEqual({
       kind: 'pin',
       number: 1040,
-      moves: [{ name: 'zap' }],
+      moves: [{ name: 'zap', lockfile: false }],
       opened: at(NOW - DAY),
       state: 'open',
       rule: 'move',
@@ -151,12 +155,43 @@ describe('the record of pull requests that carry moves', () => {
     expect(pulls.at(-1)?.number).toBe(1000 + 200 - (MOST_PULLS - 200));
   });
 
-  it('keeps a lockfile move’s package once it settles and its pull request no longer names it', () => {
+  it('keeps every move a pull request carried once it settles, each lockfile move said so, packages and all', () => {
     const states = new PullStates({ sources: () => ['pins'], now: () => NOW });
     const lockfile = 'a package in `pnpm-lock.yaml`';
-    states.saw(FACTORY, 'pins', [pinSeen(7, { moves: [{ name: lockfile, package: '@example/tokens' }] })]);
-    states.saw(FACTORY, 'pins', [pinSeen(7, { moves: [{ name: lockfile }], state: 'merged', settled: at(NOW) })]);
-    expect(states.read(FACTORY).pulls[0]?.moves).toEqual([{ name: lockfile, package: '@example/tokens' }]);
+    const carried = ['@example/tokens', 'undici', 'ws'].map((name) => ({
+      name: lockfile,
+      lockfile: true,
+      package: name,
+    }));
+    states.saw(FACTORY, 'pins', [pinSeen(7, { moves: carried })]);
+    // Settled, it is read from its marks, which name each lockfile move by its file alone.
+    const named = carried.map(() => namedMove(lockfile));
+    expect(named.every((each) => each.lockfile)).toBe(true);
+    expect(pullMoves(named)).toHaveLength(3);
+    states.saw(FACTORY, 'pins', [pinSeen(7, { moves: named, state: 'merged', settled: at(NOW) })]);
+    expect(states.read(FACTORY).pulls[0]?.moves).toEqual(carried);
+    // After a restart, the marks alone: every lockfile move kept, and said to be one.
+    const restarted = new PullStates({ sources: () => ['pins'], now: () => NOW });
+    restarted.saw(FACTORY, 'pins', [pinSeen(7, { moves: pullMoves(named), state: 'merged', settled: at(NOW) })]);
+    expect(restarted.read(FACTORY).pulls[0]?.moves).toEqual(named);
+    expect(lockfileName('a package in `pnpm-lock.yaml` and `apps/x/pnpm-lock.yaml`')).toBe(true);
+    expect(lockfileName('ghcr.io/example/sbom-tool')).toBe(false);
+  });
+
+  it('keeps the hold the watch that saw it gave, where a queue says nothing of it', () => {
+    const states = new PullStates({ sources: () => ['dependabot', 'workflow-queue'], now: () => NOW });
+    const seen: Seen = {
+      kind: 'dependabot',
+      number: 81,
+      moves: [{ name: 'actions/setup-node', lockfile: false }],
+      opened: at(NOW),
+      state: 'open',
+      hold: 'martin',
+    };
+    states.saw(APP_REPOSITORY, 'dependabot', [seen]);
+    states.say(APP_REPOSITORY, 81, HEAD, {}, true);
+    states.passedQueue(APP_REPOSITORY, 'workflow-queue', new Set([81]));
+    expect(states.read(APP_REPOSITORY).pulls[0]).toMatchObject({ hold: 'martin' });
   });
 
   it('reads the Actions run of a check from the link GitHub gives it', () => {
@@ -220,7 +255,9 @@ async function pinQueue(
     verdict?: ReviewVerdict;
     runs?: CheckRun[];
     level?: LevelReader;
-    queue?: MergeQueue;
+    queue?: MergeQueue | (() => MergeQueue);
+    passes?: number;
+    reviewPages?: unknown[][];
     conflicts?: boolean | null;
     events?: LabelEvents;
     reviews?: unknown[];
@@ -246,7 +283,14 @@ async function pinQueue(
             : [],
       }),
     },
-    { method: 'GET', path: /\/pulls\/\d+\/reviews\?per_page=100$/, answer: () => ({ body: o.reviews ?? [] }) },
+    {
+      method: 'GET',
+      path: /\/pulls\/\d+\/reviews\?per_page=100&page=\d+$/,
+      answer: ({ path }) => {
+        const page = Number(/page=(\d+)$/.exec(path)?.[1]);
+        return { body: o.reviewPages?.[page - 1] ?? (page === 1 ? (o.reviews ?? []) : []) };
+      },
+    },
     {
       method: 'GET',
       path: /\/git\/commits\/[0-9a-f]{40}$/,
@@ -267,7 +311,7 @@ async function pinQueue(
       conflicts: o.conflicts === undefined ? false : o.conflicts,
       state: 'clean',
     }),
-    mergeQueue: async () => o.queue ?? queueOf(),
+    mergeQueue: async () => (typeof o.queue === 'function' ? o.queue() : (o.queue ?? queueOf())),
   };
   const pass = pinQueueWatch(
     {
@@ -286,7 +330,7 @@ async function pinQueue(
     FACTORY,
     '*',
   );
-  await pass();
+  for (let i = 0; i < (o.passes ?? 1); i++) await pass();
   const [read] = states.read(FACTORY).pulls;
   return read as PatchPull;
 }
@@ -303,6 +347,16 @@ describe('each hold the queues give', () => {
     // Someone else's request for changes is not Martin's, and holds as the gate's own hold.
     const theirs = [{ id: 9, user: { id: 1 }, state: 'CHANGES_REQUESTED', commit_id: HEAD }];
     expect((await pinQueue({ verdict: judged('held'), reviews: theirs })).hold).toBe('held');
+    // Martin's latest review past the first hundred is read too.
+    const others = Array.from({ length: 100 }, (_, i) => ({
+      id: i,
+      user: { id: 1 },
+      state: 'COMMENTED',
+      commit_id: HEAD,
+    }));
+    expect(await pinQueue({ verdict: judged('held'), reviewPages: [others, asked] })).toMatchObject({
+      hold: 'changes-requested',
+    });
     expect(await pinQueue({ verdict: judged('martin-approved-head') })).toMatchObject({
       rule: 'martin-approved-head',
       hold: 'martin',
@@ -312,6 +366,10 @@ describe('each hold the queues give', () => {
   it('names the level and the stop', async () => {
     expect(await pinQueue({ verdict: judged('major') })).toMatchObject({ rule: 'major', hold: 'level' });
     expect((await pinQueue({ level: levelAt('lights-out', true) })).hold).toBe('stopped');
+    expect((await pinQueue({ level: levelAt('guarded', true) })).hold).toBe('stopped');
+    // A stopped line at a level that does not queue the rule: it waits on Martin, not on the line.
+    expect((await pinQueue({ level: levelAt('supervised', true) })).hold).toBe('level');
+    expect((await pinQueue({ verdict: judged('major'), level: levelAt('guarded', true) })).hold).toBe('level');
   });
 
   it('names checks running, and checks failed on every try, by name and run, never a log', async () => {
@@ -369,6 +427,12 @@ describe('each hold the queues give', () => {
     expect(queued).not.toHaveProperty('hold');
     const already = queueOf({ queued: { position: 1, state: 'QUEUED', enqueuedAt: at(NOW), commit: null } });
     expect(await pinQueue({ queue: already })).toMatchObject({ queued: true });
+    // Added, then gone from the queue by no removal of the queue's own: the worker adds it no more.
+    let read = 0;
+    const left = () => (read++ === 0 ? queueOf() : queueOf({ added: { at: at(NOW), by: 'mrogan-software-factory' } }));
+    const gone = await pinQueue({ queue: left, passes: 2 });
+    expect(gone).toMatchObject({ hold: 'dequeued' });
+    expect(gone).not.toHaveProperty('queued');
     const refused = await pinQueue({
       enqueue: async () => {
         throw new GitHubError('refused', 'no', 403);
@@ -425,7 +489,13 @@ describe('each hold the queues give', () => {
       const { github } = client(routes);
       const states = new PullStates({ sources: () => ['dependabot', 'workflow-queue'], now: () => NOW });
       states.saw(APP_REPOSITORY, 'dependabot', [
-        { kind: 'dependabot', number: 81, moves: [{ name: 'factory' }], opened: at(NOW), state: 'open' },
+        {
+          kind: 'dependabot',
+          number: 81,
+          moves: [{ name: 'factory', lockfile: false }],
+          opened: at(NOW),
+          state: 'open',
+        },
       ]);
       await workflowPinQueueWatch(
         {
@@ -512,7 +582,7 @@ describe('each reason the pin watch opens an issue for', () => {
       expect(issueWhy(each, why, kind), `${why ?? each.name} ${kind ?? ''}`).toEqual(expected);
       const { body } = issueOf(each, today, why, kind, kind === 'resolved' ? '1.1.1' : undefined);
       expect(issueWhyOf(body), `${why ?? each.name} ${kind ?? ''}`).toEqual(expected);
-      expect(issueMoveOf(body)).toBe(each.name);
+      expect(issueMoveOf(body)).toEqual({ name: each.name, lockfile: false });
     }
     expect(issueWhyOf('Someone else’s words.')).toBeUndefined();
   });
@@ -647,25 +717,32 @@ describe('what the pin watch records in a pass', () => {
     const issues = repo.issues.filter((i) => i.state === 'open');
     expect(issues).toHaveLength(2);
     const byNumber = new Map(first.map((p) => [p.number, p]));
-    expect(byNumber.get(merged.number)).toMatchObject({ kind: 'pin', state: 'merged', moves: [{ name: 'zap' }] });
+    expect(byNumber.get(merged.number)).toMatchObject({
+      kind: 'pin',
+      state: 'merged',
+      moves: [{ name: 'zap', lockfile: false }],
+    });
     expect(first.some((p) => p.moves.some((m) => m.name === 'old'))).toBe(false);
     expect(byNumber.get(closed.number)).toMatchObject({
       kind: 'issue',
       state: 'closed',
       closedByPerson: true,
       issue: 'reverted',
-      moves: [{ name: 'actions/checkout' }],
+      moves: [{ name: 'actions/checkout', lockfile: false }],
     });
     const opened = first.filter((p) => p.kind === 'issue' && p.state === 'open');
     expect(opened.map((p) => p.moves)).toEqual(
-      expect.arrayContaining([[{ name: lockfile.name, package: '@example/tokens' }], [{ name: 'actions/setup-node' }]]),
+      expect.arrayContaining([
+        [{ name: lockfile.name, lockfile: true, package: '@example/tokens' }],
+        [{ name: 'actions/setup-node', lockfile: false }],
+      ]),
     );
     expect(opened.map((p) => p.issue).sort()).toEqual(['other', 'workflow']);
     expect(byNumber.get(bump.number)).toMatchObject({
       kind: 'dependabot',
       state: 'open',
       hold: 'martin',
-      moves: [{ name: 'actions/setup-node' }],
+      moves: [{ name: 'actions/setup-node', lockfile: false }],
     });
     expect(parses(first).success).toBe(true);
 
@@ -677,7 +754,7 @@ describe('what the pin watch records in a pass', () => {
     const again = second.filter((p) => p.kind === 'issue' && p.state === 'open');
     expect(again.map((p) => p.number).sort()).toEqual(issues.map((i) => i.number).sort());
     expect(again.find((p) => p.issue === 'other')?.moves).toEqual([
-      { name: lockfile.name, package: '@example/tokens' },
+      { name: lockfile.name, lockfile: true, package: '@example/tokens' },
     ]);
     expect(second.find((p) => p.number === bump.number)).toMatchObject({ state: 'merged', settled: at(NOW) });
     expect(parses(second).success).toBe(true);
@@ -707,6 +784,9 @@ describe('what the pin watch records in a pass', () => {
     const all = [lockfile, workflow, image];
     const names = (p: DependencyPull) => dependabotCarries(p, all).map((m) => m.name);
     expect(names(pull({ dependency: '@example/tokens', version: '3.0.2' }))).toEqual([lockfile.name]);
+    expect(dependabotCarries(pull({ dependency: '@example/tokens' }), all).map(pullMove)).toEqual([
+      { name: lockfile.name, lockfile: true, package: '@example/tokens' },
+    ]);
     expect(names(pull({ ecosystem: 'github-actions', dependency: 'actions/setup-node' }))).toEqual([workflow.name]);
     expect(
       names(pull({ ecosystem: 'docker', directory: '/deploy/images/sbom-tool', dependency: 'example/sbom-tool' })),
@@ -732,22 +812,41 @@ describe('what the pin watch records in a pass', () => {
         body: marks(['old']),
         merged_at: at(NOW - DAY),
       });
-      return { repo, open, merged };
+      // The day's lockfile moves, merged in one pull request and named by its marks alone; and a lockfile move's issue.
+      const lockfiles = repo.addPull({
+        head: 'factory/pin/pnpm-lock.yaml',
+        labels: ['pin'],
+        state: 'closed',
+        body: marks([lockfile.name, lockfile.name]),
+        merged_at: at(NOW - DAY),
+      });
+      const issue = repo.addIssue({ labels: ['pin'], body: issueOf(lockfile, day(repo.main, [lockfile])).body });
+      return { repo, open, merged, lockfiles, issue };
+    };
+    const expectLockfiles = (pulls: PatchPull[], lockfiles: number, issue: number) => {
+      const lockfileMove = { name: lockfile.name, lockfile: true };
+      expect(pulls.find((p) => p.number === lockfiles)?.moves).toEqual([lockfileMove, lockfileMove]);
+      expect(pulls.find((p) => p.number === issue)).toMatchObject({ kind: 'issue', moves: [lockfileMove] });
     };
     const expectListed = (pulls: PatchPull[], open: number, merged: number) => {
       expect(pulls.find((p) => p.number === open)).toMatchObject({
         kind: 'pin',
         state: 'open',
-        moves: [{ name: 'zap' }],
+        moves: [{ name: 'zap', lockfile: false }],
       });
-      expect(pulls.find((p) => p.number === merged)).toMatchObject({ state: 'merged', moves: [{ name: 'old' }] });
+      expect(pulls.find((p) => p.number === merged)).toMatchObject({
+        state: 'merged',
+        moves: [{ name: 'old', lockfile: false }],
+      });
       expect(parses(pulls).success).toBe(true);
     };
 
     it('told no move', async () => {
-      const { repo, open, merged } = fixture();
+      const { repo, open, merged, lockfiles, issue } = fixture();
       const h = harness(repo, [], () => [], { only: [] });
-      expectListed(await h.pass(), open.number, merged.number);
+      const pulls = await h.pass();
+      expectListed(pulls, open.number, merged.number);
+      expectLockfiles(pulls, lockfiles.number, issue.number);
       // Its queue, told none too, has made its pass.
       const states = new PullStates({ sources: () => ['pin-queue'], now: () => NOW });
       const { github } = client([]);
@@ -768,9 +867,11 @@ describe('what the pin watch records in a pass', () => {
     });
 
     it('on a day the scan wrote no moves.json, or whose moves cannot be read', async () => {
-      const { repo, open, merged } = fixture();
+      const { repo, open, merged, lockfiles, issue } = fixture();
       const h = harness(repo, [], () => [], { today: async () => ({ ...day(repo.main, []), file: null }) });
-      expectListed(await h.pass(), open.number, merged.number);
+      const pulls = await h.pass();
+      expectListed(pulls, open.number, merged.number);
+      expectLockfiles(pulls, lockfiles.number, issue.number);
       const failing = harness(repo, [], () => [], {
         today: async () => {
           throw new Error('the state cannot be read');

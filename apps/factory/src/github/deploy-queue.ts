@@ -99,6 +99,7 @@
 import type { Autonomy } from '@software-factory/events';
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { enqueues } from '../../../../policy/line.ts';
 import { ACTIONS_APP } from '../gates/counts.ts';
 import { FACTORY_REPOSITORY } from '../repositories.ts';
 import type { Actions } from './actions.ts';
@@ -732,14 +733,18 @@ async function queueOne(
   // Added by this worker and gone from the queue with no removal of the queue's own read: not added again.
   if (attempt.queued && !failed) {
     attempt.done = true;
+    // Out of the queue by no removal of the queue's own: the worker adds this head no more, as for one a person took out.
+    state.note(number, head, { hold: 'dequeued' });
     return;
   }
   // The line's stop and the level, read now, just before the enqueue, so what Martin changed holds from this pass:
   // none read is stopped, at Supervised (`level.ts`).
   if (level) {
-    const allowed = levelWait(await level(), rule);
+    const merging = await level();
+    const allowed = levelWait(merging, rule);
     if (allowed) {
-      if (allowed.waits === 'stopped' || allowed.waits === 'level') state.note(number, head, { hold: allowed.waits });
+      // Stopped only where the level itself would queue it, and moves once the line runs; else it waits on Martin.
+      state.note(number, head, { hold: enqueues(merging, rule) ? 'stopped' : 'level' });
       return state.wait(number, head, allowed);
     }
   }

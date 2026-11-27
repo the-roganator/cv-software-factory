@@ -125,7 +125,9 @@ export class PullStates {
     const next = new Map([...before].filter(([, each]) => !kinds.includes(each.kind)));
     for (const each of seen) {
       const was = before.get(each.number ?? 0);
-      next.set(each.number ?? 0, was ? { ...each, moves: withPackages(each.moves, was.moves) } : each);
+      // What it carried is what it was seen carrying: a settled one's marks name its lockfile moves, not their packages.
+      const moves = !was ? each.moves : each.state !== 'open' ? was.moves : withPackages(each.moves, was.moves);
+      next.set(each.number ?? 0, { ...each, moves });
     }
     state.seen = next;
     state.passed.add(source);
@@ -185,7 +187,12 @@ export class PullStates {
       }
       // The queue reads the open pull requests each minute, the pin watch each hour: its say is of the head it is at.
       const say = each.number === undefined ? undefined : state.says.get(each.number)?.say;
-      open.push(say ? { ...withoutSay(each), ...say } : each);
+      // A queue that says nothing of it (not one it queues) leaves what the watch that saw it gave.
+      if (!say || !Object.keys(say).length) {
+        open.push(each);
+        continue;
+      }
+      open.push({ ...withoutSay(each), ...say });
     }
     const byTime = (a: PatchPull, b: PatchPull, at: (p: PatchPull) => string) =>
       at(a) < at(b) ? -1 : at(a) > at(b) ? 1 : (a.number ?? 0) - (b.number ?? 0);
@@ -214,14 +221,29 @@ function withPackages(now: readonly PullMove[], before: readonly PullMove[]): Pu
 /** A move as a pull request carries it: its name, and for a lockfile's, its package apart. */
 export const pullMove = (move: Pick<ReadMove, 'name' | 'lockfile' | 'withheld'>): PullMove => ({
   name: move.name,
+  lockfile: move.lockfile,
   ...(move.lockfile && move.withheld ? { package: move.withheld.package } : {}),
 });
 
-/** At most the moves the day's schema holds of one pull request, each once. */
+/**
+ * Whether a move's name is a lockfile's, which the scan names by its files alone (`publicMove`, moves.ts: "a package in
+ * \`<file>\`", files joined by "and"): what a description's mark or an issue gives of a move the day no longer lists.
+ * No other move's name has a space or a backtick.
+ */
+export const lockfileName = (name: string): boolean => /^a package in `[^`]+`(?: and `[^`]+`)*$/.test(name);
+
+/** A move known by its name alone, from a mark the App wrote: a lockfile's is said so by its name. */
+export const namedMove = (name: string): PullMove => ({ name, lockfile: lockfileName(name) });
+
+/**
+ * At most the moves the day's schema holds of one pull request, each once. Lockfile moves known by their name alone are
+ * each a move of their own: one pull request carries every lockfile move of the day under the one name.
+ */
 export function pullMoves(moves: readonly PullMove[]): PullMove[] {
   const seen = new Set<string>();
   return moves
     .filter((each) => {
+      if (each.lockfile && each.package === undefined) return true;
       const key = `${each.name}\n${each.package ?? ''}`;
       if (seen.has(key)) return false;
       seen.add(key);
@@ -309,6 +331,23 @@ const EVENTS = z.array(
   }),
 );
 
+/** The most pages of a hundred read of a pull request's reviews or events: the gate reads them whole. */
+const REVIEW_PAGES = 30;
+
+/**
+ * Every page GitHub gives of a list, oldest first, up to `REVIEW_PAGES`: Martin's latest review may be past the first
+ * hundred on a pull request others reviewed often. Past them, what is read decides, which only names the hold.
+ */
+async function pages<T>(github: GitHub, repo: string, path: string, schema: z.ZodType<T[]>): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 1; page <= REVIEW_PAGES; page++) {
+    const { body } = await github.poll(repo, `${path}&page=${page}`, schema);
+    out.push(...body);
+    if (body.length < 100) break;
+  }
+  return out;
+}
+
 /**
  * Why the gate's verdict keeps a pull request from the queue: not judged at its head yet (`verdict`); held because
  * Martin asked for changes, which the gate reads from his reviews as `policy/reviews.ts` has it, read here the same way
@@ -328,15 +367,15 @@ export async function gateHold(
   if (rule === undefined) return 'verdict';
   if (rule !== 'held') return 'martin';
   const reviews: Review[] = (
-    await github.poll(repo, `/repos/${repo}/pulls/${number}/reviews?per_page=100`, REVIEWS)
-  ).body.map(({ id, ...each }) => ({
+    await pages(github, repo, `/repos/${repo}/pulls/${number}/reviews?per_page=100`, REVIEWS)
+  ).map(({ id, ...each }) => ({
     ...each,
     ...(id !== undefined ? { id } : {}),
     commit_id: each.commit_id ?? null,
   }));
   // A dismissal says by whom only in the pull request's events: read only when a review was dismissed.
   const events: Dismissal[] = reviews.some((each) => each.state === 'DISMISSED')
-    ? (await github.poll(repo, `/repos/${repo}/issues/${number}/events?per_page=100`, EVENTS)).body.map((each) => ({
+    ? (await pages(github, repo, `/repos/${repo}/issues/${number}/events?per_page=100`, EVENTS)).map((each) => ({
         event: each.event,
         actor: each.actor ?? null,
         ...(each.dismissed_review ? { dismissed_review: each.dismissed_review } : {}),

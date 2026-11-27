@@ -580,8 +580,9 @@ export const SETTLED_DAYS = 28;
  * name and its run, never its log), whether it is in the merge queue, and why not. Only the factory's own words: nothing
  * of a pull request's title, body or comments, nor of Dependabot's. An issue's why is what it asks of Martin.
  *
- * In the public view a lockfile's move's package is left out, and a pull request or issue that carries one and waits
- * on Martin is `withheld`: what it is and where it stands, and nothing of what it waits for, nor its number.
+ * In the public view a lockfile's move's package is left out, and a pull request or issue that carries one, but for
+ * one merged, is `withheld`: no number, its times to the day, and, while it waits on Martin, nothing of what it waits
+ * for.
  */
 const patchPull = z
   .strictObject({
@@ -589,7 +590,16 @@ const patchPull = z
     /** Its number on GitHub; absent only where the public view withholds it. */
     number: pullRequest.optional(),
     moves: z
-      .array(z.strictObject({ name: z.string().min(1).max(300), package: dependencyName.optional() }))
+      .array(
+        z
+          .strictObject({
+            name: z.string().min(1).max(300),
+            /** Whether it is a lockfile's move, whose package the public view withholds: said, never inferred. */
+            lockfile: z.boolean(),
+            package: dependencyName.optional(),
+          })
+          .refine((m) => m.package === undefined || m.lockfile, "only a lockfile's move has its package apart"),
+      )
       .min(1)
       .max(100),
     opened: timestamp,
@@ -612,7 +622,7 @@ const patchPull = z
     hold: z.enum(V.PATCH_HOLDS).optional(),
     issue: z.enum(V.PATCH_ISSUES).optional(),
     refusal: z.enum(V.PIN_REFUSALS).optional(),
-    /** Set by the public view alone: a pull request or issue that carries a lockfile's move and waits on Martin. */
+    /** Set by the public view alone: a pull request or issue that carries a lockfile's move and has not merged. */
     withheld: z.literal(true).optional(),
   })
   .refine((p) => (p.kind === 'issue') === (p.issue !== undefined) || p.withheld, 'an issue says why, and only an issue')

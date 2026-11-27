@@ -1751,6 +1751,13 @@ describe('upcasting the real catalogue', () => {
     expect(read.ok && changed(read.event.payload)).toEqual({ ok: true });
     // The controls carry no switch now.
     expect(changed(v2).ok).toBe(false);
+    // With the switch off, nothing was queued by any rule: that reads as Supervised, which queues no more.
+    const off = { ...v2, autoMerge: false, change: { control: 'autonomy', before: 'supervised', after: 'guarded' } };
+    const quiet = upcast({ type: 'controls.changed', version: 2, payload: off });
+    expect(quiet.ok && quiet.event.payload).toMatchObject({ autonomy: 'supervised' });
+    expect(quiet.ok && changed(quiet.event.payload)).toEqual({ ok: true });
+    const supervised = upcast({ type: 'controls.changed', version: 2, payload: { ...off, autonomy: 'supervised' } });
+    expect(supervised.ok && supervised.event.payload).toMatchObject({ autonomy: 'supervised' });
   });
 
   it('holds a canary paused for Martin from version 10 of hold.started', () => {

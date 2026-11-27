@@ -207,6 +207,16 @@ describe('the dependency sense', () => {
     expect(await days()).toEqual([]);
   });
 
+  it('reads again shortly while the worker has not read the pull requests since it started', async () => {
+    const unread = Object.assign(new Error('The pin watch has not made a pass yet'), {
+      status: 503,
+      kind: 'not-read-yet',
+    });
+    const s = sense(senses({ pulls: async () => Promise.reject(unread) }));
+    expect((await s.pass()).pass).toBe('refused');
+    expect(await days()).toEqual([]);
+  });
+
   it('keeps a lockfile move’s package out of the public view', async () => {
     await sense(senses()).pass();
     const [before] = await days();

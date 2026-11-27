@@ -138,7 +138,11 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // change of it reads as it was, the change Martin made then.
   'controls.changed': {
     1: (payload) => ({ ...payload, autoRollback: true }),
-    2: ({ autoMerge: _, ...payload }) => payload,
+    // Version 3 has no auto-merge switch: the level alone decides what is queued. A version 2 record with the switch
+    // off queued nothing by any rule at any level, which is what Supervised queues now, so it reads as Supervised: the
+    // controls in force queue no more than they did until Martin sets a level again.
+    2: ({ autoMerge, ...payload }) =>
+      autoMerge === false && payload.autonomy !== 'supervised' ? { ...payload, autonomy: 'supervised' } : payload,
   },
   // Version 2 of a release's events names the release, says whether the line watched it and whether the dry run
   // answers for it, and records the analysis's own measures. A version 1 release was told apart by its version, was

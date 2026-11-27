@@ -70,6 +70,15 @@ export function refused(error: unknown): boolean {
 }
 
 /**
+ * Whether the GitHub worker answered that it has not read the pull requests yet: it has just started, and its watches
+ * have not each made a pass. Taken again shortly, as a refused connection is.
+ */
+export function unread(error: unknown): boolean {
+  const e = error as { status?: unknown; kind?: unknown };
+  return e?.status === 503 && e.kind === 'not-read-yet';
+}
+
+/**
  * How many refused passes in a row before they count as a failure: the 21st some five minutes after the first. A
  * worker a deploy recreates pulls its image and listens within that, and on a new cluster the network policy has
  * refused a new pod's connections for up to 2.5 minutes (platform run 43268720731); five is twice that.
@@ -163,7 +172,10 @@ export class PatchingSense {
     // in a row, before it is a failure. A refusal of the cluster's own read is a failure at once.
     const doorRefused =
       failed.length > 0 &&
-      answers.every((answer, i) => answer.status === 'fulfilled' || (asked[i]?.worker && refused(answer.reason)));
+      answers.every(
+        (answer, i) =>
+          answer.status === 'fulfilled' || (asked[i]?.worker && (refused(answer.reason) || unread(answer.reason))),
+      );
     if (doorRefused && this.#refused + 1 < MOST_REFUSED) {
       this.#refused++;
       this.#log.info(

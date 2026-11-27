@@ -180,7 +180,7 @@ export function factoryPulls(): { repository: string; pulls: PatchPull[] } {
       {
         kind: 'pin',
         number: 1224,
-        moves: [{ name: 'quay.io/example/k8s-sidecar' }],
+        moves: [{ name: 'quay.io/example/k8s-sidecar', lockfile: false }],
         opened: '2026-11-10T05:10:00Z',
         state: 'open',
         rule: 'move',
@@ -191,7 +191,7 @@ export function factoryPulls(): { repository: string; pulls: PatchPull[] } {
       {
         kind: 'issue',
         number: 1211,
-        moves: [{ name: 'a package in `pnpm-lock.yaml`', package: 'example-parser' }],
+        moves: [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true, package: 'example-parser' }],
         opened: '2026-11-10T05:10:00Z',
         state: 'open',
         issue: 'refused',
@@ -200,7 +200,7 @@ export function factoryPulls(): { repository: string; pulls: PatchPull[] } {
       {
         kind: 'dependabot',
         number: 1180,
-        moves: [{ name: 'docker.io/example/proxy' }],
+        moves: [{ name: 'docker.io/example/proxy', lockfile: false }],
         opened: '2026-11-02T05:10:00Z',
         state: 'merged',
         settled: '2026-11-04T09:00:00Z',

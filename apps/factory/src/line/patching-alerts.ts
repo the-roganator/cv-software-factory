@@ -11,8 +11,8 @@
  *   one's (`none`, a line no longer built, whose issue asks him to mend or remove it), or it is a row the sense made of
  *   what the cluster runs (a k3s the cluster has not moved to, a routine update's too);
  * - `move-stopped`: the factory tried a move and stopped (`stopped`), once for each pull request, issue or pin and
- *   why: a pull request whose required checks failed on every try, that the merge queue took out on every try, or that
- *   conflicts with `main`; an issue for a move the scan's pin step refused, whose branch another's pull request stands
+ *   why: a pull request whose required checks failed on every try, or that the merge queue took out on every try (not
+ *   one that conflicts with `main`, which the pin watch makes again on its head); an issue for a move the scan's pin step refused, whose branch another's pull request stands
  *   on, whose pull request GitHub refused, or whose branch's closed pull requests the watch could not all read; or a pin
  *   a finding with a deadline asks to move that no release is better than. A routine update's never is;
  * - `move-due-soon`: a move still in the sense's last day comes within a day of its deadline. One first seen within a
@@ -74,8 +74,11 @@ const DAY = 24 * HOUR;
  */
 const HIS: readonly Move['lane'][] = ['cluster', 'issue', 'none'];
 
-/** Why an open pull request stopped: its checks spent, the queue's tries spent, or a conflict with `main`. */
-const STOPPED_HOLDS: readonly NonNullable<Pull['hold']>[] = ['checks-spent', 'queue-spent', 'conflict'];
+/**
+ * Why an open pull request stopped: its checks spent, or the queue's tries spent. Not a conflict with `main`: the pin
+ * watch commits the move again on `main`'s head within the hour.
+ */
+const STOPPED_HOLDS: readonly NonNullable<Pull['hold']>[] = ['checks-spent', 'queue-spent'];
 
 /** Why the App opened an issue for a move it tried: refused, a branch held, GitHub refusing, or history unread. */
 const STOPPED_ISSUES: readonly NonNullable<Pull['issue']>[] = [

@@ -173,7 +173,8 @@
           "number": 1342,
           "moves": [
             {
-              "name": "ghcr.io/example/sidecar"
+              "name": "ghcr.io/example/sidecar",
+              "lockfile": false
             }
           ],
           "opened": "2026-10-05T06:00:00Z",
@@ -199,6 +200,7 @@
           "moves": [
             {
               "name": "a package in `pnpm-lock.yaml`",
+              "lockfile": true,
               "package": "example-parser"
             }
           ],
@@ -211,7 +213,8 @@
           "number": 1336,
           "moves": [
             {
-              "name": "k3s"
+              "name": "k3s",
+              "lockfile": false
             }
           ],
           "opened": "2026-10-01T06:00:00Z",

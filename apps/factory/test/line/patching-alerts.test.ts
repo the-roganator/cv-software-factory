@@ -461,7 +461,7 @@ describe('a move tried and stopped', () => {
   const open = (number: number, change: Partial<Pull>): Pull => ({
     kind: 'pin',
     number,
-    moves: [{ name: 'ghcr.io/example/sidecar' }],
+    moves: [{ name: 'ghcr.io/example/sidecar', lockfile: false }],
     opened: '2026-11-10T05:10:00Z',
     state: 'open',
     ...change,
@@ -489,7 +489,7 @@ describe('a move tried and stopped', () => {
   const STOPPED = [
     open(1224, { hold: 'checks-spent', checks: { state: 'failed', try: 3, of: 3, failed: [] } }),
     open(1225, { hold: 'queue-spent' }),
-    open(1226, { kind: 'dependabot', hold: 'conflict' }),
+    open(1226, { kind: 'dependabot', hold: 'queue-spent' }),
     open(1211, { kind: 'issue', issue: 'refused', refusal: 'provenance' }),
     open(1212, { kind: 'issue', issue: 'branch-held' }),
     open(1213, { kind: 'issue', issue: 'open-refused' }),
@@ -541,10 +541,16 @@ describe('a move tried and stopped', () => {
     expect(tally.kinds['move-stopped']).toBe(0);
   });
 
+  it('says nothing of a conflict with main, which the pin watch makes again on its head', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, withPulls([open(1224, { hold: 'conflict' })]), READ);
+    expect(tally.kinds['move-stopped']).toBe(0);
+  });
+
   it('counts the same pull request again for a new reason, and the same reason on another', () => {
     const tally = emptyPatchingTally();
     addDay(tally, withPulls([open(1224, { hold: 'checks-spent' })]), READ);
-    addDay(tally, withPulls([open(1224, { hold: 'conflict' })]), READ + H);
+    addDay(tally, withPulls([open(1224, { hold: 'queue-spent' })]), READ + H);
     addDay(tally, withPulls([open(1224, { hold: 'checks-spent' })]), READ + 2 * H);
     addDay(tally, withPulls([open(1227, { hold: 'checks-spent' })]), READ + 3 * H);
     expect(tally.kinds['move-stopped']).toBe(3);

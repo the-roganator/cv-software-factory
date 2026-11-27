@@ -173,18 +173,49 @@ describe("the day's moves", () => {
     // The SDK's bench issue carries a lockfile's package: what it is and where it stands, nothing more.
     expect(pulls[1]).toEqual({
       kind: 'issue',
-      moves: [{ name: 'a package in `pnpm-lock.yaml`' }],
-      opened: '2026-10-05T06:00:00Z',
+      moves: [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }],
+      opened: '2026-10-05T00:00:00Z',
       state: 'open',
       withheld: true,
     });
     expect(schema.safeParse(view(DAY)).success).toBe(true);
-    // Once it no longer waits, its number and state are public, never its package.
-    const moving = { ...DAY.repositories[0].pulls[1], kind: 'pin', issue: undefined, rule: 'move', queued: true };
-    const day = { ...DAY, repositories: [{ ...DAY.repositories[0], pulls: [moving] }, DAY.repositories[1]] };
-    const shown = (view(day) as typeof DAY).repositories[0].pulls[0];
-    expect(shown.number).toBe(1352);
-    expect(shown.moves).toEqual([{ name: 'a package in `pnpm-lock.yaml`' }]);
+    const as = (pull: object) => {
+      const day = { ...DAY, repositories: [{ ...DAY.repositories[0], pulls: [pull] }, DAY.repositories[1]] };
+      return (view(day) as typeof DAY).repositories[0].pulls[0];
+    };
+    const lockfile = DAY.repositories[0].pulls[1];
+    // Moving by itself, it says where it stands, but never its number, which GitHub's diff would name the package by,
+    // nor its times past the day, nor a failed check's name.
+    const moving = as({ ...lockfile, kind: 'pin', issue: undefined, rule: 'move', queued: true });
+    expect(moving).not.toHaveProperty('number');
+    expect(moving).toMatchObject({ state: 'open', rule: 'move', queued: true, withheld: true });
+    expect(moving.opened).toBe('2026-10-05T00:00:00Z');
+    expect(moving.moves).toEqual([{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }]);
+    // Dependabot's open pull request for it, with no hold, is withheld the same: its title names the package.
+    expect(as({ ...lockfile, kind: 'dependabot', issue: undefined })).not.toHaveProperty('number');
+    // One recorded without its package is still a lockfile's: the move says so.
+    const unnamed = { ...lockfile, moves: [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }] };
+    expect(as(unnamed)).not.toHaveProperty('number');
+    // Closed without a merge, it is withheld still: the package may be as vulnerable as before.
+    const closed = as({ ...lockfile, kind: 'pin', issue: undefined, state: 'closed', settled: '2026-10-06T07:31:12Z' });
+    expect(closed).toEqual({
+      kind: 'pin',
+      moves: [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }],
+      state: 'closed',
+      opened: '2026-10-05T00:00:00Z',
+      settled: '2026-10-06T00:00:00Z',
+      withheld: true,
+    });
+    // Merged, its fix is on main: public whole but for its package.
+    const merged = as({ ...lockfile, kind: 'pin', issue: undefined, state: 'merged', settled: '2026-10-06T07:31:12Z' });
+    expect(merged.number).toBe(1352);
+    expect(merged.moves).toEqual([{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }]);
+    // A package only on a lockfile's move.
+    const named = { ...DAY.repositories[0].pulls[0], moves: [{ name: 'x', lockfile: false, package: 'y' }] };
+    expect(
+      schema.safeParse({ ...DAY, repositories: [{ ...DAY.repositories[0], pulls: [named] }, DAY.repositories[1]] })
+        .success,
+    ).toBe(false);
     // Applying the view twice changes nothing.
     expect(view(view(DAY))).toEqual(view(DAY));
   });

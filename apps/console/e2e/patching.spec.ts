@@ -169,7 +169,7 @@ test('a row opens in place, one at a time: why it waits, what failed and its run
   );
   // A failed check by its name, its try and its run: never its log.
   await expect(more.locator('p.failed-run')).toHaveText('database tests · failed · try 3 of 3 · its run ↗');
-  await expect(more.locator('p.run a')).toHaveAttribute(
+  await expect(more.locator('p.failed-run a')).toHaveAttribute(
     'href',
     'https://github.com/the-roganator/cv-software-factory/actions/runs/19220481337',
   );
@@ -212,7 +212,7 @@ test('Martin reads every lockfile move named, grouped by what it asks of him, an
   await expect(row(page, '@example/tokens')).toContainText('holds 1 more with it');
   await row(page, '@example/tokens').click();
   await expect(panel(page).locator('.more')).toContainText('Held with it');
-  await expect(panel(page).locator('.more .pins')).toContainText('@example/ws');
+  await expect(panel(page).locator('.more .pins').first()).toContainText('@example/ws');
   // The line's move lists its findings by package, severity and deadline, never an advisory.
   const parser = row(page, '@example/parser');
   await expect(parser).toContainText('4.2.0 → 4.2.3');

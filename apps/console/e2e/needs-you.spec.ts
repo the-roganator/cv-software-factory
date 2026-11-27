@@ -45,9 +45,9 @@ test('Martin answers a card, which moves to Answered today, and gives his passke
   await enrolThroughTheDoor(page, await harness.code());
   await page.goto('/?motion=off');
   await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('Needs you');
-  // Ten holds and #1294's flag, but #1321's deploy is not his yet, its checks running: its card stays, out of the
-  // count.
-  await expect(panel(page).locator('.count-attn')).toHaveText('10 waiting');
+  // Ten holds, #1294's flag and Patching's card, but #1321's deploy is not his yet, its checks running: its card stays,
+  // out of the count.
+  await expect(panel(page).locator('.count-attn')).toHaveText('11 waiting');
 
   await test.step('Approving the planner’s question asks for nothing', async () => {
     const question = card(page, '1300');
@@ -139,8 +139,8 @@ test('Martin answers a card, which moves to Answered today, and gives his passke
 test('a visitor sees what waits on Martin, read only, and not his words on a visitor’s report', async ({ page }) => {
   await page.goto('/?motion=off');
   await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('Waiting on Martin');
-  // Three of the samples' nine holds that wait on him Martin answered above; #1294's flag waits too.
-  await expect(panel(page).locator('.count-attn')).toHaveText('7 waiting');
+  // Three of the samples' nine holds that wait on him Martin answered above; #1294's flag and Patching's card wait too.
+  await expect(panel(page).locator('.count-attn')).toHaveText('8 waiting');
   const review = card(page, '1323');
   await expect(review.locator('.kick b')).toHaveText('Held by review');
   await expect(review.locator('.ro')).toHaveText(['Approve', 'Answer in words', 'Back to the planner', 'Reject']);

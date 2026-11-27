@@ -3,17 +3,26 @@
  * README, "Patching" and "Guardrails", "The summary"). Each answers "do I need to look?" in a few lines, then opens its
  * panel whole in a sheet of its own (`Patching.tsx`, `Guardrails.tsx`), whose code arrives only then.
  *
- * One needs Martin when a move waits on him, a deadline is within a day or past, the scan failed, or a guardrail did
- * not hold: then it takes Needs you's `attn` rule down its left edge, and each reason is in `attn`, in words. A
+ * One needs Martin when a move waits on him, a deadline is within a day or past, the scan failed, the dependency sense
+ * has not read for 26 hours or a scan is past its 36, or a guardrail did not hold: then it takes Needs you's `attn` rule down its left edge, and each reason is in `attn`, in words. A
  * Critical count and a guardrail not proved yet are not reasons. The same for a visitor, with "Martin" for "you"; a
  * summary holds no control, so it carries no "Read only".
  *
  * A chunk of its own, with its stylesheet and Patching's projection, loaded with the bottom row's and drawn with it.
  */
 import { memo, type ReactNode } from 'react';
-import { ago, clock, plural } from '../format.ts';
+import { ago, clock, plural, when } from '../format.ts';
 import type { GuardrailsView, View } from '../projection/index.ts';
-import { dueSoon, dueWords, nextDue, type PatchingRow, type PatchingView } from '../projection/patching.ts';
+import {
+  APP_REPOSITORY,
+  dueSoon,
+  dueWords,
+  nextDue,
+  type PatchingRow,
+  type PatchingView,
+  readStale,
+  staleScans,
+} from '../projection/patching.ts';
 import { renders } from '../renders.ts';
 import { CountsHead, SeverityCounts } from './Counts.tsx';
 import { Glyph, type GlyphName } from './Glyph.tsx';
@@ -43,7 +52,8 @@ function Line({ glyph, tone, children }: { glyph: GlyphName; tone?: string | und
 }
 
 /** A move's name as the summary says it: a lockfile's package the public view withholds is the file's. */
-const nameOf = (row: PatchingRow) => row.name ?? 'a package in a lockfile';
+const nameOf = (row: PatchingRow) =>
+  row.name ?? `a package in ${row.repository === APP_REPOSITORY ? 'the app’s' : 'the factory’s'} lockfile`;
 
 /** When the next deadline is: "in 21 h", or "3 h ago" for one already past. */
 const nextWords = (deadline: number, t: number) => {
@@ -85,8 +95,10 @@ const PatchingCard = memo(function PatchingCard({
   const next = nextDue(view.rows);
   const soon = next !== undefined && dueSoon(next.deadline, t);
   const failed = !day.passed;
+  const stale = readStale(view.read, t);
+  const scans = staleScans(view.scans, t);
   // Each row the sense made waits on Martin, so an unscanned image running is counted among those that wait.
-  const needs = view.waiting > 0 || soon || failed;
+  const needs = view.waiting > 0 || soon || failed || stale || scans.length > 0;
   const clears = view.clears;
   const clearing = countsLabel('The moves clear', clears);
   return (
@@ -122,6 +134,17 @@ const PatchingCard = memo(function PatchingCard({
         </div>
       </div>
       <ul className="sum-lines">
+        {stale && (
+          <Line glyph="cross" tone="attn">
+            Not read since {when(view.read)}
+          </Line>
+        )}
+        {scans.map((scan) => (
+          <Line key={scan.repository} glyph="cross" tone="attn">
+            {scan.repository === APP_REPOSITORY ? 'The app’s' : 'The factory’s'} scan is{' '}
+            {Math.floor((t - (scan.judged ?? t)) / 3_600_000)} h old: its moves wait
+          </Line>
+        ))}
         {/* What the sense found running, each kind a row that waits on Martin, in the sheet's kicker's words. */}
         {runningWords(view).map((words) => (
           <Line key={words} glyph="ring" tone="attn">

@@ -256,6 +256,107 @@
 .pm .more a {
   color: var(--text);
 }
+/* What waits on Martin, grouped by what he does, each under its heading in `attn` and the line under it; then what
+   moves by itself; then Done in the last 28 days, closed until its heading opens it. */
+.pm-lists,
+.pm-lists > div {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pm-group {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.pm-group h3 {
+  margin: 0;
+}
+.pm-group.wait h3 {
+  color: var(--attn);
+}
+.pm-group .help {
+  margin: 0;
+  font-size: 12px;
+}
+.pm-group.done button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+.pm-group.done .done-chev {
+  width: 12px;
+  height: 12px;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.pm-group.done button[aria-expanded="true"] .done-chev {
+  transform: rotate(90deg);
+}
+/* The sense has not read for a while, or a scan is too old for its moves to pass: said over the rows. */
+.patch-stale {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-left: var(--stroke-rule) solid var(--attn);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.patch-stale .stale-mark {
+  color: var(--attn);
+  flex: none;
+  margin-top: 3px;
+}
+.patch-stale b {
+  color: var(--text);
+  font-weight: 500;
+}
+.patch-stale .stale-run {
+  color: var(--text);
+}
+/* Under a row's name: a major clears the rest, what it holds with it, or that the stopped line holds it. */
+.pm .leaves {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pm .leaves.tone-attn {
+  color: var(--attn);
+}
+.pm .more p.failed-run {
+  font: 12px / 1.5 var(--font-mono);
+}
+.pm .more code {
+  font: 12px var(--font-mono);
+}
+/* The one way forward, drawn as Needs you draws a merge's, beside what it does. */
+.pm .more .answers {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+  border-top: 0;
+  padding-top: 0;
+}
+.pm .more .answers .way {
+  border-color: var(--text);
+  color: var(--text);
+  font-weight: 500;
+  text-decoration: none;
+}
+.pm .more .answers a.way:hover {
+  text-decoration: underline;
+}
+.pm .more .answers .way-words {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* A move's row in two lines: its state, what and who on the first; from, to, what it clears and due under what. */
 @media (max-width: 1179.98px) {
   .pm > button {
@@ -342,6 +443,10 @@
   }
   .pm .more {
     padding-left: 0;
+  }
+  .pm .more .answers {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
   .pins > div {
     grid-template-columns: 1fr;

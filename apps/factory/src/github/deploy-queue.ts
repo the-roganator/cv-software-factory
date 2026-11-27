@@ -965,7 +965,8 @@ export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: Pi
   };
 
   return async () => {
-    if (only !== '*' && only.length === 0) return;
+    // Told no move, it queues none: its pass is made, with nothing to say.
+    if (only !== '*' && only.length === 0) return state.passed(new Set());
     const pulls = await openPulls(deps, repo, 'pin');
     const candidates = pulls.filter((p) => pinBranch(p.head.ref) || p.labels.some((l) => l.name === PIN_LABEL));
     state.keep(new Set(candidates.map((p) => p.number)));

@@ -31,6 +31,7 @@ import {
   issueWhyOf,
   OPEN_REFUSED,
   PASS_MS,
+  type PinScope,
   pinWatch,
   REVERTED,
   type RefusalKind,
@@ -43,10 +44,11 @@ import {
   type PullSource,
   PullStates,
   PullsUnread,
+  pullSources,
   type Seen,
 } from '../../src/github/pull-states.ts';
 import { actionsRunOf, type CheckRun } from '../../src/github/reads.ts';
-import type { ReadMove } from '../../src/github/scanning.ts';
+import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { APP_REPOSITORY } from '../../src/repositories.ts';
 import { client, quiet, type Route } from './fake.ts';
 import { day, FACTORY, FakeRepo, FILES, move } from './pins-harness.ts';
@@ -535,7 +537,12 @@ describe('what the pin watch records in a pass', () => {
     lane: 'issue',
   });
 
-  function harness(repo: FakeRepo, moves: ReadMove[], dependencyPulls: () => DependencyPull[]) {
+  function harness(
+    repo: FakeRepo,
+    moves: ReadMove[],
+    dependencyPulls: () => DependencyPull[],
+    o: { only?: PinScope; today?: () => Promise<Moves> } = {},
+  ) {
     // The App's `pin` items as GitHub lists them: its issues and pull requests, with their times.
     const listed: Route = {
       method: 'GET',
@@ -575,11 +582,14 @@ describe('what the pin watch records in a pass', () => {
     const watch = pinWatch(
       {
         github,
-        reads: { moves: async () => day(repo.main, moves), dependencyPulls: async () => dependencyPulls() },
+        reads: {
+          moves: o.today ?? (async () => day(repo.main, moves)),
+          dependencyPulls: async () => dependencyPulls(),
+        },
         actions: new LiveActions(github, { guard }),
         log: quiet,
         now: () => clock,
-        only: '*',
+        only: o.only ?? '*',
         pulls: states,
       },
       FACTORY,
@@ -708,5 +718,76 @@ describe('what the pin watch records in a pass', () => {
       ],
     });
     expect(names(group)).toEqual([image.name]);
+  });
+
+  describe('a pass that makes nothing still makes the read ready, with what GitHub lists', () => {
+    const marks = (names: string[]) => `<!-- factory: pin-moves ${encodeURIComponent(JSON.stringify(names))} -->`;
+    const fixture = () => {
+      const repo = new FakeRepo(FILES);
+      const open = repo.addPull({ head: 'factory/pin/zap', labels: ['pin'], body: marks(['zap']) });
+      const merged = repo.addPull({
+        head: 'factory/pin/old',
+        labels: ['pin'],
+        state: 'closed',
+        body: marks(['old']),
+        merged_at: at(NOW - DAY),
+      });
+      return { repo, open, merged };
+    };
+    const expectListed = (pulls: PatchPull[], open: number, merged: number) => {
+      expect(pulls.find((p) => p.number === open)).toMatchObject({
+        kind: 'pin',
+        state: 'open',
+        moves: [{ name: 'zap' }],
+      });
+      expect(pulls.find((p) => p.number === merged)).toMatchObject({ state: 'merged', moves: [{ name: 'old' }] });
+      expect(parses(pulls).success).toBe(true);
+    };
+
+    it('told no move', async () => {
+      const { repo, open, merged } = fixture();
+      const h = harness(repo, [], () => [], { only: [] });
+      expectListed(await h.pass(), open.number, merged.number);
+      // Its queue, told none too, has made its pass.
+      const states = new PullStates({ sources: () => ['pin-queue'], now: () => NOW });
+      const { github } = client([]);
+      await pinQueueWatch(
+        {
+          github,
+          reads: {} as DeployQueueDependencies['reads'],
+          actions: { enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }) },
+          heads: { get: () => undefined },
+          level: levelAt('guarded'),
+          log: quiet,
+          pulls: states,
+        },
+        FACTORY,
+        [],
+      )();
+      expect(states.read(FACTORY).pulls).toEqual([]);
+    });
+
+    it('on a day the scan wrote no moves.json, or whose moves cannot be read', async () => {
+      const { repo, open, merged } = fixture();
+      const h = harness(repo, [], () => [], { today: async () => ({ ...day(repo.main, []), file: null }) });
+      expectListed(await h.pass(), open.number, merged.number);
+      const failing = harness(repo, [], () => [], {
+        today: async () => {
+          throw new Error('the state cannot be read');
+        },
+      });
+      await expect(failing.pass()).rejects.toThrow('the state cannot be read');
+      // Dependabot's waits on no day; the pin pull requests and issues are said all the same.
+      failing.states.saw(FACTORY, 'dependabot', []);
+      expectListed(failing.states.read(FACTORY).pulls, open.number, merged.number);
+    });
+
+    it('in a worker that cannot write, which runs no watch: it answers at once', () => {
+      const writes = (w: boolean) => pullSources(FACTORY, { writes: w, pinRepos: [FACTORY], workflowPinRepos: [] });
+      expect(writes(true)).toEqual(['pins', 'dependabot', 'pin-queue']);
+      expect(writes(false)).toEqual([]);
+      const states = new PullStates({ sources: () => writes(false), now: () => NOW });
+      expect(states.read(FACTORY)).toEqual({ repository: FACTORY, pulls: [] });
+    });
   });
 });

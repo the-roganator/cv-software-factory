@@ -1211,7 +1211,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
    */
   const record = async (
     pulls: PullStates,
-    read: Moves,
+    /** The day, where the pass read one: without it, a pull request's moves are those its marks name. */
+    read: Moves | undefined,
     seen: {
       open: readonly Pull[];
       listed: readonly Issue[];
@@ -1230,7 +1231,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       const carried = seen.groups.get(branch);
       if (carried) return pullMoves(carried.map(({ move }) => pullMove(move)));
       const names = carriedBy(body);
-      const today = read.moves.filter((move) => names.includes(move.name) && branchOf(move) === branch);
+      const today = (read?.moves ?? []).filter((move) => names.includes(move.name) && branchOf(move) === branch);
       return pullMoves([
         ...today.map(pullMove),
         ...named(names.filter((name) => !today.some((move) => move.name === name))),
@@ -1307,7 +1308,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     try {
       const listedOpen = await deps.reads.dependencyPulls(repo);
       const open: Seen[] = listedOpen.flatMap((pull) => {
-        const carries = dependabotCarries(pull, read.moves);
+        const carries = dependabotCarries(pull, read?.moves ?? []);
         if (!carries.length) return [];
         const hold = dependabotHold(carries);
         return [
@@ -1330,7 +1331,27 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       pulls.saw(repo, 'dependabot', [...open, ...settled]);
     } catch (error) {
       log.warn({ repo, err: error }, "could not read Dependabot's pull requests for the day's pins: tries next pass");
+      // The pass is made: what is known of them stands, and the read does not wait on this one for ever.
+      pulls.saw(repo, 'dependabot', [...pulls.openDependabot(repo), ...pulls.settledDependabot(repo)]);
     }
+  };
+
+  /**
+   * What a pass that makes nothing says for the read `pulls` (told no move, a day it could not read, a scan that wrote
+   * no moves): the pin pull requests and issues of the App's as GitHub lists them, by the moves their marks name.
+   */
+  const recordLists = async (read?: Moves) => {
+    if (!deps.pulls) return;
+    const listed: Issue[] = [];
+    const [{ own: open }] = await Promise.all([makes ? openPulls() : { own: [] }, pinIssues(listed)]);
+    await record(deps.pulls, read, {
+      open,
+      listed,
+      groups: new Map(),
+      wanted: new Map(),
+      issues: new Map(),
+      acted: new Map(),
+    });
   };
 
   // The moves it was told to take: nothing else of the App's is closed as gone.
@@ -1343,10 +1364,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     if (!every && !named.size) {
       if (!toldNothing) log.info({ repo }, 'the pin watch was told no move (PIN_WATCH_ONLY): it takes none');
       toldNothing = true;
+      await recordLists();
       last = now();
       return;
     }
-    const read = await reads.moves(repo);
+    let read: Moves;
+    try {
+      read = await reads.moves(repo);
+    } catch (error) {
+      // A day that cannot be read is not the pull requests: what GitHub lists of them is still said.
+      await recordLists().catch((err: unknown) => log.warn({ repo, err }, 'could not read the pin pull requests'));
+      throw error;
+    }
     const taken = every ? read.moves : read.moves.filter((move) => named.has(move.name));
     const day: Moves = { ...read, moves: taken };
     // What a gone move's issue may be closed by: a named move's key, unless a move it was not told to take has that key
@@ -1362,6 +1391,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         { run: day.run.id },
         'the scan wrote no moves: the pin watch waits for a run that did',
       );
+      await recordLists(day);
       last = now();
       return;
     }

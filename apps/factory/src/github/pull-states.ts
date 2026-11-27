@@ -59,6 +59,27 @@ export type Seen = PatchPull;
 /** The watches that write a repository's pull requests, each of which must have made a pass before the read answers. */
 export type PullSource = 'pins' | 'dependabot' | 'pin-queue' | 'workflow-queue';
 
+/**
+ * The watches that write a repository's pull requests in a worker: none in one that cannot write, which runs none, so
+ * its read answers at once with nothing; otherwise the pin watch and Dependabot's, and the queue the repository has.
+ */
+export function pullSources(
+  repo: string,
+  {
+    writes,
+    pinRepos,
+    workflowPinRepos,
+  }: { writes: boolean; pinRepos: readonly string[]; workflowPinRepos: readonly string[] },
+): PullSource[] {
+  if (!writes) return [];
+  return [
+    'pins',
+    'dependabot',
+    ...(pinRepos.includes(repo) ? (['pin-queue'] as const) : []),
+    ...(workflowPinRepos.includes(repo) ? (['workflow-queue'] as const) : []),
+  ];
+}
+
 /** The read's failure while a watch that writes the repository has not made a pass since the worker started. */
 export class PullsUnread extends Error {
   override name = 'PullsUnread';

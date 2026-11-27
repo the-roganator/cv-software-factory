@@ -28,7 +28,7 @@ import { noLevel, storeLevel } from './level.ts';
 import { treeSource } from './pin-guard.ts';
 import { ISSUE_REPOS, PIN_REPOS, pinWatch } from './pins.ts';
 import { Poller } from './poller.ts';
-import { type PullSource, PullStates } from './pull-states.ts';
+import { PullStates, pullSources } from './pull-states.ts';
 import { LiveReads } from './reads.ts';
 import { RefusalRecorder } from './refusals.ts';
 import { Registry } from './registry.ts';
@@ -75,13 +75,10 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     );
   // What the pin watch and the queues last saw of each pull request and issue that carries a move, for the read
   // `pulls`: a repository's read waits for a pass of each watch that writes it.
+  // A worker that cannot write runs no watch, so it waits on none.
+  const writes = config.dryRun || github.writable;
   const pulls = new PullStates({
-    sources: (repo) => [
-      'pins',
-      'dependabot',
-      ...(PIN_REPOS.includes(repo) ? (['pin-queue'] as PullSource[]) : []),
-      ...(WORKFLOW_PIN_REPOS.includes(repo) ? (['workflow-queue'] as PullSource[]) : []),
-    ],
+    sources: (repo) => pullSources(repo, { writes, pinRepos: PIN_REPOS, workflowPinRepos: WORKFLOW_PIN_REPOS }),
   });
   const liveReads = new LiveReads(
     github,

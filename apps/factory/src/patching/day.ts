@@ -112,6 +112,8 @@ function repositoryDay({ moves }: RepositoryRead): Day['repositories'][number] {
     totals: moves.file ? totalsOf(moves.file.totals) : null,
     scanned: scannedOf(moves).length,
     moves: list,
+    waiting: [],
+    pulls: [],
   };
 }
 

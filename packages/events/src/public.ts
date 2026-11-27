@@ -6,7 +6,7 @@
  * key, and redacts anything shaped like a secret, because some fields (a gate's output, a log line) are copied
  * verbatim from places the factory does not control.
  */
-import type { View } from './types.ts';
+import type { PayloadOf, View } from './types.ts';
 import type { EventType } from './versions.ts';
 import { WITHHELD_PACKAGE } from './vocabulary.ts';
 
@@ -273,10 +273,27 @@ export const PUBLIC_VIEWS = {
         repositories: payload.repositories.map((day) => ({
           ...day,
           moves: day.moves.map(({ package: _withheld, ...move }) => move),
+          pulls: day.pulls.map(publicPull),
         })),
       },
     }),
 } satisfies { [K in EventType]: PublicViewOf<K> };
+
+type PatchPull = PayloadOf<'patching.read'>['repositories'][number]['pulls'][number];
+
+/**
+ * A pull request or issue of the day as the public reads it: a lockfile's package left out, and, for one that carries
+ * a lockfile's move and waits on Martin, nothing of what it waits for, nor its number (Martin's decision: a visitor
+ * never reads a vulnerable lockfile package, nor what it clears, nor what it waits for).
+ */
+function publicPull(pull: PatchPull): PatchPull {
+  const lockfile = pull.withheld || pull.moves.some((move) => move.package !== undefined);
+  const moves = pull.moves.map(({ package: _withheld, ...move }) => move);
+  if (!lockfile) return pull;
+  const waits = pull.state === 'open' && (pull.kind === 'issue' || pull.hold !== undefined);
+  if (!waits) return { ...pull, moves };
+  return { kind: pull.kind, moves, opened: pull.opened, state: pull.state, withheld: true };
+}
 
 /** The public view of an event. Applying it twice changes nothing. */
 export function publicView<K extends EventType>(type: K, event: View<K>): View<K> {

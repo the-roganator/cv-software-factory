@@ -604,6 +604,75 @@ export const SCAN_FAILURES = ['overdue', 'due-within-a-day', 'new-high-or-critic
 export type ScanFailure = (typeof SCAN_FAILURES)[number];
 
 /**
+ * What carries a move on GitHub, as the GitHub worker reads it for the dependency sense (`patching.read`'s `pulls`): the
+ * App's pin pull request, the App's issue for a move it may not make, or a pull request of Dependabot's that the worker
+ * watches for the same pin.
+ */
+export const PATCH_PULL_KINDS = ['pin', 'issue', 'dependabot'] as const;
+export type PatchPullKind = (typeof PATCH_PULL_KINDS)[number];
+
+/** Where a pull request or issue that carries a move stands: open, merged, or closed without a merge. */
+export const PATCH_PULL_STATES = ['open', 'merged', 'closed'] as const;
+export type PatchPullState = (typeof PATCH_PULL_STATES)[number];
+
+/**
+ * Why an open pull request that carries a move is not in the merge queue, in the GitHub worker's words for it: the
+ * review gate has not judged its head yet (`verdict`), or held it as code-owned or risky (`held`), or held it because
+ * Martin asked for changes, which lasts at every head (`changes-requested`); it passed by a rule the autonomy level does
+ * not queue, as a major below Lights-out (`level`); the line is stopped (`stopped`); its checks are running (`checks`);
+ * its required checks failed on every try the worker gives a head (`checks-spent`), or the queue took it out on every
+ * try (`queue-spent`); a person took its head out of the queue (`dequeued`); it conflicts with `main` (`conflict`);
+ * someone but the App took its label off (`label`); or it is Martin's to merge at every level, as a third-party
+ * action's pull request of Dependabot's is (`martin`).
+ */
+export const PATCH_HOLDS = [
+  'verdict',
+  'held',
+  'changes-requested',
+  'level',
+  'stopped',
+  'checks',
+  'checks-spent',
+  'queue-spent',
+  'dequeued',
+  'conflict',
+  'label',
+  'martin',
+] as const;
+export type PatchHold = (typeof PATCH_HOLDS)[number];
+
+/**
+ * Why the App opened an issue for a move rather than a pull request, by what the issue asks of Martin: a bench run on
+ * Claude (`bench`); a line no longer built (`none`); a workflow's pin, which the App never writes (`workflow`); the
+ * cluster's own command (`cluster`); a move whose merge was undone on `main` (`reverted`), or one made with it
+ * (`with-reverted`); a branch another's pull request stands on (`branch-held`); GitHub refused the pull request
+ * (`open-refused`); a branch whose closed pull requests the watch cannot all read (`history-unread`); the scan's pin
+ * step refused it (`refused`, with its kind); or more than its pins' lines to write (`other`).
+ */
+export const PATCH_ISSUES = [
+  'bench',
+  'none',
+  'workflow',
+  'cluster',
+  'reverted',
+  'with-reverted',
+  'branch-held',
+  'open-refused',
+  'history-unread',
+  'refused',
+  'other',
+] as const;
+export type PatchIssue = (typeof PATCH_ISSUES)[number];
+
+/** The kinds of refusal the scan's pin step gives a move (apps/factory/src/github/pins.ts's `RefusalKind`). */
+export const PIN_REFUSALS = ['young', 'provenance', 'script', 'override', 'resolved', 'lock', 'other'] as const;
+export type PinRefusal = (typeof PIN_REFUSALS)[number];
+
+/** Why a fix that exists is no move today (`moves.json`'s `waiting`): its content's day, or no release better. */
+export const WAITING_WHYS = ['content', 'no-better'] as const;
+export type WaitingWhy = (typeof WAITING_WHYS)[number];
+
+/**
  * What the dependency sense found when it compared the images the cluster's pods run with the scan's list, each a row
  * of `patching.read` that says the list or the cluster is wrong: a digest running that no scan read, under a reference
  * the list has; an image the list does not have; and a pin `main` holds that the cluster does not run yet, while it

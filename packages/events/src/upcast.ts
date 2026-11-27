@@ -338,6 +338,16 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
         };
       }),
     }),
+    // Version 5 has each repository's pins that wait and the pull requests and issues that carry its moves, and when
+    // they were read. A version 4 day read neither: it reads as having none, and no time read.
+    4: (payload) => ({
+      ...payload,
+      repositories: (payload.repositories as Record<string, unknown>[]).map((repository) => ({
+        ...repository,
+        waiting: [],
+        pulls: [],
+      })),
+    }),
   },
 };
 

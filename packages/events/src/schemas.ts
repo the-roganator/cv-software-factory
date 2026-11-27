@@ -567,6 +567,81 @@ const patchingMove = z
   })
   .refine((m) => !m.package || m.lockfile, "only a lockfile's move has its package apart");
 
+/** The most pull requests and issues a repository's day holds: the open ones, and those settled in the last 28 days. */
+export const MOST_PULLS = 300;
+/** The most days back a settled pull request or issue is kept in the day: Done shows 28 days. */
+export const SETTLED_DAYS = 28;
+
+/**
+ * A pull request or issue that carries a move, as the GitHub worker reads it (its pin watch, its queue and its watch of
+ * Dependabot's), for the dependency sense: what it is, the moves it carries (by the day's names, and a lockfile's
+ * package apart, which the public view leaves out), when it opened and settled, and, while open, the review gate's rule
+ * at its head, its required checks (their state, the try and how many the worker gives, and each that failed by its
+ * name and its run, never its log), whether it is in the merge queue, and why not. Only the factory's own words: nothing
+ * of a pull request's title, body or comments, nor of Dependabot's. An issue's why is what it asks of Martin.
+ *
+ * In the public view a lockfile's move's package is left out, and a pull request or issue that carries one and waits
+ * on Martin is `withheld`: what it is and where it stands, and nothing of what it waits for, nor its number.
+ */
+const patchPull = z
+  .strictObject({
+    kind: z.enum(V.PATCH_PULL_KINDS),
+    /** Its number on GitHub; absent only where the public view withholds it. */
+    number: pullRequest.optional(),
+    moves: z
+      .array(z.strictObject({ name: z.string().min(1).max(300), package: dependencyName.optional() }))
+      .min(1)
+      .max(100),
+    opened: timestamp,
+    state: z.enum(V.PATCH_PULL_STATES),
+    /** When it merged or closed. */
+    settled: timestamp.optional(),
+    /** Whether a person (Martin, or anyone but the App and Dependabot) closed it without a merge. */
+    closedByPerson: z.boolean().optional(),
+    /** The review gate's rule at its head, once it judged; absent while it has not. */
+    rule: z.enum(V.GATE_RULES).optional(),
+    checks: z
+      .strictObject({
+        state: z.enum(['running', 'passed', 'failed']),
+        try: z.number().int().min(1).max(9),
+        of: z.number().int().min(1).max(9),
+        failed: z.array(z.strictObject({ name: text(120), run: z.number().int().positive() })).max(10),
+      })
+      .optional(),
+    queued: z.boolean().optional(),
+    hold: z.enum(V.PATCH_HOLDS).optional(),
+    issue: z.enum(V.PATCH_ISSUES).optional(),
+    refusal: z.enum(V.PIN_REFUSALS).optional(),
+    /** Set by the public view alone: a pull request or issue that carries a lockfile's move and waits on Martin. */
+    withheld: z.literal(true).optional(),
+  })
+  .refine((p) => (p.kind === 'issue') === (p.issue !== undefined) || p.withheld, 'an issue says why, and only an issue')
+  .refine(
+    (p) => p.refusal === undefined || p.issue === 'refused',
+    "a refusal's kind only for an issue the step refused",
+  )
+  .refine((p) => (p.state === 'open') === (p.settled === undefined), 'a settled time exactly for one merged or closed')
+  .refine((p) => p.number !== undefined || p.withheld, 'a number, but where the public view withholds it')
+  .refine((p) => p.state === 'open' || (p.hold === undefined && p.queued === undefined), 'only an open one waits');
+
+/**
+ * A pin whose fix exists and is no move today, as `moves.json`'s `waiting` gives it (moves.ts's `Waiting`): its
+ * content's day (`content`, with the target and when it comes due) or no release better than the pin (`no-better`).
+ * Never a lockfile's.
+ */
+const patchingWaiting = z.strictObject({
+  name: z.string().min(1).max(300),
+  pins: z.array(filePin).max(MOST_PINS),
+  from: z.string().max(200),
+  why: z.enum(V.WAITING_WHYS),
+  to: z.string().max(400).optional(),
+  until: timestamp.optional(),
+  clears: scanCounts,
+  leaves: scanCounts.optional(),
+  deadline: timestamp.optional(),
+  routine: z.literal(true).optional(),
+});
+
 /** One repository's day: the scan's run it was read from, how that run ended and why, its totals and its moves. */
 const patchingRepository = z.strictObject({
   repository,
@@ -608,6 +683,10 @@ const patchingRepository = z.strictObject({
   /** How many images the scan read, which the cluster's are compared with. */
   scanned: count,
   moves: z.array(patchingMove).max(MOST_MOVES),
+  /** The pins that wait, from a scan that judged them; empty for a day read before the scan wrote any. */
+  waiting: z.array(patchingWaiting).max(MOST_MOVES),
+  /** Every pull request and issue that carries one of its moves: the open ones, and those settled in `SETTLED_DAYS`. */
+  pulls: z.array(patchPull).max(MOST_PULLS),
 });
 
 /** A row the comparison of the cluster's pods with the scan's list made: see `RUNNING_ROWS`. */
@@ -2134,6 +2213,12 @@ export const PAYLOADS = {
   'patching.read': z
     .strictObject({
       repositories: z.array(patchingRepository).min(1).max(2),
+      /**
+       * When the GitHub worker last read the pull requests and issues, which the sense does each hour. A day whose only
+       * change is this is not appended again but every 12 hours, so the console can tell a quiet day from a sense that
+       * stopped. Absent from a day read before the sense read pull requests.
+       */
+      read: timestamp.optional(),
       /**
        * Whether the cluster was compared with the lists: not when a repository's scan wrote no list, as a run that
        * failed early does, since every image would then look unlisted. Its rows are then empty.

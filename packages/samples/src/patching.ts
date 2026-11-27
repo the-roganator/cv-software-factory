@@ -57,6 +57,8 @@ export const PATCHING: NewEvent<'patching.read'> = {
           open: counts(12, 1388, 11021, 4087),
         },
         scanned: 52,
+        waiting: [],
+        pulls: [],
         moves: [
           {
             name: 'example/scanner-proxy',
@@ -206,6 +208,8 @@ export const PATCHING: NewEvent<'patching.read'> = {
           open: counts(0, 4, 120, 91),
         },
         scanned: 6,
+        waiting: [],
+        pulls: [],
         moves: [
           {
             name: 'a package in `pnpm-lock.yaml`',

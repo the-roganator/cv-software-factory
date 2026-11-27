@@ -1275,7 +1275,7 @@ export const PAYLOADS = {
     .refine((a) => a.findings + a.suggestions > 0, 'an acceptance answers at least one thread'),
   /**
    * The line added its pull request to the merge queue, at the head the review gate judged (`expectedHeadOid`), by the
-   * gate's rule that the autonomy level allows with auto-merge on. The queue merges it once every required check
+   * gate's rule that the autonomy level allows. The queue merges it once every required check
    * passes on its commit; GitHub then names the factory as the merger. A dry run's is recorded by the GitHub worker,
    * and marked.
    */
@@ -2059,13 +2059,12 @@ export const PAYLOADS = {
    * the one he changed, with its value before and after. The line and the admin service read the latest one his roles
    * appended, and check it against policy as they read it: anything outside it is not in force, and policy's default
    * is. The line acts on the switch for new work and on what it takes from its next pass, and adds its pull request to
-   * the merge queue only by a review gate rule the autonomy level allows, with auto-merge on (`ENQUEUES`). Auto-rollback reaches the canary's analysis as
-   * two series, the admin service's read of it and the line's (`release/analysis.ts`).
+   * the merge queue only by a review gate rule the autonomy level allows (`ENQUEUES`). Auto-rollback reaches the
+   * canary's analysis as two series, the admin service's read of it and the line's (`release/analysis.ts`).
    */
   'controls.changed': z.strictObject({
     autonomy: z.enum(V.AUTONOMY),
     newWork: z.boolean(),
-    autoMerge: z.boolean(),
     /** None: no take set, so the line takes every ticket. */
     take: take.nullable(),
     /** Whether a canary the analysis judges bad rolls back by itself; off, it pauses for Martin. */
@@ -2077,6 +2076,10 @@ export const PAYLOADS = {
         after: z.enum(V.AUTONOMY),
       }),
       z.strictObject({ control: z.literal('new-work'), before: z.boolean(), after: z.boolean() }),
+      /**
+       * A switch the line no longer has, auto-merge: the level alone decides. A change of it recorded before reads as
+       * it was, so the audit log keeps it; the admin service makes none, and it is not in `LINE_CONTROLS`.
+       */
       z.strictObject({ control: z.literal('auto-merge'), before: z.boolean(), after: z.boolean() }),
       z.strictObject({ control: z.literal('take'), before: take.nullable(), after: take }),
       z.strictObject({ control: z.literal('auto-rollback'), before: z.boolean(), after: z.boolean() }),

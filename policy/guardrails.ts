@@ -283,13 +283,15 @@ export const GUARDRAILS = [
       'in the console. An issue anyone else opens gets one polite bot reply, and nothing more. Outside PRs are never ' +
       'run with secrets, reviewed with credentials or merged automatically: the review gate passes none Martin has not ' +
       "approved at its head. Two things it does to a pull request it did not create, each to one of Dependabot's alone " +
-      "and by the GitHub worker's own watch, which nothing can ask for: it adds to the merge queue one that only moves " +
-      "the commit the factory's own workflows are called at to a later commit of the factory's main, once the review " +
-      'gate has passed it as exactly that; and it closes, with one comment, one whose every change main already has. ' +
-      'No self-hosted runners on public repos.',
+      "and by the GitHub worker's own watch, which nothing can ask for: in the app, it adds to the merge queue one " +
+      "that only moves the commit the factory's own workflows are called at to a later commit of the factory's main, " +
+      'once the review gate has passed it as exactly that; and, in either repository, it closes, with one comment, ' +
+      'one whose every change main already has. No self-hosted runners on public repos.',
     mechanism:
-      'The factory reads no issue as work, and acts only on what it opened; an outside pull request runs with no ' +
-      'secret and is never passed without Martin.',
+      'The factory reads no issue as work, and acts only on what it opened, with two exceptions of Dependabot’s: in ' +
+      'the app, its bump of the commit the factory’s workflows are called at, which the worker queues once the gate ' +
+      'passes it as an exact pin; and, in either repository, one whose every change main already has, which it ' +
+      'closes. An outside pull request runs with no secret and is never passed without Martin.',
     proofs: ['ci:public-hostile'],
   },
   {

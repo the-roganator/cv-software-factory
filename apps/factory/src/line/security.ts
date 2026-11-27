@@ -24,8 +24,9 @@
  * - `line-stopped`: every `line.stopped`, which tightens and so needs no passkey again, but which Martin is still told of;
  * - every change of the line's controls (`controls.changed`), as the access table's action it is, told from the
  *   stored change's before and after alone (`policy/line.ts`): `autonomy-loosened` and `autonomy-tightened`,
- *   `new-work-on` and `new-work-off`, `auto-merge-on` and `auto-merge-off`, `take-widened` and `take-narrowed`,
- *   `auto-rollback-off` (which overrides a guardrail, and pages) and `auto-rollback-on`. Auto-rollback is counted from
+ *   `new-work-on` and `new-work-off`, `take-widened` and `take-narrowed`, `auto-rollback-off` (which overrides a
+ *   guardrail, and pages) and `auto-rollback-on`. A change of the auto-merge switch the line no longer has counts as
+ *   nothing. Auto-rollback is counted from
  *   what the event puts in force too, as its two series read it (`auto-rollback.ts`): an event that turns it off or on
  *   while its change names another control counts as that as well (`switchedAutoRollback`), so a role that can append
  *   Martin's controls cannot turn it off under a change that only informs him. What it puts in force is followed, in
@@ -107,8 +108,6 @@ export const SECURITY_KINDS = [
   'autonomy-tightened',
   'new-work-on',
   'new-work-off',
-  'auto-merge-on',
-  'auto-merge-off',
   'take-widened',
   'take-narrowed',
   'auto-rollback-off',
@@ -217,18 +216,19 @@ const CONTROL_KINDS: Record<ControlAction, SecurityKind> = {
   'autonomy.tighten': 'autonomy-tightened',
   'new-work.on': 'new-work-on',
   'new-work.off': 'new-work-off',
-  'auto-merge.on': 'auto-merge-on',
-  'auto-merge.off': 'auto-merge-off',
   'take.widen': 'take-widened',
   'take.narrow': 'take-narrowed',
   'auto-rollback.off': 'auto-rollback-off',
   'auto-rollback.on': 'auto-rollback-on',
 };
 
-/** A stored change, if it is one as the event's schema has it, so a malformed row is counted as nothing. */
+/**
+ * A stored change, if it is one of a control the line has as the event's schema has it, so a malformed row, or one of
+ * the auto-merge switch the line no longer has, is counted as nothing.
+ */
 function changeOf(value: unknown): ControlChange | undefined {
   const read = PAYLOADS['controls.changed'].shape.change.safeParse(value);
-  return read.success ? (read.data as ControlChange) : undefined;
+  return read.success && read.data.control !== 'auto-merge' ? read.data : undefined;
 }
 
 /**

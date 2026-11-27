@@ -82,7 +82,7 @@ Accepted by Martin on 25 November 2026.
 | W3b | App: an image move `main` already has | close its ticket as done, as W3 |
 | W5 | The store restarting under the log watcher's send | no worker logs an error, and the report arrives once |
 | 25 | Factory: a move that would merge, with Martin's review asking for changes on it (k3d's, as 14) | be held by the gate, which says he asked, and never queued |
-| 26 | Factory: the line stopped, at Guarded with auto-merge on | no move queued, the worker saying the line is stopped; the deploy pin still merges |
+| 26 | Factory: the line stopped, at Guarded | no move queued, the worker saying the line is stopped; the deploy pin still merges |
 | 27 | Factory: a merged move Martin put back on `main` (k3s's, as 14) | be listed again by the scan, with no pull request for it again, and an issue that says it was undone on `main` |
 | 28 | Factory: an image's fix first seen by the scan today (Postgres's, as 1) | not be listed that day, the scan's `waiting` naming the pin with why `content`; the scan lists it once it has known the content a day |
 

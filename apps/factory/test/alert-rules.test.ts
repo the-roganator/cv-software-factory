@@ -303,7 +303,6 @@ describe('the alerts to Martin', () => {
       'phone-off',
     ]);
     expect(at(LEVELS.notify)).toEqual([
-      'auto-merge-on',
       'autonomy-tightened',
       'flag-widened',
       'improvement-approved',
@@ -316,7 +315,6 @@ describe('the alerts to Martin', () => {
       'words-shared',
     ]);
     expect(at(LEVELS.inform)).toEqual([
-      'auto-merge-off',
       'auto-rollback-on',
       'flag-narrowed',
       'flag-off',

@@ -106,9 +106,9 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
         deployQueueWatch({ github, reads: liveReads, actions, recorder, heads, log }, target),
       );
     }
-    // The autonomy level and auto-merge, which decide which moves the pin queue adds: read from the store as
-    // `factory_github`, which reads Martin's controls and nothing else, or, with no store, Supervised with auto-merge
-    // off. One connection is all it needs.
+    // The autonomy level and the line's stop, which decide which moves the pin queue adds: read from the store as
+    // `factory_github`, which reads Martin's controls and nothing else, or, with no store, Supervised and stopped. One
+    // connection is all it needs.
     const level = store ? storeLevel(store, log) : noLevel(log);
     // This repository's moves: one pull request of the App's for each it can write, one issue for each it cannot, each
     // recorded instead in a dry run. Its reads are the live ones: a dry run acts on the day as GitHub has it.

@@ -381,7 +381,6 @@ describe('a flag', () => {
         payload: {
           autonomy: 'guarded',
           newWork: true,
-          autoMerge: false,
           take: { kind: 'just-one', workItem },
           change: { control: 'take', before: null, after: { kind: 'just-one', workItem } },
         },

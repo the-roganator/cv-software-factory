@@ -668,7 +668,7 @@ describe('validation', () => {
   });
 
   it('takes a deploy pull request’s change on a work item, naming the failed checks on a failure only', () => {
-    const changed = { ...opened, type: 'deploy.changed', version: 3, actor: 'factory' };
+    const changed = { ...opened, type: 'deploy.changed', version: 4, actor: 'factory' };
     const payload = { pullRequest: 412, commit: 'b'.repeat(40), state: 'checking' };
     expect(validate({ ...changed, payload })).toEqual({ ok: true });
     for (const state of ['passed', 'merged', 'closed']) {
@@ -685,7 +685,7 @@ describe('validation', () => {
   });
 
   it('takes a deploy pull request the line queued, the queue took out, or that waits for Martin, saying why', () => {
-    const changed = { ...opened, type: 'deploy.changed', version: 3, actor: 'factory' };
+    const changed = { ...opened, type: 'deploy.changed', version: 4, actor: 'factory' };
     const at = { pullRequest: 412, commit: 'b'.repeat(40) };
     const ok = (payload: object) => validate({ ...changed, payload }).ok;
     expect(ok({ ...at, state: 'queued', rule: 'exact-pin', position: 2 })).toBe(true);
@@ -698,8 +698,9 @@ describe('validation', () => {
     expect(ok({ ...at, state: 'dequeued', reason: 'dequeued' })).toBe(true);
     expect(ok({ ...at, state: 'dequeued' })).toBe(false);
     expect(ok({ ...at, state: 'passed', reason: 'failed_checks' })).toBe(false);
-    for (const waits of ['level', 'auto-merge', 'conflict', 'verdict'])
-      expect(ok({ ...at, state: 'passed', waits })).toBe(true);
+    for (const waits of ['level', 'conflict', 'verdict']) expect(ok({ ...at, state: 'passed', waits })).toBe(true);
+    // The auto-merge switch is gone: the level alone decides.
+    expect(ok({ ...at, state: 'passed', waits: 'auto-merge' })).toBe(false);
     expect(ok({ ...at, state: 'passed', waits: 'verdict', rule: 'held' })).toBe(true);
     expect(ok({ ...at, state: 'passed', waits: 'verdict', rule: 'exact-pin' })).toBe(false);
     expect(ok({ ...at, state: 'passed', waits: 'level', rule: 'exact-pin' })).toBe(false);
@@ -710,7 +711,14 @@ describe('validation', () => {
     // A version 1 record reads as it was: one whose checks passed, with no word of why it waits.
     expect(upcast({ type: 'deploy.changed', version: 1, payload: { ...at, state: 'passed' } })).toMatchObject({
       ok: true,
-      event: { version: 3, payload: { ...at, state: 'passed' } },
+      event: { version: 4, payload: { ...at, state: 'passed' } },
+    });
+    // A version 3 record that waited for the switch off reads as waiting for the level, which alone decides now.
+    expect(
+      upcast({ type: 'deploy.changed', version: 3, payload: { ...at, state: 'passed', waits: 'auto-merge' } }),
+    ).toEqual({
+      ok: true,
+      event: expect.objectContaining({ version: 4, payload: { ...at, state: 'passed', waits: 'level' } }),
     });
   });
 
@@ -1147,11 +1155,11 @@ describe('upcasting the real catalogue', () => {
   it('reads versions 2 to 4 of hold.started as they were, and takes a defect the planner noticed at version 4', () => {
     const v2 = { stage: 'gates', kind: 'held', cause: 'gates', reason: 'The gates failed: test' };
     expect(upcast({ type: 'hold.started', version: 2, payload: v2 })).toMatchObject({
-      event: { version: 13, payload: v2 },
+      event: { version: 14, payload: v2 },
     });
     const nothing = { stage: 'build', kind: 'held', cause: 'nothing-to-fix', reason: 'The coder found nothing.' };
     expect(upcast({ type: 'hold.started', version: 3, payload: nothing })).toMatchObject({
-      event: { version: 13, payload: nothing },
+      event: { version: 14, payload: nothing },
     });
     const finding = {
       stage: 'triage',
@@ -1160,7 +1168,7 @@ describe('upcasting the real catalogue', () => {
       reason: 'The planner noticed a defect.',
       defect: { fingerprint: { route: '/basket', class: 'wrong-result' }, symptom: 'wrong-result' },
     };
-    const hold = (payload: object, version = 13) =>
+    const hold = (payload: object, version = 14) =>
       validate({ ...opened, type: 'hold.started', version, actor: 'triage', payload });
     expect(hold(finding)).toEqual({ ok: true });
     expect(hold(finding, 3).ok).toBe(false);
@@ -1345,11 +1353,11 @@ describe('upcasting the real catalogue', () => {
   it('reads version 4 of hold.started as it was, and holds for a deploy and a verification at version 5', () => {
     const merge = { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits for Martin’s merge' };
     expect(upcast({ type: 'hold.started', version: 4, payload: merge })).toMatchObject({
-      event: { version: 13, payload: merge },
+      event: { version: 14, payload: merge },
     });
     for (const cause of ['deploy', 'verify']) {
       const payload = { stage: 'release', kind: 'approval', cause, reason: 'Waits for Martin' };
-      expect(validate({ ...opened, type: 'hold.started', version: 13, actor: 'factory', payload })).toEqual({
+      expect(validate({ ...opened, type: 'hold.started', version: 14, actor: 'factory', payload })).toEqual({
         ok: true,
       });
     }
@@ -1358,10 +1366,10 @@ describe('upcasting the real catalogue', () => {
   it('reads version 5 of hold.started as it was, and holds a burst of new problems at version 6', () => {
     const deploy = { stage: 'release', kind: 'approval', cause: 'deploy', reason: 'Waits for a deploy' };
     expect(upcast({ type: 'hold.started', version: 5, payload: deploy })).toMatchObject({
-      event: { version: 13, payload: deploy },
+      event: { version: 14, payload: deploy },
     });
     const burst = { stage: 'triage', kind: 'held', cause: 'burst', reason: 'The log watcher found 34 new problems' };
-    expect(validate({ ...opened, type: 'hold.started', version: 13, actor: 'triage', payload: burst })).toEqual({
+    expect(validate({ ...opened, type: 'hold.started', version: 14, actor: 'triage', payload: burst })).toEqual({
       ok: true,
     });
     expect(validate({ ...opened, type: 'hold.started', version: 5, actor: 'triage', payload: burst }).ok).toBe(false);
@@ -1370,32 +1378,32 @@ describe('upcasting the real catalogue', () => {
   it('reads version 6 of hold.started as it was, and holds a problem seen while its sense’s reads were not healthy at 7', () => {
     const burst = { stage: 'triage', kind: 'held', cause: 'burst', reason: 'The log watcher found 34 new problems' };
     expect(upcast({ type: 'hold.started', version: 6, payload: burst })).toMatchObject({
-      event: { version: 13, payload: burst },
+      event: { version: 14, payload: burst },
     });
     const environment = { stage: 'triage', kind: 'held', cause: 'environment', reason: 'Loki was not healthy' };
     const hold = (version: number) =>
       validate({ ...opened, type: 'hold.started', version, actor: 'triage', payload: environment });
-    expect(hold(13)).toEqual({ ok: true });
+    expect(hold(14)).toEqual({ ok: true });
     expect(hold(6).ok).toBe(false);
   });
 
   it('reads version 7 of hold.started as it was, and records a spend hold’s spend at 8', () => {
     const spend = { stage: 'build', kind: 'held', cause: 'spend', reason: 'Spent its cap', limitUsd: 1 };
     expect(upcast({ type: 'hold.started', version: 7, payload: spend })).toMatchObject({
-      event: { version: 13, payload: spend },
+      event: { version: 14, payload: spend },
     });
     const hold = (version: number) =>
       validate({ ...opened, type: 'hold.started', version, actor: 'factory', payload: { ...spend, spentUsd: 1.02 } });
-    expect(hold(13)).toEqual({ ok: true });
+    expect(hold(14)).toEqual({ ok: true });
   });
 
   it('reads version 8 of hold.started as it was, and names the files a coder needs on a scope hold at 9', () => {
     const scope = { stage: 'build', kind: 'held', cause: 'scope', reason: 'The scope fence refused the patch twice' };
     expect(upcast({ type: 'hold.started', version: 8, payload: scope })).toMatchObject({
-      event: { version: 13, payload: scope },
+      event: { version: 14, payload: scope },
     });
     const needs = [{ path: 'test/flags-preview.test.ts', reason: 'It assumes / asks no flag; every page now does' }];
-    const hold = (payload: object, version = 13) =>
+    const hold = (payload: object, version = 14) =>
       validate({ ...opened, type: 'hold.started', version, actor: 'coder', payload });
     expect(hold({ ...scope, needs })).toEqual({ ok: true });
     expect(hold({ ...scope, needs: [] }).ok).toBe(false);
@@ -1711,15 +1719,38 @@ describe('upcasting the real catalogue', () => {
       take: null,
       change: { control: 'new-work', before: false, after: true },
     };
+    const { autoMerge: _, ...now } = v1;
     const read = upcast({ type: 'controls.changed', version: 1, payload: v1 });
-    expect(read).toMatchObject({ event: { version: 2, payload: { ...v1, autoRollback: true } } });
+    expect(read).toEqual({
+      ok: true,
+      event: expect.objectContaining({ version: 3, payload: { ...now, autoRollback: true } }),
+    });
     const changed = (payload: object) =>
-      validate({ ...opened, work_item: null, type: 'controls.changed', version: 2, actor: 'martin', payload });
+      validate({ ...opened, work_item: null, type: 'controls.changed', version: 3, actor: 'martin', payload });
     expect(read.ok && changed(read.event.payload)).toEqual({ ok: true });
-    const off = { ...v1, autoRollback: false, change: { control: 'auto-rollback', before: true, after: false } };
+    const off = { ...now, autoRollback: false, change: { control: 'auto-rollback', before: true, after: false } };
     expect(changed(off)).toEqual({ ok: true });
     expect(changed({ ...off, autoRollback: 'off' }).ok).toBe(false);
     expect(changed({ ...off, change: { control: 'auto-rollback', before: true, after: 'off' } }).ok).toBe(false);
+  });
+
+  it('reads version 2 of controls.changed without the auto-merge switch, and a change of it as it was', () => {
+    const v2 = {
+      autonomy: 'guarded',
+      newWork: true,
+      autoMerge: true,
+      take: null,
+      autoRollback: true,
+      change: { control: 'auto-merge', before: false, after: true },
+    };
+    const { autoMerge: _, ...now } = v2;
+    const read = upcast({ type: 'controls.changed', version: 2, payload: v2 });
+    expect(read).toEqual({ ok: true, event: expect.objectContaining({ version: 3, payload: now }) });
+    const changed = (payload: object) =>
+      validate({ ...opened, work_item: null, type: 'controls.changed', version: 3, actor: 'martin', payload });
+    expect(read.ok && changed(read.event.payload)).toEqual({ ok: true });
+    // The controls carry no switch now.
+    expect(changed(v2).ok).toBe(false);
   });
 
   it('holds a canary paused for Martin from version 10 of hold.started', () => {
@@ -1730,7 +1761,7 @@ describe('upcasting the real catalogue', () => {
       reason: 'The analysis judged the canary bad',
       release: '68ff668868-4',
     };
-    const held = (payload: object, version = 13) =>
+    const held = (payload: object, version = 14) =>
       validate({ ...opened, type: 'hold.started', version, actor: 'rollouts', payload });
     expect(held(canary)).toEqual({ ok: true });
     expect(held(canary, 9).ok).toBe(false);
@@ -1743,7 +1774,7 @@ describe('upcasting the real catalogue', () => {
   it('reads version 10 of hold.started as it was, and names a merge hold’s verdict at 11', () => {
     const merge = { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits for Martin to merge it' };
     expect(upcast({ type: 'hold.started', version: 10, payload: merge })).toMatchObject({
-      event: { version: 13, payload: merge },
+      event: { version: 14, payload: merge },
     });
     const head = 'c'.repeat(40);
     const judged = {
@@ -1759,7 +1790,7 @@ describe('upcasting the real catalogue', () => {
         approving: true,
       },
     };
-    const held = (payload: object, version = 13) =>
+    const held = (payload: object, version = 14) =>
       validate({ ...opened, type: 'hold.started', version, actor: 'factory', payload });
     expect(held(judged)).toEqual({ ok: true });
     expect(held(judged, 10).ok).toBe(false);
@@ -1772,10 +1803,23 @@ describe('upcasting the real catalogue', () => {
     expect(held({ ...judged, merge: queue })).toEqual({ ok: true });
   });
 
+  it('reads version 13 of hold.started’s merge hold kept for the auto-merge switch as kept for the level', () => {
+    const merge = { pullRequest: 12, head: 'c'.repeat(40), why: 'auto-merge', rule: 'low-risk', approving: false };
+    const hold = { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Waits for Martin to merge it', merge };
+    expect(upcast({ type: 'hold.started', version: 13, payload: hold })).toEqual({
+      ok: true,
+      event: expect.objectContaining({ version: 14, payload: { ...hold, merge: { ...merge, why: 'level' } } }),
+    });
+    const held = (payload: object) =>
+      validate({ ...opened, type: 'hold.started', version: 14, actor: 'factory', payload });
+    expect(held(hold).ok).toBe(false);
+    expect(held({ ...hold, merge: { ...merge, why: 'level' } })).toEqual({ ok: true });
+  });
+
   it('reads version 11 of hold.started as it was, and holds a report’s ticket for Martin to describe at 12', () => {
     const spec = { stage: 'plan', kind: 'approval', cause: 'spec', reason: 'Tagged out-of-scope' };
     expect(upcast({ type: 'hold.started', version: 11, payload: spec })).toMatchObject({
-      event: { version: 13, payload: spec },
+      event: { version: 14, payload: spec },
     });
     const undescribed = {
       stage: 'plan',
@@ -1786,7 +1830,7 @@ describe('upcasting the real catalogue', () => {
     };
     const held = (version: number) =>
       validate({ ...opened, type: 'hold.started', version, actor: 'factory', payload: undescribed });
-    expect(held(13)).toEqual({ ok: true });
+    expect(held(14)).toEqual({ ok: true });
     expect(held(11).ok).toBe(false);
   });
 

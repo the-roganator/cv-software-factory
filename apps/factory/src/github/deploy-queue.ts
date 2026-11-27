@@ -7,8 +7,8 @@
  * gate passes as a move (`move`, or `major` for one across a major that clears no Critical) when it is exactly the
  * scan's moves, which the gate makes itself. These watches add each to the queue, so a pin the gate passed reaches `main` with nobody's hand
  * on it: the deploy pin at every autonomy level, as it runs only what Martin already merged, and a move only when the
- * level in force allows its rule and auto-merge is on (`enqueues`, `policy/line.ts`, read as `level.ts` reads them), as the line's are, and the line is not stopped. The app's deploy pull request is the line's, within
- * Martin's autonomy level and auto-merge (`line/deploy.ts`); a pull request the gate held, even one Martin then
+ * level in force allows its rule (`enqueues`, `policy/line.ts`, read as `level.ts` reads it), as the line's are, and the line is not stopped. The app's deploy pull request is the line's, within
+ * Martin's autonomy level (`line/deploy.ts`); a pull request the gate held, even one Martin then
  * approved, a release, and anything else, is his.
  *
  * Each pass reads the open pull requests it watches, and adds each to the queue at its head only when every one of
@@ -24,7 +24,7 @@
  *   as `guardPinBranch` has it) into main, not a draft, labelled `pin` by the App and by nobody else, every time it was
  *   labelled, and none Martin holds on its branch, the gate's
  *   rule is `move` or `major`, and the autonomy level in force, read just before the enqueue, queues that rule
- *   with auto-merge on (Supervised, and off, when they cannot be read), and the line is not stopped (stopped, when
+ *   (Supervised, when it cannot be read), and the line is not stopped (stopped, when
  *   that cannot be read): a stopped line queues as Supervised does. The gate trusts no branch, label or title; the queue reads
  *   them so that nothing but the pin watch's own pull request rides the rule, and the verdict is what passes it;
  * - the review App's own `review` check on that head concluded with a verdict that passes it by that rule at that head
@@ -82,8 +82,8 @@
  *   one commit to one later commit on the factory's main, and nothing else (`workflowPin`, scripts/review-routing.ts).
  *   No watch of the worker's wrote this head, so there is no positive check to make first: the gate's verdict at the
  *   very head, which the enqueue then names (`expectedHeadOid`), is the proof of what it is;
- * - the autonomy level in force, read just before the enqueue, queues an exact pin with auto-merge on (Guarded and
- *   Lights-out; Supervised, and off, when they cannot be read), and the line is not stopped: a new commit of the
+ * - the autonomy level in force, read just before the enqueue, queues an exact pin (Guarded and Lights-out;
+ *   Supervised, when it cannot be read), and the line is not stopped: a new commit of the
  *   factory's workflows is new change to the app, as the local deploy pin is not;
  * - its checks, the conflict and the queue, as for the others. The worker writes nothing to Dependabot's branch and
  *   says nothing on its pull request, so a required check that failed on the head is not run again from a new head,
@@ -163,7 +163,6 @@ export type QueueWait =
   | { waits: 'checks'; why: string }
   | { waits: 'stopped'; why: string }
   | { waits: 'level'; why: string }
-  | { waits: 'auto-merge'; why: string }
   | { waits: 'failed'; why: string }
   | { waits: 'conflict'; why: string };
 
@@ -285,15 +284,14 @@ const LEVEL_NAME: Record<Autonomy, string> = {
 };
 
 /**
- * Whether the line's stop, the autonomy level and auto-merge in force let the worker queue a pull request the gate
- * passed by a rule (`enqueues`, as the line asks it): the stop's wait first, then the level's, then the switch's.
+ * Whether the line's stop and the autonomy level in force let the worker queue a pull request the gate passed by a
+ * rule (`enqueues`, as the line asks it): the stop's wait first, then the level's.
  */
 export function levelWait(merging: Merging, rule: QueueRule): QueueWait | undefined {
   const waits = mergingWait(merging, rule);
   const a = /^[aeiou]/.test(rule) ? 'an' : 'a';
   if (waits === 'stopped') return { waits, why: `the line is stopped, so ${a} ${rule} waits for Martin` };
   if (waits === 'level') return { waits, why: `at ${LEVEL_NAME[merging.autonomy]} ${a} ${rule} waits for Martin` };
-  if (waits === 'auto-merge') return { waits, why: `with auto-merge off ${a} ${rule} waits for Martin` };
   return undefined;
 }
 
@@ -519,14 +517,15 @@ export interface DeployQueueDependencies {
   log: Logger;
 }
 
-/** The pin queue's: the queue's, and the line's stop, the level and auto-merge in force, which decide which moves it adds (`level.ts`). */
+/** The pin queue's: the queue's, and the line's stop and the level in force, which decide which moves it adds (`level.ts`). */
 export interface PinQueueDependencies extends DeployQueueDependencies {
   level: LevelReader;
 }
 
 /**
  * The workflow pin queue's: what it reads, the enqueue and nothing else it could do to Dependabot's pull request, and
- * the level and auto-merge in force. It keeps no record of heads: no watch of the worker's writes Dependabot's branch.
+ * the level and the line's stop in force. It keeps no record of heads: no watch of the worker's writes Dependabot's
+ * branch.
  */
 export interface WorkflowPinQueueDependencies {
   github: GitHub;
@@ -686,8 +685,8 @@ async function queueOne(
     attempt.done = true;
     return;
   }
-  // The line's stop, the level and auto-merge, read now, just before the enqueue, so what Martin changed holds from
-  // this pass: none read is stopped, at Supervised, with auto-merge off (`level.ts`).
+  // The line's stop and the level, read now, just before the enqueue, so what Martin changed holds from this pass:
+  // none read is stopped, at Supervised (`level.ts`).
   if (level) {
     const allowed = levelWait(await level(), rule);
     if (allowed) return state.wait(number, head, allowed);
@@ -749,7 +748,7 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
     if (attempt.done) return;
     const notOne = deployPullWait(target, pull) ?? headWait(deps.heads, repo, pull, 'not-a-deploy');
     if (notOne) return state.wait(pull.number, pull.head.sha, notOne);
-    // The deploy pin runs only what Martin already merged: neither the level, auto-merge nor the line's stop governs it.
+    // The deploy pin runs only what Martin already merged: neither the level nor the line's stop governs it.
     await queueOne(deps, state, repo, 'deploy', pull, ['exact-pin'], attempt);
   };
 }

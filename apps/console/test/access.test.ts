@@ -38,7 +38,7 @@ const doc = (path: string) => readFileSync(new URL(`../../../${path}`, import.me
 const SPEC_STEP_UP: Record<string, Name[]> = {
   'raising a cap or a setting that raises spend': ['caps.raise', 'agent.raise', 'take.widen'],
   'loosening autonomy': ['autonomy.loosen'],
-  'turning auto-merge on or auto-rollback off': ['auto-merge.on', 'auto-rollback.off'],
+  'turning auto-rollback off': ['auto-rollback.off'],
   'switching alerts to his phone off': ['phone.off'],
   'starting the line': ['line.start'],
   'promoting a canary or retrying a stopped release': ['release.promote', 'release.retry'],
@@ -88,9 +88,7 @@ describe('the access table', () => {
       expect(ACCESS[name as Name]?.stepUp, name).toBe(asks);
     }
     // Every action of the line's controls the table names.
-    const named = Object.keys(ACCESS).filter((name) =>
-      /^(autonomy|new-work|auto-merge|auto-rollback|take)\./.test(name),
-    );
+    const named = Object.keys(ACCESS).filter((name) => /^(autonomy|new-work|auto-rollback|take)\./.test(name));
     expect(Object.keys(CONTROL_STEP_UP).sort()).toEqual(named.sort());
     // Every move of a flag's stage the table names, but the one route that is each of them.
     const moves = Object.keys(ACCESS).filter((name) => name.startsWith('flag.') && name !== 'flag.stage');

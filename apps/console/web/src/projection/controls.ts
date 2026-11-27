@@ -85,7 +85,7 @@ const isAutonomy = (value: unknown): value is Autonomy => (AUTONOMY as readonly 
 
 /**
  * Which of the access table's actions a recorded change is, by `controlAction`, as the line counts it; or none, for a
- * change that is not one.
+ * change that is not one, or one of the auto-merge switch the line no longer has.
  */
 export function changeAction(change: unknown): ControlAction | undefined {
   if (!isRecord(change)) return undefined;
@@ -94,7 +94,6 @@ export function changeAction(change: unknown): ControlAction | undefined {
     case 'autonomy':
       return isAutonomy(before) && isAutonomy(after) ? controlAction({ control, before, after }) : undefined;
     case 'new-work':
-    case 'auto-merge':
     case 'auto-rollback':
       return typeof before === 'boolean' && typeof after === 'boolean'
         ? controlAction({ control, before, after })

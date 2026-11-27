@@ -121,12 +121,13 @@ type Viewer = 'martin' | 'visitor';
 /** What each autonomy level means, to Martin and to anyone else. */
 const MEANS: Record<Autonomy, Record<Viewer, string>> = {
   supervised: {
-    martin: 'You approve every merge and every release.',
-    visitor: 'Martin approves every merge and every release.',
+    martin: 'You approve every merge and every release, but the factory’s own deploy pins, which merge on their own.',
+    visitor:
+      'Martin approves every merge and every release, but the factory’s own deploy pins, which merge on their own.',
   },
   guarded: {
-    martin: 'Low-risk changes ship on their own. Anything risky waits for you.',
-    visitor: 'Low-risk changes ship on their own. Anything risky waits for Martin.',
+    martin: 'Low-risk changes and the scan’s moves merge on their own. A major, and anything risky, waits for you.',
+    visitor: 'Low-risk changes and the scan’s moves merge on their own. A major, and anything risky, waits for Martin.',
   },
   'lights-out': {
     martin:
@@ -161,14 +162,6 @@ const LIGHTS_OUT_NOTE = (
   </p>
 );
 
-/** What auto-merge does, to Martin and to anyone else. */
-const AUTO_MERGE: Record<Viewer, string> = {
-  martin:
-    'The line adds a change to the merge queue once the review check passes it by a rule the autonomy level allows. Under Supervised it waits for you anyway.',
-  visitor:
-    'The line adds a change to the merge queue once the review check passes it by a rule the autonomy level allows. Under Supervised it waits for Martin anyway.',
-};
-
 const TAKE_LABEL: Record<TakeKind, string> = {
   every: 'Every ticket',
   'next-few': 'The next few',
@@ -200,13 +193,7 @@ function takeWords(take: Take, nextFew: ControlsView['nextFew']): string {
 type TakeBody = { kind: 'every' } | { kind: 'next-few'; count: number } | { kind: 'just-one'; workItem: string };
 
 /** What Martin may send: one change, as `POST /admin/line/controls` takes it, or a switch of alerts to his phone. */
-type Change =
-  | { autonomy: Autonomy }
-  | { newWork: boolean }
-  | { autoMerge: boolean }
-  | { autoRollback: boolean }
-  | { take: TakeBody }
-  | Phone;
+type Change = { autonomy: Autonomy } | { newWork: boolean } | { autoRollback: boolean } | { take: TakeBody } | Phone;
 type Phone = { phone: boolean };
 
 /** A wider take, as the passkey's dialog says it. */
@@ -383,8 +370,7 @@ const ROLLBACK: Record<'on' | 'off', Record<Viewer, string>> = {
 
 function SwitchesGroup({ controls, viewer, changer }: { controls: ControlsView; viewer: Viewer; changer: Changer }) {
   const martin = viewer === 'martin';
-  const { newWork, autoMerge, autoRollback } = controls;
-  const autoMergeOn: ControlChange = { control: 'auto-merge', before: autoMerge, after: !autoMerge };
+  const { newWork, autoRollback } = controls;
   const autoRollbackOff: ControlChange = { control: 'auto-rollback', before: autoRollback, after: !autoRollback };
   return (
     <div className="ctl-group">
@@ -408,31 +394,6 @@ function SwitchesGroup({ controls, viewer, changer }: { controls: ControlsView; 
                 what: <b>Agents take new work: {newWork ? 'off' : 'on'}.</b>,
                 why: 'The admin service asks for it',
               },
-            )
-          }
-        />
-        <Switch
-          label="Auto-merge low-risk changes"
-          note={AUTO_MERGE[viewer]}
-          on={autoMerge}
-          live={martin}
-          keyed={martin && !changer.fresh && asks(autoMergeOn)}
-          busy={changer.busy}
-          onToggle={() =>
-            void changer.change(
-              'switches',
-              { autoMerge: !autoMerge },
-              autoMerge
-                ? {
-                    title: 'Turn off auto-merge',
-                    what: <b>Auto-merge low-risk changes: off.</b>,
-                    why: 'The admin service asks for it',
-                  }
-                : {
-                    title: 'Turn on auto-merge',
-                    what: <b>Auto-merge low-risk changes: on.</b>,
-                    why: 'Auto-merge lets changes merge without you',
-                  },
             )
           }
         />

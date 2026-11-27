@@ -442,17 +442,12 @@ describe('Needs you', () => {
       [
         { pullRequest: 41, commit: head(2), state: 'passed', waits: 'level' },
         'Waiting for your deploy',
-        'Deploy #41 carries it, and its checks passed; at Supervised the line adds nothing to the merge queue: merging it is yours, on GitHub, and at Guarded with auto-merge on the line would add it. A release that carries it ends this wait by itself.',
+        'Deploy #41 carries it, and its checks passed; at Supervised the line adds nothing to the merge queue: merging it is yours, on GitHub, and at Guarded the line would add it. A release that carries it ends this wait by itself.',
       ],
       [
         { pullRequest: 41, commit: head(2), state: 'passed', waits: 'verdict', rule: 'held' },
         'Waiting for your deploy',
         'Deploy #41 carries it, and its checks passed; the review gate did not pass it as an exact pin (held), and the line adds only an exact pin to the merge queue: merging it is yours, on GitHub. A release that carries it ends this wait by itself.',
-      ],
-      [
-        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'auto-merge' },
-        'Waiting for your deploy',
-        'Deploy #41 carries it, and its checks passed; with auto-merge off, merging it is yours, on GitHub; switched on, the line adds it to the merge queue. A release that carries it ends this wait by itself.',
       ],
       [
         { pullRequest: 41, commit: head(2), state: 'passed', waits: 'refused', said: 'Resource not accessible' },
@@ -779,21 +774,18 @@ describe('Needs you', () => {
       expect(owned?.evidence).toMatchObject({ clear: ['not a release, not an improvement'] });
     });
 
-    it('says what would let the line merge one the level or auto-merge holds', () => {
+    it('says what would let the line merge one the level holds', () => {
       expect(needOf(merge('level', { rule: 'low-risk' }))).toMatchObject({
         kicker: 'Waiting for your merge',
         evidence: { kind: 'words', text: 'Held: level' },
-        note: 'At Guarded or Lights-out, with auto-merge on, the line would add it to the merge queue itself.',
+        note: 'At Guarded or Lights-out, the line would add it to the merge queue itself.',
         way: { verb: 'Merge', pullRequest: 1327, there: 'merge' },
       });
       expect(needOf(merge('level', { rule: 'lights-out' }))?.note).toBe(
-        'At Lights-out, with auto-merge on, the line would add it to the merge queue itself.',
+        'At Lights-out, the line would add it to the merge queue itself.',
       );
       // Martin's own pull request is his to merge at every level.
       expect(needOf(merge('level', { rule: 'martin-opened' }))?.note).toBeUndefined();
-      expect(needOf(merge('auto-merge', { rule: 'low-risk' }))?.note).toBe(
-        'With auto-merge on, the line would add it to the merge queue itself.',
-      );
       expect(needOf(merge('never'))?.answers.map((a) => a.answer)).toEqual(['answered', 'replanned', 'rejected']);
     });
 
@@ -819,7 +811,7 @@ describe('Needs you', () => {
       const item = work('2071', START)
         .open()
         .add(1, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2071' })
-        .add(30, 'hold.started', 'factory', merge('auto-merge', { rule: 'low-risk' }))
+        .add(30, 'hold.started', 'factory', merge('level', { rule: 'low-risk' }))
         .add(40, 'pull-request.enqueued', 'factory', { number: 1327, commit: HEAD, rule: 'low-risk' });
       const t = START + 50 * 60_000;
       const view = project(item.events, t);

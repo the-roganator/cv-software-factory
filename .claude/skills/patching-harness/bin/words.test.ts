@@ -116,14 +116,14 @@ describe('the worker’s words, as the harness reads them', () => {
   });
 
   it('reads the line’s stop and the level’s wait in what the queue logs (26, batch D)', () => {
-    const stopped = levelWait({ autonomy: 'guarded', autoMerge: true, stopped: true }, 'move');
-    const supervised = levelWait({ autonomy: 'supervised', autoMerge: true, stopped: false }, 'move');
+    const stopped = levelWait({ autonomy: 'guarded', stopped: true }, 'move');
+    const supervised = levelWait({ autonomy: 'supervised', stopped: false }, 'move');
     expect(stopped).toMatchObject({ waits: STOPPED_WAIT.waits, why: expect.stringMatching(STOPPED_WAIT.why) });
     expect(stopped?.why).toMatch(OF_A_MOVE);
     expect(supervised).toMatchObject({ waits: SUPERVISED_WAIT.waits, why: expect.stringMatching(SUPERVISED_WAIT.why) });
     // A stop comes before the level, and a major's wait is no move's.
-    expect(levelWait({ autonomy: 'supervised', autoMerge: true, stopped: true }, 'move')?.waits).toBe('stopped');
-    expect(levelWait({ autonomy: 'guarded', autoMerge: true, stopped: true }, 'major')?.why).not.toMatch(OF_A_MOVE);
+    expect(levelWait({ autonomy: 'supervised', stopped: true }, 'move')?.waits).toBe('stopped');
+    expect(levelWait({ autonomy: 'guarded', stopped: true }, 'major')?.why).not.toMatch(OF_A_MOVE);
     // As the worker's log carries them, a line a head.
     const line = (number: number, word: typeof stopped) =>
       JSON.stringify({ number, head: HEAD, ...word, msg: 'the pin pull request waits to be queued' });

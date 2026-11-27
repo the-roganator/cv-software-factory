@@ -108,10 +108,8 @@ test('a visitor sees every control read-only, and no Stop or Start', async ({ pa
     await expect(button).toBeDisabled();
   }
   await expect(panel.getByRole('switch', { name: /Agents take new work/ })).toBeChecked();
-  await expect(panel.getByRole('switch', { name: /Auto-merge/ })).not.toBeChecked();
-  await expect(panel.getByRole('switch', { name: /Auto-merge/ })).toContainText(
-    'The line adds a change to the merge queue once the review check passes it by a rule the autonomy level allows. Under Supervised it waits for Martin anyway.',
-  );
+  // The level alone decides what merges without Martin: there is no auto-merge switch.
+  await expect(panel.getByRole('switch', { name: /Auto-merge/ })).toHaveCount(0);
   await expect(panel.getByRole('switch', { name: /Auto-rollback/ })).toBeChecked();
   await expect(panel.getByRole('switch', { name: /Auto-rollback/ })).toContainText(
     'On: a canary the analysis judges bad rolls back by itself. Off, errors or latency judged bad would pause it for Martin instead.',
@@ -129,7 +127,7 @@ test('a visitor sees every control read-only, and no Stop or Start', async ({ pa
   await expect(panel).toContainText('The next 5 work items from');
   // Every level's words are in the panel, the others invisible: the chosen one's are what show.
   await expect(panel.locator('.means .chosen')).toHaveText(
-    'Low-risk changes ship on their own. Anything risky waits for Martin.',
+    'Low-risk changes and the scan’s moves merge on their own. A major, and anything risky, waits for Martin.',
   );
   await expect(panel.locator('.means > span:not(.chosen)')).toHaveCount(2);
   for (const words of await panel.locator('.means > span:not(.chosen)').all()) await expect(words).toBeHidden();
@@ -145,6 +143,9 @@ test('Martin stops the line with a reason, and starts it with his passkey', asyn
   await test.step('Stop the line asks for a reason, and aborts the canary in flight', async () => {
     await page.getByRole('button', { name: 'Stop the line' }).click();
     const dialog = page.getByRole('dialog', { name: 'Stop the line' });
+    await expect(dialog).toContainText(
+      'Patching’s moves wait too: the worker queues none until you start the line, though a local deploy pin still merges.',
+    );
     await expect(dialog).toContainText('make stop-the-line does the same when the console can’t.');
     const stop = dialog.getByRole('button', { name: 'Stop the line' });
     await expect(stop).toBeDisabled();
@@ -230,9 +231,6 @@ test('Martin tightens and loosens autonomy, turns a switch, and widens and narro
     await expect(panel.locator('.panel-head .label')).toHaveCount(0);
     await expect(autonomy.getByRole('button', { name: 'Lights-out (asks for your passkey)' })).toBeVisible();
     await expect(autonomy.getByRole('button', { name: 'Supervised', exact: true })).toBeVisible();
-    await expect(
-      panel.getByRole('switch', { name: /Auto-merge low-risk changes \(asks for your passkey\)/ }),
-    ).toBeVisible();
     await expect(take.getByRole('button', { name: 'Every ticket (asks for your passkey)' })).toBeVisible();
     await expect(take.getByRole('button', { name: 'Just one', exact: true })).toBeVisible();
     // Fewer of the next few count again from now, which may take more: Set asks too.

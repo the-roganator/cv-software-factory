@@ -87,8 +87,8 @@ const queue = (over: Partial<MergeQueue> = {}): MergeQueue => ({
 });
 
 const level =
-  (autonomy: Autonomy = 'guarded', autoMerge = true, stopped = false): LevelReader =>
-  async () => ({ autonomy, autoMerge, stopped });
+  (autonomy: Autonomy = 'guarded', stopped = false): LevelReader =>
+  async () => ({ autonomy, stopped });
 
 /** A log whose lines a test reads: what the queue said of each wait. */
 function capture() {
@@ -346,25 +346,22 @@ describe('the workflow pin queue watch', () => {
     }
   });
 
-  it('adds it only when the level Martin set queues an exact pin, with auto-merge on, read just before the enqueue', async () => {
-    const cases: [Autonomy, boolean, string | undefined][] = [
-      ['supervised', true, 'at Supervised an exact-pin waits for Martin'],
-      ['supervised', false, 'at Supervised an exact-pin waits for Martin'],
-      ['guarded', false, 'with auto-merge off an exact-pin waits for Martin'],
-      ['lights-out', false, 'with auto-merge off an exact-pin waits for Martin'],
-      ['guarded', true, undefined],
-      ['lights-out', true, undefined],
+  it('adds it only when the level Martin set queues an exact pin, read just before the enqueue', async () => {
+    const cases: [Autonomy, string | undefined][] = [
+      ['supervised', 'at Supervised an exact-pin waits for Martin'],
+      ['guarded', undefined],
+      ['lights-out', undefined],
     ];
-    for (const [autonomy, autoMerge, why] of cases) {
+    for (const [autonomy, why] of cases) {
       const said = capture();
-      const { pass, enqueued } = harness({ level: level(autonomy, autoMerge), log: said.log });
+      const { pass, enqueued } = harness({ level: level(autonomy), log: said.log });
       await pass();
-      expect(enqueued, `${autonomy} ${autoMerge}`).toEqual(why ? [] : [[81, HEAD]]);
+      expect(enqueued, autonomy).toEqual(why ? [] : [[81, HEAD]]);
       if (why) expect(said.lines).toMatchObject([{ why }]);
     }
     // What Martin changes holds from the next pass, with nothing restarted.
     let autonomy: Autonomy = 'supervised';
-    const { pass, enqueued } = harness({ level: async () => ({ autonomy, autoMerge: true, stopped: false }) });
+    const { pass, enqueued } = harness({ level: async () => ({ autonomy, stopped: false }) });
     await pass();
     expect(enqueued).toEqual([]);
     autonomy = 'guarded';
@@ -377,7 +374,7 @@ describe('the workflow pin queue watch', () => {
       let stopped = true;
       const said = capture();
       const { pass, enqueued } = harness({
-        level: async () => ({ autonomy, autoMerge: true, stopped }),
+        level: async () => ({ autonomy, stopped }),
         log: said.log,
       });
       await pass();

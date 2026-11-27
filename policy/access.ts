@@ -219,8 +219,6 @@ export const ACCESS = {
   'autonomy.loosen': admin('Make the autonomy level looser', true),
   'new-work.on': admin('Let agents take new work'),
   'new-work.off': admin('Stop agents taking new work'),
-  'auto-merge.on': admin('Turn on auto-merge of low-risk changes', true),
-  'auto-merge.off': admin('Turn off auto-merge of low-risk changes'),
   'auto-rollback.on': admin('Turn on auto-rollback: a canary the analysis judges bad rolls back by itself'),
   'auto-rollback.off': admin(
     'Turn off auto-rollback: a canary whose errors or latency the analysis judges bad pauses for you to promote or abort, overriding a guardrail',
@@ -234,9 +232,8 @@ export const ACCESS = {
   'line.controls': {
     ...admin(
       "Change one of the line's controls: as `autonomy.loosen` or `autonomy.tighten`, `new-work.on` or `new-work.off`, " +
-        '`auto-merge.on` or `auto-merge.off`, `take.widen` or `take.narrow`, `auto-rollback.on` or `auto-rollback.off`, ' +
-        'by what it changes, with the passkey again ' +
-        'when that one needs it',
+        '`take.widen` or `take.narrow`, `auto-rollback.on` or `auto-rollback.off`, by what it changes, with the passkey ' +
+        'again when that one needs it',
     ),
     server: 'admin',
     routes: ['POST /admin/line/controls'],

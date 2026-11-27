@@ -35,9 +35,9 @@ import {
   TAGS,
   type Tag,
 } from '../policy/review-verdict.ts';
+import { latestSay, MARTIN, type Review } from '../policy/reviews.ts';
 
-/** Martin's GitHub account, by its id, which never changes: a login can be renamed and taken by someone else. */
-export const MARTIN = 6206459;
+export { MARTIN, type Review } from '../policy/reviews.ts';
 
 /** The review App, which alone posts the `review` check the rulesets require. */
 export const REVIEW_APP = 5470762;
@@ -76,14 +76,6 @@ export interface PullRequest {
 
 /** The events that change a pull request's base: anyone's, and GitHub's own when the base branch goes. */
 export const RETARGETED: ReadonlySet<string> = new Set(['base_ref_changed', 'automatic_base_change_succeeded']);
-
-export interface Review {
-  /** The review's own number, which a `review_dismissed` event names. */
-  id?: number;
-  user: { id: number } | null;
-  state: string;
-  commit_id: string | null;
-}
 
 /** A file of a pull request, as the files API gives it. */
 export interface FileChange {
@@ -153,35 +145,24 @@ export function verdict(
   if (pr.user?.id === MARTIN && fromHere(pr) && !automationBranch(pr.head.ref)) {
     return { pass: true, title: 'Martin opened it', rule: 'martin-opened' };
   }
-  const latest = reviews
-    .filter((r) => r.user?.id === MARTIN && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state))
-    .at(-1);
+  const say = latestSay(reviews, events);
   const head = short(pr.head.sha);
-  if (!latest) return { pass: false, title: `Waits for Martin to approve ${head}` };
-  if (latest.state === 'CHANGES_REQUESTED') return { pass: false, title: 'Martin asked for changes', asked: true };
-  if (latest.state === 'DISMISSED') {
-    const dismissal =
-      latest.id === undefined
-        ? undefined
-        : events.find((e) => e.event === 'review_dismissed' && e.dismissed_review?.review_id === latest.id);
-    if (!dismissal)
-      return {
-        pass: false,
-        title: 'Martin’s review was dismissed, and the gate could not read by whom: it holds as changes he asked for',
-        asked: true,
-      };
-    if (dismissal.dismissed_review?.state !== 'approved' && dismissal.actor?.id !== MARTIN)
-      return {
-        pass: false,
-        title: 'Martin asked for changes; his review was dismissed by someone else',
-        asked: true,
-      };
+  if (say.say === 'none') return { pass: false, title: `Waits for Martin to approve ${head}` };
+  if (say.say === 'asked')
+    return {
+      pass: false,
+      title:
+        say.why === 'asked'
+          ? 'Martin asked for changes'
+          : say.why === 'dismissal-unread'
+            ? 'Martin’s review was dismissed, and the gate could not read by whom: it holds as changes he asked for'
+            : 'Martin asked for changes; his review was dismissed by someone else',
+      asked: true,
+    };
+  if (say.say === 'dismissed')
     return { pass: false, title: `His last review was dismissed: waits for him to approve ${head}` };
-  }
-  if (latest.commit_id !== pr.head.sha) {
-    const approved = latest.commit_id
-      ? `Martin approved ${short(latest.commit_id)}`
-      : 'Martin approved an earlier commit';
+  if (say.commit !== pr.head.sha) {
+    const approved = say.commit ? `Martin approved ${short(say.commit)}` : 'Martin approved an earlier commit';
     return { pass: false, title: `${approved}, and it has moved since: waits for him to approve ${head}` };
   }
   return { pass: true, title: `Martin approved ${head}`, rule: 'martin-approved-head' };

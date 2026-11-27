@@ -24,7 +24,7 @@
 import type { GateRule, PatchHold, PatchIssue, PayloadOf, PinRefusal } from '@software-factory/events';
 import { MOST_PULLS, SETTLED_DAYS } from '@software-factory/events/schemas';
 import { z } from 'zod';
-import { type IssueEvent, type Review, verdict as routed } from '../../../../scripts/review-routing.ts';
+import { type Dismissal, latestSay, type Review } from '../../../../policy/reviews.ts';
 import { ACTIONS_APP } from '../gates/counts.ts';
 import { APP_LOGIN, checksRunOf } from './actions.ts';
 import type { GitHub } from './client.ts';
@@ -311,7 +311,7 @@ const EVENTS = z.array(
 
 /**
  * Why the gate's verdict keeps a pull request from the queue: not judged at its head yet (`verdict`); held because
- * Martin asked for changes, which the gate reads from his reviews as `review-routing.ts` has it, read here the same way
+ * Martin asked for changes, which the gate reads from his reviews as `policy/reviews.ts` has it, read here the same way
  * (`changes-requested`); held otherwise (`held`), which for one of Dependabot's (`dependabot`), a third-party action's,
  * is Martin's to merge at every level (`martin`); or passed by a rule the worker never queues, as Martin's approval of
  * a head the gate held is (`martin`).
@@ -335,25 +335,15 @@ export async function gateHold(
     commit_id: each.commit_id ?? null,
   }));
   // A dismissal says by whom only in the pull request's events: read only when a review was dismissed.
-  const events: IssueEvent[] = reviews.some((each) => each.state === 'DISMISSED')
+  const events: Dismissal[] = reviews.some((each) => each.state === 'DISMISSED')
     ? (await github.poll(repo, `/repos/${repo}/issues/${number}/events?per_page=100`, EVENTS)).body.map((each) => ({
         event: each.event,
         actor: each.actor ?? null,
         ...(each.dismissed_review ? { dismissed_review: each.dismissed_review } : {}),
       }))
     : [];
-  // As the gate judges a pull request the App opened: only Martin's reviews count.
-  const asked = routed(
-    {
-      number,
-      state: 'open',
-      user: null,
-      head: { sha: head, ref: '', repo: { full_name: repo } },
-      base: { ref: 'main', repo: { full_name: repo } },
-    },
-    reviews,
-    events,
-  ).asked;
+  // As the gate judges a pull request the App opened: only Martin's reviews count (`review-routing.ts`'s `verdict`).
+  const asked = latestSay(reviews, events).say === 'asked';
   return asked ? 'changes-requested' : dependabot ? 'martin' : 'held';
 }
 

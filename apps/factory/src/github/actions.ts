@@ -814,27 +814,36 @@ export class LiveActions implements Actions {
    * Opens an issue, once for a work item: one whose body carries a work item's mark (`issue-mark.ts`) is the open
    * issue of the App's that already carries it, when there is one, and nothing is opened. So a caller that asks again,
    * its record of the first lost, gets the same issue, saying what it now asks: one whose title or body differs is
-   * written again. Only the App's own: anyone may write the mark in theirs.
+   * written again. Only the App's own: anyone may write the mark in theirs, so GitHub is asked for the issues the App
+   * created (`creator`), which nobody else's can fill the pages of, and each answer is the App's by its id too. Where
+   * `MARK_PAGES` full pages of the App's own open issues still do not end the list, none is not established: the
+   * action fails, opening nothing, and is asked again.
    */
   async openIssue(repo: string, issue: { title: string; body: string; labels?: string[] }): Promise<number> {
     const mark = workItemMarkOf(issue.body);
-    for (let page = 1; mark && page <= MARK_PAGES; page++) {
+    const creator = encodeURIComponent(APP_LOGIN);
+    for (let page = 1; mark; page++) {
+      if (page > MARK_PAGES)
+        throw new GitHubError(
+          'conflict',
+          `The App has more than ${MARK_PAGES * 100} open issues in ${repo}: whether one already carries this work item's mark is not known, so none is opened.`,
+          409,
+        );
       const open = await this.#github.read(
         repo,
-        `/repos/${repo}/issues?state=open&per_page=100&sort=created&direction=desc&page=${page}`,
+        `/repos/${repo}/issues?state=open&creator=${creator}&per_page=100&sort=created&direction=desc&page=${page}`,
         z.array(
           z.object({
             number: NUMBER,
             title: z.string(),
             body: z.string().nullable().default(null),
-            user: z.object({ login: z.string() }).nullable().default(null),
+            user: z.object({ id: z.number() }).nullable().default(null),
             pull_request: z.unknown().optional(),
           }),
         ),
       );
       const found = open.find(
-        (each) =>
-          each.pull_request === undefined && each.user?.login === APP_LOGIN && workItemMarkOf(each.body) === mark,
+        (each) => each.pull_request === undefined && each.user?.id === APP_USER && workItemMarkOf(each.body) === mark,
       );
       if (found) {
         if (found.title !== issue.title || !same(found.body ?? '', issue.body)) {

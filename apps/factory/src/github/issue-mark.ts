@@ -17,5 +17,8 @@ export const workItemMark = (workItem: string): string => `<!-- factory: work-it
 export const workItemMarkOf = (body: string | null | undefined): string | undefined =>
   MARK.exec((body ?? '').trimEnd().split(/\r?\n/).at(-1) ?? '')?.[0];
 
-/** How many pages of a repository's open issues, a hundred each and the newest first, are read to find one again. */
+/**
+ * How many pages of the App's own open issues in a repository, a hundred each and the newest first, are read to find
+ * one again. A list that runs past them does not say there is none: nothing is opened then.
+ */
 export const MARK_PAGES = 10;

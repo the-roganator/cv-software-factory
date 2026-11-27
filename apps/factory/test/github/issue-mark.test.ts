@@ -9,36 +9,46 @@ import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import { APP_LOGIN, DryRunActions, LiveActions } from '../../src/github/actions.ts';
-import { workItemMark, workItemMarkOf } from '../../src/github/issue-mark.ts';
+import { GitHubError } from '../../src/github/client.ts';
+import { MARK_PAGES, workItemMark, workItemMarkOf } from '../../src/github/issue-mark.ts';
+import { APP_USER } from '../../src/github/issues.ts';
 import { calls, client, quiet, REPO, type Sent } from './fake.ts';
 
 interface Issue {
   number: number;
   title: string;
   body: string | null;
-  user: { login: string } | null;
+  user: { login: string; id: number } | null;
   pull_request?: object;
 }
 
-/** GitHub's open issues, the newest first, a hundred to a page, and the issues it makes, as the App. */
-function repository(open: Issue[]) {
+const APP = { login: APP_LOGIN, id: APP_USER };
+const STRANGER = { login: 'someone-else', id: 4242 };
+
+/**
+ * GitHub's open issues, the newest first, a hundred to a page, those of the login asked for (`creator`), and the
+ * issues it makes, as the App. With `unfiltered`, a GitHub that answers with everyone's whatever is asked.
+ */
+function repository(open: Issue[], { unfiltered = false } = {}) {
   const sent: Sent[] = [];
   let next = 100;
   const { github } = client(
     [
       {
         method: 'GET',
-        path: /^\/repos\/[^/]+\/[^/]+\/issues\?state=open&per_page=100&sort=created&direction=desc&page=\d+$/,
+        path: /^\/repos\/[^/]+\/[^/]+\/issues\?state=open&creator=[^&]+&per_page=100&sort=created&direction=desc&page=\d+$/,
         answer: ({ path }) => {
-          const page = Number(new URL(path, 'https://api.github.test').searchParams.get('page'));
-          return { body: open.slice((page - 1) * 100, page * 100) };
+          const asked = new URL(path, 'https://api.github.test').searchParams;
+          const page = Number(asked.get('page'));
+          const theirs = unfiltered ? open : open.filter((each) => each.user?.login === asked.get('creator'));
+          return { body: theirs.slice((page - 1) * 100, page * 100) };
         },
       },
       {
         method: 'POST',
         path: `/repos/${REPO}/issues`,
         answer: ({ body }) => {
-          const made = { number: next++, ...(body as { title: string; body: string }), user: { login: APP_LOGIN } };
+          const made = { number: next++, ...(body as { title: string; body: string }), user: APP };
           open.unshift(made);
           return { status: 201, body: made };
         },
@@ -102,15 +112,18 @@ describe('opening an issue for a work item', () => {
   });
 
   it('is not captured by anyone else’s issue with the same mark, nor by a pull request', async () => {
-    const stranger = { number: 7, title: 'Mine', body: body('1288'), user: { login: 'someone-else' } };
-    const pull = { number: 8, title: 'A fix', body: body('1288'), user: { login: APP_LOGIN }, pull_request: {} };
-    const { actions, open, writes } = repository([stranger, pull]);
-    const made = await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
-    expect([7, 8]).not.toContain(made);
-    expect(writes()).toEqual(['POST']);
-    // And then the App's own is the one found.
-    expect(await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') })).toBe(made);
-    expect(open).toHaveLength(3);
+    const stranger = { number: 7, title: 'Mine', body: body('1288'), user: STRANGER };
+    const pull = { number: 8, title: 'A fix', body: body('1288'), user: APP, pull_request: {} };
+    // Each answer is the App's by its id too: a GitHub that answered with everyone's would capture nothing.
+    for (const unfiltered of [false, true]) {
+      const { actions, open, writes } = repository([stranger, pull], { unfiltered });
+      const made = await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
+      expect([7, 8]).not.toContain(made);
+      expect(writes()).toEqual(['POST']);
+      // And then the App's own is the one found.
+      expect(await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') })).toBe(made);
+      expect(open).toHaveLength(3);
+    }
   });
 
   it('is not captured by an issue of the App’s that carries the mark anywhere but its last line', async () => {
@@ -119,7 +132,7 @@ describe('opening an issue for a work item', () => {
       number: 9,
       title: 'Another ticket',
       body: `A report: ${workItemMark('1288')}\n\n${workItemMark('1287')}`,
-      user: { login: APP_LOGIN },
+      user: APP,
     };
     const { actions, open, writes } = repository([quoting]);
     const made = await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
@@ -131,18 +144,39 @@ describe('opening an issue for a work item', () => {
     expect(await actions.openIssue(REPO, { title: 'A note', body: quoted })).not.toBe(9);
   });
 
+  const filler = (count: number, user: Issue['user']): Issue[] =>
+    Array.from({ length: count }, (_, i) => ({ number: 100_000 - i, title: 'Another', body: null, user }));
+
   it('finds one past the first page, and reads no further than a page that is not full', async () => {
-    const others = Array.from({ length: 100 }, (_, i) => ({
-      number: 1000 - i,
-      title: 'Another',
-      body: null,
-      user: { login: 'someone-else' },
-    }));
-    const own = { number: 41, title: 'Server errors on /search', body: body('1288'), user: { login: APP_LOGIN } };
-    const { actions, sent, writes } = repository([...others, own]);
+    const own = { number: 41, title: 'Server errors on /search', body: body('1288'), user: APP };
+    const { actions, sent, writes } = repository([...filler(100, APP), own]);
     expect(await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') })).toBe(41);
     expect(writes()).toEqual([]);
     expect(calls(sent)).toHaveLength(2);
+  });
+
+  it('asks for the App’s own issues, so no number of anyone else’s hides the one it opened', async () => {
+    const own = { number: 41, title: 'Server errors on /search', body: body('1288'), user: APP };
+    const { actions, sent, writes } = repository([...filler(MARK_PAGES * 100 + 50, STRANGER), own]);
+    expect(await actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') })).toBe(41);
+    expect(writes()).toEqual([]);
+    const [read, ...more] = calls(sent);
+    expect(more).toEqual([]);
+    expect(new URL(read?.path ?? '', 'https://api.github.test').searchParams.get('creator')).toBe(APP_LOGIN);
+  });
+
+  it('opens nothing where every page read is full: that does not say the App has none', async () => {
+    const own = { number: 41, title: 'Server errors on /search', body: body('1288'), user: APP };
+    const { actions, sent, writes } = repository([...filler(MARK_PAGES * 100, APP), own]);
+    const asked = actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
+    await expect(asked).rejects.toBeInstanceOf(GitHubError);
+    await expect(asked).rejects.toMatchObject({ kind: 'conflict', status: 409 });
+    expect(writes()).toEqual([]);
+    expect(calls(sent)).toHaveLength(MARK_PAGES);
+    // One fewer, and the last page read is not full: none is established, and one is opened.
+    const under = repository(filler(MARK_PAGES * 100 - 1, APP));
+    await under.actions.openIssue(REPO, { title: 'Server errors on /search', body: body('1288') });
+    expect(under.writes()).toEqual(['POST']);
   });
 
   it('looks for none when the body carries no mark, as the pin watch’s issues carry none', async () => {

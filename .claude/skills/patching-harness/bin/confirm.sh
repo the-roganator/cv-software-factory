@@ -267,7 +267,7 @@ queued_base || broke "D: the queued base; the deploy pin's verdict below is no v
 k -n factory rollout restart deploy/patching >/dev/null
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Whether every move's pull request the App opened since waits as <want> says (stopped, supervised or either), unqueued,
-# its checks in, by the worker's last word at its head (`harness.ts waits`, decide.ts's `waitsFault`). The worker says
+# its checks in, by the worker's last word at its head (`harness.ts waits`, decide.ts's `waitsReading`). The worker says
 # that word only after the gate's verdict, the checks and mergeability are through, the last step before it would queue
 # (deploy-queue.ts's queueOne), so it is the pass where the stop or the level is asked; its earlier words at that head
 # (`verdict`, `checks`, `conflict`) decide nothing.
@@ -288,13 +288,15 @@ d_settled() {
   moves_wait either >/dev/null
 }
 # A phase after the first: watched until every move waits as <want> says, <minutes> at most, and then, for <hold>
-# seconds more, that none was queued meanwhile. One line: PASS or FAIL, and what the worker said.
+# seconds more, that none was queued meanwhile. One line: PASS or FAIL, and what the worker said; or NO VERDICT, where
+# the only pull request that does not wait so is one whose target moved during the run (`harness.ts waits` exits 3).
 phase() { # <label> <want> <minutes> <hold seconds>
-  local until said
+  local until said mark=PASS
   until=$(($(date +%s) + $3 * 60))
   while ! moves_wait "$2" >/dev/null && [ "$(date +%s)" -lt "$until" ]; do sleep 20; done
   sleep "$4"
-  if said=$(moves_wait "$2"); then echo "$1: PASS, $(tail -1 <<<"$said")"; else echo "$1: FAIL, $(tail -1 <<<"$said")"; fi
+  said=$(moves_wait "$2") || { [ $? -eq 3 ] && mark="NO VERDICT" || mark=FAIL; }
+  echo "$1: $mark, $(tail -1 <<<"$said")"
   sed '$d' <<<"$said" | sed 's/^/  /'
 }
 until_d=$(($(date +%s) + 2100))

@@ -35,7 +35,17 @@
  */
 // biome-ignore-all lint/suspicious/noExplicitAny: it reads GitHub's and the cluster's JSON as each gives it, untyped
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { APP, FACTORY, TESTS, type Test } from './catalogue.ts';
 import {
@@ -56,6 +66,7 @@ import {
   issueOfMove,
   leftAloneFault,
   lineTooEarly,
+  MOVED_WAIT_MS,
   type MovesFile,
   majorNext,
   majorNextFault,
@@ -88,9 +99,11 @@ import {
   type TicketFacts,
   ticketFault,
   unreadMoves,
+  VERDICT_WAIT,
   WAITING_KEY,
+  type WaitingPull,
   waitedVerdict,
-  waitsFault,
+  waitsReading,
   watcherRode,
   watchRead,
   withoutDependabot,
@@ -787,6 +800,32 @@ function latestScan(repo: string, since?: string, event?: string): Scan | undefi
     }
   );
 }
+/** The moves of the newest finished scan of a copy's `main` that kept them, of its three newest; undefined with none. */
+function newestMoves(repo: string): Move[] | undefined {
+  repoOk(repo);
+  // The newest page alone, as `latestScan` reads it.
+  const runs: any[] =
+    JSON.parse(
+      sh('gh', [
+        'api',
+        `repos/${repo}/actions/workflows/vulnerabilities.yml/runs?branch=main&status=completed&per_page=10`,
+      ]),
+    ).workflow_runs ?? [];
+  const into = mkdtempSync(join(tmpdir(), 'harness-moves-'));
+  try {
+    for (const run of runs.filter((r) => r.event !== 'pull_request').slice(0, 3)) {
+      try {
+        sh('gh', ['run', 'download', String(run.id), '-R', repo, '-n', 'moves', '-D', join(into, String(run.id))]);
+        return JSON.parse(readFileSync(join(into, String(run.id), 'moves.json'), 'utf8')).moves as Move[];
+      } catch {}
+    }
+  } finally {
+    rmSync(into, { recursive: true, force: true });
+  }
+  return undefined;
+}
+/** `harness.ts waits`'s exit status for a phase with no verdict, which confirm.sh's `phase` marks so. */
+const WAITS_NO_VERDICT = 3;
 /** `main`'s commit now: the sha alone, as the commit's own page lists its files, hundreds for a baseline. */
 /**
  * When a copy's `main` was last put at its baseline: the newest move of `main` to the baseline's commit, as GitHub's
@@ -3396,41 +3435,58 @@ if (command === 'factory' || command === 'app') {
   console.log(`the pin watch takes: ${back || 'no move'}`);
 } else if (command === 'waits') {
   // Batch D's question: whether every move's pull request the App opened since <since> waits as <want> says, unqueued,
-  // its checks in, by the worker's last word at its head (decide.ts's `waitsFault`). Said, and the exit status. The
+  // its checks in, by the worker's last word at its newest head (decide.ts's `waitsReading`). Said, and the exit
+  // status: 0 when they do, 1 when one does not, and 3 (`WAITS_NO_VERDICT`) when the only ones that do not are those
+  // a target moved under during the run, with no word of the worker's on the head for the new target in time. The
   // worker says a wait once a head, so a word may be older than a change of the level or the stop it must answer:
   // with <said since>, the time of a restart of the worker after that change, only its words from then count.
   const [since = '', want = '', saidSince = since] = rest;
   const time = /^\d{4}-\d\d-\d\dT[\d:]+Z$/;
   if (!time.test(since) || !['stopped', 'supervised', 'either'].includes(want) || !time.test(saidSince))
     throw new Error('waits <since, as 2026-11-26T20:00:00Z> stopped|supervised|either [<said since>]');
-  const open = api<any[]>(FACTORY, 'pulls?state=open&per_page=100').filter(
-    (p) => p.user.login === APP_BOT && p.created_at >= since && p.title.startsWith('chore(pin): '),
-  );
-  const queue: number[] =
-    graphql(
-      FACTORY,
-      'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { mergeQueue(branch: "main") { entries(first: 50) { nodes { pullRequest { number } } } } } }',
-    ).repository.mergeQueue?.entries.nodes.map((n: any) => n.pullRequest.number) ?? [];
-  const pulls = open.map((p) => ({
-    number: p.number as number,
-    head: p.head.sha as string,
-    queued: queue.includes(p.number),
-    pending: (api<any>(FACTORY, `commits/${p.head.sha}/check-runs?per_page=100`).check_runs ?? []).filter(
-      (run: any) => run.status !== 'completed',
-    ).length,
-  }));
-  const words = queueWords(
-    kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${saidSince}`], 300_000),
-  );
-  const fault = waitsFault(pulls, words, want as 'stopped' | 'supervised' | 'either');
+  const want3 = want as 'stopped' | 'supervised' | 'either';
+  const read = () => {
+    const open = api<any[]>(FACTORY, 'pulls?state=open&per_page=100').filter(
+      (p) => p.user.login === APP_BOT && p.created_at >= since && p.title.startsWith('chore(pin): '),
+    );
+    const queue: number[] =
+      graphql(
+        FACTORY,
+        'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { mergeQueue(branch: "main") { entries(first: 50) { nodes { pullRequest { number } } } } } }',
+      ).repository.mergeQueue?.entries.nodes.map((n: any) => n.pullRequest.number) ?? [];
+    const pulls: WaitingPull[] = open.map((p) => ({
+      number: p.number as number,
+      head: p.head.sha as string,
+      title: p.title as string,
+      queued: queue.includes(p.number),
+      pending: (api<any>(FACTORY, `commits/${p.head.sha}/check-runs?per_page=100`).check_runs ?? []).filter(
+        (run: any) => run.status !== 'completed',
+      ).length,
+    }));
+    const words = queueWords(
+      kubectl(['-n', 'factory', 'logs', 'deployment/github', `--since-time=${saidSince}`], 300_000),
+    );
+    // The newest scan's moves, which the gate makes each move from, are read only where the worker says a head waits
+    // for the gate's verdict: whether its target moved on is then the question (decide.ts's `movedUnder`).
+    const held = pulls.some((p) => words.get(`${p.number} ${p.head}`)?.waits === VERDICT_WAIT);
+    return { pulls, words, reading: waitsReading(pulls, words, want3, held ? newestMoves(FACTORY) : undefined) };
+  };
+  // A target that moved under a pull request is not the phase's failure: the reading waits for the worker's word on
+  // the head the pin watch writes for the new target, and reads again; without that word in time, no verdict.
+  const until = Date.now() + MOVED_WAIT_MS;
+  let { pulls, words, reading } = read();
+  while (reading.reads === 'moved' && Date.now() < until) {
+    sleep(20_000);
+    ({ pulls, words, reading } = read());
+  }
   for (const p of pulls) {
     const word = words.get(`${p.number} ${p.head}`);
     console.log(
       `#${p.number} at ${p.head.slice(0, 7)}: ${word ? `waits for ${word.waits} (${word.why})` : 'no word yet'}`,
     );
   }
-  console.log(fault ?? `every move's pull request waits, unqueued: ${want}`);
-  process.exit(fault ? 1 : 0);
+  console.log(reading.reads === 'waits' ? `every move's pull request waits, unqueued: ${want}` : reading.why);
+  process.exit(reading.reads === 'waits' ? 0 : reading.reads === 'moved' ? WAITS_NO_VERDICT : 1);
 } else if (command === 'rests') {
   // Whether the factory copy rests, as an app's test needs it to (decide.ts's `factoryBusy`): said, and the exit status.
   const busy = factoryBusy({

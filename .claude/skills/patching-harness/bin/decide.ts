@@ -935,8 +935,89 @@ export function waitsFault(
       return `${tag} at ${pull.head.slice(0, 7)}: the worker ${word ? `says it waits for ${word.waits} (${word.why})` : 'has said nothing of it'}, not that ${want === 'stopped' ? 'the line is stopped' : want === 'supervised' ? 'it waits at Supervised' : 'the line is stopped or it waits at Supervised'}`;
   }
   if (want === 'stopped' && !pulls.some((p) => OF_A_MOVE.test(words.get(`${p.number} ${p.head}`)?.why ?? '')))
-    return 'none of them is a move Guarded would queue, so the stop is not what holds them';
+    return NO_MOVE_STOPPED;
   return undefined;
+}
+/** `waitsFault`'s word when every pull request waits for the stop and none is a move, which Guarded would queue. */
+const NO_MOVE_STOPPED = 'none of them is a move Guarded would queue, so the stop is not what holds them';
+
+/** The worker's wait for the gate's verdict: a head the gate held, or has not judged (deploy-queue.ts's `QueueWait`). */
+export const VERDICT_WAIT = 'verdict';
+/** How long a reading of batch D waits for the worker's word on the head that replaces one whose target moved. */
+export const MOVED_WAIT_MS = 10 * 60_000;
+/** A move's pull request as a phase of batch D reads it: its newest head, its title there, the queue, its checks. */
+export interface WaitingPull {
+  number: number;
+  head: string;
+  title: string;
+  queued: boolean;
+  pending: number;
+}
+/**
+ * The pin whose target moved under a pull request during the run, and how that shows, or nothing. A release published
+ * mid-run moves the next scan's target; the gate, which makes the move from that scan, rightly holds the head that
+ * names the old one, the worker rightly says it waits for the verdict, and the pin watch then writes the pull request
+ * again for the new target. Two sights of that: the worker's word at the newest head is `verdict` and the newest
+ * scan's move of the pin its title names is to another target; or the worker has said nothing of the newest head and
+ * said `verdict` of an earlier one, which that head replaced. A `verdict` at the newest head whose title names the
+ * scan's own target is the gate holding it for another reason, and is not this.
+ */
+export function movedUnder(
+  pull: Pick<WaitingPull, 'number' | 'head' | 'title'>,
+  words: ReadonlyMap<string, QueueWord>,
+  moves: readonly Pick<ListedMove, 'name' | 'to'>[] | undefined,
+): { pin: string; how: string } | undefined {
+  const named = /^chore\(pin\): move (.+) to (\S+)$/.exec(pull.title);
+  const tag = `#${pull.number} at ${pull.head.slice(0, 7)}`;
+  const word = words.get(`${pull.number} ${pull.head}`);
+  if (!word) {
+    const earlier = [...words].find(
+      ([key, said]) => key.startsWith(`${pull.number} `) && said.waits === VERDICT_WAIT,
+    )?.[0];
+    if (!earlier) return undefined;
+    return {
+      pin: named?.[1] ?? `#${pull.number}`,
+      how: `${tag} replaced ${earlier.split(' ')[1]?.slice(0, 7)}, which the gate held, and the worker has said nothing of it yet`,
+    };
+  }
+  if (word.waits !== VERDICT_WAIT || !named) return undefined;
+  const targets = (moves ?? []).filter((m) => m.name === named[1]).flatMap((m) => targetOf(m.to) ?? []);
+  if (!targets.length || targets.includes(named[2] as string)) return undefined;
+  return {
+    pin: named[1] as string,
+    how: `${tag} moves it to ${named[2]}, the newest scan's move is to ${targets.join(' or ')}, and the gate holds the head until the pin watch writes it again`,
+  };
+}
+/**
+ * A phase of batch D, read: `waits`, every move's pull request waits as the phase wants (`waitsFault` finds no fault);
+ * `fault`, one does not, which fails the phase; or `moved`, the only ones that do not are those a target moved under
+ * (`movedUnder`), which is not the stop's failure or the level's. The reading then waits for the worker's word on the
+ * newest head (`MOVED_WAIT_MS`) and reads again, and with still no such word the phase has no verdict, in `why`. A
+ * pull request in the merge queue fails the phase whatever moved, and so does a fault of any other pull request.
+ */
+export function waitsReading(
+  pulls: readonly WaitingPull[],
+  words: ReadonlyMap<string, QueueWord>,
+  want: 'stopped' | 'supervised' | 'either',
+  moves: readonly Pick<ListedMove, 'name' | 'to'>[] | undefined,
+): { reads: 'waits' } | { reads: 'fault' | 'moved'; why: string } {
+  const fault = waitsFault(pulls, words, want);
+  if (!fault) return { reads: 'waits' };
+  const queued = pulls.find((p) => p.queued);
+  if (queued) return { reads: 'fault', why: `#${queued.number} is in the merge queue` };
+  const moved = pulls.flatMap((p) => {
+    const under = movedUnder(p, words, moves);
+    return under ? [{ pull: p, ...under }] : [];
+  });
+  if (!moved.length) return { reads: 'fault', why: fault };
+  const rest = pulls.filter((p) => !moved.some((m) => m.pull === p));
+  const other = rest.length ? waitsFault(rest, words, want) : undefined;
+  // With the moved one set aside the rest may hold no move Guarded would queue: that is its absence, not a fault.
+  if (other && other !== NO_MOVE_STOPPED) return { reads: 'fault', why: other };
+  return {
+    reads: 'moved',
+    why: moved.map((m) => `no verdict: ${m.pin}'s target moved during the run: ${m.how}`).join('; '),
+  };
 }
 
 // ── The rulesets' two refusals ──────────────────────────────────────────────────────────────────────────────────────

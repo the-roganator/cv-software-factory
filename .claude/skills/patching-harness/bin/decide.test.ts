@@ -26,6 +26,7 @@ import {
   majorNext,
   majorNextFault,
   majorNotFirst,
+  movedUnder,
   moveFits,
   NO_VERDICT,
   newerFault,
@@ -62,6 +63,7 @@ import {
   unreadMoves,
   waitedVerdict,
   waitsFault,
+  waitsReading,
   watcherRode,
   watchRead,
   withoutDependabot,
@@ -1103,6 +1105,103 @@ describe('what the worker says a move waits for', () => {
     expect(waitsFault([{ ...pulls[0], pending: 2 } as (typeof pulls)[number]], words, 'stopped')).toMatch(/2 checks/);
     expect(waitsFault(pulls, words, 'stopped')).toMatch(/#2 at bbb: the worker has said nothing of it/);
     expect(waitsFault([], words, 'either')).toBe('no move has a pull request open');
+  });
+});
+
+describe('a target that moves under a pull request during the run', () => {
+  const line = (number: number, head: string, waits: string, why: string) =>
+    JSON.stringify({ msg: 'A pull request waits to be queued', number, head, waits, why });
+  const stopped = 'the line is stopped, so a move waits for Martin';
+  const held = "the gate's rule is held, not move or major";
+  const prometheus = {
+    number: 983,
+    head: '394d035aaa',
+    title: 'chore(pin): move prometheus to 29.49.0',
+    queued: false,
+    pending: 0,
+  };
+  const loki = { number: 982, head: 'aff8911bbb', title: 'chore(pin): move loki to 21.6.0', queued: false, pending: 0 };
+  const scan = [
+    { name: 'prometheus', to: 'chart prometheus 29.49.0' },
+    { name: 'loki', to: 'chart loki 21.6.2 (a major)' },
+  ];
+  const said = (...lines: string[]) => queueWords(lines.join('\n'));
+
+  it('reads every move waiting, as waitsFault does', () => {
+    const words = said(line(983, prometheus.head, 'stopped', stopped), line(982, loki.head, 'stopped', stopped));
+    expect(waitsReading([prometheus, loki], words, 'either', undefined)).toEqual({ reads: 'waits' });
+  });
+  it('gives no verdict when the gate holds a head whose target the newest scan moved on from', () => {
+    const words = said(line(983, prometheus.head, 'stopped', stopped), line(982, loki.head, 'verdict', held));
+    expect(movedUnder(loki, words, scan)).toMatchObject({ pin: 'loki' });
+    expect(waitsReading([prometheus, loki], words, 'either', scan)).toEqual({
+      reads: 'moved',
+      why: "no verdict: loki's target moved during the run: #982 at aff8911 moves it to 21.6.0, the newest scan's move is to 21.6.2, and the gate holds the head until the pin watch writes it again",
+    });
+  });
+  it('gives no verdict while the worker has said nothing of the head that replaced a held one', () => {
+    const newer = { ...loki, head: 'b5970f4ccc', title: 'chore(pin): move loki to 21.6.2', pending: 3 };
+    const words = said(line(983, prometheus.head, 'stopped', stopped), line(982, loki.head, 'verdict', held));
+    const reading = waitsReading([prometheus, newer], words, 'either', scan);
+    expect(reading).toMatchObject({ reads: 'moved' });
+    expect(reading).toHaveProperty(
+      'why',
+      "no verdict: loki's target moved during the run: #982 at b5970f4 replaced aff8911, which the gate held, and the worker has said nothing of it yet",
+    );
+  });
+  it('reads the pull request at its newest head once the worker has spoken of it', () => {
+    const newer = { ...loki, head: 'b5970f4ccc', title: 'chore(pin): move loki to 21.6.2' };
+    const before = [line(983, prometheus.head, 'stopped', stopped), line(982, loki.head, 'verdict', held)];
+    const waits = said(...before, line(982, newer.head, 'stopped', stopped));
+    expect(waitsReading([prometheus, newer], waits, 'either', scan)).toEqual({ reads: 'waits' });
+    // The newest head held too, at the scan's own target: the gate holds it for another reason.
+    const again = said(...before, line(982, newer.head, 'verdict', held));
+    expect(waitsReading([prometheus, newer], again, 'either', scan)).toMatchObject({
+      reads: 'fault',
+      why: expect.stringMatching(/^#982 at b5970f4: the worker says it waits for verdict/),
+    });
+  });
+  it('fails on a verdict at the newest head whose title names the scan’s own target, or with no scan to say', () => {
+    const current = { ...loki, title: 'chore(pin): move loki to 21.6.2' };
+    const words = said(line(983, prometheus.head, 'stopped', stopped), line(982, loki.head, 'verdict', held));
+    expect(movedUnder(current, words, scan)).toBeUndefined();
+    expect(waitsReading([prometheus, current], words, 'either', scan)).toMatchObject({ reads: 'fault' });
+    expect(waitsReading([prometheus, loki], words, 'either', undefined)).toMatchObject({ reads: 'fault' });
+    // A scan that no longer lists the pin names no other target for it.
+    expect(waitsReading([prometheus, loki], words, 'either', [scan[0] as (typeof scan)[number]])).toMatchObject({
+      reads: 'fault',
+    });
+  });
+  it('fails on another pull request’s fault, and on one in the queue, whatever moved', () => {
+    const words = said(
+      line(983, prometheus.head, 'level', 'at Supervised a move waits for Martin'),
+      line(982, loki.head, 'verdict', held),
+    );
+    expect(waitsReading([prometheus, loki], words, 'stopped', scan)).toMatchObject({
+      reads: 'fault',
+      why: expect.stringMatching(/^#983 at 394d035: the worker says it waits for level/),
+    });
+    const fits = said(line(983, prometheus.head, 'stopped', stopped), line(982, loki.head, 'verdict', held));
+    expect(waitsReading([prometheus, { ...loki, queued: true }], fits, 'either', scan)).toEqual({
+      reads: 'fault',
+      why: '#982 is in the merge queue',
+    });
+  });
+  it('has no verdict on the stop when the one move Guarded would queue is the one that moved', () => {
+    const major = 'the line is stopped, so a major waits for Martin';
+    const words = said(line(983, prometheus.head, 'verdict', held), line(982, loki.head, 'stopped', major));
+    const moved = [{ name: 'prometheus', to: 'chart prometheus 29.50.0' }];
+    expect(waitsReading([prometheus, loki], words, 'stopped', moved)).toMatchObject({
+      reads: 'moved',
+      why: expect.stringMatching(
+        /^no verdict: prometheus's target moved during the run: #983 at 394d035 moves it to 29.49.0/,
+      ),
+    });
+    // With no target moved, the same words fail the phase: the gate holds the one move for another reason.
+    expect(waitsReading([prometheus, loki], words, 'stopped', scan)).toMatchObject({ reads: 'fault' });
+  });
+  it('says nothing moved of a pull request the worker has never spoken of', () => {
+    expect(movedUnder(loki, said(line(983, prometheus.head, 'verdict', held)), scan)).toBeUndefined();
   });
 });
 

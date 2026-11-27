@@ -37,7 +37,6 @@ const manifest = {
     issues: 'write',
     metadata: 'read',
     pull_requests: 'write',
-    security_events: 'read',
   },
   default_events: [],
 };

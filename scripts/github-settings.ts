@@ -123,7 +123,7 @@ export const APPS = {
   /**
    * The factory's (ADR 0005): it opens pull requests, and posts the reviewer's check run, which no ruleset requires.
    * It reads the vulnerability scan's day for the factory (apps/factory/src/github/scanning.ts): the scan's runs and
-   * their `moves` artifact (actions) and its code-scanning alerts (security events), and changes neither.
+   * their `moves` artifact (actions), and changes neither. It reads no code-scanning alert.
    */
   factory: {
     slug: 'mrogan-software-factory',
@@ -137,7 +137,6 @@ export const APPS = {
       issues: 'write',
       metadata: 'read',
       pull_requests: 'write',
-      security_events: 'read',
     },
   },
   /** The review gate's (ADR 0014): it posts `review`, and reads the pull request it judges. */

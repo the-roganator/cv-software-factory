@@ -75,6 +75,6 @@ The daily scan fails on a new High or Critical finding whose fix can be installe
 - Scanning everything finds what is already there. The first full scan opens alerts on the platform's images and on development dependencies, each with its deadline from that day.
 - Each repository's code scanning shows one alert for each package and advisory, so a finding has a file or an image, and can be dismissed, with a reason, by an exception.
 - A day when Trivy's advisory database cannot be fetched is a failed run, not a clean one.
-- The factory's App needs to read code scanning alerts in both repositories from Part D, a change to its permissions in `scripts/github-settings.ts`. It is read-only, and covers CodeQL's alerts too, so their text reaches the sense as untrusted input, as every signal's does: a fix is read from the scans, never from an advisory's words.
+- The factory's App reads the scan's runs and their artifacts in both repositories (`actions: read` in `scripts/github-settings.ts`), and no code scanning alert: a fix is read from the scan's own artifacts, never from an advisory's words.
 - Charts pin images by tag, not digest, so a platform image is scanned as the tag resolves that day. Pinning the platform's images by digest is not part of this decision.
 - Scorecard's Vulnerabilities score rises only as findings are fixed or excepted.

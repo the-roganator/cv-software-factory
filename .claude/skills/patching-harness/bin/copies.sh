@@ -337,7 +337,9 @@ run_ok() { # <run> <repository>
 }
 
 # `ruleset <copy> active|disabled`: a copy's branch rulesets off for a push to main and on again after, and on again
-# on any exit that left them off; the tag ruleset is never touched (rulesets.sh).
+# on any exit that left them off; the tag ruleset is never touched (rulesets.sh). With it comes `gh_retry <gh's
+# arguments>` (gh-retry.sh): a write of gh's that sets a run up, tried three times when GitHub answers in the 500s or
+# the network drops, and failing at once on anything else. A call that reads standard input is plain `gh`.
 # shellcheck source=rulesets.sh
 source "$HERE/rulesets.sh"
 
@@ -368,13 +370,13 @@ settings() {
   # with the keys in place, applies the ruleset.
   copy_settings || true
   for copy in "$FACTORY_COPY" "$APP_COPY"; do
-    gh repo edit "$copy" --description "Scratch copy for the patching tests. Reset often; nothing here is real." >/dev/null
-    gh variable set FACTORY_REPOSITORY -R "$copy" -b "$FACTORY_COPY"
-    gh variable set APP_REPOSITORY -R "$copy" -b "$APP_COPY"
+    gh_retry repo edit "$copy" --description "Scratch copy for the patching tests. Reset often; nothing here is real." >/dev/null
+    gh_retry variable set FACTORY_REPOSITORY -R "$copy" -b "$FACTORY_COPY"
+    gh_retry variable set APP_REPOSITORY -R "$copy" -b "$APP_COPY"
     # The real ones' labels: the line, the worker and the gate read them.
     local real=$FACTORY_REAL; [[ $copy == "$APP_COPY" ]] && real=$APP_REAL
-    gh label clone "$real" -R "$copy" --force >/dev/null
-    for env in review scan-state; do gh api -X PUT "repos/$copy/environments/$env" >/dev/null; done
+    gh_retry label clone "$real" -R "$copy" --force >/dev/null
+    for env in review scan-state; do gh_retry api -X PUT "repos/$copy/environments/$env" >/dev/null; done
     security find-generic-password -s "$REVIEW_APP_KEYCHAIN" -w | base64 -d |
       gh secret set REVIEW_APP_PRIVATE_KEY --env review -R "$copy"
   done
@@ -471,7 +473,7 @@ pin_images() {
     local copy=${pair%%:*} sha=${pair#*:}
     say "build.yml on $copy at $sha"
     local since run=; since=$(date -u +%FT%TZ)
-    gh workflow run build.yml -R "$copy" --ref main
+    gh_retry workflow run build.yml -R "$copy" --ref main
     # The run this dispatch started: by its event and its time, not merely the newest.
     for _ in $(seq 1 30); do
       run=$(gh run list -R "$copy" -w build.yml -e workflow_dispatch -L 5 --json databaseId,createdAt,headSha \
@@ -539,13 +541,13 @@ dependabot_only_needed() { # <copy>
     --jq '.[] | "\(.number)\t\(.title | ascii_downcase)"' |
     while IFS=$'\t' read -r n title; do
       if ! grep -qE -- "$keep" <<<"$title"; then
-        gh pr close "$n" -R "$copy" -c "Closed for the patching tests: the copy keeps only the Dependabot pull requests they need." >/dev/null
+        gh_retry pr close "$n" -R "$copy" -c "Closed for the patching tests: the copy keeps only the Dependabot pull requests they need." >/dev/null
         echo "  closed Dependabot's #$n ($title): no test needs it"
       elif grep -qE -- "$as_is" <<<"$title"; then
         echo "  kept Dependabot's #$n ($title) as it is"
       else
         # Made again on the baseline just pushed, so its checks are the baseline's, not a run from before the reset.
-        gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
+        gh_retry pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
         echo "  asked Dependabot to recreate #$n ($title) on the baseline"
       fi
     done
@@ -573,14 +575,14 @@ dependabot_reopen() { # <copy>
     n=$(awk -F'\t' -v re="$one" '$2 ~ re { print $1; exit }' <<<"$closed")
     title=$(awk -F'\t' -v re="$one" '$2 ~ re { print $2; exit }' <<<"$closed")
     if [[ -n $n ]] && grep -qE -- "$as_is" <<<"$title"; then
-      if gh pr reopen "$n" -R "$copy" >/dev/null; then
+      if gh_retry pr reopen "$n" -R "$copy" >/dev/null; then
         echo "  reopened Dependabot's #$n, kept as it is: a test needs it open ($one)"
       else
         echo "  Dependabot's #$n cannot be reopened: the test that needs it ($one) has none" >&2
       fi
     elif [[ -n $n ]]; then
-      if gh pr reopen "$n" -R "$copy" >/dev/null; then
-        gh pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
+      if gh_retry pr reopen "$n" -R "$copy" >/dev/null; then
+        gh_retry pr comment "$n" -R "$copy" -b "@dependabot recreate" >/dev/null
         reopened+=("$n")
         echo "  reopened Dependabot's #$n and asked Dependabot to recreate it on main: a test needs it ($one)"
       else
@@ -617,8 +619,11 @@ forget_closed() { # <copy>
   gh pr list -R "$copy" --author "app/$SCRATCH_APP_SLUG" --state closed --limit 500 --json number,title,mergedAt,body \
     --jq '.[] | select(.mergedAt == null) | select((((.title | startswith("chore(reset): ")) or (.title | startswith("[reset] "))) | not) or (.body | test("<!-- factory: pin-edits [0-9a-f]{64} -->"))) | "\(.number)\t\(.title)"' |
     while IFS=$'\t' read -r n title; do
-      gh pr view "$n" -R "$copy" --json body --jq .body | sed -E 's/<!-- factory: pin-edits [0-9a-f]{64} -->/<!-- factory: pin-edits reset -->/' |
-        gh pr edit "$n" -R "$copy" --title "chore(reset): $(printf %s "${title#\[reset\] }" | sed -E "s/^[a-z]+(\\([a-z0-9-]+\\))?!?: //")" --body-file - >/dev/null && echo "  retitled #$n, closed by a reset"
+      # The body in a file, not a pipe, so the edit can be made again (gh_retry).
+      local body; body=$(mktemp)
+      gh pr view "$n" -R "$copy" --json body --jq .body | sed -E 's/<!-- factory: pin-edits [0-9a-f]{64} -->/<!-- factory: pin-edits reset -->/' >"$body" &&
+        gh_retry pr edit "$n" -R "$copy" --title "chore(reset): $(printf %s "${title#\[reset\] }" | sed -E "s/^[a-z]+(\\([a-z0-9-]+\\))?!?: //")" --body-file "$body" >/dev/null && echo "  retitled #$n, closed by a reset"
+      rm -f "$body"
     done
 }
 
@@ -632,7 +637,7 @@ dependabot_like_real() { # <copy> <real>
       # One a test needs stays, whatever the real repository did with its own of that title.
       if grep -qE -- "$keep" <<<"$title"; then continue; fi
       if grep -qxF "$title" <<<"$closed"; then
-        gh pr close "$n" -R "$copy" -c "Closed as $real closed it: the copy's Dependabot skips what the real one skips." >/dev/null
+        gh_retry pr close "$n" -R "$copy" -c "Closed as $real closed it: the copy's Dependabot skips what the real one skips." >/dev/null
         echo "  closed Dependabot's #$n ($title), as $real did"
       fi
     done
@@ -645,36 +650,36 @@ reset_one() { # <copy> <dir>
   # skip that version for good; left open, it rebases them on the baseline itself.
   gh pr list -R "$copy" --state open --limit 200 --json number,author,headRefName \
     --jq '.[] | select(.author.login != "app/dependabot") | "\(.number) \(.headRefName)"' |
-    while read -r n branch; do gh pr close "$n" -R "$copy" --delete-branch >/dev/null || true; done
+    while read -r n branch; do gh_retry pr close "$n" -R "$copy" --delete-branch >/dev/null || true; done
   # Every other branch but main, baseline and Dependabot's.
   gh api --paginate "repos/$copy/branches" --jq '.[].name' |
     { grep -vxE 'main|baseline|dependabot/.*' || true; } | while read -r b; do
-      gh api -X DELETE "repos/$copy/git/refs/heads/$b" >/dev/null || true
+      gh_retry api -X DELETE "repos/$copy/git/refs/heads/$b" >/dev/null || true
     done
   # Issues (the worker's), deleted, so the next run's numbers and texts are its own.
   gh issue list -R "$copy" --state all --limit 500 --json id --jq '.[].id' | while read -r id; do
-    gh api graphql -f query='mutation($id:ID!){deleteIssue(input:{issueId:$id}){clientMutationId}}' -f id="$id" >/dev/null
+    gh_retry api graphql -f query='mutation($id:ID!){deleteIssue(input:{issueId:$id}){clientMutationId}}' -f id="$id" >/dev/null
   done
   # Releases and every tag, which release-please makes from merges after the baseline.
   gh release list -R "$copy" --limit 200 --json tagName --jq '.[].tagName' | while read -r t; do
-    gh release delete "$t" -R "$copy" --yes --cleanup-tag >/dev/null || true
+    gh_retry release delete "$t" -R "$copy" --yes --cleanup-tag >/dev/null || true
   done
   gh api --paginate "repos/$copy/tags" --jq '.[].name' | while read -r t; do
-    gh api -X DELETE "repos/$copy/git/refs/tags/$t" >/dev/null || true
+    gh_retry api -X DELETE "repos/$copy/git/refs/tags/$t" >/dev/null || true
   done
   # The scan's sealed state (the artifact `state`), so the next scan starts its clocks afresh: every image's digest
   # and chart's version it finds is then first seen that day, and waits a day. The copy's scan puts the sightings in
   # the state it writes this many days back (staged/factory/28-…, which reads the variable), so the scan after it
   # lists them: a run reads both scans (test 28).
-  gh variable set SCRATCH_CONTENT_SEEN_DAYS_AGO -R "$copy" -b "${CONTENT_SEEN_DAYS_AGO:-2}" >/dev/null
+  gh_retry variable set SCRATCH_CONTENT_SEEN_DAYS_AGO -R "$copy" -b "${CONTENT_SEEN_DAYS_AGO:-2}" >/dev/null
   gh api --paginate "repos/$copy/actions/artifacts?name=state" --jq '.artifacts[].id' | while read -r id; do
-    gh api -X DELETE "repos/$copy/actions/artifacts/$id" >/dev/null || true
+    gh_retry api -X DELETE "repos/$copy/actions/artifacts/$id" >/dev/null || true
   done
   # Code scanning: every analysis, and so every alert, so the next scan finds its findings anew.
   local next
   while next=$(gh api "repos/$copy/code-scanning/analyses?per_page=100" --jq '[.[] | select(.deletable)][0].id' 2>/dev/null) \
     && [[ -n "$next" && "$next" != null ]]; do
-    gh api -X DELETE "repos/$copy/code-scanning/analyses/$next?confirm_delete=true" >/dev/null || break
+    gh_retry api -X DELETE "repos/$copy/code-scanning/analyses/$next?confirm_delete=true" >/dev/null || break
   done
   # main, back to the baseline.
   local was; was=$(git ls-remote "https://github.com/$copy" refs/heads/main | cut -f1)
@@ -685,7 +690,7 @@ reset_one() { # <copy> <dir>
   if [[ $was == "$sha" ]]; then
     local codeql
     codeql=$(gh run list -R "$copy" -w codeql.yml -e push -c "$sha" -L 1 --json databaseId --jq '.[0].databaseId // empty')
-    if [[ -n $codeql ]] && gh run rerun "$codeql" -R "$copy" >/dev/null 2>&1; then
+    if [[ -n $codeql ]] && gh_retry run rerun "$codeql" -R "$copy" >/dev/null; then
       echo "  main was already the baseline: CodeQL's push run $codeql on it runs again, for an analysis of main"
     else
       echo "  main was already the baseline, and CodeQL has no push run on it to run again: no analysis of main until one" >&2

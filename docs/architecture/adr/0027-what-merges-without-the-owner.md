@@ -20,14 +20,14 @@ The gate does not judge whether an update is safe. The daily scan has already de
 
 ### One table of levels
 
-The line and the GitHub worker both ask one table (`ENQUEUES` in `policy/line.ts`), and only while auto-merge is on:
+The line and the GitHub worker both ask one table (`ENQUEUES` in `policy/line.ts`), and the autonomy level alone decides:
 
 | | Supervised | Guarded | Lights-out |
 |---|---|---|---|
 | `move` | waits | queued | queued |
 | `major` | waits | waits | queued |
 
-Controls the worker cannot read count as Supervised with auto-merge off.
+Controls the worker cannot read count as Supervised.
 
 ### The worker queues only its own watches' work
 

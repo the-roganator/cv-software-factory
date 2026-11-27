@@ -1,9 +1,10 @@
-# The dependency sense (apps/factory/src/patching, `factory patching`): as it starts, and each day after the scan, it
-# asks the GitHub worker for both repositories' moves, compares the images every pod runs with the scan's list, and
-# appends the day as `patching.read` when it differs from the last. It connects to the store as its own role,
+# The dependency sense (apps/factory/src/patching, `factory patching`): as it starts, and each hour after, it asks the
+# GitHub worker for both repositories' moves and the pull requests and issues that carry them, compares the images
+# every pod runs with the scan's list, and appends the day as `patching.read` when it differs from the last, or the
+# last is 12 hours old. It connects to the store as its own role,
 # `factory_patching`, which alone may append that event and appends nothing else (0050_patching.sql). It is no member
 # of the workers' role: its NetworkPolicy gives it the store, the collector, the API server and the GitHub worker's
-# door for its two reads, and nothing else (network-policies.yaml).
+# door for its reads, and nothing else (network-policies.yaml).
 #
 # An image the list lacks may run in any namespace, so its account may list pods, and nothing else: not get or watch
 # them, nor read their logs, nor anything but pods. It may in every namespace but `runners`, whose agent steps' Jobs carry
@@ -94,9 +95,6 @@ spec:
             # The namespaces it lists pods in: those ../patching-reads-pods binds it in, which a test holds to this.
             - name: PATCHING_NAMESPACES
               value: "argo-rollouts,argocd,default,factory,flagd,kube-node-lease,kube-public,kube-system,kyverno,pod-logs,telemetry,website"
-            # The day's read, once the scan (04:17 UTC) has finished.
-            - name: PATCHING_AT
-              value: "05:30"
           readinessProbe:
             exec:
               command: [/nodejs/bin/node, -e, "process.exit(0)"]

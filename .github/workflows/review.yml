@@ -5,7 +5,7 @@
 # commit that descends from the one it replaces, or of Dependabot's in the app's repository, which calls these
 # workflows, every changed line a call of them, each moved from one commit to one later commit on this repository's
 # main, each workflow called declaring to its callers at the later commit what it declared at the earlier, or the bump
-# is Martin's (it reads what a workflow declares, not what it needs: ADR 0023); a move, in either repository and whoever
+# is Martin's (it reads what a workflow declares, not what it needs: ADR 0027); a move, in either repository and whoever
 # opened it, exactly the moves the scan of main asked for and nothing else (below), named `major` when one crosses a
 # major and clears no Critical; and, in the app's repository alone, the App's pull request with no risk tags, which the
 # gate works out from the diff and test integrity's run, or, while the caller's AUTONOMY variable is `lights-out`, one
@@ -88,7 +88,7 @@
 #   `workflow_run` after one counts as Dependabot's. If it does, the gate says its verdict on Dependabot's opening and
 #   pushes and posts nothing. Most of its pull requests wait for Martin's approval either way, and his review's run is
 #   his, so the check posts then. Those the gate passes without him (in the app's repository an exact pin of these
-#   workflows, ADR 0023; in either, a change that is exactly the scan's moves) have a check only from a run that is
+#   workflows, ADR 0027; in either, a change that is exactly the scan's moves) have a check only from a run that is
 #   given the key.
 # - A pull request with a merge conflict: GitHub runs no `pull_request` workflow on it until the conflict is resolved,
 #   which is a push, and that run asks the gate.

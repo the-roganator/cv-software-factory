@@ -1,5 +1,5 @@
 /**
- * The worker adds this repository's local deploy pull request to the merge queue (ADR 0017), through the watch itself:
+ * The worker adds this repository's local deploy pull request to the merge queue (ADR 0027), through the watch itself:
  * a fake GitHub for the pull request, fake reads for the gate's verdict, the checks and the queue, and fake actions for
  * the enqueue, or the dry run's own. The pin queue watch beside it adds the pin watch's pull requests the gate passed
  * as pin moves, each condition tested alone against one that passes.

@@ -1,7 +1,7 @@
 /**
  * Each open finding's deadline, worked out on every run from what the scan read, the registries and the days the last
  * run kept; and the run's verdict on them. With `--state <default branch>`, a run that writes reads those days from the
- * state the newest earlier run kept, sealed, as its artifact (state.ts, ADR 0021), and seals the next beside what it
+ * state the newest earlier run kept, sealed, as its artifact (state.ts, ADR 0026), and seals the next beside what it
  * uploads; any other run, and one that finds no state it can open, reads them from code scanning's alerts, which hold
  * the same. With `--memo`, the registries' and the releases' answers are asked once a day and kept in that file for the
  * day's other runs (memo.ts); Trivy on the scan's database is read every run.

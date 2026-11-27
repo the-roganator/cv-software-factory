@@ -1,5 +1,5 @@
 /**
- * The App's own pin pull requests in this repository, added to the merge queue by the worker itself (ADR 0017): the
+ * The App's own pin pull requests in this repository, added to the merge queue by the worker itself (ADR 0027): the
  * local profile's deploy pin, and each of the pin watch's pull requests the gate passed as a move. The deploy watch (`deploys.ts`) opens and
  * moves the factory's own deploy pull request, which the review gate passes as an exact pin (`exact-pin`: every changed
  * line a digest under `deploy/`, each image signed by `build.yml` on main, from a commit ahead of the pin it replaces);

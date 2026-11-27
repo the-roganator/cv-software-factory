@@ -5,7 +5,7 @@
  * `moves` takes two artifacts from the last finished run of `vulnerabilities.yml` on the default branch, by schedule,
  * push or hand (a pull request's run of the same workflow is never read, and a run still going is passed over), with
  * that run's conclusion: `moves.json`, which is public, and the state the scan kept, sealed with the repository's key
- * (vulnerabilities/state.ts, ADR 0021), for what `moves.json` withholds: a lockfile move's package and versions, and
+ * (vulnerabilities/state.ts, ADR 0026), for what `moves.json` withholds: a lockfile move's package and versions, and
  * each move's findings. A routine move, a pin merely behind, has no finding: a lockfile's is read from the state's
  * record of it (`routine`). It reads no alert: code scanning is where findings are shown, not where the worker learns them.
  *

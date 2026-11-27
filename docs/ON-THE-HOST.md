@@ -62,7 +62,7 @@ GITHUB_APP_CLIENT_ID=Iv23liE1Dj3iYkwWX59z GITHUB_APP_PRIVATE_KEY="$(security fin
   GITHUB_DRY_RUN=true ARTIFACTS_DIR=/tmp/artifacts PORT=8091 node apps/factory/src/cli.ts github run
 ```
 
-Never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs: each worker writes its own commit to the deploy and pin watches' branches whenever they are at any other ([ADR 0017](architecture/adr/0017-the-worker-queues-the-local-deploy-pins.md)), so two that write never settle, and neither queues anything.
+Never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs: each worker writes its own commit to the deploy and pin watches' branches whenever they are at any other ([ADR 0027](architecture/adr/0027-what-merges-without-the-owner.md)), so two that write never settle, and neither queues anything.
 
 The GitHub worker signs each refusal it answers (its guard's, and GitHub's 403s) so the line can record it: `make refusal-key` (and so `make up`) makes its Ed25519 key once, through stdin, the Secret `refusal-signing-key` in `factory`, which only the worker reads, and its public half, the ConfigMap `refusal-key`, which the line reads, and the console, to check each relayed refusal Guardrails shows. On the host, `REFUSAL_SIGNING_KEY` and `REFUSAL_PUBLIC_KEY` take them as PEM; without them the worker answers unsigned and the line records none.
 

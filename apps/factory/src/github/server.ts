@@ -332,7 +332,7 @@ async function guardPinNumber(repo: string, args: Record<string, unknown>, reads
 /**
  * Whether a branch is one of the deploy watch's in a repository whose deploy pull requests the worker queues itself:
  * the deploy branch, or the scratch branch its commit is made on. The deploy queue takes a pull request from it as the
- * watch's own, so no worker that asks writes it, opens a pull request from it, or acts on one (ADR 0017).
+ * watch's own, so no worker that asks writes it, opens a pull request from it, or acts on one (ADR 0027).
  */
 function deployBranch(repo: string, branch: string): boolean {
   if (repo !== QUEUES_DEPLOYS_IN) return false;
@@ -366,7 +366,7 @@ function guardDeployWatch(repo: string, args: Record<string, unknown>): void {
 /**
  * Throws `BranchRefused` for an enqueue a worker asks in a repository whose merge queue only the worker's own watches
  * add to: this one's, where the deploy queue and the pin queue add only what their watches opened and the gate passed
- * (ADR 0017). The line adds to the app's alone, and there only the App's own: Dependabot's bump of the factory's
+ * (ADR 0027). The line adds to the app's alone, and there only the App's own: Dependabot's bump of the factory's
  * workflows is the worker's watch's to add, and the issue guard refuses it to every request that comes through here,
  * which can name no asker (`CALLS`, `QueueAsker` in `issues.ts`).
  */

@@ -2,7 +2,7 @@
 
 A single path for change. Part of the [GitHub plane](README.md#github-plane).
 
-- **v1:** three rulesets, on `main`, on every branch that is not the automation's and on a tag named `main`, the merge queue and the review gate (ADR 0014, [ADR 0025](../architecture/adr/0025-martins-stops-and-the-content-a-move-lands.md)), and the environments that hold a key, applied to both public repositories by `scripts/github-settings.ts` and checked weekly for drift.
+- **v1:** three rulesets, on `main`, on every branch that is not the automation's and on a tag named `main`, the merge queue and the review gate (ADR 0014, [ADR 0027](../architecture/adr/0027-what-merges-without-the-owner.md)), and the environments that hold a key, applied to both public repositories by `scripts/github-settings.ts` and checked weekly for drift.
 
 ## Where they live
 

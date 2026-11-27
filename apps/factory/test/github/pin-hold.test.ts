@@ -1,5 +1,5 @@
 /**
- * Martin holds a pin move by taking its `pin` label off (ADR 0017, `labelWait`). A day the scan does not list the
+ * Martin holds a pin move by taking its `pin` label off (ADR 0027, `labelWait`). A day the scan does not list the
  * move, the pin watch closes the pull request; when the scan lists it again, to the same target, the watch opens a new
  * one, whose own events hold nothing. The queue carries the hold to it from the closed one (`heldBefore`).
  *

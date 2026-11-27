@@ -52,7 +52,7 @@ export const FACTORY_APP = 337765427;
  */
 export const DEPENDABOT = 49699333;
 
-/** This repository, the factory's: where the App's pull requests pass only as pins or moves (ADR 0022). */
+/** This repository, the factory's: where the App's pull requests pass only as pins or moves (ADR 0027). */
 export const FACTORY_REPO = FACTORY_REPOSITORY;
 
 /** The app's repository: the only one where Lights-out applies, and the App's pull requests may pass untagged. */
@@ -1034,7 +1034,7 @@ export async function workflowPin(
   const touches = files.some((file) => file.patch !== undefined && changedLines(file.patch).some(callsFactory));
   if (!touches) return undefined;
   if (repo === FACTORY_REPO) return { reason: 'the factory calls none of its own workflows by commit' };
-  // The exception is the app's alone (ADR 0023, guardrail 10): in any other repository that came to call these
+  // The exception is the app's alone (ADR 0027, guardrail 10): in any other repository that came to call these
   // workflows, a bump of them is Martin's, as the worker's guards hold its enqueue to the app's too.
   if (repo !== APP_REPO) return { reason: `it is in ${repo}, and only the app's bump of them passes as an exact pin` };
   if (pr.user?.id !== DEPENDABOT) return { reason: 'Dependabot did not open it' };

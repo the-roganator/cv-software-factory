@@ -101,7 +101,7 @@ details p { font-size: 13.5px; margin-top: 8px; }
 
   <footer class="foot">
     <div class="left">
-      <span>The details: <a href="../COMPONENTS/PATCHING.md">patching</a>, <a href="../COMPONENTS/SECURITY-SCANNING.md">the scan</a>, and <a href="adr/0022-the-gate-passes-exactly-the-scans-moves.md">why</a>.</span>
+      <span>The details: <a href="../COMPONENTS/PATCHING.md">patching</a>, <a href="../COMPONENTS/SECURITY-SCANNING.md">the scan</a>, and <a href="adr/0027-what-merges-without-the-owner.md">why</a>.</span>
       <a href="wiring.html">How the parts connect</a>
       <a href="flags.html">Feature flags</a>
       <a href="hosting.html">Where the factory lives</a>
@@ -219,7 +219,7 @@ const STEPS = [
 </ol>
 <div class="callout"><b>Tested on a real cluster.</b> A move that changes what the cluster runs gets a whole cluster, built in CI from the change. It passes only when every part comes up healthy and every image is admitted. The merge queue builds it again, unless a cluster made from the same inputs passed at the pull request's head within the day.</div>
 <p><b>A fact unread is a hold:</b> anything the gate cannot read, or that differs, and the move waits for Martin.</p>
-<details><summary>In the docs</summary><p><a href="${DOCS}/APPROVAL-ROUTING.md">Approval routing</a>; <a href="adr/0022-the-gate-passes-exactly-the-scans-moves.md">ADR 0022</a>.</p></details>`,
+<details><summary>In the docs</summary><p><a href="${DOCS}/APPROVAL-ROUTING.md">Approval routing</a>; <a href="adr/0027-what-merges-without-the-owner.md">ADR 0027</a>.</p></details>`,
   },
   {
     title: 'Queued, or held',
@@ -241,7 +241,7 @@ const STEPS = [
 <li>A move the App <b>may not write</b> (a workflow's pin) goes to Martin as an issue. It, and k3s's move, which his cluster's own command applies once its pull request merges, is a card in Needs you and reaches his phone, once.</li>
 <li>In <b>the app's repository</b> the line does the patching, by the same rule and the same level.</li>
 </ul>
-<details><summary>In the docs</summary><p><a href="${DOCS}/PATCHING.md">Patching</a>; <a href="${DOCS}/GITHUB-WORKER.md">the GitHub worker</a>; <a href="adr/0017-the-worker-queues-the-local-deploy-pins.md">ADR 0017</a>.</p></details>`,
+<details><summary>In the docs</summary><p><a href="${DOCS}/PATCHING.md">Patching</a>; <a href="${DOCS}/GITHUB-WORKER.md">the GitHub worker</a>; <a href="adr/0027-what-merges-without-the-owner.md">ADR 0027</a>.</p></details>`,
   },
   {
     title: 'Running, and seen to be',

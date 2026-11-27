@@ -19,7 +19,7 @@ import {
 } from '../../src/vulnerabilities/state.ts';
 import { zipOf } from './zip-of.ts';
 
-/** The state the scan keeps between runs (state.ts, ADR 0021): its seal, its shape, and how the last one is found. */
+/** The state the scan keeps between runs (state.ts, ADR 0026): its seal, its shape, and how the last one is found. */
 const REPOSITORY = 'the-roganator/cv-software-factory';
 const KEY = readKey(newKey());
 

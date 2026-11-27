@@ -1,6 +1,6 @@
 /**
  * What the scan keeps between runs: each finding's first-seen day, its fix and the day that became installable, and its
- * move, in one sealed file on the run, the artifact `state` (ADR 0021). The next scan reads it for its clocks, and the
+ * move, in one sealed file on the run, the artifact `state` (ADR 0026). The next scan reads it for its clocks, and the
  * GitHub worker for what `moves.json` withholds, in place of paging every alert in code scanning for what the scan
  * itself wrote there. It also keeps the day the scan first saw each image's digest and each chart's version a move
  * could list at (`StateSeen`), which only it can: no move lists at content the scan has known for less than

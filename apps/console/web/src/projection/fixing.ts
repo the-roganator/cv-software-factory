@@ -442,9 +442,7 @@ function passedWhy({ waits, rule, said }: Pick<DeployRecord, 'waits' | 'rule' | 
     case 'verdict':
       return `the review gate did not pass it as an exact pin${rule ? ` (${rule})` : ''}, and the line adds only an exact pin to the merge queue: merging it is yours, on GitHub`;
     case 'level':
-      return 'at Supervised the line adds nothing to the merge queue: merging it is yours, on GitHub, and at Guarded with auto-merge on the line would add it';
-    case 'auto-merge':
-      return 'with auto-merge off, merging it is yours, on GitHub; switched on, the line adds it to the merge queue';
+      return 'at Supervised the line adds nothing to the merge queue: merging it is yours, on GitHub, and at Guarded the line would add it';
     case 'conflict':
       return 'it conflicts with main, so the line cannot add it to the merge queue: putting that right or merging it is yours, on GitHub';
     case 'refused':

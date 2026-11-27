@@ -158,8 +158,6 @@ describe('the count of Martin’s security events', () => {
       'autonomy-tightened': 0,
       'new-work-on': 0,
       'new-work-off': 1,
-      'auto-merge-on': 0,
-      'auto-merge-off': 0,
       'take-widened': 1,
       'take-narrowed': 0,
       'auto-rollback-off': 2,
@@ -258,7 +256,6 @@ describe('the count of Martin’s security events', () => {
     const controls = (autoRollback: boolean, change: object) => ({
       autonomy: 'supervised',
       newWork: true,
-      autoMerge: false,
       take: null,
       autoRollback,
       change,
@@ -294,7 +291,6 @@ describe('the count of Martin’s security events', () => {
     const controls = (autoRollback: boolean, change: object) => ({
       autonomy: 'supervised',
       newWork: true,
-      autoMerge: false,
       take: null,
       autoRollback,
       change,
@@ -408,7 +404,6 @@ describe('what counts as a security event', () => {
       'agent.raise': 'setting-changed',
       'caps.raise': 'setting-changed',
       'autonomy.loosen': 'autonomy-loosened',
-      'auto-merge.on': 'auto-merge-on',
       'auto-rollback.off': 'auto-rollback-off',
       'take.widen': 'take-widened',
       'flag.widen': 'flag-widened',
@@ -477,8 +472,8 @@ describe('what counts as a security event', () => {
     });
     expect(changed({ control: 'new-work', before: true, after: false })).toEqual({ kind: 'new-work-off' });
     expect(changed({ control: 'new-work', before: false, after: true })).toEqual({ kind: 'new-work-on' });
-    expect(changed({ control: 'auto-merge', before: false, after: true })).toEqual({ kind: 'auto-merge-on' });
-    expect(changed({ control: 'auto-merge', before: true, after: false })).toEqual({ kind: 'auto-merge-off' });
+    // A change of the auto-merge switch the line no longer has, stored before, counts as nothing.
+    expect(changed({ control: 'auto-merge', before: false, after: true })).toBeNull();
     const one = { kind: 'just-one', workItem: '1290' };
     expect(changed({ control: 'take', before: one, after: { kind: 'every' } })).toEqual({ kind: 'take-widened' });
     expect(changed({ control: 'take', before: { kind: 'every' }, after: one })).toEqual({ kind: 'take-narrowed' });

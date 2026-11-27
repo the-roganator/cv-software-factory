@@ -139,24 +139,6 @@ serverFiles:
               summary: "Agents take no new work"
               description: "Agents were stopped taking new work in the console."
           - alert: SecurityEvent
-            expr: "max(increase(line_security_events_total{kind=\"auto-merge-on\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
-            for: 0s
-            labels:
-              level: "notify"
-              kind: "auto-merge-on"
-            annotations:
-              summary: "Auto-merge was turned on"
-              description: "Auto-merge of low-risk changes was turned on in the console."
-          - alert: SecurityEvent
-            expr: "max(increase(line_security_events_total{kind=\"auto-merge-off\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
-            for: 0s
-            labels:
-              level: "inform"
-              kind: "auto-merge-off"
-            annotations:
-              summary: "Auto-merge was turned off"
-              description: "Auto-merge of low-risk changes was turned off in the console."
-          - alert: SecurityEvent
             expr: "max(increase(line_security_events_total{kind=\"take-widened\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
             for: 0s
             labels:

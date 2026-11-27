@@ -109,7 +109,6 @@ export const SECURITY_LEVELS: Record<SecurityKind, Level> = {
   'passkey-revoked': LEVELS.page,
   'guardrail-approved': LEVELS.page,
   'autonomy-tightened': LEVELS.notify,
-  'auto-merge-on': LEVELS.notify,
   'take-widened': LEVELS.notify,
   'flag-widened': LEVELS.notify,
   'improvement-requested': LEVELS.notify,
@@ -135,7 +134,6 @@ export const SECURITY_LEVELS: Record<SecurityKind, Level> = {
   'sign-in': LEVELS.inform,
   'line-stopped': LEVELS.inform,
   'new-work-off': LEVELS.inform,
-  'auto-merge-off': LEVELS.inform,
   'take-narrowed': LEVELS.inform,
   'flag-narrowed': LEVELS.inform,
   'flag-off': LEVELS.inform,
@@ -175,14 +173,6 @@ const SECURITY_WORDS: Record<SecurityKind, { summary: string; description: strin
   'new-work-off': {
     summary: 'Agents take no new work',
     description: 'Agents were stopped taking new work in the console.',
-  },
-  'auto-merge-on': {
-    summary: 'Auto-merge was turned on',
-    description: 'Auto-merge of low-risk changes was turned on in the console.',
-  },
-  'auto-merge-off': {
-    summary: 'Auto-merge was turned off',
-    description: 'Auto-merge of low-risk changes was turned off in the console.',
   },
   'take-widened': {
     summary: 'The line takes more',

@@ -495,15 +495,14 @@ function gateEvidence(merge: Merge): Evidence {
 
 /**
  * What would let the line add a change it holds for Martin's merge to the merge queue itself: the levels whose rules
- * take the gate's, with auto-merge on, or auto-merge alone. Nothing where no setting of his would.
+ * take the gate's. Nothing where no level would.
  */
 function mergeNote(merge: Merge | undefined): string | undefined {
-  if (merge?.why === 'auto-merge') return 'With auto-merge on, the line would add it to the merge queue itself.';
   if (merge?.why !== 'level' || !merge.rule) return undefined;
   const rule = merge.rule;
   const levels = LEVELS.filter((level) => ENQUEUES[level].includes(rule)).map((level) => AUTONOMY[level]);
   if (!levels.length) return undefined;
-  return `At ${levels.join(' or ')}, with auto-merge on, the line would add it to the merge queue itself.`;
+  return `At ${levels.join(' or ')}, the line would add it to the merge queue itself.`;
 }
 
 /**

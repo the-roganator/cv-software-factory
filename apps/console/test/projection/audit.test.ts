@@ -333,13 +333,14 @@ describe('the detail under a row', () => {
 
   it('says when the passkey was given for a change of the line’s controls that loosens, and not for one that tightens', () => {
     const steppedUp = event(0, 'admin.stepped-up', 'martin', {});
-    const controls = { autonomy: 'guarded', newWork: true, autoMerge: false, take: null, autoRollback: true } as const;
+    const controls = { autonomy: 'guarded', newWork: true, take: null, autoRollback: true } as const;
     const changed = (change: PayloadOf<'controls.changed'>['change']) =>
       event(2, 'controls.changed', 'martin', { ...controls, change }, 'Martin changed a control');
     const marked = (change: PayloadOf<'controls.changed'>['change']) =>
       Boolean(only([steppedUp, changed(change)]).detail?.includes('passkey given'));
     expect(marked({ control: 'autonomy', before: 'supervised', after: 'guarded' })).toBe(true);
     expect(marked({ control: 'autonomy', before: 'lights-out', after: 'guarded' })).toBe(false);
+    // The auto-merge switch the line no longer has asked for it when it was turned on, and a record of that says so.
     expect(marked({ control: 'auto-merge', before: false, after: true })).toBe(true);
     expect(marked({ control: 'auto-merge', before: true, after: false })).toBe(false);
     expect(marked({ control: 'auto-rollback', before: true, after: false })).toBe(true);
@@ -355,7 +356,7 @@ describe('the detail under a row', () => {
 
   it('marks every action the access table asks the passkey for, or names the event it waits for', () => {
     // Each marked action, and events that record it.
-    const controls = { autonomy: 'guarded', newWork: true, autoMerge: false, take: null, autoRollback: true } as const;
+    const controls = { autonomy: 'guarded', newWork: true, take: null, autoRollback: true } as const;
     const control = (change: PayloadOf<'controls.changed'>['change']) => [
       event(2, 'controls.changed', 'martin', { ...controls, change }),
     ];
@@ -409,7 +410,6 @@ describe('the detail under a row', () => {
     const recorded: Record<string, PublicEvent[] | 'no event yet'> = {
       'line.start': [event(2, 'line.started', 'martin', { reason: 'Back' })],
       'autonomy.loosen': control({ control: 'autonomy', before: 'supervised', after: 'guarded' }),
-      'auto-merge.on': control({ control: 'auto-merge', before: false, after: true }),
       'auto-rollback.off': control({ control: 'auto-rollback', before: true, after: false }),
       'take.widen': control({ control: 'take', before: null, after: { kind: 'every' } }),
       'release.promote': release('promote-fully'),

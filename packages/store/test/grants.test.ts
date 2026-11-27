@@ -409,7 +409,6 @@ const PAYLOADS: Partial<Record<EventType, object>> = {
   'controls.changed': {
     autonomy: 'guarded',
     newWork: true,
-    autoMerge: false,
     take: null,
     autoRollback: true,
     change: { control: 'autonomy', before: 'supervised', after: 'guarded' },

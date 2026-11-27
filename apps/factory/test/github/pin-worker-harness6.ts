@@ -294,7 +294,7 @@ export async function worker(
           actions.commitAgain(repo, branch, head, run),
       },
       heads,
-      level: async () => ({ autonomy: 'guarded', autoMerge: true, stopped: false }) as const,
+      level: async () => ({ autonomy: 'guarded', stopped: false }) as const,
       log: quiet,
     },
     FACTORY,

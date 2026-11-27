@@ -346,7 +346,7 @@ export const HOLD_CAUSES = [
   'beyond-ticket',
   /**
    * The change passed its gates and review, and waits for Martin to merge it: the line adds it to the merge queue
-   * itself only when the autonomy level, auto-merge and the review gate's verdict all allow (`MERGE_HOLDS` says why not).
+   * itself only when the autonomy level and the review gate's verdict both allow (`MERGE_HOLDS` says why not).
    */
   'merge',
   /**
@@ -383,9 +383,9 @@ export type DeployState = (typeof DEPLOY_STATES)[number];
 /**
  * Why the line has not added a deploy pull request whose checks passed to the merge queue, so that it waits for Martin:
  * the review gate did not pass its head as an exact pin; the autonomy level adds nothing to the queue by that rule
- * (Supervised); auto-merge is off; it conflicts with main; or the GitHub worker or GitHub refused to add it.
+ * (Supervised); it conflicts with main; or the GitHub worker or GitHub refused to add it.
  */
-export const DEPLOY_WAITS = ['verdict', 'level', 'auto-merge', 'conflict', 'refused'] as const;
+export const DEPLOY_WAITS = ['verdict', 'level', 'conflict', 'refused'] as const;
 export type DeployWait = (typeof DEPLOY_WAITS)[number];
 
 /**
@@ -454,8 +454,6 @@ export const MERGE_HOLDS = [
   'never',
   /** The gate passed it, by a rule the autonomy level does not let the line add it to the queue by. */
   'level',
-  /** The gate passed it, by a rule the level allows, but auto-merge is off. */
-  'auto-merge',
   /** It conflicts with main. */
   'conflict',
   /** The merge queue took it out without merging it. */
@@ -467,10 +465,10 @@ export type MergeHold = (typeof MERGE_HOLDS)[number];
 
 /**
  * Martin's controls of the line, from the console's Controls (the admin service): the autonomy level, whether agents
- * take new work, whether low-risk changes merge by themselves, what the line takes, and whether a canary the analysis
- * judges bad rolls back by itself or pauses for him.
+ * take new work, what the line takes, and whether a canary the analysis judges bad rolls back by itself or pauses for
+ * him.
  */
-export const LINE_CONTROLS = ['autonomy', 'new-work', 'auto-merge', 'take', 'auto-rollback'] as const;
+export const LINE_CONTROLS = ['autonomy', 'new-work', 'take', 'auto-rollback'] as const;
 export type LineControl = (typeof LINE_CONTROLS)[number];
 
 /** What the line takes: every ticket, the next few from when Martin set it, or just one work item. */

@@ -1894,7 +1894,6 @@ describe('the line’s controls', () => {
       event(null, 'controls.changed', 'martin', {
         autonomy: 'supervised',
         newWork: true,
-        autoMerge: false,
         take: null,
         autoRollback: true,
         change: { control: 'new-work', before: false, after: true },
@@ -1938,7 +1937,7 @@ describe('the line’s controls', () => {
     expect(await browser.post('/admin/line/controls', { autonomy: 'guarded' })).toEqual({
       status: 200,
       body: {
-        controls: { autonomy: 'guarded', newWork: true, autoMerge: false, take: { kind: 'every' }, autoRollback: true },
+        controls: { autonomy: 'guarded', newWork: true, take: { kind: 'every' }, autoRollback: true },
         change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
       },
     });
@@ -1949,7 +1948,6 @@ describe('the line’s controls', () => {
       payload: {
         autonomy: 'guarded',
         newWork: true,
-        autoMerge: false,
         take: { kind: 'every' },
         change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
       },
@@ -1963,7 +1961,7 @@ describe('the line’s controls', () => {
 
   it('decides what a change does from the controls in force, never from the request', async () => {
     // Lights-out in force: Guarded is a tightening, and asks nothing.
-    await stored({ autonomy: 'lights-out', autoMerge: true });
+    await stored({ autonomy: 'lights-out', newWork: false });
     const { browser } = await signedIn();
     expect(await browser.post('/admin/line/controls', { autonomy: 'guarded' })).toMatchObject({
       status: 200,
@@ -1971,7 +1969,7 @@ describe('the line’s controls', () => {
     });
     expect((await changes()).at(-1)?.summary).toBe('Martin tightened autonomy from Lights-out to Guarded');
     // Every other control stays as it was in force.
-    expect((await changes()).at(-1)?.payload).toMatchObject({ autoMerge: true });
+    expect((await changes()).at(-1)?.payload).toMatchObject({ newWork: false });
     // What policy does not allow is not in force, whatever the event says: the next fifty are more than it allows, so
     // every ticket is, and the next three are narrower, and ask nothing.
     await stored({ take: { kind: 'next-few', count: 50, since: new Date().toISOString() } });
@@ -1982,19 +1980,23 @@ describe('the line’s controls', () => {
     expect((await changes()).at(-1)?.summary).toBe('Martin narrowed what the line takes to the next 3 from now');
   });
 
-  it('turns new work off and on without the passkey, and auto-merge on only with it', async () => {
+  it('turns new work off and on without the passkey, and has no auto-merge switch to turn', async () => {
     await stored({});
     const { browser, passkey } = await signedIn();
     expect(await browser.post('/admin/line/controls', { newWork: false })).toMatchObject({ status: 200 });
     expect((await changes()).at(-1)?.summary).toBe('Martin stopped agents taking new work');
     expect(await browser.post('/admin/line/controls', { newWork: true })).toMatchObject({ status: 200 });
     expect((await changes()).at(-1)?.summary).toBe('Martin let agents take new work again');
-    expect((await browser.post('/admin/line/controls', { autoMerge: true })).body.refused).toBe('step-up');
+    // The level alone decides what merges without him: auto-merge is no control, passkey or none.
+    const before = (await changes()).length;
     expect((await stepUp(browser, passkey)).status).toBe(200);
-    expect(await browser.post('/admin/line/controls', { autoMerge: true })).toMatchObject({ status: 200 });
-    expect((await changes()).at(-1)?.summary).toBe('Martin turned on auto-merge of low-risk changes');
-    const other = (await signedIn()).browser;
-    expect(await other.post('/admin/line/controls', { autoMerge: false })).toMatchObject({ status: 200 });
+    for (const autoMerge of [true, false]) {
+      expect(await browser.post('/admin/line/controls', { autoMerge })).toMatchObject({
+        status: 400,
+        body: { refused: 'body' },
+      });
+    }
+    expect(await changes()).toHaveLength(before);
   });
 
   it('turns auto-rollback off only with the passkey again, and on without, as one public event each', async () => {
@@ -2163,7 +2165,7 @@ describe('the line’s controls', () => {
         body: { refused: 'policy' },
       });
     }
-    for (const body of [{}, { newWork: true, autoMerge: true }, { autoRollback: 'off' }, { autonomy: 'yolo' }]) {
+    for (const body of [{}, { newWork: true, autoRollback: true }, { autoRollback: 'off' }, { autonomy: 'yolo' }]) {
       expect(await browser.post('/admin/line/controls', body), JSON.stringify(body)).toMatchObject({
         status: 400,
         body: { refused: 'body' },

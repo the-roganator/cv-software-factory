@@ -23,8 +23,8 @@
  *   to the new one, pushed to the same pull request (`#pushAfresh`).
  * - It reads its pull requests' gates and merges through the GitHub worker about once a minute (`gates.ts`).
  * - About as often, for a change that passed its gates and review, it reads the review gate's verdict on its head and
- *   whether it conflicts with main, and adds it to the merge queue when the verdict, Martin's autonomy level and
- *   auto-merge allow, or holds it for his merge, saying why (`merging.ts`). A verdict that held it is recorded as the
+ *   whether it conflicts with main, and adds it to the merge queue when the verdict and Martin's autonomy level
+ *   allow, or holds it for his merge, saying why (`merging.ts`). A verdict that held it is recorded as the
  *   gate's refusal, once for each head, signed by the GitHub worker and verified with its key. Once it is in the queue,
  *   the line reads the queue as it reads the gates, and records the queue taking it out without merging it.
  * - About as often, it tells the app's deploy pull request which work items it carries: those whose fixes merged
@@ -33,8 +33,8 @@
  *   item says nothing of the others. And it records, on each work item held for a deploy that the pull request
  *   carries, where that pull request stands: its checks running, passed or failed, merged, or closed (`deploy.ts`),
  *   with `only` too, for that work item. Once its checks have passed, it adds that pull request to the merge queue
- *   itself, once for each head, when the review gate passed the head as an exact pin and Martin's autonomy level and
- *   auto-merge allow it, and records the queue taking it out; otherwise it waits for Martin, saying why.
+ *   itself, once for each head, when the review gate passed the head as an exact pin and Martin's autonomy level
+ *   allows it, and records the queue taking it out; otherwise it waits for Martin, saying why.
  * - An improvement, once a release that carries it is promoted, is handed over: one comment on its issue says it is in
  *   the app behind its flag, off, and that Martin widens it from the console, and its row on the line ends. No sense
  *   looks at it: it has no signal. The work item stays open, for the flag pass below.
@@ -331,7 +331,7 @@ export interface LineOptions {
 type Provider = 'anthropic' | 'bedrock' | 'local';
 
 /** What GitHub says of a pull request ready to merge: `MergeFacts` without Martin's controls, which are read each pass. */
-type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge' | 'now'>;
+type MergeRead = Omit<MergeFacts, 'autonomy' | 'now'>;
 
 /** Martin's settings, as the line reads them (`../settings.ts`): checked against policy, as the gateway checks them. */
 export interface LineSettings {
@@ -442,8 +442,8 @@ export class Line {
   #newWork = true;
   /** The settings in force, as this pass read them; until the first pass, the options'. */
   #inForce: Awaited<ReturnType<LineSettings['now']>> | undefined;
-  /** Martin's autonomy level and auto-merge switch, as this pass read them: policy's default until the first. */
-  #merging: Pick<Controls, 'autonomy' | 'autoMerge'> = { autonomy: 'supervised', autoMerge: false };
+  /** Martin's autonomy level, as this pass read it: policy's default until the first. */
+  #merging: Pick<Controls, 'autonomy'> = { autonomy: 'supervised' };
   /** What GitHub said of each pull request ready to merge, read at most once in `gatesEveryMs`, by work item. */
   readonly #mergeRead = new Map<string, { at: number; number: number; facts: Promise<MergeRead | null> }>();
 
@@ -575,14 +575,14 @@ export class Line {
    * whether agents take new work.
    */
   #control(
-    { take, newWork, autonomy, autoMerge }: Pick<Controls, 'take' | 'newWork' | 'autonomy' | 'autoMerge'>,
+    { take, newWork, autonomy }: Pick<Controls, 'take' | 'newWork' | 'autonomy'>,
     /** Whether the take in force is Martin's, or he has set none, or his is outside policy: every ticket, for either. */
     set: 'set' | 'none' | 'outside',
   ): void {
-    if (autonomy !== this.#merging.autonomy || autoMerge !== this.#merging.autoMerge) {
-      this.#o.log.info({ autonomy, autoMerge }, 'the line merges as Martin set its autonomy and auto-merge');
+    if (autonomy !== this.#merging.autonomy) {
+      this.#o.log.info({ autonomy }, 'the line merges as Martin set its autonomy');
     }
-    this.#merging = { autonomy, autoMerge };
+    this.#merging = { autonomy };
     const takes = takesOf(take);
     if (JSON.stringify(takes) !== JSON.stringify(this.#takes) || newWork !== this.#newWork) {
       this.#o.log.info(

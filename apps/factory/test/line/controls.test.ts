@@ -21,19 +21,18 @@ const next = (count: number): Take => ({ kind: 'next-few', count, since: SINCE }
 const one = (workItem: string): Take => ({ kind: 'just-one', workItem });
 
 describe('the controls in force', () => {
-  it('are policy’s defaults before Martin sets any: Supervised, new work, no auto-merge, every ticket, and auto-rollback', () => {
+  it('are policy’s defaults before Martin sets any: Supervised, new work, every ticket, and auto-rollback', () => {
     expect(controlsInForce()).toEqual({ ...DEFAULT_CONTROLS, outside: [] });
     expect(DEFAULT_CONTROLS).toEqual({
       autonomy: 'supervised',
       newWork: true,
-      autoMerge: false,
       take: { kind: 'every' },
       autoRollback: true,
     });
   });
 
   it('take every ticket with no take set, from an event that sets none', () => {
-    const chosen = { autonomy: 'guarded', newWork: false, autoMerge: true, take: null, autoRollback: false };
+    const chosen = { autonomy: 'guarded', newWork: false, take: null, autoRollback: false };
     expect(controlsInForce(chosen)).toEqual({ ...chosen, take: every, outside: [] });
     expect(takeSet(chosen)).toBe(false);
     expect(takeSet(undefined)).toBe(false);
@@ -43,14 +42,14 @@ describe('the controls in force', () => {
   });
 
   it('are what the latest event says, within policy', () => {
-    const chosen = { autonomy: 'guarded', newWork: false, autoMerge: true, take: next(3), autoRollback: false };
+    const chosen = { autonomy: 'guarded', newWork: false, take: next(3), autoRollback: false };
     expect(controlsInForce(chosen)).toEqual({ ...chosen, outside: [] });
     expect(controlsInForce({ ...chosen, take: one('1290') }).take).toEqual(one('1290'));
     expect(controlsInForce({ ...chosen, take: next(TAKE.most) }).take).toEqual(next(TAKE.most));
   });
 
   it('leave out anything outside policy, field by field, for policy’s default', () => {
-    const chosen = { autonomy: 'guarded', newWork: false, autoMerge: true, autoRollback: false };
+    const chosen = { autonomy: 'guarded', newWork: false, autoRollback: false };
     for (const take of [
       next(0),
       next(TAKE.most + 1),
@@ -68,15 +67,19 @@ describe('the controls in force', () => {
         outside: ['take'],
       });
     }
-    expect(controlsInForce({ autonomy: 'yolo', newWork: 'yes', autoMerge: 1, take: null, autoRollback: 0 })).toEqual({
+    expect(controlsInForce({ autonomy: 'yolo', newWork: 'yes', take: null, autoRollback: 0 })).toEqual({
       ...DEFAULT_CONTROLS,
-      outside: ['autonomy', 'newWork', 'autoMerge', 'autoRollback'],
+      outside: ['autonomy', 'newWork', 'autoRollback'],
+    });
+    // The auto-merge switch the line no longer has, still in an event stored before, is read as nothing at all.
+    expect(controlsInForce({ ...chosen, take: null, autoMerge: false })).toEqual({
+      ...chosen,
+      take: every,
+      outside: [],
     });
     // Auto-rollback outside policy, or not said, is on: a bad canary rolls back.
     expect(controlsInForce({ ...chosen, take: null, autoRollback: 'off' }).autoRollback).toBe(true);
-    expect(controlsInForce({ autonomy: 'guarded', newWork: true, autoMerge: false, take: null }).autoRollback).toBe(
-      true,
-    );
+    expect(controlsInForce({ autonomy: 'guarded', newWork: true, take: null }).autoRollback).toBe(true);
     expect(controlsInForce('guarded')).toEqual({ ...DEFAULT_CONTROLS, outside: [] });
   });
 });
@@ -104,8 +107,6 @@ describe('each change', () => {
   it('turns each switch on or off', () => {
     expect(change('new-work', true, false)).toBe('new-work.off');
     expect(change('new-work', false, true)).toBe('new-work.on');
-    expect(change('auto-merge', false, true)).toBe('auto-merge.on');
-    expect(change('auto-merge', true, false)).toBe('auto-merge.off');
     // Auto-rollback off overrides a guardrail, so it loosens, and needs the passkey again; on asks for nothing.
     expect(change('auto-rollback', true, false)).toBe('auto-rollback.off');
     expect(change('auto-rollback', false, true)).toBe('auto-rollback.on');
@@ -152,14 +153,12 @@ describe('each change', () => {
   });
 
   it('asks for the passkey again exactly when it loosens, as the access table marks', () => {
-    const loosens = ['autonomy.loosen', 'auto-merge.on', 'take.widen'];
+    const loosens = ['autonomy.loosen', 'take.widen'];
     for (const action of [
       'autonomy.loosen',
       'autonomy.tighten',
       'new-work.on',
       'new-work.off',
-      'auto-merge.on',
-      'auto-merge.off',
       'take.widen',
       'take.narrow',
     ] as const) {

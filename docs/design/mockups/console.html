@@ -1425,7 +1425,7 @@ const RETURNS = [
 const STAGE_NAME = { sense: 'Sense', triage: 'Triage', plan: 'Plan', build: 'Build', gates: 'Gates', review: 'Review', release: 'Release', verify: 'Verify' };
 const STATE = { idle: ['idle', 'faint'], working: ['working', 'signal'], returning: ['sending back', 'signal'], passing: ['passed', 'ok'], blocked: ['needs you', 'attn'], failed: ['failed', 'attn'] };
 const AUTONOMY = {
-  supervised: ['Supervised', 'You approve every merge and every release.'],
+  supervised: ['Supervised', 'You approve every merge and every release, but the factory’s own deploy pins, which merge on their own.'],
   guarded: ['Guarded', 'Low-risk changes and the scan’s moves merge on their own. A major, and anything risky, waits for you.'],
   lightsout: ['Lights-out', 'Risky changes ship too, on the gates and the canary alone. Releases, improvements, code-owned paths and anything out of scope still wait for you.'],
 };
@@ -3427,6 +3427,7 @@ const MOVES = [
     why: 'The gate passed #1343 as the scan’s move, its checks passed, and the worker added it to the merge queue. It stays within its major, and leaves 2 High that only the next major clears: that major is listed on a later scan, and the deadline here is the earliest of what it clears or leaves.',
     pins: [['deploy/base/telemetry/grafana.yaml:14', 'targetRevision 13.2.7 → 13.7.2']] },
   { key: 'parser', st: 'build', name: '@example/parser', pin: '<span class="sans">the app’s</span> pnpm-lock.yaml', from: '4.2.0', to: '4.2.3', c: [1, 0, 0, 1], due: 'in 1 day 20 h', h: 44, lockfile: true, withheld: true, route: 'line', pr: 1338,
+    findings: [['@example/parser', 'Critical', 'due in 1 day 20 h'], ['@example/parser', 'Low', 'due in 89 days']],
     why: 'The app’s move goes down the line as a work item, #1338: its pins are written, then its gates and review, as any change.',
     pins: [['pnpm-lock.yaml', '4.2.0 → 4.2.3']] },
   { key: 'redis', st: 'day', name: 'Redis image', pin: 'deploy/base/cache/redis.yaml:17', from: '8.2.2', to: '8.2.3', c: [0, 1, 2, 0], due: 'in 6 days', h: 140, route: 'worker',
@@ -3539,6 +3540,7 @@ function patchingBody() {
     const more = !open ? '' : `<div class="more" id="pm-more-${m.key}">
       <div><span class="label">${m.st === 'wait' ? 'Why it waits' : 'Where it is'}</span><p>${shown ? whose(m.why) : (m.on ? 'A lockfile’s package is withheld, as every vulnerable one is, and so is what it clears. Martin sees both, signed in.' : 'Its package is withheld while it has an open finding, and so is what it waits for. Martin sees both, signed in.')}</p></div>
       ${m.alsoHeld ? `<div><span class="label">Held with it</span>${shown ? `<div class="reflist pins">${m.alsoHeld.map(([n, w, c]) => `<div><span class="mono">${n}</span><span>${w} · ${c}</span></div>`).join('')}</div>` : `<p>${m.alsoHeld.length} other moves in the same lockfile.</p>`}</div>` : ''}
+      ${m.findings && shown && !v ? `<div><span class="label">Its findings · ${m.findings.length}</span><div class="reflist pins">${m.findings.map(([p, sev, due]) => `<div><span class="mono">${p}</span><span>${sev} · ${due}</span></div>`).join('')}</div><p class="help">Each advisory is named on its issue and in code scanning, never here.</p></div>` : ''}
       ${m.leaves ? `<div><span class="label">Leaves · a major clears the rest</span><p>${sevWords(m.leaves)}, which only a move across its major clears.</p></div>` : ''}
       ${m.run ? `<div><span class="label">${m.key === 'valkey' ? 'Why no target' : 'What failed'}</span><p class="run"><span class="mono">${m.run[0]}</span> · ${m.run[1]} · <a href="${m.run[2]}" target="_blank" rel="noopener">its run ↗</a></p><p class="help">The console never copies a check’s log: the run on GitHub has it whole.</p></div>` : ''}
       ${m.st === 'wait' ? `<div><span class="label">What to do</span>${m.act ? `<div class="answers">${moveWay(m)}<p>${v ? 'Martin does it there.' : m.act[2]}</p></div>` : ''}${m.bench && !v ? '<p class="help">How to run it: <a href="https://github.com/the-roganator/cv-software-factory/blob/main/docs/ON-THE-HOST.md#the-bench" target="_blank" rel="noopener">the bench, on the host</a>.</p>' : ''}<p class="help">${whose(m.left)}</p></div>` : ''}

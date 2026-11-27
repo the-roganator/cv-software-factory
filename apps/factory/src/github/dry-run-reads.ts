@@ -33,6 +33,7 @@ import { APP_LOGIN, type DryRunActions, type DryRunPull } from './actions.ts';
 import type { DependencyPull } from './dependabot.ts';
 import { DEPLOYS, type DeployBuild, type DeployProposal } from './deploys.ts';
 import { type Mergeability, type MergeQueue, type ReviewCheck, type ReviewVerdict, verdictOf } from './merging.ts';
+import { PullsUnread, type RepositoryPulls } from './pull-states.ts';
 import type { Checkout, CheckRun, Commits, Comparison, FileAt, PullRequestState, Reads, Signed } from './reads.ts';
 import type { Moves } from './scanning.ts';
 
@@ -306,6 +307,12 @@ export class DryRunReads implements Reads {
   }
 
   /** Dependabot's pull requests, as GitHub has them: a dry run opens none of Dependabot's. */
+  /** The pull requests that carry moves, as the watches saw them in GitHub: a dry run's own are no move's. */
+  async pulls(repo: string): Promise<RepositoryPulls> {
+    if (!this.#live.pulls) throw new PullsUnread('This worker reads no pull requests that carry moves.');
+    return this.#live.pulls(repo);
+  }
+
   async dependencyPulls(repo: string): Promise<DependencyPull[]> {
     return this.#live.dependencyPulls(repo);
   }

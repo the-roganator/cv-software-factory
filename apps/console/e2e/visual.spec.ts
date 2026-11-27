@@ -1480,7 +1480,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
     }
 
     test('a move that waits on Martin opened, for him', async ({ page }) => {
-      await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory k3s');
+      await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory example/sidecar');
       await expect(page).toHaveScreenshot(`m07-patching-open-${width}.png`);
     });
 
@@ -1514,12 +1514,12 @@ test.describe('Patching’s summary beside Needs you, where the right column is 
   }
 });
 
-/** Task 32: a move's card in Needs you, from the samples' day, by its title. */
-async function patchCardAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' | 'ink', title: string) {
+/** Patching's one card in Needs you, from the samples' day. */
+async function patchCardAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' | 'ink') {
   await adminService(page, as);
   await page.goto(consoleUrl({ theme }));
   await ready(page);
-  const card = page.locator('article.needs .need').filter({ has: page.locator('h3', { hasText: title }) });
+  const card = page.locator('article.needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patching$/ }) });
   await card.scrollIntoViewIfNeeded();
   await page.evaluate(() => document.fonts.ready);
   return card;
@@ -1530,15 +1530,12 @@ for (const width of ['laptop', 'phone'] as const) {
     test.use({ viewport: WIDTHS[width] });
 
     for (const theme of THEMES) {
-      test(`a held pin’s card for Martin, in ${theme}`, async ({ page }) => {
-        const card = await patchCardAt(page, 'martin', theme, 'k3s needs the cluster moved');
-        await expect(card).toHaveScreenshot(`m07-needs-patch-martin-${theme}-${width}.png`);
-      });
-
-      test(`a running pod’s card for a visitor, in ${theme}`, async ({ page }) => {
-        const card = await patchCardAt(page, 'visitor', theme, 'An unscanned image is running');
-        await expect(card).toHaveScreenshot(`m07-needs-patch-visitor-${theme}-${width}.png`);
-      });
+      for (const as of ['martin', 'visitor'] as const) {
+        test(`its card for ${as === 'martin' ? 'Martin' : 'a visitor'}, in ${theme}`, async ({ page }) => {
+          const card = await patchCardAt(page, as, theme);
+          await expect(card).toHaveScreenshot(`m07-needs-patch-${as}-${theme}-${width}.png`);
+        });
+      }
     }
   });
 }

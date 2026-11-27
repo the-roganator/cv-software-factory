@@ -1,14 +1,13 @@
 /**
  * The full events, as the admin service streams them to Martin's session, made from the samples for the browser tests:
- * the samples' log is public views, so each visitor's report is given back the text the tests look for, the dependency
- * sense's day the lockfile's package the public view withholds until its pull request is open. A sample's other
- * events are given back their own payloads by `own`, from the samples' private half (`private.ndjson`).
+ * the samples' log is public views, so each visitor's report is given back the text the tests look for. A sample's
+ * other events are given back their own payloads by `own`, from the samples' private half (`private.ndjson`): the
+ * dependency sense's days with each lockfile move's package, and the pull requests and issues that carry them.
  */
 
 import { fileURLToPath } from 'node:url';
 import { type HoldAnswer, type RawEvent, WORDED_ANSWERS } from '@software-factory/events';
 import { readLogPrivate } from '@software-factory/events/log';
-import { WITHHELD } from '../../../packages/samples/src/patching-withheld.ts';
 
 /** The samples' own summaries and payloads where their public views change them. */
 const PRIVATE = readLogPrivate(fileURLToPath(new URL('../../../packages/samples/log', import.meta.url)));
@@ -24,20 +23,9 @@ export const REPORT_SHOWN = 'The contact form ate my message twice, so I gave up
 export const MARTINS_WORDS = 'Worth having: I’ll ask for colour in search from Plan once improvements ship.';
 
 /**
- * An event as its full version carries it: a report with its text, Martin's words on a hold about one, and the sense's
- * day whole.
+ * An event as its full version carries it: a report with its text, and Martin's words on a hold about one.
  */
 export function full<T extends RawEvent>(event: T): T {
-  if (event.type === 'patching.read') {
-    type Day = { repositories: { repository: string; moves: { lockfile: boolean; package?: unknown }[] }[] };
-    const day = event.payload as Day;
-    const repositories = day.repositories.map((r) =>
-      r.repository === 'the-roganator/cv-worlds-worst-website'
-        ? { ...r, moves: r.moves.map((m) => (m.lockfile && !m.package ? { ...m, package: WITHHELD } : m)) }
-        : r,
-    );
-    return { ...event, payload: { ...day, repositories } };
-  }
   const payload = event.payload as { report?: { page: string }; state?: { report?: { page: string } } };
   if (event.type === 'signal.received' && payload.report) {
     return { ...event, payload: { ...payload, report: { ...payload.report, text: REPORT_TEXT } } };

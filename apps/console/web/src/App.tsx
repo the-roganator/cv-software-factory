@@ -168,7 +168,6 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   // Each held steady, so a summary drawn with one renders only when what it shows changes.
   const openPatching = useCallback(() => openSheet({ kind: 'patching' }), [openSheet]);
   const openGuardrails = useCallback(() => openSheet({ kind: 'guardrails' }), [openSheet]);
-  const openRow = useCallback((row: string) => openSheet({ kind: 'patching', row }), [openSheet]);
   const atNow = useRef(true);
   const resting = Math.max(0, Math.min(n - 1, centre ?? n - 1));
 
@@ -401,7 +400,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
                   app={factory.app}
                   now={view.t}
                   onOpen={setOpen}
-                  onRow={openRow}
+                  onPatching={openPatching}
                   onMoved={held.refresh}
                 />
                 <div className="bottom-side">

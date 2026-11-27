@@ -51,7 +51,7 @@ import searchByColour from './items/1329-search-by-colour.ts';
 import freeDelivery from './items/1334-free-delivery.ts';
 import parserMove from './items/1335-parser-move.ts';
 import releases from './items/line.ts';
-import { PATCHING } from './patching.ts';
+import { PATCHING, PATCHING_BEFORE } from './patching.ts';
 import { PROOFS } from './proofs.ts';
 import lineRefusals from './refusals.ts';
 import { scoreEvents } from './score.ts';
@@ -164,6 +164,7 @@ export function sampleEvents(): NewEvent[] {
     ...CONTROLS,
     ...STEPPED_UP,
     ...PROOFS,
+    PATCHING_BEFORE,
     PATCHING,
     ...releases.events,
     ...lineRefusals.events,

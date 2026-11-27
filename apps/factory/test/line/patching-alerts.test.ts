@@ -120,6 +120,8 @@ describe('the moves Martin hears of, on the sense’s day', () => {
         ...r,
         totals: r.totals && { ...r.totals, noFix: 15_000, newHighWithoutFix: 35 },
         moves: [],
+        waiting: [],
+        pulls: [],
       })),
     };
     addDay(tally, noFix, READ);
@@ -562,10 +564,24 @@ describe('a move tried and stopped', () => {
     expect(live.kinds['move-stopped']).toBe(STOPPED.length);
   });
 
+  it('says nothing of a routine update tried and stopped, as of a routine wait: nothing is due', () => {
+    const none = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+    const routine = moved(DAY, ({ deadline: _, ...move }) => ({ ...move, deadline: undefined, clears: none }));
+    const tally = emptyPatchingTally();
+    addDay(tally, routine, READ);
+    expect(tally.kinds['move-stopped']).toBe(0);
+    // The same pull request carrying a fix is said once.
+    addDay(tally, DAY, READ + H);
+    expect(tally.kinds['move-stopped']).toBe(1);
+  });
+
   it('reads a day stored before the sense read pull requests, which has none', () => {
     const tally = emptyPatchingTally();
-    expect(DAY.repositories[0]).not.toHaveProperty('pulls');
-    addDay(tally, DAY, READ);
+    const before = {
+      ...DAY,
+      repositories: DAY.repositories.map(({ pulls: _p, waiting: _w, ...r }) => r),
+    } as unknown as Day;
+    addDay(tally, before, READ);
     expect(tally.kinds['move-stopped']).toBe(0);
   });
 });

@@ -190,9 +190,16 @@ export function addDay(tally: PatchingTally, day: Day, at: number): void {
     // What was tried and stopped, whether or not the scan judged its moves today: its pull requests stand apart. A day
     // stored before the sense read them has neither its pull requests nor its waits.
     const { pulls = [], waiting = [] }: Partial<Pick<typeof repository, 'pulls' | 'waiting'>> = repository;
+    // A routine update tried and stopped sends nothing, as a routine wait does: nothing is due. A pull request carries
+    // a routine move alone when every move of the day it names is one; one it names that the day no longer lists, or a
+    // lockfile's the day names by its file, counts as not routine, so a stop is said rather than missed.
+    const routineNames = new Set(repository.moves.filter(routine).map((move) => move.name));
+    const notRoutine = new Set(repository.moves.filter((move) => !routine(move)).map((move) => move.name));
+    const routineAlone = (pull: Pull) =>
+      pull.moves.every((move) => routineNames.has(move.name) && !notRoutine.has(move.name));
     for (const pull of pulls) {
       const key = stopped(repository.repository, pull);
-      if (key) once(tally, 'move-stopped', key);
+      if (key && !routineAlone(pull)) once(tally, 'move-stopped', key);
     }
     for (const wait of waiting) {
       const key = noBetter(repository.repository, wait);

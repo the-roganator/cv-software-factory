@@ -564,7 +564,8 @@ describe('the moves Martin hears of, read from the store', () => {
     expect(tally.patching.kinds).toEqual({
       'move-fix': 3,
       'move-waits': 4,
-      'move-stopped': 0,
+      // The sidecar's pull request, whose required checks failed on every try.
+      'move-stopped': 1,
       'move-due-soon': 0,
       'move-overdue': 0,
       'app-fix-merged': 1,

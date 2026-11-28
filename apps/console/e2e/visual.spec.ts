@@ -1136,18 +1136,24 @@ async function improve(page: Page, as: 'martin' | 'visitor', theme: 'paper' | 'i
   await page.evaluate(() => document.fonts.ready);
 }
 
+/**
+ * Under the dialog's scrim, the belt's rounded end at Sense anti-aliases a pixel apart on arm64 (a Mac's Docker, where
+ * `make e2e` refreshes the snapshots) and amd64 (CI), though both run the pinned image. Every other snapshot is exact.
+ */
+const UNDER_THE_SCRIM = { maxDiffPixels: 4 };
+
 for (const [width, viewport] of Object.entries(WIDTHS)) {
   test.describe(`${width}, the "+"`, () => {
     test.use({ viewport });
 
     test('Martin asks for an improvement', async ({ page }) => {
       await improve(page, 'martin');
-      await expect(page).toHaveScreenshot(`m07-improve-${width}.png`);
+      await expect(page).toHaveScreenshot(`m07-improve-${width}.png`, UNDER_THE_SCRIM);
     });
 
     test('a visitor reads how Martin asks', async ({ page }) => {
       await improve(page, 'visitor');
-      await expect(page).toHaveScreenshot(`m07-improve-visitor-${width}.png`);
+      await expect(page).toHaveScreenshot(`m07-improve-visitor-${width}.png`, UNDER_THE_SCRIM);
     });
 
     test('an improvement’s spec in Needs you, Approve with the key', async ({ page }) => {

@@ -156,7 +156,6 @@ describe('a station’s state', () => {
     const controls = (autonomy: string) => ({
       autonomy,
       newWork: true,
-      autoMerge: false,
       take: null,
       change: { control: 'autonomy', before: 'supervised', after: autonomy },
     });

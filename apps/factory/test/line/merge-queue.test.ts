@@ -1,6 +1,6 @@
 /**
- * The real line merging through the queue, with only GitHub faked: the review gate's verdict, the autonomy level and
- * auto-merge decide whether the line adds its own pull request to the queue, or holds it for Martin (`merging.ts`).
+ * The real line merging through the queue, with only GitHub faked: the review gate's verdict and the autonomy level
+ * decide whether the line adds its own pull request to the queue, or holds it for Martin (`merging.ts`).
  */
 import { generateKeyPairSync } from 'node:crypto';
 import type { PayloadOf } from '@software-factory/events';
@@ -25,10 +25,9 @@ const controls = (set: Partial<PayloadOf<'controls.changed'>>) =>
       {
         autonomy: 'guarded',
         newWork: true,
-        autoMerge: true,
         take: null,
         autoRollback: true,
-        change: { control: 'auto-merge', before: false, after: true },
+        change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
         ...set,
       },
       'martin',
@@ -69,7 +68,7 @@ const enqueues = (acts: { action: string; args: Record<string, unknown> }[]) =>
   acts.filter((a) => a.action === 'enqueuePullRequest');
 
 describe('the line, merging through the queue', () => {
-  it('adds an untagged fix to the queue at Guarded with auto-merge on, and goes on to Release once it merges', async () => {
+  it('adds an untagged fix to the queue at Guarded, and goes on to Release once it merges', async () => {
     await controls({});
     const { workItem, pass, github } = await readyToMerge();
     await pass();
@@ -98,7 +97,7 @@ describe('the line, merging through the queue', () => {
     expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ cause: 'deploy' });
   });
 
-  it('holds it for Martin at Supervised, and with auto-merge off, with the gate’s words and no refusal', async () => {
+  it('holds it for Martin at Supervised, with the gate’s words and no refusal, and adds it at Guarded', async () => {
     const { workItem, pass, github } = await readyToMerge();
     await pass();
     expect(enqueues(github.acts)).toEqual([]);
@@ -107,18 +106,15 @@ describe('the line, merging through the queue', () => {
       reason: expect.stringContaining('at Supervised the line adds nothing to the merge queue'),
       merge: { pullRequest: 12, why: 'level', rule: 'low-risk', approving: false },
     });
-    await controls({ autoMerge: false });
-    await pass();
-    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'auto-merge' } });
     expect(await types(workItem)).not.toContain('action.refused');
-    // Turned on, the next read adds it.
+    // At Guarded, the next read adds it.
     await controls({});
     await pass();
     expect(await payloads(workItem, 'pull-request.enqueued')).toHaveLength(1);
   });
 
   it('decides on Martin’s controls as they are this pass, even while what GitHub said is still fresh', async () => {
-    await controls({ autoMerge: false });
+    await controls({ autonomy: 'supervised' });
     // GitHub read at most once a minute, with a minute between the passes that carry it to its merge.
     let at = clock.now;
     const workItem = await ticket();
@@ -132,9 +128,9 @@ describe('the line, merging through the queue', () => {
       if (github.pulls.has(12)) github.pass();
       await pass();
     }
-    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'auto-merge' } });
-    // Within the minute GitHub is not asked again, so a check run started since is not seen yet; but the switch he
-    // turned on applies at once.
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'level' } });
+    // Within the minute GitHub is not asked again, so a check run started since is not seen yet; but the level he
+    // loosened applies at once.
     github.gate = 'pending';
     await controls({});
     await pass();

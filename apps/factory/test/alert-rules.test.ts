@@ -277,8 +277,15 @@ describe('the alerts to Martin', () => {
   it('say a move waits on Martin only for what only he moves: the review gate holds none for his approval', () => {
     const waits = rules.find((rule) => rule.alert === 'PatchingMove' && rule.labels.kind === 'move-waits');
     expect(waits?.annotations.description).toBe(
-      'A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you.',
+      'A pin only you can move: only your cluster’s own command applies it, no pull request of the App’s can write it, it is in a line no longer built, or the sense found something running that no scan read. Patching in the console has it under Yours to do by hand.',
     );
+  });
+
+  it('say a move was tried and stopped by its kinds of stop alone, naming none of its pull requests or packages', () => {
+    const stopped = rules.find((rule) => rule.alert === 'PatchingMove' && rule.labels.kind === 'move-stopped');
+    expect(stopped?.labels.level).toBe('notify');
+    expect(stopped?.annotations.description).toContain('Tried and stopped');
+    expect(stopped?.annotations.description).not.toMatch(/#\d|\{\{/);
   });
 
   it('page for what loosens a guardrail or finds one not held, an attack not refused as it should be or not finished, changes who can sign in or keeps alerts from the phone, notify of what widens the line’s work or a flag or acts on a release, and inform of the rest', () => {
@@ -296,7 +303,6 @@ describe('the alerts to Martin', () => {
       'phone-off',
     ]);
     expect(at(LEVELS.notify)).toEqual([
-      'auto-merge-on',
       'autonomy-tightened',
       'flag-widened',
       'improvement-approved',
@@ -309,7 +315,6 @@ describe('the alerts to Martin', () => {
       'words-shared',
     ]);
     expect(at(LEVELS.inform)).toEqual([
-      'auto-merge-off',
       'auto-rollback-on',
       'flag-narrowed',
       'flag-off',

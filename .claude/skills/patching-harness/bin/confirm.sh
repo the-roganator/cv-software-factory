@@ -204,7 +204,7 @@ fi
 
 if want D && [ -n "$based" ]; then
 # Three phases on one reset. First Supervised with the line stopped: the deploy pin merges, as neither governs it, and
-# every move waits. Then Guarded, auto-merge on, the line still stopped (26): the stop alone holds prometheus's move,
+# every move waits. Then Guarded, the line still stopped (26): the stop alone holds prometheus's move,
 # which Guarded would queue. Then Supervised with the line running: the level alone holds them.
 echo "##### D: Supervised and the line stopped, no move queued $(date -u +%H:%MZ)"
 # The stop first, and nothing of D without it: on a line still running Guarded queues the batch's moves, and 26 would
@@ -311,13 +311,12 @@ case "$deploy" in
   *) echo "deploy pin: PASS, merged at Supervised with the line stopped: $deploy" ;;
 esac
 phase "no move queued, Supervised and stopped" either 0 0
-# 26: Guarded, with auto-merge on, and the line still stopped. The worker's word that a move waits for the stop was
+# 26: Guarded, and the line still stopped. The worker's word that a move waits for the stop was
 # said at Supervised, once a head, and it says nothing new when the level alone changes: so the worker is restarted
 # once the level is Guarded, and 26 stands on what the new one says of each head, having read the level as Guarded,
 # and then on five minutes more in which each of its passes would queue prometheus's move were the line running. A
 # worker that starts takes each head as its own where `main` has not moved under it, and writes it again where it has,
 # which is a round of checks: so the wait for its words is thirty minutes at most, and ends when they are in.
-(cd "$H" && ./auto-merge.sh on >/dev/null) || broke "D: auto-merge on"
 level guarded show
 said_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 k -n factory rollout restart deploy/github >/dev/null && k -n factory rollout status deploy/github --timeout=300s >/dev/null ||

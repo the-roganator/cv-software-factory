@@ -1129,7 +1129,6 @@ describe('the line', () => {
         {
           autonomy: 'supervised',
           newWork: true,
-          autoMerge: false,
           take: null,
           autoRollback: true,
           change: { control: 'new-work', before: false, after: true },

@@ -1,6 +1,6 @@
 /**
- * Martin's controls of the line, within policy: the autonomy level, whether agents take new work, whether the line adds
- * the changes the level allows to the merge queue itself (auto-merge, by `ENQUEUES`), what the line takes, and whether a
+ * Martin's controls of the line, within policy: the autonomy level, which alone decides what the line and the GitHub
+ * worker add to the merge queue themselves (`ENQUEUES`), whether agents take new work, what the line takes, and whether a
  * canary the analysis judges bad rolls back by itself, as he chose them in the console (`controls.changed`). This is the
  * one check: the line and the admin service each turn the latest controls event into the controls in force with
  * `controlsInForce`, and the console's Controls is to as well, so all agree on what is in force.
@@ -21,16 +21,15 @@ import type { Rule } from './review-verdict.ts';
 
 /**
  * The review gate's rules a pull request is added to the merge queue by, at each autonomy level (spec 4.3, deviation
- * 2): the one table the line and the GitHub worker both obey, each only with auto-merge on (`enqueues`). At
- * Supervised none, so every change waits for Martin's merge; at Guarded a low-risk change, an exact pin, a move (exactly the scan's moves,
- * which the gate made itself), and a head Martin approved on GitHub; at Lights-out those, a major (a move across a
+ * 2): the one table the line and the GitHub worker both obey (`enqueues`). At Supervised none, so every change waits
+ * for Martin's merge; at Guarded a low-risk change, an exact pin, a move (exactly the scan's moves, which the gate made
+ * itself), and a head Martin approved on GitHub; at Lights-out those, a major (a move across a
  * major that clears no Critical), and the gate's Lights-out pass of a risk-tagged change. Martin's own pull request
  * (`martin-opened`) is his to merge, at every level. The gate passes by a rule only when its own reading of the diff
  * allows it, so the stricter of the two always wins.
  *
- * The level and auto-merge govern new change. The factory's local deploy pin, which runs only what Martin already
- * merged, is not new change: the GitHub worker queues it at every level, whatever the switch says
- * (`apps/factory/src/github/deploy-queue.ts`).
+ * The level governs new change. The factory's local deploy pin, which runs only what Martin already merged, is not new
+ * change: the GitHub worker queues it at every level (`apps/factory/src/github/deploy-queue.ts`).
  */
 export const ENQUEUES: Readonly<Record<Autonomy, readonly Rule[]>> = {
   supervised: [],
@@ -39,11 +38,11 @@ export const ENQUEUES: Readonly<Record<Autonomy, readonly Rule[]>> = {
 };
 
 /**
- * Whether a pull request the gate passed by a rule is added to the merge queue at the level and switch in force: the
- * line's own, and a move of the GitHub worker's.
+ * Whether a pull request the gate passed by a rule is added to the merge queue at the level in force: the line's own,
+ * and a move of the GitHub worker's.
  */
-export const enqueues = ({ autonomy, autoMerge }: Pick<Controls, 'autonomy' | 'autoMerge'>, rule: Rule): boolean =>
-  autoMerge && ENQUEUES[autonomy].includes(rule);
+export const enqueues = ({ autonomy }: Pick<Controls, 'autonomy'>, rule: Rule): boolean =>
+  ENQUEUES[autonomy].includes(rule);
 
 /** The most work items "The next few" may take: the console's field allows 1 to this. */
 export const TAKE = { most: 20 } as const;
@@ -59,7 +58,6 @@ export type Take =
 export interface Controls {
   autonomy: Autonomy;
   newWork: boolean;
-  autoMerge: boolean;
   take: Take;
   /**
    * Whether a canary the analysis judges bad rolls back by itself. Off, the analysis calls the same verdict
@@ -74,13 +72,12 @@ export interface ControlsInForce extends Controls {
 }
 
 /**
- * Before Martin sets any: Supervised (every change waits for his merge), agents taking new work, no auto-merge, every
- * ticket, and auto-rollback on. Nothing moves until he first starts the line, whatever these say.
+ * Before Martin sets any: Supervised (every change waits for his merge), agents taking new work, every ticket, and
+ * auto-rollback on. Nothing moves until he first starts the line, whatever these say.
  */
 export const DEFAULT_CONTROLS: Controls = {
   autonomy: 'supervised',
   newWork: true,
-  autoMerge: false,
   take: { kind: 'every' },
   autoRollback: true,
 };
@@ -89,7 +86,6 @@ export const DEFAULT_CONTROLS: Controls = {
 export type ControlChange =
   | { control: 'autonomy'; before: Autonomy; after: Autonomy }
   | { control: 'new-work'; before: boolean; after: boolean }
-  | { control: 'auto-merge'; before: boolean; after: boolean }
   /** `before` is null in a change recorded when no take set meant the line's own default, which policy could not see. */
   | { control: 'take'; before: Take | null; after: Take }
   | { control: 'auto-rollback'; before: boolean; after: boolean };
@@ -100,8 +96,6 @@ export type ControlAction =
   | 'autonomy.tighten'
   | 'new-work.on'
   | 'new-work.off'
-  | 'auto-merge.on'
-  | 'auto-merge.off'
   | 'take.widen'
   | 'take.narrow'
   | 'auto-rollback.on'
@@ -147,17 +141,16 @@ export function controlsInForce(chosen?: unknown): ControlsInForce {
     ? (chosen.autonomy as Autonomy)
     : DEFAULT_CONTROLS.autonomy;
   if (autonomy !== chosen.autonomy) outside.push('autonomy');
-  const flag = (field: 'newWork' | 'autoMerge' | 'autoRollback') => {
+  const flag = (field: 'newWork' | 'autoRollback') => {
     if (typeof chosen[field] === 'boolean') return chosen[field] as boolean;
     outside.push(field);
     return DEFAULT_CONTROLS[field];
   };
   const newWork = flag('newWork');
-  const autoMerge = flag('autoMerge');
   const autoRollback = flag('autoRollback');
   const take = chosen.take === null ? DEFAULT_CONTROLS.take : (takeOf(chosen.take) ?? DEFAULT_CONTROLS.take);
   if (chosen.take !== null && takeOf(chosen.take) === undefined) outside.push('take');
-  return { autonomy, newWork, autoMerge, take, autoRollback, outside };
+  return { autonomy, newWork, take, autoRollback, outside };
 }
 
 /** How loose an autonomy level is: Supervised the least, Lights-out the most. */
@@ -167,8 +160,8 @@ const looseness = (autonomy: Autonomy) => AUTONOMY.indexOf(autonomy);
 const breadth = (take: Take) => ({ 'just-one': 0, 'next-few': 1, every: 2 })[take.kind];
 
 /**
- * Which action a change is. A looser autonomy level, auto-merge turned on, a wider take, and auto-rollback turned off
- * loosen, and need the passkey again; their opposites tighten, and turning agents' new work off or on asks for nothing (starting the line
+ * Which action a change is. A looser autonomy level, a wider take, and auto-rollback turned off loosen, and need the
+ * passkey again; their opposites tighten, and turning agents' new work off or on asks for nothing (starting the line
  * again is what asks). A take is wider when it takes more kinds of work (every ticket, then the next few, then just
  * one) or, the next few still, a larger number or a count started again. Only the next few counted from the same start,
  * with a smaller number, are narrower: policy cannot prove a restart admits no more, since it sees neither how many the
@@ -182,8 +175,6 @@ export function controlAction(change: ControlChange): ControlAction {
       return looseness(change.after) > looseness(change.before) ? 'autonomy.loosen' : 'autonomy.tighten';
     case 'new-work':
       return change.after ? 'new-work.on' : 'new-work.off';
-    case 'auto-merge':
-      return change.after ? 'auto-merge.on' : 'auto-merge.off';
     // Off overrides a guardrail: the analysis's verdict no longer rolls a bad canary back by itself.
     case 'auto-rollback':
       return change.after ? 'auto-rollback.on' : 'auto-rollback.off';

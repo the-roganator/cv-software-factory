@@ -59,7 +59,7 @@ export function waitingHold(workItem: string, events: readonly Dated[]): OpenHol
 /**
  * Since when a work item's deploy pull request has waited for Martin under the hold that started at `started`: the
  * first of the records in a row, since then, of that pull request at that head that wait for him. Why it waits may
- * change meanwhile (the gate judging again, auto-merge switched), and it has waited for him all along.
+ * change meanwhile (the gate judging again, the level changed), and it has waited for him all along.
  */
 function deployWaitSince(events: readonly Dated[], started: Dated): Date {
   let since: Date | undefined;

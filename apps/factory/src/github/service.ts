@@ -28,6 +28,7 @@ import { noLevel, storeLevel } from './level.ts';
 import { treeSource } from './pin-guard.ts';
 import { ISSUE_REPOS, PIN_REPOS, pinWatch } from './pins.ts';
 import { Poller } from './poller.ts';
+import { PullStates, pullSources } from './pull-states.ts';
 import { LiveReads } from './reads.ts';
 import { RefusalRecorder } from './refusals.ts';
 import { Registry } from './registry.ts';
@@ -72,10 +73,17 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     log.warn(
       `No ${without.map(stateKeyName).join(' or ')}: the scan's moves in ${without.join(' and ')} cannot be read (make scan-state-key).`,
     );
+  // What the pin watch and the queues last saw of each pull request and issue that carries a move, for the read
+  // `pulls`: a repository's read waits for a pass of each watch that writes it.
+  // A worker that cannot write runs no watch, so it waits on none.
+  const writes = config.dryRun || github.writable;
+  const pulls = new PullStates({
+    sources: (repo) => pullSources(repo, { writes, pinRepos: PIN_REPOS, workflowPinRepos: WORKFLOW_PIN_REPOS }),
+  });
   const liveReads = new LiveReads(
     github,
     { registry, signatures, proposals },
-    { recorder, stateKeys: (repo) => config.stateKeys.get(repo) },
+    { recorder, stateKeys: (repo) => config.stateKeys.get(repo), pulls },
   );
   const dryRunReads = dryRun ? new DryRunReads(dryRun, liveReads, config.dryRunTimes) : undefined;
   const poller = new Poller({ intervalMs: config.pollMs, log });
@@ -106,9 +114,9 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
         deployQueueWatch({ github, reads: liveReads, actions, recorder, heads, log }, target),
       );
     }
-    // The autonomy level and auto-merge, which decide which moves the pin queue adds: read from the store as
-    // `factory_github`, which reads Martin's controls and nothing else, or, with no store, Supervised with auto-merge
-    // off. One connection is all it needs.
+    // The autonomy level and the line's stop, which decide which moves the pin queue adds: read from the store as
+    // `factory_github`, which reads Martin's controls and nothing else, or, with no store, Supervised and stopped. One
+    // connection is all it needs.
     const level = store ? storeLevel(store, log) : noLevel(log);
     // This repository's moves: one pull request of the App's for each it can write, one issue for each it cannot, each
     // recorded instead in a dry run. Its reads are the live ones: a dry run acts on the day as GitHub has it.
@@ -116,14 +124,14 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
       const only = config.pinWatchOnly;
       poller.watch(
         `pins in ${repo}`,
-        pinWatch({ github, reads: liveReads, actions, recorder, ...recorded, log, only }, repo),
+        pinWatch({ github, reads: liveReads, actions, recorder, ...recorded, log, only, pulls }, repo),
       );
       // Each of those pull requests is added to the merge queue once the gate passes it by a rule the autonomy level
       // queues and its checks are green (ADR 0027), recorded instead in a dry run; only a move the watch is told to
       // take, as it opens only those. One the gate held is Martin's, as is all else.
       poller.watch(
         `queue pins in ${repo}`,
-        pinQueueWatch({ github, reads: liveReads, actions, recorder, heads, log, level }, repo, only),
+        pinQueueWatch({ github, reads: liveReads, actions, recorder, heads, log, level, pulls }, repo, only),
       );
     }
     // The app's moves are its line's, from tickets: a move there that no ticket is made for (a line no longer built)
@@ -131,7 +139,7 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     for (const repo of ISSUE_REPOS.filter((r) => config.repositories.includes(r))) {
       poller.watch(
         `pin issues in ${repo}`,
-        pinWatch({ github, reads: liveReads, actions, recorder, log, only: config.pinWatchOnly }, repo),
+        pinWatch({ github, reads: liveReads, actions, recorder, log, only: config.pinWatchOnly, pulls }, repo),
       );
     }
     // Dependabot's bump of the commit the app calls the factory's workflows at, which the App cannot write: added to
@@ -140,7 +148,7 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     for (const repo of WORKFLOW_PIN_REPOS.filter((r) => config.repositories.includes(r))) {
       poller.watch(
         `queue workflow pins in ${repo}`,
-        workflowPinQueueWatch({ github, reads: liveReads, actions, recorder, level, log }, repo),
+        workflowPinQueueWatch({ github, reads: liveReads, actions, recorder, level, log, pulls }, repo),
       );
     }
     // Each issue opened by anyone but Martin or the App gets one reply, recorded instead in a dry run.
@@ -171,8 +179,8 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     log,
   });
   // The dependency sense's door (`factory patching`), on a port of its own: the scan's moves, read as a live worker reads
-  // them, and no action. A NetworkPolicy opens the port to the sense's pod alone,
-  // so the sense reaches the worker's reads and cannot act in GitHub.
+  // them, and the pull requests and issues that carry them, as the watches last saw them; and no action. A NetworkPolicy
+  // opens the port to the sense's pod alone, so the sense reaches the worker's reads and cannot act in GitHub.
   let patchingDoor: Server | undefined;
   if (config.patchingPort !== undefined) {
     patchingDoor = createWorkerServer({

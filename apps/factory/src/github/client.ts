@@ -165,19 +165,28 @@ export class GitHub {
   }
 
   /** A conditional GET: unchanged answers come from the client's cache and cost nothing against the rate limit. */
-  async poll<T>(repo: string, path: string, schema: z.ZodType<T>): Promise<Polled<T>> {
+  /**
+   * `keep`, when given, says whether an answer may be kept for the next conditional request: one it refuses is asked for
+   * whole next time. GitHub answers a pull request's mergeability as unknown while it works it out, and a conditional
+   * request after that has been seen to keep answering 304, so the unknown answer is never kept.
+   */
+  async poll<T>(repo: string, path: string, schema: z.ZodType<T>, keep?: (body: T) => boolean): Promise<Polled<T>> {
     const key = `${repo} ${path}`;
     const cached = this.#etags.get(key);
-    const response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
+    let response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
     if (response.status === 304 && cached) {
-      return { changed: false, body: parse(schema, json(cached.text, `GET ${path}`), `GET ${path}`) };
+      const body = parse(schema, json(cached.text, `GET ${path}`), `GET ${path}`);
+      if (keep === undefined || keep(body)) return { changed: false, body };
+      // An answer another caller kept that this one may not take (a mergeability not worked out yet): asked again whole.
+      this.#forget(key);
+      response = await this.#authorised(repo, 'GET', path, undefined, undefined);
     }
     const text = await response.text();
     // Read through the caller's schema before it is kept, so an answer no caller has read is asked for again.
     const body = parse(schema, json(text, `GET ${path}`), `GET ${path}`);
     const etag = response.headers.get('etag');
     this.#forget(key);
-    if (etag && text.length <= MAX_CACHED_LENGTH) {
+    if (etag && text.length <= MAX_CACHED_LENGTH && (keep?.(body) ?? true)) {
       this.#etags.set(key, { etag, text });
       this.#cachedLength += text.length;
       for (const [oldest] of this.#etags) {

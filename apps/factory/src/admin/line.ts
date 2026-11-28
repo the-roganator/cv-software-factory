@@ -19,9 +19,9 @@
  * `make stop-the-line` keeps its own path, which needs neither the console nor the admin service.
  *
  * **The line's controls** (`POST /admin/line/controls`), from the console's Controls: the autonomy level, whether
- * agents take new work, whether low-risk changes merge by themselves, what the line takes, and auto-rollback, within
- * policy (`policy/line.ts`). One change a request, and one `controls.changed` event, carrying every control as it now stands
- * and the one changed, with its value before and after.
+ * agents take new work, what the line takes, and auto-rollback, within policy (`policy/line.ts`). One change a request,
+ * and one `controls.changed` event, carrying every control as it now stands and the one changed, with its value before
+ * and after. A request to switch auto-merge, which the line no longer has, is refused (400) as any other unknown.
  *
  * - Which action a change is (`autonomy.loosen`, `take.widen`, …) is decided from the controls in force as it is taken,
  *   read from the store under the lock every append takes, never from the request's word: the passkey again for one
@@ -162,7 +162,6 @@ export async function startLine(store: AdminStore, session: Session, reason: str
 export const CHANGE = z.union([
   z.strictObject({ autonomy: z.enum(AUTONOMY) }),
   z.strictObject({ newWork: z.boolean() }),
-  z.strictObject({ autoMerge: z.boolean() }),
   z.strictObject({ autoRollback: z.boolean() }),
   z.strictObject({
     take: z.discriminatedUnion('kind', [
@@ -199,10 +198,6 @@ export function changeSummary(change: ControlChange): string {
     }
     case 'new-work':
       return change.after ? 'Martin let agents take new work again' : 'Martin stopped agents taking new work';
-    case 'auto-merge':
-      return change.after
-        ? 'Martin turned on auto-merge of low-risk changes'
-        : 'Martin turned off auto-merge of low-risk changes';
     case 'take': {
       const how = controlAction(change) === 'take.widen' ? 'widened' : 'narrowed';
       return `Martin ${how} what the line takes to ${takeWords(change.after)}`;
@@ -221,7 +216,6 @@ export function changeSummary(change: ControlChange): string {
 function changeOf(before: Controls, asked: Change, now: string): ControlChange {
   if ('autonomy' in asked) return { control: 'autonomy', before: before.autonomy, after: asked.autonomy };
   if ('newWork' in asked) return { control: 'new-work', before: before.newWork, after: asked.newWork };
-  if ('autoMerge' in asked) return { control: 'auto-merge', before: before.autoMerge, after: asked.autoMerge };
   if ('autoRollback' in asked) {
     return { control: 'auto-rollback', before: before.autoRollback, after: asked.autoRollback };
   }
@@ -240,8 +234,6 @@ function withChange(controls: Controls, change: ControlChange): Controls {
       return { ...controls, autonomy: change.after };
     case 'new-work':
       return { ...controls, newWork: change.after };
-    case 'auto-merge':
-      return { ...controls, autoMerge: change.after };
     case 'take':
       return { ...controls, take: change.after };
     case 'auto-rollback':

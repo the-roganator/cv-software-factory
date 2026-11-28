@@ -24,8 +24,9 @@
  * - `line-stopped`: every `line.stopped`, which tightens and so needs no passkey again, but which Martin is still told of;
  * - every change of the line's controls (`controls.changed`), as the access table's action it is, told from the
  *   stored change's before and after alone (`policy/line.ts`): `autonomy-loosened` and `autonomy-tightened`,
- *   `new-work-on` and `new-work-off`, `auto-merge-on` and `auto-merge-off`, `take-widened` and `take-narrowed`,
- *   `auto-rollback-off` (which overrides a guardrail, and pages) and `auto-rollback-on`. Auto-rollback is counted from
+ *   `new-work-on` and `new-work-off`, `take-widened` and `take-narrowed`, `auto-rollback-off` (which overrides a
+ *   guardrail, and pages) and `auto-rollback-on`. A change of the auto-merge switch the line no longer has counts as
+ *   nothing. Auto-rollback is counted from
  *   what the event puts in force too, as its two series read it (`auto-rollback.ts`): an event that turns it off or on
  *   while its change names another control counts as that as well (`switchedAutoRollback`), so a role that can append
  *   Martin's controls cannot turn it off under a change that only informs him. What it puts in force is followed, in
@@ -84,6 +85,7 @@ import {
   PATCHING_KINDS,
   PATCHING_ROLE,
   type PatchingTally,
+  senseStaleFor,
   staleScans,
 } from './patching-alerts.ts';
 
@@ -106,8 +108,6 @@ export const SECURITY_KINDS = [
   'autonomy-tightened',
   'new-work-on',
   'new-work-off',
-  'auto-merge-on',
-  'auto-merge-off',
   'take-widened',
   'take-narrowed',
   'auto-rollback-off',
@@ -216,18 +216,19 @@ const CONTROL_KINDS: Record<ControlAction, SecurityKind> = {
   'autonomy.tighten': 'autonomy-tightened',
   'new-work.on': 'new-work-on',
   'new-work.off': 'new-work-off',
-  'auto-merge.on': 'auto-merge-on',
-  'auto-merge.off': 'auto-merge-off',
   'take.widen': 'take-widened',
   'take.narrow': 'take-narrowed',
   'auto-rollback.off': 'auto-rollback-off',
   'auto-rollback.on': 'auto-rollback-on',
 };
 
-/** A stored change, if it is one as the event's schema has it, so a malformed row is counted as nothing. */
+/**
+ * A stored change, if it is one of a control the line has as the event's schema has it, so a malformed row, or one of
+ * the auto-merge switch the line no longer has, is counted as nothing.
+ */
 function changeOf(value: unknown): ControlChange | undefined {
   const read = PAYLOADS['controls.changed'].shape.change.safeParse(value);
-  return read.success ? (read.data as ControlChange) : undefined;
+  return read.success && read.data.control !== 'auto-merge' ? read.data : undefined;
 }
 
 /**
@@ -503,12 +504,19 @@ const holdsStored = meter.createObservableCounter('line.holds.stored', {
 
 const patchingMoves = meter.createObservableCounter('line.patching_moves', {
   description:
-    'The moves Martin hears of, each once, by kind: a new High or Critical fix, waiting on him, due within a day, past its deadline, and the app’s vulnerable dependency fixed without him',
+    'The moves Martin hears of, each once, by kind: a new High or Critical fix, waiting on him, tried and stopped, due within a day, past its deadline, and the app’s vulnerable dependency fixed without him',
 });
 
 const scanStale = meter.createObservableGauge('line.patching.scan_stale', {
   description:
-    'Whether a repository’s newest scan in the dependency sense’s days judged its moves too long ago to judge by: 1 if so, 0 if not',
+    'How long a repository’s newest scan in the dependency sense’s days has been too old to judge a move by, as this line has seen it: 0 while it is not',
+  unit: 's',
+});
+
+const senseStale = meter.createObservableGauge('line.patching.sense_stale', {
+  description:
+    'How long the dependency sense has gone without appending a day past the age it keeps one to, as this line has seen it: 0 while it has not',
+  unit: 's',
 });
 
 const counting = meter.createObservableGauge('line.security_events.counting', {
@@ -530,6 +538,9 @@ export function observeSecurity(
 ): () => void {
   let tally = emptyTally();
   let failing = false;
+  // When this line began reading: a staleness is measured from it at the latest, so a cluster that wakes with an old
+  // day is told of only once the sense has had time to read.
+  const since = now();
   const callback = async (result: BatchObservableResult) => {
     try {
       tally = await readOn(sql, tally, verifier, log, now());
@@ -545,11 +556,13 @@ export function observeSecurity(
     for (const kind of SECURITY_KINDS) result.observe(securityEvents, tally.kinds[kind], { kind });
     for (const cause of HOLD_CAUSES) result.observe(holdsStored, tally.holds[cause], { cause });
     for (const kind of PATCHING_KINDS) result.observe(patchingMoves, tally.patching.kinds[kind], { kind });
-    for (const { repository, stale } of staleScans(tally.patching, now())) {
-      result.observe(scanStale, stale ? 1 : 0, { repository });
+    for (const { repository, staleFor } of staleScans(tally.patching, now(), since)) {
+      result.observe(scanStale, staleFor, { repository });
     }
+    const sense = senseStaleFor(tally.patching, now(), since);
+    if (sense !== null) result.observe(senseStale, sense);
   };
-  const observed = [securityEvents, holdsStored, patchingMoves, scanStale, counting];
+  const observed = [securityEvents, holdsStored, patchingMoves, scanStale, senseStale, counting];
   meter.addBatchObservableCallback(callback, observed);
   return () => meter.removeBatchObservableCallback(callback, observed);
 }

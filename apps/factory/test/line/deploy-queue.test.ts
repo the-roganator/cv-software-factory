@@ -1,6 +1,6 @@
 /**
  * The line adding the app's deploy pull request to the merge queue itself, once its checks have passed, when the review
- * gate passed its head as an exact pin and Martin's level and auto-merge allow (`deploy.ts`); otherwise it waits for
+ * gate passed its head as an exact pin and Martin's level allows (`deploy.ts`); otherwise it waits for
  * Martin, and its record says why. The real line, with only GitHub faked.
  */
 import { AUTONOMY, type PayloadOf } from '@software-factory/events';
@@ -29,10 +29,9 @@ const controls = (set: Partial<PayloadOf<'controls.changed'>>) =>
       {
         autonomy: 'guarded',
         newWork: true,
-        autoMerge: true,
         take: null,
         autoRollback: true,
-        change: { control: 'auto-merge', before: false, after: true },
+        change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
         ...set,
       },
       'martin',
@@ -103,27 +102,23 @@ describe('why the line does not add a deploy pull request to the merge queue', (
     judged: { number: DEPLOY, head, rule, tags: [], ...extra },
   });
 
-  it('adds only an exact pin of that head, at Guarded or Lights-out, with auto-merge on', () => {
+  it('adds only an exact pin of that head, at Guarded or Lights-out', () => {
     for (const autonomy of AUTONOMY) {
-      for (const autoMerge of [true, false]) {
-        for (const rule of RULES) {
-          const wait = deployWait(judged(rule), head, { autonomy, autoMerge });
-          const expected =
-            rule !== 'exact-pin'
-              ? { waits: 'verdict', rule }
-              : autonomy === 'supervised'
-                ? { waits: 'level' }
-                : autoMerge
-                  ? undefined
-                  : { waits: 'auto-merge' };
-          expect(wait, `${autonomy}, auto-merge ${autoMerge}, ${rule}`).toEqual(expected);
-        }
+      for (const rule of RULES) {
+        const wait = deployWait(judged(rule), head, { autonomy });
+        const expected =
+          rule !== 'exact-pin'
+            ? { waits: 'verdict', rule }
+            : autonomy === 'supervised'
+              ? { waits: 'level' }
+              : undefined;
+        expect(wait, `${autonomy}, ${rule}`).toEqual(expected);
       }
     }
   });
 
   it('waits for a verdict that is pending, missing, or for another head, naming no rule', () => {
-    const merging = { autonomy: 'lights-out', autoMerge: true } as const;
+    const merging = { autonomy: 'lights-out' } as const;
     expect(deployWait(judged('exact-pin', { pending: 'test integrity' }), head, merging)).toEqual({ waits: 'verdict' });
     expect(deployWait({ head, judged: null }, head, merging)).toEqual({ waits: 'verdict' });
     expect(deployWait({ ...judged('exact-pin'), head: sha('e') }, head, merging)).toEqual({ waits: 'verdict' });
@@ -160,23 +155,21 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     expect(enqueues()).toHaveLength(1);
   });
 
-  it('adds none at Supervised or with auto-merge off, saying why, and adds it once auto-merge is on', async () => {
+  it('adds none at Supervised, saying why, and adds it once the level is Guarded', async () => {
     const workItem = await heldForDeploy(sha('2'));
     const { pass, enqueues } = lineWith('exact-pin');
     await pass();
-    await controls({ autoMerge: false });
     await pass();
     expect(enqueues()).toEqual([]);
     expect(await summaries(workItem, 'deploy.changed')).toEqual([
       'Deploy pull request #30 carries it, and its checks passed: at Supervised the line adds nothing to the merge queue: it waits for Martin to merge it',
-      'Deploy pull request #30 carries it, and its checks passed: with auto-merge off it waits for Martin to merge it',
     ]);
     expect(await waits(workItem)).toMatchObject({ cause: 'deploy', pullRequest: DEPLOY });
 
     await controls({});
     await pass();
     expect(enqueues()).toHaveLength(1);
-    expect((await changes(workItem)).map((c) => c.waits ?? c.state)).toEqual(['level', 'auto-merge', 'queued']);
+    expect((await changes(workItem)).map((c) => c.waits ?? c.state)).toEqual(['level', 'queued']);
   });
 
   it('never adds one the gate held, or passed by another rule, whatever the level', async () => {

@@ -18,10 +18,9 @@
  * A flag waiting for Martin to widen it has a card among them (`FlagCard`): Widen to the next stage, dashed with its
  * reason when it can't be taken now, and Turn off, each opening the slider's confirmation (`Flags.tsx`).
  *
- * A move that waits on Martin has a card among them (`PatchCard`): a pin the review gate holds for his approval, one
- * only his cluster's own command applies, one no pull request of the App's can write, or what the sense found running
- * that nothing scanned. It names the move, what it clears and when it is due, and opens Patching's sheet at its row,
- * where the rest of it is: a move is not a work item.
+ * Patching has one card among them at most (`PatchingCard`), while anything of the dependency sense's day waits on
+ * Martin or the day is stale: how many patches wait, counted by what he does, the first deadline among them, and a
+ * foot that opens Patching's sheet, where each is answered on GitHub or the cluster. A move is not a work item.
  *
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
@@ -43,11 +42,13 @@ import {
   type Move,
   type Need,
   type NeedsView,
-  type PatchNeed,
+  type PatchGroup,
+  type PatchingNeed,
   SAMPLE_PULL,
   STAGE_NAME,
   type WayThere,
 } from '../projection/index.ts';
+import { REPOSITORIES } from '../repositories.ts';
 import { CanaryAnswers } from './Canary.tsx';
 import { FlagDialog, stageWords } from './Flags.tsx';
 import { ToolMark } from './Logos.tsx';
@@ -528,79 +529,92 @@ function CanaryCard({ need, admin, onOpen }: { need: CanaryNeed; admin: Admin } 
 }
 
 /**
- * What a move's card says, by what waits: whose it is, its title from what moves, and why it waits, each in Martin's
- * words or a visitor's (`his`: "your" or "Martin’s"). Kept short: every page that has the bottom row loads them.
+ * How Patching's card counts what waits on Martin, by what he does: one and many, Martin's words and a visitor's. Kept
+ * short: every page that has the bottom row loads them.
  */
-const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: string) => string, why: string]> = {
-  cluster: [
-    '{his} cluster',
-    (name) => `${name} needs the cluster moved`,
-    'Only make upgrade-cluster applies it, with the line stopped: no pull request can show it works.',
-  ],
-  issue: [
-    'an issue',
-    (name) => `${name} needs moving by hand`,
-    'No pull request of the App’s can write it: the Makefile pins it, or a workflow does.',
-  ],
-  'unlisted-image': [
-    '{his} cluster',
-    () => 'An unscanned image is running',
-    'A pod runs an image no pin names, so the daily scan never sees it.',
-  ],
-  'unscanned-digest': [
-    '{his} cluster',
-    () => 'A running digest no scan read',
-    'A pod runs a digest the scan never read: what runs there is not what was scanned.',
-  ],
-  'not-running': [
-    '{his} cluster',
-    () => 'A pin the cluster does not run yet',
-    'main pins it, and {his} cluster runs another of the same image.',
-  ],
+const PATCH_WORDS: Record<PatchGroup, [one: string, many: string, visitor?: string]> = {
+  approve: ['to approve', 'to approve'],
+  bench: ['bench run', 'bench runs'],
+  held: ['held by you', 'held by you', 'held by a person'],
+  stuck: ['tried and stopped', 'tried and stopped'],
+  hand: ['to do by hand', 'to do by hand'],
+  martin: ['waiting on Martin', 'waiting on Martin'],
 };
 
 /**
- * A move that waits on Martin: what it is and why it waits, from the sense's day, and the way to its row in Patching,
- * which holds its pins, what it clears in full, and what to do. The same for a visitor, who reads who moves it.
+ * Patching's one card: how many patches wait on Martin, counted by what he does, the first deadline among them, and
+ * that the day may be out of date, where the sense has not read for a while or a scan is too old for its moves to
+ * pass. It has no answer of its own: each is answered on GitHub or the cluster, from its row in Patching's sheet, which
+ * its foot opens.
  */
-function PatchCard({
+function PatchingCard({
   need,
   now,
   martin,
-  onRow,
+  onPatching,
 }: {
-  need: PatchNeed;
+  need: PatchingNeed;
   now: number;
   martin: boolean;
-  onRow: (key: string) => void;
+  onPatching: () => void;
 }) {
   const id = useId();
-  const his = (words: string) => words.replace('{his}', martin ? 'your' : 'Martin’s');
-  const [whose, title, why] = PATCH_WORDS[need.kind];
-  const name = need.name ?? 'A package in the lockfile';
-  const c = need.clears;
+  const { first, waiting } = need;
+  const firstName = first
+    ? (first.name ?? `a package in ${first.repository === REPOSITORIES.app ? 'the app’s' : 'the factory’s'} lockfile`)
+    : undefined;
+  const soon = first?.deadline !== undefined && first.deadline - now <= 24 * 3_600_000;
   return (
     <article className="need raised ruled" aria-labelledby={id}>
       <div className="kick">
-        <b>Patch · {his(whose)}</b>
-        <span>
-          {need.runs ? `running in ${need.runs.namespace}` : name} ·{' '}
-          {need.deadline === undefined ? 'no deadline' : `due ${dueWords(need.deadline, now)}`}
-        </span>
+        <b>Patching</b>
+        <span>{first?.deadline !== undefined ? `next due ${dueWords(first.deadline, now)}` : 'nothing due'}</span>
       </div>
-      <h3 id={id}>{title(name)}</h3>
-      <p className="ev">
-        {c &&
-          `Clears ${[c.critical && `${count(c.critical)} Critical`, c.high && `${count(c.high)} High`].filter(Boolean).join(' and ') || 'nothing at High or Critical'}. `}
-        {his(why)}
-      </p>
-      {(need.runs || need.to) && <p className="words">{need.runs ? need.runs.image : `${need.from} → ${need.to}`}</p>}
-      {need.deadline !== undefined && <p className="help">Left as it is, the scan fails from {when(need.deadline)}.</p>}
+      <h3 id={id}>
+        {waiting > 0
+          ? `${count(waiting)} ${waiting === 1 ? 'patch waits' : 'patches wait'} on ${martin ? 'you' : 'Martin'}`
+          : 'Patching may be out of date'}
+      </h3>
+      {need.stale !== undefined && (
+        <p className="ev tone-attn">
+          The dependency sense has not read since {when(need.stale)}, so this may be out of date.
+        </p>
+      )}
+      {need.scanStale.map((scan) => (
+        <p className="ev tone-attn" key={scan.repository}>
+          {scan.repository === REPOSITORIES.app ? 'The app’s' : 'The factory’s'} scan is{' '}
+          {Math.floor((now - (scan.judged ?? now)) / 3_600_000)} hours old, so the gate passes none of its moves.
+        </p>
+      ))}
+      {need.groups.length > 0 && (
+        <ul className="need-counts">
+          {need.groups.map(([group, n]) => {
+            const [one, many, visitor] = PATCH_WORDS[group];
+            return (
+              <li key={group}>
+                <b>{count(n)}</b> {!martin && visitor ? visitor : n === 1 ? one : many}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {first?.deadline !== undefined && (
+        <p className="ev">
+          First due: {firstName}, {dueWords(first.deadline, now)}.
+        </p>
+      )}
+      {soon && first?.deadline !== undefined && (
+        <p className="help">Left as it is, the scan fails from {when(first.deadline)}.</p>
+      )}
       <div className="need-foot">
-        <button type="button" className="linkish" onClick={() => onRow(need.key)}>
-          Open its row in Patching
+        <button type="button" className="linkish" onClick={onPatching}>
+          Open Patching
         </button>
-        {!martin && <span>Martin moves it, on GitHub or his cluster</span>}
+        <span>
+          {martin
+            ? 'Each is answered there, on GitHub or your cluster'
+            : 'Martin answers each, on GitHub or his cluster'}
+        </span>
       </div>
     </article>
   );
@@ -745,22 +759,22 @@ interface NeedsYouProps {
   /** The time the view is at, which a move's deadline is said from. */
   now: number;
   onOpen: (item: string) => void;
-  /** Opens Patching's sheet at a move's row, by its key. */
-  onRow: (key: string) => void;
+  /** Opens Patching's sheet. */
+  onPatching: () => void;
   /** A flag was moved: the page asks again soon whether the app holds it. */
   onMoved: () => void;
 }
 
-export function NeedsYou({ needs, flags, admin, app, now, onOpen, onRow, onMoved }: NeedsYouProps) {
+export function NeedsYou({ needs, flags, admin, app, now, onOpen, onPatching, onMoved }: NeedsYouProps) {
   const martin = admin.kind === 'martin';
-  const { holds, canary, patches, answered } = needs;
+  const { holds, canary, patching, answered } = needs;
   // A deploy that is not his to merge yet keeps its card, but does not wait on him.
   const waiting =
-    holds.filter((need) => need.forMartin).length + flags.needs.length + (canary ? 1 : 0) + patches.length;
-  // The moves that wait on him, holds, the canary and flags together, oldest first.
+    holds.filter((need) => need.forMartin).length + flags.needs.length + (canary ? 1 : 0) + (patching ? 1 : 0);
+  // Patching's card, holds, the canary and flags together, oldest first.
   const none = { hold: undefined, flag: undefined, canary: undefined, patch: undefined };
   const cards = [
-    ...patches.map((need) => ({ ...none, since: need.since, key: `patch-${need.key}`, patch: need })),
+    ...(patching ? [{ ...none, since: patching.since, key: 'patching', patch: patching }] : []),
     ...holds.map((need) => ({ ...none, since: need.since, key: need.hold, hold: need })),
     ...(canary ? [{ ...none, since: canary.since, key: `canary-${canary.release.id}`, canary }] : []),
     ...flags.needs.map((need) => ({ ...none, since: need.since, key: `flag-${need.flag}`, flag: need })),
@@ -775,7 +789,7 @@ export function NeedsYou({ needs, flags, admin, app, now, onOpen, onRow, onMoved
         <div className="needs-list">
           {cards.map(({ key, hold, flag, canary, patch }) =>
             patch ? (
-              <PatchCard key={key} need={patch} now={now} martin={martin} onRow={onRow} />
+              <PatchingCard key={key} need={patch} now={now} martin={martin} onPatching={onPatching} />
             ) : canary ? (
               <CanaryCard key={key} need={canary} admin={admin} onOpen={onOpen} />
             ) : flag ? (

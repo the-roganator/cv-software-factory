@@ -51,7 +51,7 @@ import searchByColour from './items/1329-search-by-colour.ts';
 import freeDelivery from './items/1334-free-delivery.ts';
 import parserMove from './items/1335-parser-move.ts';
 import releases from './items/line.ts';
-import { PATCHING } from './patching.ts';
+import { PATCHING, PATCHING_BEFORE } from './patching.ts';
 import { PROOFS } from './proofs.ts';
 import lineRefusals from './refusals.ts';
 import { scoreEvents } from './score.ts';
@@ -111,7 +111,7 @@ const controlsChanged = (
   ts,
   work_item: null,
   type: 'controls.changed',
-  version: 2,
+  version: 3,
   actor: 'martin',
   summary,
   payload,
@@ -123,7 +123,6 @@ const CONTROLS: NewEvent<'controls.changed'>[] = [
   controlsChanged('2026-09-29T07:00:30.000Z', 'Martin loosened autonomy from Supervised to Guarded', {
     autonomy: 'guarded',
     newWork: true,
-    autoMerge: false,
     take: null,
     autoRollback: true,
     change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
@@ -131,7 +130,6 @@ const CONTROLS: NewEvent<'controls.changed'>[] = [
   controlsChanged('2026-10-06T12:00:00.000Z', 'Martin widened what the line takes to the next 5 from now', {
     autonomy: 'guarded',
     newWork: true,
-    autoMerge: false,
     take: { kind: 'next-few', count: 5, since: '2026-10-06T12:00:00.000Z' },
     autoRollback: true,
     change: { control: 'take', before: null, after: { kind: 'next-few', count: 5, since: '2026-10-06T12:00:00.000Z' } },
@@ -166,6 +164,7 @@ export function sampleEvents(): NewEvent[] {
     ...CONTROLS,
     ...STEPPED_UP,
     ...PROOFS,
+    PATCHING_BEFORE,
     PATCHING,
     ...releases.events,
     ...lineRefusals.events,

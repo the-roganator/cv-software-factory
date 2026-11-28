@@ -267,7 +267,7 @@ export const STORE_GRANTS = {
   },
   factory_github: {
     for:
-      'The GitHub worker: reads the autonomy level and auto-merge, the latest of Martin’s controls ' +
+      'The GitHub worker: reads the autonomy level, the latest of Martin’s controls ' +
       '(`controls.changed`), and whether he has the line stopped, his latest `line.started` or `line.stopped`, so it ' +
       'adds to the merge queue only the moves they queue (`enqueues`, `policy/line.ts`), and none while the line is ' +
       'stopped; and nothing else: the columns those reads need, of the events his roles appended. It appends ' +

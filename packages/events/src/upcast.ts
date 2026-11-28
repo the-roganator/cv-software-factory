@@ -59,6 +59,14 @@ function withRuleNow(payload: Record<string, unknown>): Record<string, unknown> 
   return 'rule' in payload ? { ...payload, rule: ruleNow(payload.rule) } : payload;
 }
 
+/**
+ * A record's reason a change waited for Martin, as the line names it now: the auto-merge switch off reads as the level,
+ * which alone decides whether the line adds it to the merge queue.
+ */
+function withoutSwitch(payload: Record<string, unknown>, field: 'why' | 'waits'): Record<string, unknown> {
+  return payload[field] === 'auto-merge' ? { ...payload, [field]: 'level' } : payload;
+}
+
 export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 1 recorded each call, with its cassette; version 2 records an agent's step, with how many calls it made.
   'model.called': { 1: ({ cassette: _, ...payload }) => ({ ...payload, calls: 1 }) },
@@ -103,6 +111,12 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
       payload.merge && typeof payload.merge === 'object'
         ? { ...payload, merge: withRuleNow(payload.merge as Record<string, unknown>) }
         : payload,
+    // Version 14 has no auto-merge switch: the level alone decides. A version 13 merge hold kept for the switch off
+    // reads as kept for the level, which is what decides now.
+    13: (payload) =>
+      payload.merge && typeof payload.merge === 'object'
+        ? { ...payload, merge: withoutSwitch(payload.merge as Record<string, unknown>, 'why') }
+        : payload,
   },
   // Version 2 names the hold it answers, and says when its words stay Martin's; a version 1 answer said neither.
   // Version 3 adds sending the work back to the planner to the decisions; a version 2 answer reads as it was.
@@ -120,7 +134,16 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 2 marks the abort that came with Stop the line; a version 1 control was always the Canary panel's.
   'release.controlled': { 1: (payload) => payload },
   // Version 2 adds auto-rollback to the controls; until it had a switch, it was always on.
-  'controls.changed': { 1: (payload) => ({ ...payload, autoRollback: true }) },
+  // Version 3 has no auto-merge switch: the level alone decides. A version 2 record's controls read without it, and a
+  // change of it reads as it was, the change Martin made then.
+  'controls.changed': {
+    1: (payload) => ({ ...payload, autoRollback: true }),
+    // Version 3 has no auto-merge switch: the level alone decides what is queued. A version 2 record with the switch
+    // off queued nothing by any rule at any level, which is what Supervised queues now, so it reads as Supervised: the
+    // controls in force queue no more than they did until Martin sets a level again.
+    2: ({ autoMerge, ...payload }) =>
+      autoMerge === false && payload.autonomy !== 'supervised' ? { ...payload, autonomy: 'supervised' } : payload,
+  },
   // Version 2 of a release's events names the release, says whether the line watched it and whether the dry run
   // answers for it, and records the analysis's own measures. A version 1 release was told apart by its version, was
   // watched, and shipped.
@@ -274,7 +297,9 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // whose checks passed waits for Martin; a version 1 record reads as it was.
   // Version 3 names the gate's rule as the gate does now: a version 2 record's `pin-move` or `critical-fix` reads as
   // `move`.
-  'deploy.changed': { 1: (payload) => payload, 2: withRuleNow },
+  // Version 4 has no auto-merge switch: the level alone decides. A version 3 record that waited for the switch off reads
+  // as waiting for the level, which is what decides now.
+  'deploy.changed': { 1: (payload) => payload, 2: withRuleNow, 3: (payload) => withoutSwitch(payload, 'waits') },
   // Version 2 names the gate's rule as the gate does now: a version 1 record's `pin-move` or `critical-fix` reads as
   // `move`.
   'pull-request.enqueued': { 1: withRuleNow },
@@ -337,6 +362,16 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
           totals: totals && { ...totals, lanes: { ...lanes, worker: (lanes.worker ?? 0) + dependabot } },
         };
       }),
+    }),
+    // Version 5 has each repository's pins that wait and the pull requests and issues that carry its moves, and when
+    // they were read. A version 4 day read neither: it reads as having none, and no time read.
+    4: (payload) => ({
+      ...payload,
+      repositories: (payload.repositories as Record<string, unknown>[]).map((repository) => ({
+        ...repository,
+        waiting: [],
+        pulls: [],
+      })),
     }),
   },
 };

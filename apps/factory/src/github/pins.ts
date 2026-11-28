@@ -72,6 +72,11 @@
  * and closes nothing. A `moves.json` that lists no move, its count held to the scan's state as every day's is, is a day
  * with nothing to move, and closes what the watch has open. A pin whose line has changed since the scan read it waits
  * for the next scan, and its pull request stays.
+ *
+ * Each pass that reads a day whole says what it saw for the read `pulls` (`pull-states.ts`): every pin pull request and
+ * issue of the App's, open or settled in the last 28 days, with the moves each carries and why each issue was opened,
+ * from what the pass decided or, for one it did not make today, from the words the App wrote in it (`issueWhyOf`);
+ * and Dependabot's pull requests for a pin of the day.
  */
 import { createHash } from 'node:crypto';
 import type { Logger } from 'pino';
@@ -100,6 +105,21 @@ import {
   treeSource,
 } from './pin-guard.ts';
 import type { Watch } from './poller.ts';
+import {
+  closedByPerson,
+  dependabotCarries,
+  dependabotHold,
+  namedMove,
+  type PatchIssue,
+  type PinRefusal,
+  type PullMove,
+  type PullStates,
+  pullMove,
+  pullMoves,
+  recent,
+  type Seen,
+  settledPulls,
+} from './pull-states.ts';
 import type { Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import type { Moves, ReadMove } from './scanning.ts';
@@ -128,7 +148,8 @@ export const READ_THE_SCAN = 'the pin watch takes the moves it was told to (PIN_
 
 export interface PinWatchDependencies {
   github: GitHub;
-  reads: Pick<Reads, 'moves'>;
+  /** The day's moves; and Dependabot's open pull requests, read for the read `pulls` alone. */
+  reads: Pick<Reads, 'moves'> & Partial<Pick<Reads, 'dependencyPulls'>>;
   actions: Pick<
     Actions,
     | 'dryRun'
@@ -160,6 +181,11 @@ export interface PinWatchDependencies {
    * issue is never opened, updated or closed; told nothing (no names, the default), the watch takes no move at all.
    */
   only?: PinScope;
+  /**
+   * Where each pass says what it saw of the pin pull requests and issues of the App's, and of Dependabot's pull requests
+   * for the day's pins, for the read `pulls`.
+   */
+  pulls?: PullStates | undefined;
 }
 
 /** Which of the day's moves the watch takes: every one, or those named. */
@@ -191,7 +217,12 @@ const PULLS = z.array(
     merge_commit_sha: z.string().nullable().optional(),
     user: z.object({ login: z.string() }).nullable(),
     labels: z.array(z.object({ name: z.string() })),
-    head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
+    head: z.object({
+      ref: z.string(),
+      sha: z.string().optional(),
+      repo: z.object({ full_name: z.string() }).nullable(),
+    }),
+    created_at: z.string().optional(),
   }),
 );
 const MERGE_BASE = z.object({ merge_base_commit: z.object({ sha: z.string() }) });
@@ -207,8 +238,12 @@ const ISSUES = z.array(
     body: z.string().nullable().optional(),
     user: z.object({ login: z.string() }).nullable(),
     pull_request: z.unknown().optional(),
+    created_at: z.string().optional(),
+    closed_at: z.string().nullable().optional(),
   }),
 );
+/** What the issues API says of a pull request: when it merged, where it did. */
+const AS_PULL = z.object({ merged_at: z.string().nullable().optional() });
 type Pull = z.infer<typeof PULLS>[number];
 type Issue = z.infer<typeof ISSUES>[number];
 
@@ -645,13 +680,22 @@ const REFUSED: Record<RefusalKind, string> = {
 /** Why a move the watch made before is left unmade: its merge was undone on `main`. */
 export const REVERTED = 'its merge was undone on main';
 /** Why a move the pin step makes waits beside one undone on `main`: the step makes their files whole. */
-const WITH_REVERTED = 'a move made with it was undone on main';
+export const WITH_REVERTED = 'a move made with it was undone on main';
 /** Why a move waits whose branch a pull request of someone else's stands on. */
-const BRANCH_HELD = 'a pull request the App did not open stands on its branch';
+export const BRANCH_HELD = 'a pull request the App did not open stands on its branch';
 /** Why a move waits whose pull request GitHub would not open. */
-const OPEN_REFUSED = 'GitHub refused its pull request';
+export const OPEN_REFUSED = 'GitHub refused its pull request';
 /** Why a move waits whose branch has more closed pull requests than the watch reads (`CLOSED_PAGES`). */
-const HISTORY_UNREAD = 'its branch has more closed pull requests than the watch reads';
+export const HISTORY_UNREAD = 'its branch has more closed pull requests than the watch reads';
+
+/** The reason each of those is, as the read `pulls` names an issue's (`PATCH_ISSUES`). */
+const WAIT_ISSUES: Record<string, PatchIssue> = {
+  [REVERTED]: 'reverted',
+  [WITH_REVERTED]: 'with-reverted',
+  [BRANCH_HELD]: 'branch-held',
+  [HISTORY_UNREAD]: 'history-unread',
+  [OPEN_REFUSED]: 'open-refused',
+};
 
 /** What each of those asks of Martin, for the move's issue. */
 const WAITS: Record<string, string> = {
@@ -667,6 +711,17 @@ const WAITS: Record<string, string> = {
     'The watch committed the move to its branch, and GitHub refused the pull request from it. The watch tries again each pass; what GitHub said is in the worker’s log and its refusal.',
 };
 
+const BENCHED =
+  'Its bump merges only after a bench run on Claude (`factory line bench`, docs/ON-THE-HOST.md#the-bench), which is yours to start: the App opens no pull request for it. Run the bench on the bumped package and move it in a pull request of your own, by the deadline below.';
+const NOT_BUILT =
+  'Its line is no longer built: nothing on this line will bring the fix. Move the pin to a line its publisher builds, and the scan reads it from there.';
+const WORKFLOW_ROUTINE =
+  'A workflow pins it, and the App writes no workflow: move it in a pull request of your own, when you choose to. Nothing is due.';
+const WORKFLOW = 'A workflow pins it, and the App writes no workflow: move it in a pull request of your own.';
+const MORE_THAN_LINES =
+  'It needs more than its pins’ lines written, which no pull request of the App’s makes: move it in a pull request of your own.';
+const NOT_ON_LINES = "The watch cannot write it on its pins' lines (";
+
 /** Why the App cannot write a move, and what to do instead, for its issue. */
 function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other', resolved?: string): string {
   if (why === STEP_REFUSED) {
@@ -676,17 +731,69 @@ function cannotWrite(move: ReadMove, why?: string, kind: RefusalKind = 'other', 
   }
   const waits = why === undefined ? undefined : WAITS[why];
   if (waits) return waits;
-  if (why)
-    return `The watch cannot write it on its pins' lines (${why}): move it by hand, and the scan's next run sees it.`;
-  if (move.bench)
-    return 'Its bump merges only after a bench run on Claude (`factory line bench`, docs/ON-THE-HOST.md#the-bench), which is yours to start: the App opens no pull request for it. Run the bench on the bumped package and move it in a pull request of your own, by the deadline below.';
-  if (move.lane === 'none')
-    return 'Its line is no longer built: nothing on this line will bring the fix. Move the pin to a line its publisher builds, and the scan reads it from there.';
-  if (isRoutine(move) && move.pins.some((pin) => pin.file.startsWith('.github/')))
-    return 'A workflow pins it, and the App writes no workflow: move it in a pull request of your own, when you choose to. Nothing is due.';
-  if (move.pins.some((pin) => pin.file.startsWith('.github/')))
-    return 'A workflow pins it, and the App writes no workflow: move it in a pull request of your own.';
-  return 'It needs more than its pins’ lines written, which no pull request of the App’s makes: move it in a pull request of your own.';
+  if (why) return `${NOT_ON_LINES}${why}): move it by hand, and the scan's next run sees it.`;
+  if (move.bench) return BENCHED;
+  if (move.lane === 'none') return NOT_BUILT;
+  if (isRoutine(move) && move.pins.some((pin) => pin.file.startsWith('.github/'))) return WORKFLOW_ROUTINE;
+  if (move.pins.some((pin) => pin.file.startsWith('.github/'))) return WORKFLOW;
+  return MORE_THAN_LINES;
+}
+
+/** Why an issue was opened, as the read `pulls` names it, and for one the pin step refused, the kind of refusal. */
+export interface IssueWhy {
+  issue: PatchIssue;
+  refusal?: PinRefusal;
+}
+
+/** Why the App opens an issue for a move, by the same cases as its words (`cannotWrite`). */
+export function issueWhy(move: ReadMove, why?: string, kind: RefusalKind = 'other'): IssueWhy {
+  if (why === STEP_REFUSED) return { issue: 'refused', refusal: kind };
+  const named = why === undefined ? undefined : WAIT_ISSUES[why];
+  if (named) return { issue: named };
+  if (why) return { issue: 'other' };
+  if (move.bench) return { issue: 'bench' };
+  if (move.lane === 'none') return { issue: 'none' };
+  if (move.pins.some((pin) => pin.file.startsWith('.github/'))) return { issue: 'workflow' };
+  return { issue: 'other' };
+}
+
+/**
+ * Why the App opened an issue, read back from the words it wrote in it (`cannotWrite`), for one the pass did not make
+ * today: closed, or of a move it was not told to take. Undefined for a description it did not write.
+ */
+export function issueWhyOf(body: string | null | undefined): IssueWhy | undefined {
+  const text = body ?? '';
+  for (const kind of Object.keys(REFUSED) as RefusalKind[]) {
+    // The release pnpm took is written into the middle of a `resolved`'s words.
+    const parts = kind === 'resolved' ? REFUSED[kind].split('a newer one,') : [REFUSED[kind]];
+    if (parts.every((part) => text.includes(part))) return { issue: 'refused', refusal: kind };
+  }
+  for (const [why, words] of Object.entries(WAITS)) {
+    const issue = WAIT_ISSUES[why];
+    if (issue && text.includes(words)) return { issue };
+  }
+  if (text.includes(BENCHED)) return { issue: 'bench' };
+  if (text.includes(NOT_BUILT)) return { issue: 'none' };
+  if (text.includes(WORKFLOW_ROUTINE) || text.includes(WORKFLOW)) return { issue: 'workflow' };
+  if (text.includes(MORE_THAN_LINES) || text.includes(NOT_ON_LINES)) return { issue: 'other' };
+  return undefined;
+}
+
+/**
+ * The move an issue's description names, as the App wrote it (`issueOf`): its name from the first sentence, which
+ * writes it as code and so without its backticks. A lockfile's, known by its key (`issueKey`), is named again as the
+ * scan names it (`publicMove`, moves.ts), from the files its pins list.
+ */
+export function issueMoveOf(body: string | null | undefined): PullMove | undefined {
+  const text = body ?? '';
+  if (ISSUE_MARK.exec(text)?.[1]?.startsWith('lockfile-')) {
+    const pins = text.split('**Pins**')[1]?.split('\n\n')[1] ?? '';
+    const files = [...pins.matchAll(/^- `([^`\n]+)`$/gm)].map((each) => each[1] as string);
+    if (!files.length) return undefined;
+    return { name: `a package in ${files.map((file) => `\`${file}\``).join(' and ')}`, lockfile: true };
+  }
+  const name = /lists a move [^`\n]*?: `([^`\n]+)`/.exec(text)?.[1];
+  return name === undefined ? undefined : namedMove(name);
 }
 
 /** The key an issue is found again by: the move's name, or for a lockfile's, its mark, which names no package. */
@@ -1083,7 +1190,11 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     return undone;
   };
 
-  const pinIssues = async (): Promise<Map<string, Issue>> => {
+  /**
+   * The App's `pin` issues, the newest for each key, open before closed. Every item of the App's listed, its pull
+   * requests too, is kept in `listed` for the read `pulls`.
+   */
+  const pinIssues = async (listed: Issue[] = []): Promise<Map<string, Issue>> => {
     const out = new Map<string, Issue>();
     for (let page = 1; page <= PAGES; page++) {
       const { body } = await github.poll(
@@ -1092,6 +1203,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         ISSUES,
       );
       for (const issue of body) {
+        if (issue.user?.login === APP_LOGIN) listed.push(issue);
         if (issue.pull_request !== undefined || issue.user?.login !== APP_LOGIN) continue;
         const key = ISSUE_MARK.exec(issue.body ?? '')?.[1];
         // The newest of the App's for a key, open before closed.
@@ -1101,6 +1213,164 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       if (body.length < 100) return out;
     }
     throw new GitHubError('malformed', `${repo} has more pin issues than the pin watch reads.`);
+  };
+
+  /** What a pass did to an issue or pull request after it read them: opened, closed or opened again. */
+  type Acted = { at: string } & ({ did: 'opened'; seen: Seen } | { did: 'closed' } | { did: 'reopened' });
+
+  /**
+   * What the pass saw of the App's pin pull requests and issues, and of Dependabot's pull requests for the day's pins,
+   * said for the read `pulls`: each open one with the moves it carries, and each settled in the last 28 days.
+   */
+  const record = async (
+    pulls: PullStates,
+    /** The day, where the pass read one: without it, a pull request's moves are those its marks name. */
+    read: Moves | undefined,
+    seen: {
+      open: readonly Pull[];
+      listed: readonly Issue[];
+      groups: ReadonlyMap<string, readonly Carried[]>;
+      wanted: ReadonlyMap<string, { move: ReadMove; why: IssueWhy }>;
+      issues: ReadonlyMap<string, Issue>;
+      acted: ReadonlyMap<number, Acted>;
+    },
+  ) => {
+    const at = now();
+    const iso = new Date(at).toISOString();
+    const listedAt = new Map(seen.listed.map((item) => [item.number, item]));
+    const named = (names: readonly string[]): PullMove[] => names.map(namedMove);
+    // A branch's moves: those the pass carries there; else those its description names, as the day has them.
+    const movesOn = (branch: string, body: string | null | undefined): PullMove[] => {
+      const carried = seen.groups.get(branch);
+      if (carried) return pullMoves(carried.map(({ move }) => pullMove(move)));
+      const names = carriedBy(body);
+      const today = (read?.moves ?? []).filter((move) => names.includes(move.name) && branchOf(move) === branch);
+      return pullMoves([
+        ...today.map(pullMove),
+        ...named(names.filter((name) => !today.some((move) => move.name === name))),
+      ]);
+    };
+    const whyByNumber = new Map<number, { move: ReadMove; why: IssueWhy }>();
+    for (const [key, wanted] of seen.wanted) {
+      const issue = seen.issues.get(key);
+      if (issue) whyByNumber.set(issue.number, wanted);
+    }
+    const out: Seen[] = [];
+    for (const pull of seen.open) {
+      const moves = movesOn(pull.head.ref, pull.body);
+      if (!moves.length) continue;
+      out.push({
+        kind: 'pin',
+        number: pull.number,
+        moves,
+        opened: pull.created_at ?? listedAt.get(pull.number)?.created_at ?? iso,
+        state: 'open',
+      });
+    }
+    for (const item of seen.listed) {
+      const acted = seen.acted.get(item.number);
+      const opened = item.created_at ?? iso;
+      if (item.pull_request !== undefined) {
+        // An open one is the open list's; one closed in this pass, by the watch, is settled now.
+        const closedNow = acted?.did === 'closed';
+        if (item.state === 'open' && !closedNow) continue;
+        const merged = AS_PULL.safeParse(item.pull_request).data?.merged_at ?? undefined;
+        const settled = closedNow ? acted.at : (merged ?? item.closed_at ?? undefined);
+        const moves = pullMoves(named(carriedBy(item.body)));
+        if (!recent(settled, at) || !moves.length) continue;
+        out.push({
+          kind: 'pin',
+          number: item.number,
+          moves,
+          opened,
+          state: merged ? 'merged' : 'closed',
+          settled,
+          ...(merged ? {} : { closedByPerson: closedNow ? false : await closedByPerson(github, repo, item.number) }),
+        });
+        continue;
+      }
+      const today = whyByNumber.get(item.number);
+      const why = today?.why ?? issueWhyOf(item.body) ?? { issue: 'other' };
+      const written = today ? undefined : issueMoveOf(item.body);
+      const moves = today ? [pullMove(today.move)] : written ? [written] : [];
+      if (!moves.length) continue;
+      const open = acted?.did === 'reopened' || (item.state === 'open' && acted?.did !== 'closed');
+      const settled = acted?.did === 'closed' ? acted.at : (item.closed_at ?? undefined);
+      if (!open && !recent(settled, at)) continue;
+      out.push({
+        kind: 'issue',
+        number: item.number,
+        moves,
+        opened,
+        ...(open
+          ? { state: 'open' }
+          : {
+              state: 'closed',
+              settled,
+              closedByPerson: acted?.did === 'closed' ? false : await closedByPerson(github, repo, item.number),
+            }),
+        issue: why.issue,
+        ...(why.refusal ? { refusal: why.refusal } : {}),
+      } as Seen);
+    }
+    for (const acted of seen.acted.values()) if (acted.did === 'opened') out.push(acted.seen);
+    pulls.saw(repo, 'pins', out);
+
+    // Dependabot's pull requests for the day's pins: a failure to read them costs those alone, and is tried next pass.
+    if (!deps.reads.dependencyPulls) return;
+    // With no day read, nothing says which of them carries a move: what was known of them is kept as it was, and the
+    // watch counts as having passed.
+    if (!read) {
+      pulls.saw(repo, 'dependabot', [...pulls.openDependabot(repo), ...pulls.settledDependabot(repo)]);
+      return;
+    }
+    try {
+      const listedOpen = await deps.reads.dependencyPulls(repo);
+      const open: Seen[] = listedOpen.flatMap((pull) => {
+        const carries = dependabotCarries(pull, read.moves);
+        if (!carries.length) return [];
+        const hold = dependabotHold(carries);
+        return [
+          {
+            kind: 'dependabot' as const,
+            number: pull.number,
+            moves: pullMoves(carries.map(pullMove)),
+            opened: pull.createdAt,
+            state: 'open' as const,
+            ...(hold ? { hold } : {}),
+          },
+        ];
+      });
+      const numbers = new Set(listedOpen.map((pull) => pull.number));
+      const gone = pulls.openDependabot(repo).filter((each) => !numbers.has(each.number ?? 0));
+      const settled = [
+        ...(await settledPulls(github, repo, gone)),
+        ...pulls.settledDependabot(repo).filter((each) => recent(each.settled, at)),
+      ];
+      pulls.saw(repo, 'dependabot', [...open, ...settled]);
+    } catch (error) {
+      log.warn({ repo, err: error }, "could not read Dependabot's pull requests for the day's pins: tries next pass");
+      // The pass is made: what is known of them stands, and the read does not wait on this one for ever.
+      pulls.saw(repo, 'dependabot', [...pulls.openDependabot(repo), ...pulls.settledDependabot(repo)]);
+    }
+  };
+
+  /**
+   * What a pass that makes nothing says for the read `pulls` (told no move, a day it could not read, a scan that wrote
+   * no moves): the pin pull requests and issues of the App's as GitHub lists them, by the moves their marks name.
+   */
+  const recordLists = async (read?: Moves) => {
+    if (!deps.pulls) return;
+    const listed: Issue[] = [];
+    const [{ own: open }] = await Promise.all([makes ? openPulls() : { own: [] }, pinIssues(listed)]);
+    await record(deps.pulls, read, {
+      open,
+      listed,
+      groups: new Map(),
+      wanted: new Map(),
+      issues: new Map(),
+      acted: new Map(),
+    });
   };
 
   // The moves it was told to take: nothing else of the App's is closed as gone.
@@ -1113,10 +1383,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     if (!every && !named.size) {
       if (!toldNothing) log.info({ repo }, 'the pin watch was told no move (PIN_WATCH_ONLY): it takes none');
       toldNothing = true;
+      await recordLists();
       last = now();
       return;
     }
-    const read = await reads.moves(repo);
+    let read: Moves;
+    try {
+      read = await reads.moves(repo);
+    } catch (error) {
+      // A day that cannot be read is not the pull requests: what GitHub lists of them is still said.
+      await recordLists().catch((err: unknown) => log.warn({ repo, err }, 'could not read the pin pull requests'));
+      throw error;
+    }
     const taken = every ? read.moves : read.moves.filter((move) => named.has(move.name));
     const day: Moves = { ...read, moves: taken };
     // What a gone move's issue may be closed by: a named move's key, unless a move it was not told to take has that key
@@ -1132,13 +1410,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         { run: day.run.id },
         'the scan wrote no moves: the pin watch waits for a run that did',
       );
+      await recordLists(day);
       last = now();
       return;
     }
+    const listed: Issue[] = [];
     const [{ own: open, theirs }, issues] = await Promise.all([
       makes ? openPulls() : { own: [], theirs: [] },
-      pinIssues(),
+      pinIssues(listed),
     ]);
+    /** What this pass did to an issue or pull request after it read them, by number. */
+    const acted = new Map<number, Acted>();
+    const stamp = () => new Date(now()).toISOString();
     // Where it keeps issues alone no move is written, so nothing is read of main.
     const head = makes ? await source.head(repo) : '';
     const scanned = day.run.headSha;
@@ -1176,11 +1459,17 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
 
     /** The branches today's moves keep: their pull requests stay. */
     const keep = new Set<string>();
-    /** The issues today's moves keep, each with what it says. */
-    const wanted = new Map<string, { title: string; body: string; target: string }>();
+    /** The issues today's moves keep, each with what it says, the move and why. */
+    const wanted = new Map<string, { title: string; body: string; target: string; move: ReadMove; why: IssueWhy }>();
     const want = (move: ReadMove, why?: string, kind?: RefusalKind, resolved?: string) => {
       const issue = issueOf(move, day, why, kind, resolved);
-      wanted.set(issue.key, { title: issue.title, body: issue.body, target: issue.target });
+      wanted.set(issue.key, {
+        title: issue.title,
+        body: issue.body,
+        target: issue.target,
+        move,
+        why: issueWhy(move, why, kind),
+      });
     };
 
     for (const move of day.moves) if (ISSUE_LANES.has(move.lane)) want(move);
@@ -1488,6 +1777,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
             labels: [PIN_LABEL],
           });
           log.info({ repo, number: made.number, commit, moves: carried.length }, 'opened a pin pull request');
+          const at = stamp();
+          acted.set(made.number, {
+            at,
+            did: 'opened',
+            seen: {
+              kind: 'pin',
+              number: made.number,
+              moves: pullMoves(carried.map(({ move }) => pullMove(move))),
+              opened: at,
+              state: 'open',
+            },
+          });
         } catch (error) {
           if (error instanceof BranchRefused || (error instanceof PatchRefused && error.kind === 'protected')) {
             await refused(run, branch, error, null);
@@ -1537,6 +1838,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         ? `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: it read no release of ${refusedFor.map(code).join(' and ')} that is better than the pin, by its findings at each severity, so it lists no fix there today. Closed; the watch opens another if the scan lists one.`
         : `${RunText(day)} no longer lists a move here that a pull request of the factory's makes: \`main\` has moved its pins, or the scan has nothing left to move them for. Closed; the watch opens another if the scan lists one.`;
       await actions.closePullRequest(repo, pull.number, sentence);
+      acted.set(pull.number, { at: stamp(), did: 'closed' });
       heads?.delete(repo, pull.head.ref);
       log.info({ repo, number: pull.number }, 'closed a pin pull request with no move left');
     }
@@ -1549,6 +1851,20 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         recorded.set(`issue ${key}`, `${issue.title}\n${issue.body}`);
         const number = await actions.openIssue(repo, { title: issue.title, body: issue.body, labels: [PIN_LABEL] });
         log.info({ repo, number, key }, 'opened a pin issue');
+        const at = stamp();
+        acted.set(number, {
+          at,
+          did: 'opened',
+          seen: {
+            kind: 'issue',
+            number,
+            moves: [pullMove(issue.move)],
+            opened: at,
+            state: 'open',
+            issue: issue.why.issue,
+            ...(issue.why.refusal ? { refusal: issue.why.refusal } : {}),
+          },
+        });
         continue;
       }
       if (found.state !== 'open') {
@@ -1561,6 +1877,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
           found.number,
           same ? `${RunText(day)} lists this move again.` : `${RunText(day)} lists this move again, to a later target.`,
         );
+        acted.set(found.number, { at: stamp(), did: 'reopened' });
       }
       if ((found.body ?? '') !== issue.body || found.title !== issue.title)
         await actions.updateIssue(repo, found.number, { title: issue.title, body: issue.body });
@@ -1575,8 +1892,19 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         'completed',
         `${RunText(day)} no longer lists this move as one the App cannot make: it is moved, made by a pull request of the factory's, or the scan has nothing left to move it for.`,
       );
+      acted.set(issue.number, { at: stamp(), did: 'closed' });
       log.info({ repo, number: issue.number, key }, 'closed a pin issue whose move is gone');
     }
+    // A dry run's own pull requests and issues are none GitHub has: what it read of GitHub's is all that is said.
+    if (deps.pulls)
+      await record(deps.pulls, read, {
+        open,
+        listed,
+        groups,
+        wanted,
+        issues,
+        acted: actions.dryRun ? new Map() : acted,
+      });
     last = again ? undefined : now();
   };
 }

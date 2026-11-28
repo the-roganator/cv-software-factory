@@ -284,7 +284,10 @@ function askedForPasskey(
     case 'settings.changed':
       return raises(profile, event.payload);
     case 'controls.changed': {
-      const action = changeAction(event.payload.change);
+      // The auto-merge switch the line no longer has asked for it when it was turned on, and the record keeps that.
+      const { change } = event.payload;
+      if (change?.control === 'auto-merge') return change.after === true;
+      const action = changeAction(change);
       return action !== undefined && CONTROL_STEP_UP[action];
     }
     case 'flag.staged': {

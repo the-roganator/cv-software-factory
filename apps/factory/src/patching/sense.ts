@@ -1,11 +1,12 @@
 /**
- * The dependency sense's pass: ask the GitHub worker for both repositories' moves,
- * list what the cluster's pods run, compare the two, and append the day as `patching.read` when it differs from the
- * last. It keeps nothing between passes: the last day is the store's, so a restart appends nothing new unless
- * something changed.
+ * The dependency sense's pass: ask the GitHub worker for both repositories' moves and for the pull requests and issues
+ * that carry them, list what the cluster's pods run, compare the two, and append the day as `patching.read` when it
+ * differs from the last, or when the last is `KEEP_DAY_HOURS` old though nothing changed, so a quiet day reads apart
+ * from a sense that stopped. It keeps nothing between passes: the last day is the store's, so a restart appends nothing
+ * new unless something changed.
  *
- * A read that fails, of either repository or of the cluster, appends nothing and says so: a day is never made from part
- * of what it says. A pass the worker's door refused outright, as when a deploy restarts the sense and the worker
+ * A read that fails, of either repository's moves or pull requests or of the cluster, appends nothing and says so: a
+ * day is never made from part of what it says. A pass the worker's door refused outright, as when a deploy restarts the sense and the worker
  * together and the sense reads first, or the store refused it, is taken again shortly, for about five minutes, before it
  * counts as failed. It
  * acts only on a store of real events, or one that holds none yet: samples are not the factory's work.
@@ -17,14 +18,18 @@ import type { Sql } from 'postgres';
 import type { Moves } from '../github/scanning.ts';
 import type { Outbox } from '../outbox.ts';
 import { compare } from './compare.ts';
-import { type Day, dayOf, type RepositoryRead, sameDay, scannedOf } from './day.ts';
+import { type Day, dayOf, type PatchPull, type RepositoryRead, sameDay, scannedOf } from './day.ts';
 import type { RunningContainer } from './running.ts';
-import { type Next, stale } from './schedule.ts';
+import { KEEP_DAY_HOURS, type Next } from './schedule.ts';
 import { sendsOf } from './sends.ts';
 
-/** What the sense reads through: the GitHub worker's read of the moves, and the cluster's pods. */
+/**
+ * What the sense reads through: the GitHub worker's reads of the moves and of the pull requests and issues that carry
+ * them, and the cluster's pods.
+ */
 export interface Senses {
   moves(repo: string): Promise<Moves>;
+  pulls(repo: string): Promise<{ repository: string; pulls: PatchPull[] }>;
   running(): Promise<RunningContainer[]>;
 }
 
@@ -65,23 +70,26 @@ export function refused(error: unknown): boolean {
 }
 
 /**
+ * Whether the GitHub worker answered that it cannot give the read yet: it has just started, and its watches have not
+ * each made a pass (503, `not-read-yet`); or a worker from before the read was served still answers, as one does for a
+ * moment while a deploy replaces it beside the sense (404, `not-found`). Taken again shortly, as a refused connection
+ * is, so a deploy costs the day minutes and not an hour; past `MOST_REFUSED` it counts as failed.
+ */
+export function unread(error: unknown): boolean {
+  const e = error as { status?: unknown; kind?: unknown };
+  return (e?.status === 503 && e.kind === 'not-read-yet') || (e?.status === 404 && e.kind === 'not-found');
+}
+
+/**
  * How many refused passes in a row before they count as a failure: the 21st some five minutes after the first. A
  * worker a deploy recreates pulls its image and listens within that, and on a new cluster the network policy has
  * refused a new pod's connections for up to 2.5 minutes (platform run 43268720731); five is twice that.
  */
 export const MOST_REFUSED = 21;
 
-/**
- * When the next pass is, after this one (`schedule.ts`), and why when it is sooner than the day's: a pass refused, a
- * read that failed, or a day read from yesterday's scan.
- */
-export function nextAfter(result: Pass, now: number): { next: Next; why?: 'refused' | 'failed' | 'stale' } {
-  if (result.pass === 'refused') return { next: 'shortly', why: 'refused' };
-  if (result.pass === 'failed') return { next: 'hour', why: 'failed' };
-  if (result.pass === 'not-real') return { next: 'daily' };
-  return result.day.repositories.some((r) => stale(r.run.finished, now))
-    ? { next: 'hour', why: 'stale' }
-    : { next: 'daily' };
+/** When the next pass is, after this one (`schedule.ts`): shortly after a pass refused, else an hour on. */
+export function nextAfter(result: Pass): { next: Next } {
+  return { next: result.pass === 'refused' ? 'shortly' : 'hour' };
 }
 
 /**
@@ -144,11 +152,18 @@ export class PatchingSense {
   async #pass(): Promise<Pass> {
     if ((await storeKind(this.#sql)) === 'sample') return { pass: 'not-real' };
     const asked: { what: string; worker?: true; read: () => Promise<unknown> }[] = [
-      ...this.#repositories.map((repo) => ({
-        what: `the moves of ${repo}`,
-        worker: true as const,
-        read: () => this.#senses.moves(repo),
-      })),
+      ...this.#repositories.flatMap((repo) => [
+        { what: `the moves of ${repo}`, worker: true as const, read: () => this.#senses.moves(repo) },
+        {
+          what: `the pull requests of ${repo}`,
+          worker: true as const,
+          read: async () => {
+            const read = await this.#senses.pulls(repo);
+            if (read.repository !== repo) throw new Error(`the worker answered for ${read.repository}`);
+            return read.pulls;
+          },
+        },
+      ]),
       { what: "the cluster's pods", read: () => this.#senses.running() },
     ];
     const answers = await Promise.allSettled(asked.map(({ read }) => read()));
@@ -159,7 +174,10 @@ export class PatchingSense {
     // in a row, before it is a failure. A refusal of the cluster's own read is a failure at once.
     const doorRefused =
       failed.length > 0 &&
-      answers.every((answer, i) => answer.status === 'fulfilled' || (asked[i]?.worker && refused(answer.reason)));
+      answers.every(
+        (answer, i) =>
+          answer.status === 'fulfilled' || (asked[i]?.worker && (refused(answer.reason) || unread(answer.reason))),
+      );
     if (doorRefused && this.#refused + 1 < MOST_REFUSED) {
       this.#refused++;
       this.#log.info(
@@ -174,7 +192,10 @@ export class PatchingSense {
       return { pass: 'failed', failed };
     }
     const values = answers.map((answer) => (answer as PromiseFulfilledResult<unknown>).value);
-    const reads: RepositoryRead[] = this.#repositories.map((_, i) => ({ moves: values[i] as Moves }));
+    const reads: RepositoryRead[] = this.#repositories.map((_, i) => ({
+      moves: values[2 * i] as Moves,
+      pulls: values[2 * i + 1] as PatchPull[],
+    }));
     const containers = values.at(-1) as RunningContainer[];
 
     const lists = reads.map(({ moves }) => ({ repository: moves.repository, scanned: scannedOf(moves) }));
@@ -185,10 +206,14 @@ export class PatchingSense {
         { without: lists.filter((l) => !l.scanned.length).map((l) => l.repository) },
         'patching: a scan wrote no list of what it read, so the cluster is not compared with it',
       );
-    const day = dayOf(reads, containers.length, compared ? compare(containers, lists) : null);
+    const now = this.#now();
+    const day = dayOf(reads, containers.length, compared ? compare(containers, lists) : null, now);
 
-    const unchanged = sameDay(day, await this.#last());
-    if (!unchanged) await this.#events.append(dayEvent(day, this.#now()));
+    const last = await this.#last();
+    // A day unchanged is appended again once the last is `KEEP_DAY_HOURS` old, so a quiet day reads apart from a
+    // sense that stopped.
+    const unchanged = sameDay(day, last?.day ?? null) && now.getTime() - (last?.at ?? 0) < KEEP_DAY_HOURS * 3_600_000;
+    if (!unchanged) await this.#events.append(dayEvent(day, now));
     // Every pass that reads sends, the day changed or not: the same send has the same id, and the inbox keeps the first,
     // so a sense restarted sends nothing twice, and a send that failed goes again at the next pass.
     const unsent = await this.#send(reads.map((read) => read.moves));
@@ -234,14 +259,14 @@ export class PatchingSense {
     return failed;
   }
 
-  /** The last day appended, which the sense's role alone appends and reads. */
-  async #last(): Promise<Day | null> {
-    const [row] = await this.#sql<{ type: string; version: number; payload: unknown }[]>`
-      select type, version, payload from events where type = 'patching.read' order by seq desc limit 1`;
+  /** The last day appended, and when, which the sense's role alone appends and reads. */
+  async #last(): Promise<{ day: Day; at: number } | null> {
+    const [row] = await this.#sql<{ type: string; version: number; payload: unknown; ts: Date }[]>`
+      select type, version, payload, ts from events where type = 'patching.read' order by seq desc limit 1`;
     if (!row) return null;
     const read = upcast(row);
     if (!read.ok) throw new Error(`The last patching.read is version ${row.version}, newer than this sense's`);
-    return read.event.payload as Day;
+    return { day: read.event.payload as Day, at: row.ts.getTime() };
   }
 }
 

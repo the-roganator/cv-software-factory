@@ -499,7 +499,6 @@ const MERGE_SUMMARIES: Record<MergeHold, string> = {
   held: 'Held by the review gate: waiting for Martin',
   never: 'Waiting for Martin to merge',
   level: 'Waiting for Martin to merge, at this autonomy level',
-  'auto-merge': 'Waiting for Martin to merge, with auto-merge off',
   conflict: 'Waiting for Martin: it conflicts with main',
   queue: 'Waiting for Martin: the merge queue took it out',
   refused: 'Waiting for Martin: adding it to the merge queue was refused',

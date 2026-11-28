@@ -346,7 +346,7 @@ export const HOLD_CAUSES = [
   'beyond-ticket',
   /**
    * The change passed its gates and review, and waits for Martin to merge it: the line adds it to the merge queue
-   * itself only when the autonomy level, auto-merge and the review gate's verdict all allow (`MERGE_HOLDS` says why not).
+   * itself only when the autonomy level and the review gate's verdict both allow (`MERGE_HOLDS` says why not).
    */
   'merge',
   /**
@@ -383,9 +383,9 @@ export type DeployState = (typeof DEPLOY_STATES)[number];
 /**
  * Why the line has not added a deploy pull request whose checks passed to the merge queue, so that it waits for Martin:
  * the review gate did not pass its head as an exact pin; the autonomy level adds nothing to the queue by that rule
- * (Supervised); auto-merge is off; it conflicts with main; or the GitHub worker or GitHub refused to add it.
+ * (Supervised); it conflicts with main; or the GitHub worker or GitHub refused to add it.
  */
-export const DEPLOY_WAITS = ['verdict', 'level', 'auto-merge', 'conflict', 'refused'] as const;
+export const DEPLOY_WAITS = ['verdict', 'level', 'conflict', 'refused'] as const;
 export type DeployWait = (typeof DEPLOY_WAITS)[number];
 
 /**
@@ -454,8 +454,6 @@ export const MERGE_HOLDS = [
   'never',
   /** The gate passed it, by a rule the autonomy level does not let the line add it to the queue by. */
   'level',
-  /** The gate passed it, by a rule the level allows, but auto-merge is off. */
-  'auto-merge',
   /** It conflicts with main. */
   'conflict',
   /** The merge queue took it out without merging it. */
@@ -467,10 +465,10 @@ export type MergeHold = (typeof MERGE_HOLDS)[number];
 
 /**
  * Martin's controls of the line, from the console's Controls (the admin service): the autonomy level, whether agents
- * take new work, whether low-risk changes merge by themselves, what the line takes, and whether a canary the analysis
- * judges bad rolls back by itself or pauses for him.
+ * take new work, what the line takes, and whether a canary the analysis judges bad rolls back by itself or pauses for
+ * him.
  */
-export const LINE_CONTROLS = ['autonomy', 'new-work', 'auto-merge', 'take', 'auto-rollback'] as const;
+export const LINE_CONTROLS = ['autonomy', 'new-work', 'take', 'auto-rollback'] as const;
 export type LineControl = (typeof LINE_CONTROLS)[number];
 
 /** What the line takes: every ticket, the next few from when Martin set it, or just one work item. */
@@ -602,6 +600,75 @@ export type ScanSeverity = (typeof SCAN_SEVERITIES)[number];
  */
 export const SCAN_FAILURES = ['overdue', 'due-within-a-day', 'new-high-or-critical', 'other'] as const;
 export type ScanFailure = (typeof SCAN_FAILURES)[number];
+
+/**
+ * What carries a move on GitHub, as the GitHub worker reads it for the dependency sense (`patching.read`'s `pulls`): the
+ * App's pin pull request, the App's issue for a move it may not make, or a pull request of Dependabot's that the worker
+ * watches for the same pin.
+ */
+export const PATCH_PULL_KINDS = ['pin', 'issue', 'dependabot'] as const;
+export type PatchPullKind = (typeof PATCH_PULL_KINDS)[number];
+
+/** Where a pull request or issue that carries a move stands: open, merged, or closed without a merge. */
+export const PATCH_PULL_STATES = ['open', 'merged', 'closed'] as const;
+export type PatchPullState = (typeof PATCH_PULL_STATES)[number];
+
+/**
+ * Why an open pull request that carries a move is not in the merge queue, in the GitHub worker's words for it: the
+ * review gate has not judged its head yet (`verdict`), or held it as code-owned or risky (`held`), or held it because
+ * Martin asked for changes, which lasts at every head (`changes-requested`); it passed by a rule the autonomy level does
+ * not queue, as a major below Lights-out (`level`); the line is stopped (`stopped`); its checks are running (`checks`);
+ * its required checks failed on every try the worker gives a head (`checks-spent`), or the queue took it out on every
+ * try (`queue-spent`); a person took its head out of the queue (`dequeued`); it conflicts with `main` (`conflict`);
+ * someone but the App took its label off (`label`); or it is Martin's to merge at every level, as a third-party
+ * action's pull request of Dependabot's is (`martin`).
+ */
+export const PATCH_HOLDS = [
+  'verdict',
+  'held',
+  'changes-requested',
+  'level',
+  'stopped',
+  'checks',
+  'checks-spent',
+  'queue-spent',
+  'dequeued',
+  'conflict',
+  'label',
+  'martin',
+] as const;
+export type PatchHold = (typeof PATCH_HOLDS)[number];
+
+/**
+ * Why the App opened an issue for a move rather than a pull request, by what the issue asks of Martin: a bench run on
+ * Claude (`bench`); a line no longer built (`none`); a workflow's pin, which the App never writes (`workflow`); the
+ * cluster's own command (`cluster`); a move whose merge was undone on `main` (`reverted`), or one made with it
+ * (`with-reverted`); a branch another's pull request stands on (`branch-held`); GitHub refused the pull request
+ * (`open-refused`); a branch whose closed pull requests the watch cannot all read (`history-unread`); the scan's pin
+ * step refused it (`refused`, with its kind); or more than its pins' lines to write (`other`).
+ */
+export const PATCH_ISSUES = [
+  'bench',
+  'none',
+  'workflow',
+  'cluster',
+  'reverted',
+  'with-reverted',
+  'branch-held',
+  'open-refused',
+  'history-unread',
+  'refused',
+  'other',
+] as const;
+export type PatchIssue = (typeof PATCH_ISSUES)[number];
+
+/** The kinds of refusal the scan's pin step gives a move (apps/factory/src/github/pins.ts's `RefusalKind`). */
+export const PIN_REFUSALS = ['young', 'provenance', 'script', 'override', 'resolved', 'lock', 'other'] as const;
+export type PinRefusal = (typeof PIN_REFUSALS)[number];
+
+/** Why a fix that exists is no move today (`moves.json`'s `waiting`): its content's day, or no release better. */
+export const WAITING_WHYS = ['content', 'no-better'] as const;
+export type WaitingWhy = (typeof WAITING_WHYS)[number];
 
 /**
  * What the dependency sense found when it compared the images the cluster's pods run with the scan's list, each a row

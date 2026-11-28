@@ -21,8 +21,8 @@
  *   on the head runs, or concluded with a hold marked `pending` less than `PENDING_LIMIT_MS` ago, it is still being
  *   judged, and the record says its checks are running (`gateJudging`): the gate is not among the checks `judge` waits
  *   for;
- * - the autonomy level adds to the queue by that rule, with auto-merge on (`ENQUEUES`, `policy/line.ts`): at Guarded
- *   and Lights-out, never at Supervised;
+ * - the autonomy level adds to the queue by that rule (`ENQUEUES`, `policy/line.ts`): at Guarded and Lights-out,
+ *   never at Supervised;
  * - it does not conflict with main, and the GitHub worker and GitHub add it.
  *
  * It does so once for each head: once it has added it (`queued`), the queue merges it, which the read of the pull
@@ -84,21 +84,19 @@ export function deployState(
 
 /**
  * Why the line does not add a deploy pull request whose checks passed at `head` to the merge queue, by the gate's
- * verdict and Martin's controls, or undefined when it may: only an exact pin of that head, at a level that adds one,
- * with auto-merge on.
+ * verdict and Martin's autonomy level, or undefined when it may: only an exact pin of that head, at a level that adds
+ * one.
  */
 export function deployWait(
   verdict: Pick<ReviewVerdict, 'head' | 'judged'>,
   head: string,
-  merging: Pick<Controls, 'autonomy' | 'autoMerge'>,
+  merging: Pick<Controls, 'autonomy'>,
 ): Pick<DeployChange, 'waits' | 'rule'> | undefined {
   const { judged } = verdict;
   // A verdict for another head says nothing of this one, and a pending one says only that the gate has not judged.
   const of = verdict.head === head && judged?.head === head && judged.pending === undefined ? judged : null;
   if (of?.rule !== 'exact-pin') return { waits: 'verdict', ...(of ? { rule: of.rule } : {}) };
-  if (!enqueues({ autonomy: merging.autonomy, autoMerge: true }, 'exact-pin')) return { waits: 'level' };
-  if (!merging.autoMerge) return { waits: 'auto-merge' };
-  return undefined;
+  return enqueues(merging, 'exact-pin') ? undefined : { waits: 'level' };
 }
 
 /**
@@ -172,8 +170,6 @@ function waitWords({ waits, rule }: DeployChange): string {
       return `the review gate did not pass it as an exact pin${rule ? ` (${rule})` : ''}, so the line does not add it to the merge queue: it waits for Martin to merge it`;
     case 'level':
       return 'at Supervised the line adds nothing to the merge queue: it waits for Martin to merge it';
-    case 'auto-merge':
-      return 'with auto-merge off it waits for Martin to merge it';
     case 'conflict':
       return 'it conflicts with main: it waits for Martin';
     case 'refused':
@@ -327,10 +323,10 @@ export interface DeployContext {
   log: Logger;
   append: (workItem: string, drafts: Draft[]) => Promise<void>;
   /**
-   * Martin's autonomy level and auto-merge switch, as the line read them this pass, when it may add the deploy pull
-   * request to the merge queue: the app's alone. Without them it adds nothing, and records none of why.
+   * Martin's autonomy level, as the line read it this pass, when it may add the deploy pull request to the merge
+   * queue: the app's alone. Without it the line adds nothing, and records none of why.
    */
-  merging?: Pick<Controls, 'autonomy' | 'autoMerge'>;
+  merging?: Pick<Controls, 'autonomy'>;
   /**
    * Whether the line may add it this pass: not when it acts on one work item and the pull request carries another. What
    * it did at the head already is still followed, so the queue's word is recorded and a head is never added twice.
@@ -360,7 +356,7 @@ const doneAt = (records: readonly (DeployChange | undefined)[], { pullRequest, c
  * could not be read.
  */
 async function queueDeploy(
-  o: DeployContext & { merging: Pick<Controls, 'autonomy' | 'autoMerge'> },
+  o: DeployContext & { merging: Pick<Controls, 'autonomy'> },
   base: DeployChange,
   records: readonly (DeployChange | undefined)[],
   by: string,

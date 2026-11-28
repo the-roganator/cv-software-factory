@@ -52,6 +52,7 @@ const CHECKED_OUT: Record<string, string[]> = {
     'policy/branches.ts',
     'policy/repositories.ts',
     'policy/review-verdict.ts',
+    'policy/reviews.ts',
   ],
   'copilot-held-runs.yml': ['mise.toml', 'mise.lock', 'scripts/copilot-held-runs.ts'],
 };

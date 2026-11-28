@@ -38,7 +38,7 @@ export const VERSIONS = {
   // Release and verify
   'build.unsigned': 1,
   'build.signed': 1,
-  'deploy.changed': 3,
+  'deploy.changed': 4,
   'release.started': 3,
   'canary.stepped': 2,
   'canary.measuring': 1,
@@ -50,7 +50,7 @@ export const VERSIONS = {
   'signal.rechecked': 3,
   // Anywhere on the line
   'work.returned': 3,
-  'hold.started': 13,
+  'hold.started': 14,
   'hold.answered': 4,
   'action.refused': 3,
   'model.called': 2,
@@ -74,7 +74,7 @@ export const VERSIONS = {
   // Martin's settings: each agent's model and effort, and the spend caps (the admin service)
   'settings.changed': 1,
   // Martin's controls of the line: the autonomy level, the switches, and what the line takes (the admin service)
-  'controls.changed': 2,
+  'controls.changed': 3,
   // Whether alerts reach Martin's phone (the admin service)
   'alerts.switched': 1,
   // Martin's stage of a feature flag (the admin service), Verify's comparison of its two sides at the share stage, and
@@ -85,7 +85,7 @@ export const VERSIONS = {
   // Martin's request for an improvement, in his own words (the admin service), with the work item it opens
   'improvement.requested': 1,
   // The day's moves for both repositories, and what the cluster runs that the scan's list does not say (the dependency sense)
-  'patching.read': 4,
+  'patching.read': 5,
 } as const;
 
 export type EventType = keyof typeof VERSIONS;

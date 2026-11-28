@@ -1,21 +1,27 @@
 /**
  * Patching's view, for its summary and its sheet alike, worked out once for each view the console draws, whichever of
- * them asks first, from the fold it was drawn from (the events by its time and the work items). It is kept while what
+ * them asks first, from the fold it was drawn from (the events by its time and the work items): the sense's last day,
+ * and the days of the 28 before it, which Done is worked out from. It is kept while what
  * it reads is the same, the same object, so an event that changes nothing here renders nothing in either. Nothing is
  * held but by the views and events it was worked out from. Plain TypeScript, which Node tests directly.
  */
 import { foldOf, type View } from '../projection/index.ts';
 import type { ItemState } from '../projection/items.ts';
-import { dayView, lastRead, type PatchingView } from '../projection/patching.ts';
+import { readAt } from '../projection/patch-needs.ts';
+import { daysBefore, dayView, lastRead, type PatchingView } from '../projection/patching.ts';
 
 /**
- * What the view reads of the work items: those that carry a dependency, by where each stands. Two folds that agree on
- * this give the same view, so a new event elsewhere keeps it.
+ * What the view reads of the work items: those that carry a dependency, by where each stands and how many signals it
+ * has, whose newest gives a line move's findings. Two folds that agree on this give the same view, so a new event
+ * elsewhere keeps it.
  */
 const carriedKey = (items: readonly ItemState[]) =>
   items
     .filter((item) => item.dependency)
-    .map((item) => `${item.number}:${item.stage}:${item.closedAt ?? ''}:${item.dependency?.name}`)
+    .map((item) => {
+      const signals = item.events.filter((event) => event.type === 'signal.received').length;
+      return `${item.number}:${item.stage}:${item.closedAt ?? ''}:${item.dependency?.name}:${signals}`;
+    })
     .join(' ');
 
 /** A minute's resolution is all a deadline's words need. */
@@ -43,7 +49,11 @@ export function patchingOf(drawn: View): PatchingView {
   if (read) {
     const carried = carriedKey(items);
     const kept = byDay.get(read);
-    view = kept?.carried === carried ? kept.view : dayView(read.payload, Date.parse(read.ts), items);
+    // The days before the last are older than it, so a day's view is the same whatever arrives after it.
+    view =
+      kept?.carried === carried
+        ? kept.view
+        : dayView(read.payload, Date.parse(read.ts), items, daysBefore(events, read), readAt(read));
     if (kept?.view !== view) byDay.set(read, { carried, view });
   }
   answered.set(drawn, view);

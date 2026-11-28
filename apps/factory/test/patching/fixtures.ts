@@ -5,6 +5,7 @@
  */
 import type { Moves } from '../../src/github/scanning.ts';
 import type { ScannedImage } from '../../src/patching/compare.ts';
+import type { PatchPull } from '../../src/patching/day.ts';
 
 export const FACTORY = 'the-roganator/cv-software-factory';
 export const APP = 'the-roganator/cv-worlds-worst-website';
@@ -139,8 +140,76 @@ export function factoryMoves(scanned: ScannedImage[] = FACTORY_SCANNED): Moves {
         findings: [],
       },
     ],
+    waiting: [
+      {
+        index: 1,
+        name: 'docker.io/example/cache',
+        pins: [{ file: 'deploy/base/cache/statefulset.yaml', line: 21 }],
+        from: '8.2.1',
+        lockfile: false,
+        why: 'no-better',
+        clears: { ...zero, HIGH: 1 },
+        deadline: '2026-11-25T04:57:00Z',
+        findings: [{ advisory: 'CVE-2026-2002', package: 'libexample', severity: 'HIGH' }],
+      },
+      {
+        index: 2,
+        name: 'docker.io/example/queue',
+        pins: [{ file: 'deploy/base/queue/deployment.yaml', line: 9 }],
+        from: '7.4.0',
+        lockfile: false,
+        why: 'content',
+        to: `image 7.4.1@${digest(12)}`,
+        until: '2026-11-12T04:57:00Z',
+        clears: zero,
+        routine: true,
+        findings: [],
+      },
+    ],
   };
 }
+
+/**
+ * The pull requests and issues that carry the factory's moves, as the worker's `pulls` read gives them: the image's
+ * pin pull request, its checks spent; the lockfile's move refused by the pin step; and Dependabot's, merged.
+ */
+export function factoryPulls(): { repository: string; pulls: PatchPull[] } {
+  return {
+    repository: FACTORY,
+    pulls: [
+      {
+        kind: 'pin',
+        number: 1224,
+        moves: [{ name: 'quay.io/example/k8s-sidecar', lockfile: false }],
+        opened: '2026-11-10T05:10:00Z',
+        state: 'open',
+        rule: 'move',
+        checks: { state: 'failed', try: 3, of: 3, failed: [{ name: 'static checks', run: 42000000301 }] },
+        queued: false,
+        hold: 'checks-spent',
+      },
+      {
+        kind: 'issue',
+        number: 1211,
+        moves: [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true, package: 'example-parser' }],
+        opened: '2026-11-10T05:10:00Z',
+        state: 'open',
+        issue: 'refused',
+        refusal: 'provenance',
+      },
+      {
+        kind: 'dependabot',
+        number: 1180,
+        moves: [{ name: 'docker.io/example/proxy', lockfile: false }],
+        opened: '2026-11-02T05:10:00Z',
+        state: 'merged',
+        settled: '2026-11-04T09:00:00Z',
+      },
+    ],
+  };
+}
+
+export const appPulls = (): { repository: string; pulls: PatchPull[] } => ({ repository: APP, pulls: [] });
 
 export function appMoves(scanned: ScannedImage[] = APP_SCANNED): Moves {
   return {
@@ -160,6 +229,7 @@ export function appMoves(scanned: ScannedImage[] = APP_SCANNED): Moves {
       scanned,
     },
     moves: [],
+    waiting: [],
   };
 }
 

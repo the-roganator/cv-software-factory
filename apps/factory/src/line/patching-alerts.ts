@@ -7,9 +7,14 @@
  * move, ever, so nothing repeats on a timer, and a day has at most a message or two for a move:
  *
  * - `move-fix`: a move first clears a High or a Critical, which a fix the scan found has given it;
- * - `move-waits`: a move a finding asks for first waits on him: its lane is his cluster's own command or an issue, or
- *   it is a row the sense made of what the cluster runs (a k3s the cluster has not moved to, a routine update's too).
- *   Each is a card in Needs you. A line no longer built (`none`) is none: its issue in its repository tells him;
+ * - `move-waits`: a move a finding asks for first waits on him: its lane is his cluster's own command, an issue, or no
+ *   one's (`none`, a line no longer built, whose issue asks him to mend or remove it), or it is a row the sense made of
+ *   what the cluster runs (a k3s the cluster has not moved to, a routine update's too);
+ * - `move-stopped`: the factory tried a move and stopped (`stopped`), once for each pull request, issue or pin and
+ *   why: a pull request whose required checks failed on every try, or that the merge queue took out on every try (not
+ *   one that conflicts with `main`, which the pin watch makes again on its head); an issue for a move the scan's pin step refused, whose branch another's pull request stands
+ *   on, whose pull request GitHub refused, or whose branch's closed pull requests the watch could not all read; or a pin
+ *   a finding with a deadline asks to move that no release is better than. A routine update's never is;
  * - `move-due-soon`: a move still in the sense's last day comes within a day of its deadline. One first seen within a
  *   day of it, or past it, is told by `move-fix` alone, which says it is due; one that passes its deadline unjudged
  *   before (the line was down) is counted here as it is counted overdue, so a line that reads the store again counts
@@ -28,15 +33,25 @@
  *
  * And he hears when the scan stops (`staleScans`): a repository whose newest scan in the sense's days judged its moves
  * more than `SCAN_MAX_AGE_HOURS` ago, by the clock. No day arriving is the same to it as a day with no newer scan, so
- * it says so whether the scan has stopped running, fails before it judges, or the sense can no longer read it. It is a
- * condition, not a count: it ends when a day arrives with a scan judged since. A repository no scan has judged yet is
- * measured from the first day that says so, and a store with no day at all, as a new cluster's is until the sense's
- * first read, has nothing to measure from: nothing is stale there.
+ * it says so whether the scan has stopped running, fails before it judges, or the sense can no longer read it. And
+ * he hears when the sense stops (`senseStaleFor`): no day has arrived in `SENSE_MAX_AGE_HOURS`, though the sense
+ * appends one at least every `KEEP_DAY_HOURS`. Each is a condition, not a count, given as how long it has stood, so its
+ * rule tells him once: it ends when a day arrives with a scan judged since, or a day at all. A repository no scan has
+ * judged yet is measured from the first day that says so, and a store with no day at all, as a new cluster's is until
+ * the sense's first read, has nothing to measure from: nothing is stale there.
  */
 import type { PayloadOf } from '@software-factory/events';
 import { SCAN_MAX_AGE_HOURS } from '../../../../policy/vulnerabilities.ts';
+import { KEEP_DAY_HOURS } from '../patching/schedule.ts';
 
-export const PATCHING_KINDS = ['move-fix', 'move-waits', 'move-due-soon', 'move-overdue', 'app-fix-merged'] as const;
+export const PATCHING_KINDS = [
+  'move-fix',
+  'move-waits',
+  'move-stopped',
+  'move-due-soon',
+  'move-overdue',
+  'app-fix-merged',
+] as const;
 export type PatchingKind = (typeof PATCHING_KINDS)[number];
 
 /** The one role whose merges are read: the line's (0023's `line_only_event`). */
@@ -47,11 +62,57 @@ export const PATCHING_ROLE = 'factory_patching';
 
 type Day = PayloadOf<'patching.read'>;
 type Move = Day['repositories'][number]['moves'][number];
+type Pull = Day['repositories'][number]['pulls'][number];
+type Waiting = Day['repositories'][number]['waiting'][number];
 
-const DAY = 24 * 3_600_000;
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 
-/** The lanes only Martin moves: his cluster's own command, and what no pull request of the App's can write. */
-const HIS: readonly Move['lane'][] = ['cluster', 'issue'];
+/**
+ * The lanes only Martin moves: his cluster's own command, what no pull request of the App's can write, and a line no
+ * longer built, which nobody's pull request can move.
+ */
+const HIS: readonly Move['lane'][] = ['cluster', 'issue', 'none'];
+
+/**
+ * Why an open pull request stopped: its checks spent, or the queue's tries spent. Not a conflict with `main`: the pin
+ * watch commits the move again on `main`'s head within the hour.
+ */
+const STOPPED_HOLDS: readonly NonNullable<Pull['hold']>[] = ['checks-spent', 'queue-spent'];
+
+/** Why the App opened an issue for a move it tried: refused, a branch held, GitHub refusing, or history unread. */
+const STOPPED_ISSUES: readonly NonNullable<Pull['issue']>[] = [
+  'refused',
+  'branch-held',
+  'open-refused',
+  'history-unread',
+];
+
+/**
+ * Why a pull request or issue that carries a move was tried and stopped, as a key that is the same on every day it
+ * stands: its repository, its number and why; nothing for one that waits for anything else, or has settled.
+ */
+function stopped(repository: string, pull: Pull): string | null {
+  if (pull.state !== 'open') return null;
+  const which = `${repository} #${pull.number ?? pull.moves.map((move) => move.name).join(' ')}`;
+  if (pull.kind === 'issue')
+    return pull.issue && STOPPED_ISSUES.includes(pull.issue)
+      ? `${which} ${pull.issue}${pull.refusal ? ` ${pull.refusal}` : ''}`
+      : null;
+  return pull.hold && STOPPED_HOLDS.includes(pull.hold) ? `${which} ${pull.hold}` : null;
+}
+
+/** A pin a finding with a deadline asks to move that no release is better than; never a routine update's. */
+const noBetter = (repository: string, wait: Waiting) =>
+  wait.why === 'no-better' && wait.deadline !== undefined && !wait.routine
+    ? `${repository} ${wait.name} no-better`
+    : null;
+
+/**
+ * How long without a day before Martin hears that the sense has stopped: it reads each hour, and appends a day at least
+ * every 12 hours (`KEEP_DAY_HOURS`), so two of those missed, and two hours' reads more.
+ */
+export const SENSE_MAX_AGE_HOURS = 2 * KEEP_DAY_HOURS + 2;
 
 /**
  * Whether a day's move is a routine update, as moves.ts's `isRoutine` says of the scan's own: it clears nothing and has
@@ -60,15 +121,16 @@ const HIS: readonly Move['lane'][] = ['cluster', 'issue'];
 const routine = (move: Move) => Object.values(move.clears).every((count) => count === 0) && move.lane !== 'none';
 
 /**
- * The counts so far, what each has counted, and the deadlines of the last day's moves, by move; and for each
- * repository the days have named, when its newest scan judged its moves, or, while none has, when the first day arrived
- * that said so.
+ * The counts so far, what each has counted, and the deadlines of the last day's moves, by move; for each repository
+ * the days have named, when its newest scan judged its moves, or, while none has, when the first day arrived that said
+ * so; and when the last day arrived, or null before the first.
  */
 export interface PatchingTally {
   kinds: Record<PatchingKind, number>;
   counted: Record<PatchingKind, Set<string>>;
   deadlines: Map<string, number>;
   scans: Map<string, { judged: boolean; at: number }>;
+  lastDay: number | null;
 }
 
 export const emptyPatchingTally = (): PatchingTally => ({
@@ -79,6 +141,7 @@ export const emptyPatchingTally = (): PatchingTally => ({
   >,
   deadlines: new Map(),
   scans: new Map(),
+  lastDay: null,
 });
 
 /** Counts a kind for a key, once ever. */
@@ -124,8 +187,27 @@ export function judgeDeadlines(tally: PatchingTally, t: number): void {
  */
 export function addDay(tally: PatchingTally, day: Day, at: number): void {
   judgeDeadlines(tally, at);
+  tally.lastDay = Math.max(tally.lastDay ?? at, at);
   const deadlines = new Map<string, number>();
   for (const repository of day.repositories) {
+    // What was tried and stopped, whether or not the scan judged its moves today: its pull requests stand apart. A day
+    // stored before the sense read them has neither its pull requests nor its waits.
+    const { pulls = [], waiting = [] }: Partial<Pick<typeof repository, 'pulls' | 'waiting'>> = repository;
+    // A routine update tried and stopped sends nothing, as a routine wait does: nothing is due. A pull request carries
+    // a routine move alone when every move of the day it names is one; one it names that the day no longer lists, or a
+    // lockfile's the day names by its file, counts as not routine, so a stop is said rather than missed.
+    const routineNames = new Set(repository.moves.filter(routine).map((move) => move.name));
+    const notRoutine = new Set(repository.moves.filter((move) => !routine(move)).map((move) => move.name));
+    const routineAlone = (pull: Pull) =>
+      pull.moves.every((move) => routineNames.has(move.name) && !notRoutine.has(move.name));
+    for (const pull of pulls) {
+      const key = stopped(repository.repository, pull);
+      if (key && !routineAlone(pull)) once(tally, 'move-stopped', key);
+    }
+    for (const wait of waiting) {
+      const key = noBetter(repository.repository, wait);
+      if (key) once(tally, 'move-stopped', key);
+    }
     const scan = tally.scans.get(repository.repository);
     if (repository.judged !== null) {
       const judged = Date.parse(repository.judged);
@@ -157,14 +239,33 @@ export function addDay(tally: PatchingTally, day: Day, at: number): void {
 }
 
 /**
- * Each repository the days have named, and whether its scan is stale at t: its newest judged its moves more than
- * `SCAN_MAX_AGE_HOURS` before, or none has in that long since the first day that named it.
+ * How long, at t, something last seen at `at` has been older than `hours`, in seconds rounded up, as this line has
+ * seen it: measured from that age, or from `since` (when this line began reading) if later, so a cluster that wakes
+ * with an old day is measured from its waking, as the sense reads within minutes of starting; 0 while it is not that
+ * old.
  */
-export function staleScans(tally: PatchingTally, t: number): { repository: string; stale: boolean }[] {
+function staleFor(at: number, hours: number, t: number, since: number): number {
+  if (t - at <= hours * HOUR) return 0;
+  return Math.max(0, Math.ceil((t - Math.max(at + hours * HOUR, since)) / 1000));
+}
+
+/**
+ * Each repository the days have named, and how long its scan has been stale at t (`staleFor`): its newest judged its
+ * moves more than `SCAN_MAX_AGE_HOURS` before, or none has in that long since the first day that named it.
+ */
+export function staleScans(tally: PatchingTally, t: number, since: number): { repository: string; staleFor: number }[] {
   return [...tally.scans].map(([repository, scan]) => ({
     repository,
-    stale: t - scan.at > SCAN_MAX_AGE_HOURS * 3_600_000,
+    staleFor: staleFor(scan.at, SCAN_MAX_AGE_HOURS, t, since),
   }));
+}
+
+/**
+ * How long the sense has been stale at t (`staleFor`): its last day arrived more than `SENSE_MAX_AGE_HOURS` before.
+ * Null before any day, when there is nothing to measure from.
+ */
+export function senseStaleFor(tally: PatchingTally, t: number, since: number): number | null {
+  return tally.lastDay === null ? null : staleFor(tally.lastDay, SENSE_MAX_AGE_HOURS, t, since);
 }
 
 /**
@@ -190,4 +291,5 @@ export const copyPatchingTally = (tally: PatchingTally): PatchingTally => ({
   >,
   deadlines: new Map(tally.deadlines),
   scans: new Map(tally.scans),
+  lastDay: tally.lastDay,
 });

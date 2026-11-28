@@ -14,6 +14,8 @@ import {
   emptyPatchingTally,
   judgeDeadlines,
   type PatchingTally,
+  SENSE_MAX_AGE_HOURS,
+  senseStaleFor,
   staleScans,
 } from '../../src/line/patching-alerts.ts';
 
@@ -25,6 +27,7 @@ const H = 3_600_000;
 const at = (iso: string) => Date.parse(iso);
 /** The day's scan, a little after it ran. */
 const READ = at('2026-11-11T05:10:00Z');
+const READ_ISO = new Date(READ).toISOString();
 
 const kinds = (tally: PatchingTally) => ({ ...tally.kinds });
 const moved = (day: Day, change: (move: Day['repositories'][number]['moves'][number]) => object): Day => ({
@@ -117,6 +120,8 @@ describe('the moves Martin hears of, on the sense’s day', () => {
         ...r,
         totals: r.totals && { ...r.totals, noFix: 15_000, newHighWithoutFix: 35 },
         moves: [],
+        waiting: [],
+        pulls: [],
       })),
     };
     addDay(tally, noFix, READ);
@@ -142,6 +147,7 @@ describe('the moves Martin hears of, on the sense’s day', () => {
     expect(kinds(tally)).toEqual({
       'move-fix': 0,
       'move-waits': 0,
+      'move-stopped': 0,
       'move-due-soon': 0,
       'move-overdue': 0,
       'app-fix-merged': 0,
@@ -187,7 +193,7 @@ describe('the moves Martin hears of, on the sense’s day', () => {
     expect(tally.kinds['move-fix']).toBeGreaterThan(0);
   });
 
-  it('counts no line no longer built as waiting: it is no card in Needs you, and its issue tells him', () => {
+  it('counts a line no longer built as waiting on him: nobody’s pull request can move it, and its issue asks him', () => {
     const tally = emptyPatchingTally();
     const unbuilt = moved({ ...DAY, rows: [] }, (m) =>
       m.name === 'k3s'
@@ -195,9 +201,12 @@ describe('the moves Martin hears of, on the sense’s day', () => {
         : { clears: { critical: 0, high: 0, medium: 2, low: 0, unknown: 0 }, lane: 'none', deadline: undefined },
     );
     addDay(tally, unbuilt, READ);
-    // k3s alone, his cluster's: every other move of the day is on a line no longer built.
-    expect(unbuilt.repositories.flatMap((r) => r.moves).length).toBeGreaterThan(1);
-    expect(tally.kinds['move-waits']).toBe(1);
+    // k3s, his cluster's, and every other move of the day, each on a line no longer built.
+    const moves = unbuilt.repositories.flatMap((r) => r.moves).length;
+    expect(moves).toBeGreaterThan(1);
+    expect(tally.kinds['move-waits']).toBe(moves);
+    addDay(tally, unbuilt, READ + 24 * H);
+    expect(tally.kinds['move-waits']).toBe(moves);
   });
 
   it('has a move’s first High or Critical counted the day it gets one, not before', () => {
@@ -331,8 +340,8 @@ describe('a scan that stops', () => {
   const APP = 'the-roganator/cv-worlds-worst-website';
   /** The fixture's scans judged at 04:57 and 05:01 on the 11th. */
   const JUDGED = { [FACTORY]: at('2026-11-11T04:57:00Z'), [APP]: at('2026-11-11T05:01:00Z') };
-  const stale = (tally: PatchingTally, t: number) =>
-    Object.fromEntries(staleScans(tally, t).map((each) => [each.repository, each.stale]));
+  const stale = (tally: PatchingTally, t: number, since = READ) =>
+    Object.fromEntries(staleScans(tally, t, since).map((each) => [each.repository, each.staleFor > 0]));
   const scanned = (day: Day, judged: Record<string, string | null>): Day => ({
     ...day,
     repositories: day.repositories.map((r) => ({ ...r, judged: judged[r.repository] ?? r.judged })),
@@ -343,7 +352,7 @@ describe('a scan that stops', () => {
   });
 
   it('says nothing before the sense’s first day: a new cluster has no scan to be old', () => {
-    expect(staleScans(emptyPatchingTally(), READ + 365 * 24 * H)).toEqual([]);
+    expect(staleScans(emptyPatchingTally(), READ + 365 * 24 * H, READ)).toEqual([]);
   });
 
   it('is stale for each repository once its newest scan judged more than the age ago, by the clock, with no day since', () => {
@@ -387,12 +396,199 @@ describe('a scan that stops', () => {
     expect(stale(tally, JUDGED[FACTORY] + 36 * H)).toEqual({ [FACTORY]: false, [APP]: false });
   });
 
+  it('says how long it has been stale, from its age or from when the line began reading, if later', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    const age = JUDGED[FACTORY] + 36 * H;
+    const of = (t: number, since: number) =>
+      staleScans(tally, t, since).find((e) => e.repository === FACTORY)?.staleFor;
+    expect(of(age + 10 * 60_000, READ)).toBe(600);
+    // A cluster that wakes days later: measured from the line's start, so the sense has its minutes to read.
+    expect(of(age + 72 * H, age + 72 * H - 60_000)).toBe(60);
+    expect(of(age + 72 * H, age + 72 * H)).toBe(0);
+  });
+
   it('is copied with the tally', () => {
     const tally = emptyPatchingTally();
     const copy = copyPatchingTally(tally);
     addDay(copy, DAY, READ);
     expect(tally.scans.size).toBe(0);
     expect(copyPatchingTally(copy).scans).toEqual(copy.scans);
+  });
+});
+
+describe('a sense that stops', () => {
+  it('is two of the days it keeps missed, and two hours’ reads more', () => {
+    expect(SENSE_MAX_AGE_HOURS).toBe(26);
+  });
+
+  it('says nothing before the sense’s first day', () => {
+    expect(senseStaleFor(emptyPatchingTally(), READ + 365 * 24 * H, READ)).toBeNull();
+  });
+
+  it('is stale once no day has arrived in that age, by the clock, and ends when one does', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    expect(senseStaleFor(tally, READ + 26 * H, READ)).toBe(0);
+    expect(senseStaleFor(tally, READ + 26 * H + 15 * 60_000, READ)).toBe(900);
+    // The same day again, as the sense appends it every 12 hours though nothing changed, ends it.
+    addDay(tally, DAY, READ + 27 * H);
+    expect(senseStaleFor(tally, READ + 27 * H + 60_000, READ)).toBe(0);
+    expect(senseStaleFor(tally, READ + 53 * H + 1000, READ)).toBe(1);
+  });
+
+  it('is measured from when the line began reading, for a cluster that wakes with an old day', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    const woke = READ + 4 * 24 * H;
+    expect(senseStaleFor(tally, woke, woke)).toBe(0);
+    expect(senseStaleFor(tally, woke + 20 * 60_000, woke)).toBe(1200);
+  });
+
+  it('is copied with the tally', () => {
+    const tally = emptyPatchingTally();
+    const copy = copyPatchingTally(tally);
+    addDay(copy, DAY, READ);
+    expect(tally.lastDay).toBeNull();
+    expect(copyPatchingTally(copy).lastDay).toBe(READ);
+  });
+});
+
+describe('a move tried and stopped', () => {
+  type Pull = Day['repositories'][number]['pulls'][number];
+  type Waiting = Day['repositories'][number]['waiting'][number];
+  const none = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+  const open = (number: number, change: Partial<Pull>): Pull => ({
+    kind: 'pin',
+    number,
+    moves: [{ name: 'ghcr.io/example/sidecar', lockfile: false }],
+    opened: '2026-11-10T05:10:00Z',
+    state: 'open',
+    ...change,
+  });
+  const wait = (name: string, change: Partial<Waiting>): Waiting => ({
+    name,
+    pins: [{ file: 'deploy/base/cache/statefulset.yaml', line: 21 }],
+    from: '8.2.1',
+    why: 'no-better',
+    clears: { ...none, high: 1 },
+    deadline: '2026-11-25T04:57:00Z',
+    ...change,
+  });
+  /** The day, its first repository's pull requests and waits as given, and nothing else of the day's to count. */
+  const withPulls = (pulls: Pull[], waiting: Waiting[] = []): Day => ({
+    ...DAY,
+    rows: [],
+    repositories: DAY.repositories.map((r, i) => ({
+      ...r,
+      moves: [],
+      pulls: i === 0 ? pulls : [],
+      waiting: i === 0 ? waiting : [],
+    })),
+  });
+  const STOPPED = [
+    open(1224, { hold: 'checks-spent', checks: { state: 'failed', try: 3, of: 3, failed: [] } }),
+    open(1225, { hold: 'queue-spent' }),
+    open(1226, { kind: 'dependabot', hold: 'queue-spent' }),
+    open(1211, { kind: 'issue', issue: 'refused', refusal: 'provenance' }),
+    open(1212, { kind: 'issue', issue: 'branch-held' }),
+    open(1213, { kind: 'issue', issue: 'open-refused' }),
+    open(1214, { kind: 'issue', issue: 'history-unread' }),
+  ];
+
+  it('counts each pull request and issue the factory stopped trying, and a pin no release is better than, once each', () => {
+    const tally = emptyPatchingTally();
+    const day = withPulls(STOPPED, [wait('docker.io/example/cache', {})]);
+    addDay(tally, day, READ);
+    expect(tally.kinds['move-stopped']).toBe(8);
+    // Each hour the sense reads them again, and the 12th appends the day again: nothing new.
+    addDay(tally, day, READ + 12 * H);
+    addDay(tally, day, READ + 24 * H);
+    expect(tally.kinds['move-stopped']).toBe(8);
+    expect({ ...tally.kinds, 'move-stopped': 0 }).toEqual(kinds(emptyPatchingTally()));
+  });
+
+  it('counts none that waits for anything else, has settled, or is a routine update’s wait', () => {
+    const tally = emptyPatchingTally();
+    const day = withPulls(
+      [
+        open(1300, { hold: 'verdict' }),
+        open(1301, { hold: 'held' }),
+        open(1302, { hold: 'changes-requested' }),
+        open(1303, { hold: 'level' }),
+        open(1304, { hold: 'stopped' }),
+        open(1305, { hold: 'checks' }),
+        open(1306, { hold: 'dequeued' }),
+        open(1307, { hold: 'label' }),
+        open(1308, { kind: 'dependabot', hold: 'martin' }),
+        open(1309, { queued: true }),
+        open(1310, { kind: 'issue', issue: 'bench' }),
+        open(1311, { kind: 'issue', issue: 'none' }),
+        open(1312, { kind: 'issue', issue: 'workflow' }),
+        open(1313, { kind: 'issue', issue: 'cluster' }),
+        open(1314, { kind: 'issue', issue: 'reverted' }),
+        open(1315, { kind: 'issue', issue: 'other' }),
+        { ...open(1316, { kind: 'issue', issue: 'refused', refusal: 'young' }), state: 'closed', settled: READ_ISO },
+        { ...open(1317, {}), state: 'merged', settled: READ_ISO },
+      ],
+      [
+        wait('docker.io/example/routine', { clears: none, deadline: undefined, routine: true }),
+        wait('docker.io/example/undated', { deadline: undefined }),
+        wait('docker.io/example/queue', { why: 'content', to: 'image 7.4.1', until: '2026-11-12T04:57:00Z' }),
+      ],
+    );
+    addDay(tally, day, READ);
+    expect(tally.kinds['move-stopped']).toBe(0);
+  });
+
+  it('says nothing of a conflict with main, which the pin watch makes again on its head', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, withPulls([open(1224, { hold: 'conflict' })]), READ);
+    expect(tally.kinds['move-stopped']).toBe(0);
+  });
+
+  it('counts the same pull request again for a new reason, and the same reason on another', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, withPulls([open(1224, { hold: 'checks-spent' })]), READ);
+    addDay(tally, withPulls([open(1224, { hold: 'queue-spent' })]), READ + H);
+    addDay(tally, withPulls([open(1224, { hold: 'checks-spent' })]), READ + 2 * H);
+    addDay(tally, withPulls([open(1227, { hold: 'checks-spent' })]), READ + 3 * H);
+    expect(tally.kinds['move-stopped']).toBe(3);
+  });
+
+  it('counts the same after a restart that reads the days again', () => {
+    const days = [withPulls(STOPPED.slice(0, 3)), withPulls(STOPPED)];
+    const live = emptyPatchingTally();
+    days.forEach((day, i) => {
+      addDay(live, day, READ + i * H);
+    });
+    const again = emptyPatchingTally();
+    days.forEach((day, i) => {
+      addDay(again, day, READ + i * H);
+    });
+    expect(kinds(again)).toEqual(kinds(live));
+    expect(live.kinds['move-stopped']).toBe(STOPPED.length);
+  });
+
+  it('says nothing of a routine update tried and stopped, as of a routine wait: nothing is due', () => {
+    const none = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+    const routine = moved(DAY, ({ deadline: _, ...move }) => ({ ...move, deadline: undefined, clears: none }));
+    const tally = emptyPatchingTally();
+    addDay(tally, routine, READ);
+    expect(tally.kinds['move-stopped']).toBe(0);
+    // The same pull request carrying a fix is said once.
+    addDay(tally, DAY, READ + H);
+    expect(tally.kinds['move-stopped']).toBe(1);
+  });
+
+  it('reads a day stored before the sense read pull requests, which has none', () => {
+    const tally = emptyPatchingTally();
+    const before = {
+      ...DAY,
+      repositories: DAY.repositories.map(({ pulls: _p, waiting: _w, ...r }) => r),
+    } as unknown as Day;
+    addDay(tally, before, READ);
+    expect(tally.kinds['move-stopped']).toBe(0);
   });
 });
 

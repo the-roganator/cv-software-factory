@@ -56,9 +56,8 @@ export const GUARDRAIL_HOLDS: readonly HoldCause[] = [
 export const LINE_STEP_UP = { 'line.start': true, 'line.stop': false } as const;
 
 /**
- * Which changes of the line's controls ask for the passkey again: a looser autonomy level (`autonomy.loosen`),
- * auto-merge turned on (`auto-merge.on`), a wider take (`take.widen`) and auto-rollback turned off
- * (`auto-rollback.off`). Which action a change is, is
+ * Which changes of the line's controls ask for the passkey again: a looser autonomy level (`autonomy.loosen`), a
+ * wider take (`take.widen`) and auto-rollback turned off (`auto-rollback.off`). Which action a change is, is
  * `controlAction`'s in `policy/line.ts`, which the admin service decides by too.
  */
 export const CONTROL_STEP_UP: Record<ControlAction, boolean> = {
@@ -66,8 +65,6 @@ export const CONTROL_STEP_UP: Record<ControlAction, boolean> = {
   'autonomy.tighten': false,
   'new-work.on': false,
   'new-work.off': false,
-  'auto-merge.on': true,
-  'auto-merge.off': false,
   'take.widen': true,
   'take.narrow': false,
   'auto-rollback.off': true,

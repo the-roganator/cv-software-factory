@@ -6,7 +6,7 @@
  * key, and redacts anything shaped like a secret, because some fields (a gate's output, a log line) are copied
  * verbatim from places the factory does not control.
  */
-import type { View } from './types.ts';
+import type { PayloadOf, View } from './types.ts';
 import type { EventType } from './versions.ts';
 import { WITHHELD_PACKAGE } from './vocabulary.ts';
 
@@ -273,10 +273,45 @@ export const PUBLIC_VIEWS = {
         repositories: payload.repositories.map((day) => ({
           ...day,
           moves: day.moves.map(({ package: _withheld, ...move }) => move),
+          pulls: day.pulls.map(publicPull),
         })),
       },
     }),
 } satisfies { [K in EventType]: PublicViewOf<K> };
+
+type PatchPull = PayloadOf<'patching.read'>['repositories'][number]['pulls'][number];
+
+/** A time to its day, UTC: a withheld pull request's, which to the second would find it in GitHub's public lists. */
+const toDay = (ts: string) => `${ts.slice(0, 10)}T00:00:00Z`;
+
+/**
+ * A pull request or issue of the day as the public reads it (Martin's decision: a visitor never reads a vulnerable
+ * lockfile package, nor what it clears, nor what it waits for). One that carries no lockfile's move is public as GitHub
+ * shows it. One that does loses each move's package; once merged its fix is in `main`, and it is public whole. Until
+ * then it is `withheld`: no number, which GitHub's diff of it would name the package by, and its times to the day, so
+ * no list of GitHub's by time finds it; and while it waits on Martin (an issue, or a hold), nothing of what it waits
+ * for, nor its rule or checks. Applying it twice changes nothing.
+ */
+function publicPull(pull: PatchPull): PatchPull {
+  const lockfile = pull.withheld || pull.moves.some((move) => move.lockfile);
+  if (!lockfile) return pull;
+  const moves = pull.moves.map(({ package: _withheld, ...move }) => move);
+  if (pull.state === 'merged' && !pull.withheld) return { ...pull, moves };
+  const times = {
+    opened: toDay(pull.opened),
+    ...(pull.settled === undefined ? {} : { settled: toDay(pull.settled) }),
+  };
+  const waits = pull.state === 'open' && (pull.kind === 'issue' || pull.hold !== undefined);
+  if (waits || pull.state !== 'open') return { kind: pull.kind, moves, state: pull.state, ...times, withheld: true };
+  const { number: _number, checks, ...open } = pull;
+  return {
+    ...open,
+    moves,
+    ...times,
+    ...(checks ? { checks: { ...checks, failed: [] } } : {}),
+    withheld: true,
+  };
+}
 
 /** The public view of an event. Applying it twice changes nothing. */
 export function publicView<K extends EventType>(type: K, event: View<K>): View<K> {

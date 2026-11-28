@@ -40,7 +40,7 @@ import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP, SHARE_STEP_UP } from '../access.t
 import { APP_REPO, AUTONOMY, clock, duration, jobUrl, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
 import { deployRecord, deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
-import type { PatchNeed } from './patch-needs.ts';
+import { type PatchingDay, type PatchingNeed, patchingNeed } from './patch-needs.ts';
 import { judgedSaid, judgedWords, type Release } from './release.ts';
 
 /** The one piece of evidence that explains a hold: a check's or the fence's own output, a question, or words. */
@@ -180,8 +180,11 @@ export interface NeedsView {
   holds: Need[];
   /** The canary paused for Martin, if one is. */
   canary: CanaryNeed | undefined;
-  /** Each move of the sense's last day that waits on Martin (`patch-needs.ts`), oldest first. */
-  patches: PatchNeed[];
+  /**
+   * Patching's one card (`patch-needs.ts`): what of the sense's last day waits on Martin, by what he does, while
+   * anything does or the day is stale.
+   */
+  patching: PatchingNeed | undefined;
   /** Today's answers, the viewer's own day, newest first. */
   answered: Answered[];
 }
@@ -495,15 +498,14 @@ function gateEvidence(merge: Merge): Evidence {
 
 /**
  * What would let the line add a change it holds for Martin's merge to the merge queue itself: the levels whose rules
- * take the gate's, with auto-merge on, or auto-merge alone. Nothing where no setting of his would.
+ * take the gate's. Nothing where no level would.
  */
 function mergeNote(merge: Merge | undefined): string | undefined {
-  if (merge?.why === 'auto-merge') return 'With auto-merge on, the line would add it to the merge queue itself.';
   if (merge?.why !== 'level' || !merge.rule) return undefined;
   const rule = merge.rule;
   const levels = LEVELS.filter((level) => ENQUEUES[level].includes(rule)).map((level) => AUTONOMY[level]);
   if (!levels.length) return undefined;
-  return `At ${levels.join(' or ')}, with auto-merge on, the line would add it to the merge queue itself.`;
+  return `At ${levels.join(' or ')}, the line would add it to the merge queue itself.`;
 }
 
 /**
@@ -607,14 +609,9 @@ function canaryNeed(flight: Release | undefined, t: number): CanaryNeed | undefi
 
 /**
  * Needs you at t: every open hold, oldest first, the canary paused for Martin among them, and his answers since the
- * viewer's day began. `flight` is the release in flight, if one is; `patches`, the moves that wait on him.
+ * viewer's day began. `flight` is the release in flight, if one is; `patching`, the sense's last day.
  */
-export function needsView(
-  items: readonly ItemState[],
-  t: number,
-  flight?: Release,
-  patches: PatchNeed[] = [],
-): NeedsView {
+export function needsView(items: readonly ItemState[], t: number, flight?: Release, patching?: PatchingDay): NeedsView {
   const holds = items
     .flatMap((item): Need[] => {
       const hold = item.hold;
@@ -707,7 +704,7 @@ export function needsView(
     }
   }
   answered.sort((a, b) => b.at - a.at);
-  return { holds, canary: canaryNeed(flight, t), patches, answered };
+  return { holds, canary: canaryNeed(flight, t), patching: patchingNeed(patching, t), answered };
 }
 
 /** What a report's ticket points at, as a card says it; undefined for any other work item's. */

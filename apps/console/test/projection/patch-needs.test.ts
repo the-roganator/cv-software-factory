@@ -1,169 +1,141 @@
 import type { PayloadOf, PublicEvent } from '@software-factory/events';
+import { SCAN_MAX_AGE_HOURS as POLICY_SCAN_MAX_AGE_HOURS } from '@software-factory/policy/vulnerabilities';
 import { describe, expect, it } from 'vitest';
+import { own } from '../../e2e/full.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
 import { needsView } from '../../web/src/projection/needs.ts';
-import { PATCHING_ROLE, patchNeeds } from '../../web/src/projection/patch-needs.ts';
+import { PATCHING_ROLE, patchingDay, patchingNeed, SCAN_MAX_AGE_HOURS } from '../../web/src/projection/patch-needs.ts';
 import { patchingView } from '../../web/src/projection/patching.ts';
 import { END, SAMPLES } from './support.ts';
 
 type Day = PayloadOf<'patching.read'>;
-const sample = () => {
-  const read = SAMPLES.find((e): e is PublicEvent<'patching.read'> => e.type === 'patching.read');
+const H = 3_600_000;
+const last = () => {
+  const read = SAMPLES.findLast((e): e is PublicEvent<'patching.read'> => e.type === 'patching.read');
   if (!read) throw new Error('no sample day');
   return read;
 };
 let seq = 9000;
 const readAt = (ts: string, payload: Day, appended_by = PATCHING_ROLE): PublicEvent<'patching.read'> => ({
-  ...sample(),
+  ...last(),
   seq: ++seq,
   id: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}`,
   ts,
   appended_by,
   payload,
 });
-/** The sample day without the move named. */
-const without = (day: Day, name: string): Day => ({
+const FULL = SAMPLES.map((e) => own(e as never) as PublicEvent);
+/** A day with nothing that waits on Martin: no moves, no pins that wait, no rows of the sense's. */
+const quiet = (day: Day, read?: string): Day => ({
   ...day,
-  repositories: day.repositories.map((r) => ({ ...r, moves: r.moves.filter((m) => m.name !== name) })),
+  ...(read ? { read } : {}),
+  rows: [],
+  repositories: day.repositories.map((r) => ({ ...r, moves: [], waiting: [], pulls: [] })),
 });
 
-describe('Needs you’s moves, projected from the samples', () => {
-  const needs = patchNeeds(SAMPLES);
+describe('Needs you’s Patching card, from the samples', () => {
+  it('counts what waits on a visitor’s Martin by what he does, the withheld apart, with the first deadline among them', () => {
+    const need = patchingNeed(patchingDay(SAMPLES), END);
+    expect(need).toMatchObject({
+      groups: [
+        ['approve', 2],
+        ['held', 2],
+        ['stuck', 3],
+        ['hand', 5],
+        ['martin', 4],
+      ],
+      waiting: 16,
+      stale: undefined,
+      scanStale: [],
+    });
+    expect(need?.first).toMatchObject({ name: 'example-cd', deadline: Date.parse('2026-10-06T23:20:00.000Z') });
+  });
 
-  it('has a card for each move only Martin moves and each row the sense made, and for no other', () => {
-    expect(needs.map((need) => [need.kind, need.name])).toEqual([
-      ['issue', 'example-cd'],
-      ['cluster', 'k3s'],
-      ['unlisted-image', 'example/debug-shell:1.4'],
+  it('counts Martin’s by the groups his full events give, a move held with another counted in its row', () => {
+    const need = patchingNeed(patchingDay(FULL), END);
+    expect(need?.groups).toEqual([
+      ['approve', 2],
+      ['bench', 1],
+      ['held', 3],
+      ['stuck', 4],
+      ['hand', 5],
     ]);
+    expect(need?.waiting).toBe(15);
   });
 
-  it('keys each card as Patching’s sheet keys its row, so the card opens that row', () => {
-    const keys = patchingView(SAMPLES, foldItems(SAMPLES), END);
-    if (keys.state !== 'read') throw new Error('no day read');
-    const waiting = keys.rows.filter((row) => row.waits).map((row) => row.key);
-    expect(needs.map((need) => need.key).sort()).toEqual([...waiting].sort());
+  it('counts what the sheet shows waiting, group by group', () => {
+    for (const events of [SAMPLES, FULL]) {
+      const view = patchingView(events, foldItems(events), END);
+      if (view.state !== 'read') throw new Error('no day read');
+      const need = patchingNeed(patchingDay(events), END);
+      expect(need?.waiting).toBe(view.waiting);
+      expect(need?.groups).toEqual(view.groups.map(({ group, rows }) => [group, rows.length]));
+    }
   });
 
-  it('keys each card as its row when two rows share a key: two pods of one image, and after a restart', () => {
-    const day = sample().payload;
-    const unlisted = day.rows.find((r) => r.row === 'unlisted-image');
-    if (!unlisted) throw new Error('the samples have no unlisted image');
-    const twice = { ...day, rows: [...day.rows, { ...unlisted, pod: 'debug-shell-b81d' }] };
-    const events = [readAt(sample().ts, twice)];
-    const view = patchingView(events, [], END);
-    if (view.state !== 'read') throw new Error('no day read');
-    const rows = view.rows.filter((row) => row.source.kind === 'unlisted-image').map((row) => row.key);
-    const cards = patchNeeds(events)
-      .filter((need) => need.kind === 'unlisted-image')
-      .map((need) => need.key);
-    expect(new Set(rows).size).toBe(2);
-    expect([...cards].sort()).toEqual([...rows].sort());
-    // A restart renames the pod and keeps the card's key, so its wait is not started again.
-    const restarted = patchNeeds([
-      readAt(sample().ts, {
-        ...day,
-        rows: day.rows.map((r) => (r === unlisted ? { ...r, pod: 'debug-shell-0000' } : r)),
-      }),
-    ]);
-    expect(restarted.map((need) => need.key)).toEqual(patchNeeds([readAt(sample().ts, day)]).map((need) => need.key));
+  it('dates from the first of the sense’s days, unbroken to the last, that had anything waiting', () => {
+    const first = SAMPLES.find((e) => e.type === 'patching.read');
+    expect(patchingNeed(patchingDay(SAMPLES), END)?.since).toBe(Date.parse(first?.ts ?? ''));
+    const broken = [
+      readAt('2026-10-04T05:00:00.000Z', last().payload),
+      readAt('2026-10-05T05:00:00.000Z', quiet(last().payload)),
+      readAt('2026-10-06T05:00:00.000Z', last().payload),
+    ];
+    expect(patchingNeed(patchingDay(broken), END)?.since).toBe(Date.parse('2026-10-06T05:00:00.000Z'));
   });
 
-  it('says only what the day gives: what it clears at High and Critical, its deadline, where a pod runs', () => {
-    const k3s = needs.find((need) => need.name === 'k3s');
-    expect(k3s?.clears).toEqual({ critical: 0, high: 21 });
-    expect(k3s?.deadline).toBe(Date.parse('2026-10-11T04:16:00.000Z'));
-    // A major is no card: the autonomy level decides whether its pull request waits, and no event records that.
-    expect(needs.find((need) => need.name === 'example-logs')).toBeUndefined();
-    const pod = needs.find((need) => need.kind === 'unlisted-image');
-    expect(pod?.clears).toBeUndefined();
-    expect(pod?.deadline).toBeUndefined();
-    expect(pod?.runs).toMatchObject({ namespace: 'default', pod: 'debug-shell-7c9f' });
+  it('looks back no further than 28 days for since when, however many days have waited', () => {
+    const days = Array.from({ length: 40 }, (_, i) =>
+      readAt(new Date(Date.parse('2026-09-01T05:00:00.000Z') + i * 24 * H).toISOString(), last().payload),
+    );
+    const lastAt = Date.parse(days.at(-1)?.ts ?? '');
+    expect(patchingNeed(patchingDay(days), lastAt)?.since).toBe(lastAt - 28 * 24 * H);
   });
 
-  it('writes a target as the Patching row does, in its few characters', () => {
-    const k3s = needs.find((need) => need.name === 'k3s');
-    expect([k3s?.from, k3s?.to]).toEqual(['v1.34.4+k3s1', 'v1.34.5+k3s1']);
-  });
-
-  it('counts each in Needs you’s view, beside the holds', () => {
-    const items = foldItems(SAMPLES);
-    expect(needsView(items, END, undefined, needs).patches).toHaveLength(3);
-    expect(needsView(items, END).patches).toEqual([]);
+  it('is in Needs you’s view, at the view’s time', () => {
+    expect(needsView(foldItems(SAMPLES), END, undefined, patchingDay(SAMPLES)).patching?.waiting).toBe(16);
+    expect(needsView(foldItems(SAMPLES), END).patching).toBeUndefined();
   });
 });
 
-describe('Needs you’s moves, over the days', () => {
-  const day = sample().payload;
+describe('the card when nothing waits', () => {
+  const read = '2026-10-06T05:12:00.000Z';
+  const day = () => patchingDay([readAt(read, quiet(last().payload, read))]);
 
-  it('dates each from the first of an unbroken run of days that had it waiting, and puts the oldest first', () => {
-    const later = { ...day, rows: [] };
-    const needs = patchNeeds([
-      readAt('2026-10-05T04:20:00.000Z', without(later, 'k3s')),
-      readAt('2026-10-06T04:20:00.000Z', day),
-    ]);
-    expect(needs.map((need) => [need.name, new Date(need.since).toISOString()])).toEqual([
-      ['example-cd', '2026-10-05T04:20:00.000Z'],
-      ['k3s', '2026-10-06T04:20:00.000Z'],
-      ['example/debug-shell:1.4', '2026-10-06T04:20:00.000Z'],
-    ]);
+  it('is none while the day is fresh', () => {
+    expect(patchingNeed(day(), Date.parse(read) + 25 * H)).toBeUndefined();
   });
 
-  it('starts a move’s wait again when a day without it came between', () => {
-    const needs = patchNeeds([
-      readAt('2026-10-04T04:20:00.000Z', day),
-      readAt('2026-10-05T04:20:00.000Z', without(day, 'k3s')),
-      readAt('2026-10-06T04:20:00.000Z', day),
-    ]);
-    expect(needs.find((need) => need.name === 'k3s')?.since).toBe(Date.parse('2026-10-06T04:20:00.000Z'));
-    expect(needs.find((need) => need.name === 'example-cd')?.since).toBe(Date.parse('2026-10-04T04:20:00.000Z'));
+  it('is shown once the sense has not read for 26 hours, saying since when', () => {
+    const need = patchingNeed(day(), Date.parse(read) + 26 * H);
+    expect(need).toMatchObject({ waiting: 0, groups: [], stale: Date.parse(read) });
   });
 
-  it('keeps a move’s wait through a day whose run judged nothing of its repository', () => {
-    const failed: Day = {
-      ...day,
-      repositories: day.repositories.map((r) => ({ ...r, judged: null, totals: null, moves: [] })),
-      compared: false,
-      rows: [],
-    };
-    const needs = patchNeeds([
-      readAt('2026-10-04T04:20:00.000Z', day),
-      readAt('2026-10-05T04:20:00.000Z', failed),
-      readAt('2026-10-06T04:20:00.000Z', day),
-    ]);
-    expect(needs).toHaveLength(3);
-    expect(needs.every((need) => need.since === Date.parse('2026-10-04T04:20:00.000Z'))).toBe(true);
-    // The last day judged nothing: its cards are the day before's, not none, with their waits unbroken.
-    const last = patchNeeds([readAt('2026-10-04T04:20:00.000Z', day), readAt('2026-10-05T04:20:00.000Z', failed)]);
-    expect(last).toEqual(patchNeeds([readAt('2026-10-04T04:20:00.000Z', day)]));
-    // A day that judged one repository keeps only the other's: the judged one says what still waits.
-    const [factory, ...rest] = day.repositories;
-    if (!factory) throw new Error('the sample day has no repository');
-    const oneJudged: Day = {
-      ...day,
-      repositories: [{ ...factory, moves: [] }, ...rest.map((r) => ({ ...r, judged: null, moves: [] }))],
-    };
-    const cleared = patchNeeds([
-      readAt('2026-10-04T04:20:00.000Z', day),
-      readAt('2026-10-05T04:20:00.000Z', oneJudged),
-    ]);
-    expect(cleared.map((need) => need.name)).toEqual(['example/debug-shell:1.4']);
+  it('is shown once a scan was judged more than 36 hours ago, naming it, as the review gate then passes none', () => {
+    const judged = Date.parse(last().payload.repositories[0]?.judged ?? '');
+    const need = patchingNeed(day(), judged + 36 * H + 60_000);
+    expect(need?.scanStale.map((scan) => scan.repository)).toContain('the-roganator/cv-software-factory');
   });
 
-  it('reads only the sense’s own role, and has nothing before its first day', () => {
-    expect(patchNeeds([readAt('2026-10-06T04:20:00.000Z', day, 'factory_line')])).toEqual([]);
-    expect(patchNeeds([])).toEqual([]);
+  it('reads a day appended before the sense read pull requests as read when it was appended', () => {
+    const { read: _read, ...payload } = quiet(last().payload);
+    const at = '2026-10-06T05:12:00.000Z';
+    expect(patchingDay([readAt(at, payload as Day)])?.read).toBe(Date.parse(at));
+  });
+});
+
+describe('the sense’s day, for the card', () => {
+  it('is read from Martin’s command line’s role too, which the store lets append one only as a sample', () => {
+    expect(patchingDay([readAt('2026-10-06T04:20:00.000Z', last().payload, 'factory_operator')])?.rows.length).toBe(16);
   });
 
-  it('has no card on a day where nothing waits on Martin', () => {
-    const quiet: Day = {
-      ...day,
-      rows: [],
-      repositories: day.repositories.map((r) => ({
-        ...r,
-        moves: r.moves.filter((m) => !['cluster', 'issue'].includes(m.lane)),
-      })),
-    };
-    expect(patchNeeds([readAt('2026-10-06T04:20:00.000Z', quiet)])).toEqual([]);
+  it('is read only from the sense’s own role, and is none before its first day', () => {
+    expect(patchingDay([readAt('2026-10-06T04:20:00.000Z', last().payload, 'factory_line')])).toBeUndefined();
+    expect(patchingDay([])).toBeUndefined();
+    expect(patchingNeed(undefined, END)).toBeUndefined();
+  });
+
+  it('holds a scan too old for its moves as long as policy does', () => {
+    expect(SCAN_MAX_AGE_HOURS).toBe(POLICY_SCAN_MAX_AGE_HOURS);
   });
 });

@@ -79,7 +79,6 @@ const merge = (over: Partial<MergeFacts> & { rule?: Rule; tags?: string[] } = {}
   const now = rest.now ?? new Date(Date.parse(JUDGED_AT) + 60_000);
   return {
     autonomy: 'guarded',
-    autoMerge: true,
     head,
     check: {
       status: 'completed',
@@ -116,20 +115,19 @@ const enqueued = (commit = HEAD, rule: Rule = 'low-risk'): LineEvent => ({
   payload: { number: 12, commit, rule, position: 1 },
 });
 
-describe('the line’s merge, by the review gate’s verdict, the autonomy level and auto-merge', () => {
-  it('adds a change to the queue only by a rule its level allows, with auto-merge on, and holds it otherwise', () => {
+describe('the line’s merge, by the review gate’s verdict and the autonomy level', () => {
+  it('adds a change to the queue only by a rule its level allows, and holds it otherwise', () => {
     for (const autonomy of AUTONOMY) {
       for (const rule of RULES.filter((r) => r !== 'held')) {
-        for (const autoMerge of [true, false]) {
-          const { next } = decide(ready, facts(merge({ autonomy, autoMerge, rule })));
-          const allowed = autoMerge && ENQUEUES[autonomy].includes(rule);
-          const at = `${autonomy}, ${rule}, auto-merge ${autoMerge}`;
-          if (allowed) expect(next, at).toEqual({ do: 'enqueue', number: 12, head: HEAD, rule });
-          else {
-            expect(next, at).toMatchObject({ do: 'hold', hold: { cause: 'merge', merge: { rule, approving: false } } });
-            const why = !ENQUEUES[autonomy].includes(rule) ? 'level' : 'auto-merge';
-            expect(next, at).toMatchObject({ hold: { merge: { why } } });
-          }
+        const { next } = decide(ready, facts(merge({ autonomy, rule })));
+        const at = `${autonomy}, ${rule}`;
+        if (ENQUEUES[autonomy].includes(rule))
+          expect(next, at).toEqual({ do: 'enqueue', number: 12, head: HEAD, rule });
+        else {
+          expect(next, at).toMatchObject({
+            do: 'hold',
+            hold: { cause: 'merge', merge: { rule, approving: false, why: 'level' } },
+          });
         }
       }
     }
@@ -168,9 +166,8 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     const holding = [...ready, refused, { type: 'hold.started', payload: hold } as LineEvent];
     expect(decide(holding, facts(held)).next).toEqual({ do: 'wait', for: 'martin' });
     // Where his approval would not queue it, the hold does not say so.
-    for (const m of [merge({ ...held, autonomy: 'supervised' }), merge({ ...held, autoMerge: false })]) {
-      expect(holdOf([...ready, refused], { ...m, rule: undefined } as MergeFacts).merge?.approving).toBe(false);
-    }
+    const supervised = merge({ ...held, autonomy: 'supervised' });
+    expect(holdOf([...ready, refused], { ...supervised, rule: undefined } as MergeFacts).merge?.approving).toBe(false);
   });
 
   it('adds it to the queue once Martin approves the head, and holds it again after a push since', () => {
@@ -468,14 +465,14 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     expect(decide(holding, facts(merge())).next).toEqual({ do: 'wait', for: 'martin' });
     // Added again, it is still the line's only as any change is: not at a level that does not let it.
     const once = [...ready, enqueued(), out()];
-    expect(holdOf(once, merge({ autoMerge: false })).merge).toMatchObject({ why: 'auto-merge' });
+    expect(holdOf(once, merge({ autonomy: 'supervised' })).merge).toMatchObject({ why: 'level' });
     // A new push starts the count again.
     const repushed = [...events, pushed(), ...gates(), reviewed()];
     expect(fold(repushed).queueFailures).toEqual([]);
   });
 
   it('ends the hold for the merge when the line queues it, and goes on to Release once it merges', () => {
-    const hold = holdOf(ready, merge({ autoMerge: false }));
+    const hold = holdOf(ready, merge({ autonomy: 'supervised' }));
     const holding = [...ready, { type: 'hold.started', payload: hold } as LineEvent];
     expect(fold(holding).hold?.cause).toBe('merge');
     expect(fold([...holding, enqueued()]).hold).toBeUndefined();
@@ -487,22 +484,22 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     const level = holdOf(ready, merge({ autonomy: 'supervised' }));
     const holding = [...ready, { type: 'hold.started', payload: level } as LineEvent];
     expect(decide(holding, facts(merge({ autonomy: 'supervised' }))).next).toEqual({ do: 'wait', for: 'martin' });
-    expect(decide(holding, facts(merge({ autoMerge: false }))).next).toMatchObject({
+    expect(decide(holding, facts(merge({ conflicts: true }))).next).toMatchObject({
       do: 'hold',
-      hold: { merge: { why: 'auto-merge' } },
+      hold: { merge: { why: 'conflict' } },
     });
     // A pending check on a hold in force leaves it standing.
     expect(decide(holding, facts(merge({ check: null, judged: null }))).next).toEqual({ do: 'wait', for: 'martin' });
   });
 
   it('queues it after Martin’s console answer to wait for the merge, when the gate and the controls allow', () => {
-    const hold = holdOf(ready, merge({ autoMerge: false }));
+    const hold = holdOf(ready, merge({ autonomy: 'supervised' }));
     const answered = [
       ...ready,
       { type: 'hold.started', payload: hold } as LineEvent,
       { type: 'hold.answered', payload: { decision: 'approved' } } as LineEvent,
     ];
-    expect(decide(answered, facts(merge({ autoMerge: false }))).next).toEqual({ do: 'wait', for: 'martin' });
+    expect(decide(answered, facts(merge({ autonomy: 'supervised' }))).next).toEqual({ do: 'wait', for: 'martin' });
     expect(decide(answered, facts(merge())).next).toMatchObject({ do: 'enqueue', rule: 'low-risk' });
   });
 

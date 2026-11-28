@@ -22,10 +22,13 @@ import {
   RULES_FILE,
   SCAN_STALE,
   SCAN_STALE_FOR,
+  SENSE_STALE,
+  STALE_TOLD_FOR,
   WORKERS,
 } from '../src/alerts/rules.ts';
 import { NO_CAP } from '../src/gateway/metrics.ts';
 import { ADMIN_ACTIONS } from '../src/line/admin-actions.ts';
+import { SENSE_MAX_AGE_HOURS } from '../src/line/patching-alerts.ts';
 import { TARGETS } from '../src/probes/health.ts';
 import {
   METRICS_FROM_THE_ADMIN_SERVICE,
@@ -946,71 +949,119 @@ describe('the alert that the admin service’s word on auto-rollback differs fro
   });
 });
 
-describe('the alert that the vulnerability scan has stopped', PROMTOOL, () => {
-  const [rule] = martinRules().filter((r) => r.alert === SCAN_STALE);
-  const stale = (repository: string) => line('line_patching_scan_stale', `repository="${repository}"`);
-  const fires = { exp_labels: rule?.labels, exp_annotations: rule?.annotations };
-  const minutes = (value: number, count: number) => Array<number>(count).fill(value);
+/** A staleness the line reports in seconds, by the minute: none for `before` minutes, then `for` minutes of it, then none. */
+const staleness = (before: number, minutes: number, after = 0) =>
+  each(
+    ...Array<number>(before).fill(0),
+    ...Array.from({ length: minutes }, (_, m) => m * 60),
+    ...Array<number>(after).fill(0),
+  );
 
-  it('notifies, as each move does, of a scan older than a move may be judged by', () => {
-    expect(martinRules().filter((r) => r.alert === SCAN_STALE)).toHaveLength(1);
-    expect(rule?.labels).toEqual({ level: LEVELS.notify });
-    expect(rule?.expr).toContain(METRICS_FROM_THE_LINE);
-    expect(rule?.annotations.description).toContain(`more than ${SCAN_MAX_AGE_HOURS} hours ago`);
+/** The two stopped machines Martin hears of once each: the scan, by repository, and the dependency sense. */
+for (const { alert, series, what } of [
+  {
+    alert: SCAN_STALE,
+    series: (from = line) => from('line_patching_scan_stale_seconds', 'repository="example/app"'),
+    what: 'either repository’s scan',
+  },
+  {
+    alert: SENSE_STALE,
+    series: (from = line) => from('line_patching_sense_stale_seconds', 'instance="a"'),
+    what: 'the dependency sense',
+  },
+] as const) {
+  describe(`the alert that ${what} has stopped`, PROMTOOL, () => {
+    const [rule] = martinRules().filter((r) => r.alert === alert);
+    const fires = { exp_labels: rule?.labels, exp_annotations: rule?.annotations };
+    const quiet = { exp_alerts: [] };
+
+    it('notifies, as each move does, from the line’s figures alone', () => {
+      expect(martinRules().filter((r) => r.alert === alert)).toHaveLength(1);
+      expect(rule?.labels).toEqual({ level: LEVELS.notify });
+      expect(rule?.expr).toContain(METRICS_FROM_THE_LINE);
+    });
+
+    it(`fires once it has been stale for ${SCAN_STALE_FOR}, and stops ${STALE_TOLD_FOR} on, before Alertmanager would send it again`, () => {
+      expect([SCAN_STALE_FOR, STALE_TOLD_FOR]).toEqual(['15m', '3h']);
+      const values = parse(
+        readFileSync(join(import.meta.dirname, '../../../deploy/base/telemetry/values/prometheus.yaml'), 'utf8'),
+      ) as { alertmanager: { config: { route: { repeat_interval: string } } } };
+      expect(values.alertmanager.config.route.repeat_interval).toBe('4h');
+      expectPasses(
+        promtool(
+          [
+            {
+              interval: '1m',
+              input_series: [
+                // Stale from 2m, for four hours; another worker cannot say it through the line's figures.
+                { series: series(), values: staleness(2, 240) },
+                { series: series(other), values: staleness(0, 242) },
+              ],
+              alert_rule_test: [
+                { eval_time: '17m', alertname: alert, ...quiet },
+                { eval_time: '18m', alertname: alert, exp_alerts: [fires] },
+                { eval_time: '196m', alertname: alert, exp_alerts: [fires] },
+                { eval_time: '197m', alertname: alert, ...quiet },
+                { eval_time: '240m', alertname: alert, ...quiet },
+              ],
+            },
+          ],
+          'martin',
+        ),
+      );
+    });
+
+    it('ends when it is no longer stale, and fires again when it is stale again', () => {
+      expectPasses(
+        promtool(
+          [
+            {
+              interval: '1m',
+              input_series: [{ series: series(), values: `${staleness(0, 30, 10)} ${staleness(0, 30)}` }],
+              alert_rule_test: [
+                { eval_time: '20m', alertname: alert, exp_alerts: [fires] },
+                { eval_time: '35m', alertname: alert, ...quiet },
+                { eval_time: '60m', alertname: alert, exp_alerts: [fires] },
+              ],
+            },
+          ],
+          'martin',
+        ),
+      );
+    });
+
+    it('says nothing of a cluster that wakes with the last day it read, nor before the sense’s first day', () => {
+      expectPasses(
+        promtool(
+          [
+            {
+              interval: '1m',
+              // Measured from the line's start, and ended by the sense's first read, ten minutes on.
+              input_series: [{ series: series(), values: staleness(0, 10, 12) }],
+              alert_rule_test: [
+                { eval_time: '9m', alertname: alert, ...quiet },
+                { eval_time: '20m', alertname: alert, ...quiet },
+              ],
+            },
+            {
+              interval: '1m',
+              // A line with no day to read reports neither.
+              input_series: [{ series: line('line_work_items', 'stage="plan"'), values: each(...Array(31).fill(0)) }],
+              alert_rule_test: [{ eval_time: '30m', alertname: alert, ...quiet }],
+            },
+          ],
+          'martin',
+        ),
+      );
+    });
   });
+}
 
-  it(`fires once either repository’s scan has been stale for ${SCAN_STALE_FOR}, and ends when a newer one is read`, () => {
-    expect(SCAN_STALE_FOR).toBe('15m');
-    expectPasses(
-      promtool(
-        [
-          {
-            interval: '1m',
-            input_series: [
-              // The app's scan goes stale at 2m, and a newer one is read at 20m; the factory's is read all along.
-              { series: stale('example/app'), values: each(0, 0, ...minutes(1, 18), 0, 0) },
-              { series: stale('example/factory'), values: each(...minutes(0, 22)) },
-              // Another worker cannot say it through the line's figures.
-              {
-                series: other('line_patching_scan_stale', 'repository="example/app"'),
-                values: each(...minutes(1, 22)),
-              },
-            ],
-            alert_rule_test: [
-              { eval_time: '16m', alertname: SCAN_STALE, exp_alerts: [] },
-              { eval_time: '17m', alertname: SCAN_STALE, exp_alerts: [fires] },
-              { eval_time: '19m', alertname: SCAN_STALE, exp_alerts: [fires] },
-              { eval_time: '20m', alertname: SCAN_STALE, exp_alerts: [] },
-            ],
-          },
-        ],
-        'martin',
-      ),
-    );
-  });
-
-  it('says nothing of a cluster that wakes with the last day it read, nor before the sense’s first day', () => {
-    expectPasses(
-      promtool(
-        [
-          {
-            interval: '1m',
-            // Stale as the line starts, until the sense's first read, ten minutes on.
-            input_series: [{ series: stale('example/app'), values: each(...minutes(1, 10), ...minutes(0, 12)) }],
-            alert_rule_test: [
-              { eval_time: '9m', alertname: SCAN_STALE, exp_alerts: [] },
-              { eval_time: '20m', alertname: SCAN_STALE, exp_alerts: [] },
-            ],
-          },
-          {
-            interval: '1m',
-            // A line with no day to read reports no scan at all.
-            input_series: [{ series: line('line_work_items', 'stage="plan"'), values: each(...minutes(0, 31)) }],
-            alert_rule_test: [{ eval_time: '30m', alertname: SCAN_STALE, exp_alerts: [] }],
-          },
-        ],
-        'martin',
-      ),
-    );
+describe('the scan’s and the sense’s staleness', () => {
+  it('are told in the policy’s ages', () => {
+    const [scan] = martinRules().filter((r) => r.alert === SCAN_STALE);
+    const [sense] = martinRules().filter((r) => r.alert === SENSE_STALE);
+    expect(scan?.annotations.description).toContain(`more than ${SCAN_MAX_AGE_HOURS} hours ago`);
+    expect(sense?.annotations.description).toContain(`no day in ${SENSE_MAX_AGE_HOURS} hours`);
   });
 });

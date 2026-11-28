@@ -51,7 +51,6 @@ const stored = (autoRollback: boolean) =>
             'controls.changed', ${database.operator.json({
               autonomy: 'supervised',
               newWork: true,
-              autoMerge: false,
               take: null,
               autoRollback,
               change: { control: 'auto-rollback', before: !autoRollback, after: autoRollback },

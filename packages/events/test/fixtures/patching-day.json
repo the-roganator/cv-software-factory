@@ -28,7 +28,13 @@
         "dueWithinDay": 9,
         "newHighWithFix": 3,
         "newHighWithoutFix": 118,
-        "open": { "critical": 2, "high": 1363, "medium": 5623, "low": 2727, "unknown": 0 }
+        "open": {
+          "critical": 2,
+          "high": 1363,
+          "medium": 5623,
+          "low": 2727,
+          "unknown": 0
+        }
       },
       "scanned": 52,
       "moves": [
@@ -137,6 +143,84 @@
             ]
           }
         }
+      ],
+      "waiting": [
+        {
+          "name": "ghcr.io/example/cache",
+          "pins": [
+            {
+              "file": "deploy/base/cache/cache.yaml",
+              "line": 17
+            }
+          ],
+          "from": "8.2.2",
+          "why": "content",
+          "to": "8.2.3",
+          "until": "2026-10-07T04:17:00Z",
+          "clears": {
+            "critical": 0,
+            "high": 1,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0
+          },
+          "deadline": "2026-10-12T04:17:00Z"
+        }
+      ],
+      "pulls": [
+        {
+          "kind": "pin",
+          "number": 1342,
+          "moves": [
+            {
+              "name": "ghcr.io/example/sidecar",
+              "lockfile": false
+            }
+          ],
+          "opened": "2026-10-05T06:00:00Z",
+          "state": "open",
+          "rule": "move",
+          "checks": {
+            "state": "failed",
+            "try": 3,
+            "of": 3,
+            "failed": [
+              {
+                "name": "database tests",
+                "run": 19220481337
+              }
+            ]
+          },
+          "queued": false,
+          "hold": "checks-spent"
+        },
+        {
+          "kind": "issue",
+          "number": 1352,
+          "moves": [
+            {
+              "name": "a package in `pnpm-lock.yaml`",
+              "lockfile": true,
+              "package": "example-parser"
+            }
+          ],
+          "opened": "2026-10-05T06:00:00Z",
+          "state": "open",
+          "issue": "bench"
+        },
+        {
+          "kind": "pin",
+          "number": 1336,
+          "moves": [
+            {
+              "name": "k3s",
+              "lockfile": false
+            }
+          ],
+          "opened": "2026-10-01T06:00:00Z",
+          "state": "merged",
+          "settled": "2026-10-02T06:00:00Z"
+        }
       ]
     },
     {
@@ -200,9 +284,12 @@
           "lane": "line",
           "lockfile": false
         }
-      ]
+      ],
+      "waiting": [],
+      "pulls": []
     }
   ],
+  "read": "2026-10-06T05:30:00.000Z",
   "compared": true,
   "containers": 61,
   "rows": [

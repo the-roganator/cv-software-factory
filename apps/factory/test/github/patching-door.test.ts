@@ -1,11 +1,13 @@
 /**
  * The GitHub worker's door for the dependency sense (milestone 7, task 31): on a port of its own, it serves the sense's
- * two reads and no action, so the port the sense's NetworkPolicy opens cannot act in GitHub.
+ * reads (the scan's moves, and the pull requests and issues that carry them) and no action, so the port the sense's
+ * NetworkPolicy opens cannot act in GitHub.
  */
 import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { configFromEnv } from '../../src/github/config.ts';
+import { PullsUnread } from '../../src/github/pull-states.ts';
 import type { Reads } from '../../src/github/reads.ts';
 import { createWorkerServer, PATCHING_READS } from '../../src/github/server.ts';
 
@@ -14,11 +16,12 @@ describe('the GitHub worker’s door for the sense', () => {
   afterEach(() => close?.());
   const REPO = 'the-roganator/cv-software-factory';
 
-  async function door() {
+  async function door({ unread = false } = {}) {
     const asked: string[] = [];
     const reads = new Proxy({} as Reads, {
       get: (_, name: string) => async () => {
         asked.push(name);
+        if (name === 'pulls' && unread) throw new PullsUnread('not read yet');
         return name === 'dependencyPulls' ? [] : { read: name };
       },
     });
@@ -43,12 +46,19 @@ describe('the GitHub worker’s door for the sense', () => {
     return { call, asked };
   }
 
-  it('serves the moves, and not Dependabot’s pull requests', async () => {
+  it('serves the moves and the pull requests that carry them, and not Dependabot’s pull requests whole', async () => {
     const { call, asked } = await door();
-    expect(PATCHING_READS).toEqual(['moves']);
+    expect(PATCHING_READS).toEqual(['moves', 'pulls']);
     expect(await call('/v1/reads/moves')).toBe(200);
+    expect(await call('/v1/reads/pulls')).toBe(200);
+    expect(await call('/v1/reads/pulls', { number: 1 })).toBe(400);
     expect(await call('/v1/reads/dependencyPulls')).toBe(404);
-    expect(asked).toEqual(['moves']);
+    expect(asked).toEqual(['moves', 'pulls']);
+  });
+
+  it('answers the pull requests 503 while the watches have not read them since the worker started', async () => {
+    const { call } = await door({ unread: true });
+    expect(await call('/v1/reads/pulls')).toBe(503);
   });
 
   it('serves no other read and no action, dry run or not', async () => {

@@ -127,18 +127,20 @@ function LineDialog({
       {stop ? (
         <p>
           Every agent stops at the end of its step, nothing new is taken, and a canary in flight is aborted: the version
-          before takes all the traffic, unless it has no pod to take it. <code>make stop-the-line</code> does the same
-          when the console can’t.
+          before takes all the traffic, unless it has no pod to take it. Patching’s moves wait too: the worker queues
+          none until you start the line, though a local deploy pin still merges. <code>make stop-the-line</code> does
+          the same when the console can’t.
         </p>
       ) : first ? (
         <p>
           The line has not started yet. Starting it lets triage take what waits in its inbox and agents take work, as
-          What the line takes says: every ticket, until you choose otherwise in Controls.
+          What the line takes says: every ticket, until you choose otherwise in Controls. The worker queues patching’s
+          moves from then.
         </p>
       ) : (
         <p>
-          Agents take work again, as What the line takes says. A release stopped with the line stays stopped until you
-          retry it.
+          Agents take work again, as What the line takes says, and the worker queues patching’s moves again. A release
+          stopped with the line stays stopped until you retry it.
         </p>
       )}
       {!done && (

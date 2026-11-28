@@ -135,7 +135,7 @@ const NODES = {
   gate: { x: 680, y: 250, t: 'The review gate', s: 'makes the move itself' },
   queue: { x: 460, y: 250, t: 'The merge queue', s: 'runs the checks again' },
   martin: { x: 20, y: 250, t: 'Martin', s: 'the console, his phone', person: true },
-  sense: { x: 20, y: 440, t: 'Dependency sense', s: '05:30 UTC' },
+  sense: { x: 20, y: 440, t: 'Dependency sense', s: 'hourly' },
   build: { x: 240, y: 440, t: 'Build and sign', s: 'our own images only' },
   argo: { x: 460, y: 440, t: 'Argo CD', s: 'deploys what is on main' },
   admission: { x: 680, y: 440, t: 'Admission', s: 'signed, or by digest' },
@@ -151,7 +151,7 @@ const EDGES = {
   // A held move leaves the gate downwards and comes round to Martin; his answer goes straight to the queue.
   gm: { d: 'M778,310 L778,345 Q778,360 763,360 L173,360 Q158,360 158,345 L158,310' },
   mq: ['martin', 'queue'],
-  // A move the App may not write never becomes a pull request: it goes to Martin as an issue.
+  // A move no pull request of the App's may make goes to Martin as an issue.
   mi: { d: 'M558,100 L558,205 Q558,220 543,220 L133,220 Q118,220 118,235 L118,250' },
   qa: ['queue', 'argo'],
   qb: { d: 'M500,310 C 500,390 330,370 330,440' },
@@ -200,8 +200,9 @@ const STEPS = [
 <tr><th>New versions</th><td>Each publisher's own list: npm, the image registry, the chart's index, the tool's releases.</td></tr>
 <tr><th>Images</th><td>Ours are built and signed on <code>main</code>. Anyone else's is pinned by digest: a tag can be moved, a digest cannot.</td></tr>
 </table>
-<p>A fix that can be installed starts a clock: <b>2 days</b> for a Critical, <b>7</b> High, <b>30</b> Medium, <b>90</b> Low. A missed deadline fails the scan.</p>
-<p>The pin watch opens <b>one pull request for the day's moves at each file</b>, changing the pins and nothing else. A lockfile's or a tool's move is made in the scan's own run, and the watch commits what it made. A move the App may not write (a workflow's pin) becomes an issue.</p>
+<p>A fix is a move only once it can be installed and is <b>better than the pin</b>, by what it leaves, worst first. A package waits pnpm's day; an image or a chart waits until the scan has known its content a day. Then a clock starts: <b>2 days</b> for a Critical, <b>7</b> High, <b>30</b> Medium, <b>90</b> Low. A missed deadline fails the scan. A fix that waits is listed as <b>waiting</b>, with why, so nothing reads it as fixed.</p>
+<p>The pin watch opens <b>one pull request for the day's moves at each set of files</b>, a major and routine updates apart, changing the pins and nothing else. A lockfile's or a tool's move is made in the scan's own run, and the watch commits what it made. A move no pull request of the App's may make becomes an issue instead (step 4).</p>
+<p>Dependabot still opens its own. Once <code>main</code> has every line one adds, the worker closes it with one comment, if Dependabot has not.</p>
 <details><summary>In the docs</summary><p><a href="${DOCS}/SECURITY-SCANNING.md">The scan</a>, its <a href="${DOCS}/SECURITY-SCANNING.md#moves">moves</a> and <a href="${DOCS}/SECURITY-SCANNING.md#exceptions">exceptions</a>; <a href="${DOCS}/SUPPLY-CHAIN.md">signing</a>; <a href="adr/0013-vulnerabilities-found-everywhere-fixed-by-a-deadline.md">ADR 0013</a>.</p></details>`,
   },
   {
@@ -233,13 +234,15 @@ const STEPS = [
 <table>
 <tr><th></th><th>Proved</th><th>Held</th></tr>
 <tr><th>Which</th><td>a move, and at Lights-out a major</td><td>a major below Lights-out, or anything that is not exactly the scan's moves</td></tr>
-<tr><th>Queued by</th><td>the GitHub worker, at Guarded or Lights-out with auto-merge on</td><td>Martin</td></tr>
-<tr><th>He hears</th><td>nothing</td><td>for a major the level holds, its pull request's description; for anything the gate held, its check on GitHub, with the reason</td></tr>
+<tr><th>Queued by</th><td>the GitHub worker, at Guarded or Lights-out, while the line runs. The level alone decides</td><td>Martin</td></tr>
+<tr><th>He sees</th><td>its row in Patching, moving by itself, then in Done</td><td>its row in Patching, under what he does about it, and one card in Needs you that counts them all</td></tr>
 </table>
 <ul>
 <li>The worker queues <b>only the commit it wrote itself</b>. A matching name or label is not enough.</li>
-<li>A move the App <b>may not write</b> (a workflow's pin) goes to Martin as an issue. It, and k3s's move, which his cluster's own command applies once its pull request merges, is a card in Needs you and reaches his phone, once.</li>
-<li>In <b>the app's repository</b> the line does the patching, by the same rule and the same level.</li>
+<li><b>Also held:</b> anything at Supervised or while the line is stopped; a pull request Martin asked changes of, at every head; a head he took out of the queue; anything while the scan was judged more than 36 hours ago; a head whose required checks failed three times, which is tried and stopped.</li>
+<li><b>An issue, not a pull request:</b> a workflow's pin, the agent SDK's fix that waits for his bench run, a line no longer built, a move the pin step refused, one he reverted on <code>main</code>, and one whose branch someone else's pull request stands on. k3s's move merges as any other, and his cluster's own command applies it.</li>
+<li>In <b>the app's repository</b> the line does the patching, by the same rule and the same level. The worker keeps an issue there for what the line takes no ticket for: a line no longer built, and the SDK's bench fix.</li>
+<li><b>His phone</b> hears of a new fix for a High or a Critical, a deadline near or past, a move tried and stopped, and a sense or scan that has stopped, each once. A routine update that waits sends nothing.</li>
 </ul>
 <details><summary>In the docs</summary><p><a href="${DOCS}/PATCHING.md">Patching</a>; <a href="${DOCS}/GITHUB-WORKER.md">the GitHub worker</a>; <a href="adr/0027-what-merges-without-the-owner.md">ADR 0027</a>.</p></details>`,
   },
@@ -248,13 +251,13 @@ const STEPS = [
     tab: 'Running',
     nodes: ['queue', 'build', 'argo', 'admission', 'cluster', 'sense', 'martin'],
     edges: { qa: 'auto', qb: 'auto', ba: 'auto', aa: 'auto', ac: 'auto', cs: 'read', sn: 'read' },
-    tags: { build: 'signed', admission: 'refuses the rest', sense: 'daily' },
+    tags: { build: 'signed', admission: 'refuses the rest', sense: 'hourly' },
     body: `
 <p>After the merge, both kinds of move take the same road.</p>
 <ul>
 <li><b>Argo CD</b> deploys what is on <code>main</code>. A change inside one of our own images is built and signed first.</li>
-<li><b>Admission</b> checks every image as it starts where the factory and the app run: ours must be signed by the build on <code>main</code>, anyone else's named by its exact digest. A wrong pin that somehow merged still cannot start.</li>
-<li><b>The dependency sense</b> compares, each morning, what the cluster runs with what the scan read, and the console's Patching panel shows it. Until it has looked, a merged pin is not a patched cluster.</li>
+<li><b>Admission</b> checks every image as it starts where the factory and the app run: ours must be signed by the build on <code>main</code>, anyone else's named by its exact digest. An image nobody pinned cannot start. A third-party digest it admits is the one the pin names, so a bad release that merged as a move runs: the checks before the merge are its guard.</li>
+<li><b>The dependency sense</b> compares, each hour, what the cluster runs with what the scan read, and reads where each move's pull request or issue stands. The console's Patching sheet shows its last read. Until it has looked, a merged pin is not a patched cluster; if it stops looking, or the scan stops, Martin is alerted.</li>
 </ul>
 <details><summary>In the docs</summary><p><a href="${DOCS}/ADMISSION-CONTROL.md">Admission control</a> (<a href="adr/0010-admission-control.md">ADR 0010</a>); <a href="${DOCS}/PATCHING.md">the sense</a>.</p></details>`,
   },
@@ -280,7 +283,7 @@ const STEPS = [
 <li>The sense compares what runs with what was scanned.</li>
 <li>The rules themselves change only with Martin's approval.</li>
 </ol>
-<p><b>To stop one move:</b> take the <code>pin</code> label off its pull request. <b>To stop them merging:</b> Supervised, or auto-merge off. <b>To stop them opening:</b> unset <code>PIN_WATCH_ONLY</code>.</p>
+<p><b>To stop one move:</b> ask for changes on its pull request, which holds it at every head; take its <code>pin</code> label off; take its head out of the queue, which holds that head; close it, and it is not opened again for the same edits; or revert it on <code>main</code>, and it is not made again until its target changes. <b>To stop them merging:</b> Supervised, or stop the line; the local deploy pin still merges. <b>To stop them opening:</b> unset <code>PIN_WATCH_ONLY</code>.</p>
 <details><summary>In the docs</summary><p><a href="${DOCS}/GUARDRAILS.md">Guardrails</a>; <a href="${DOCS}/PATCHING.md">patching</a>.</p></details>`,
   },
 ];

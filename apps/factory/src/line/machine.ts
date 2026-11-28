@@ -56,7 +56,7 @@
  * every call that step made.
  *
  * A change that passed its gates and review merges through the merge queue: the line adds it to the queue itself when
- * the review gate's verdict on its head, the autonomy level and auto-merge allow, and otherwise holds it for Martin's
+ * the review gate's verdict on its head and the autonomy level allow, and otherwise holds it for Martin's
  * merge, saying why (`merging.ts`). The queue taking it out is recorded, and holds it too. The merge, the line's or
  * Martin's, answers whatever held the change before it, and the work item goes on to Release and Verify:
  *

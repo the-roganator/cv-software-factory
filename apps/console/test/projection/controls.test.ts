@@ -74,14 +74,14 @@ describe('the line’s controls', () => {
   it('take nothing outside policy, control by control, and nothing anyone but Martin appended', () => {
     const outside = changed(1, {
       autonomy: 'yolo',
-      autoMerge: 'yes',
+      newWork: 'yes',
       take: { kind: 'next-few', count: 21, since: '' },
     });
     expect(controlsView([outside], at(2))).toMatchObject({
       ...DEFAULT_CONTROLS,
-      outside: ['autonomy', 'autoMerge', 'take'],
+      outside: ['autonomy', 'newWork', 'take'],
     });
-    expect(controlsView([changed(1, { autoMerge: true }, 'factory')], at(2)).autoMerge).toBe(false);
+    expect(controlsView([changed(1, { autonomy: 'lights-out' }, 'factory')], at(2)).autonomy).toBe('supervised');
   });
 
   it('count what the next few have taken from when Martin chose them, by the first thing the line did with each', () => {
@@ -131,7 +131,8 @@ describe('the line’s controls', () => {
 
   it('tell which action a recorded change is, and none for one that is not a change', () => {
     expect(changeAction({ control: 'autonomy', before: 'supervised', after: 'guarded' })).toBe('autonomy.loosen');
-    expect(changeAction({ control: 'auto-merge', before: true, after: false })).toBe('auto-merge.off');
+    // The auto-merge switch the line no longer has is no action now.
+    expect(changeAction({ control: 'auto-merge', before: false, after: true })).toBeUndefined();
     expect(changeAction({ control: 'auto-rollback', before: true, after: false })).toBe('auto-rollback.off');
     expect(changeAction({ control: 'auto-rollback', before: false, after: true })).toBe('auto-rollback.on');
     expect(changeAction({ control: 'take', before: null, after: { kind: 'just-one', workItem: '7' } })).toBe(
@@ -152,7 +153,7 @@ describe('the line’s controls', () => {
 
   it('are in the view, with the samples’ Guarded and their next few', () => {
     const { controls } = project(SAMPLES, END);
-    expect(controls).toMatchObject({ autonomy: 'guarded', newWork: true, autoMerge: false, outside: [] });
+    expect(controls).toMatchObject({ autonomy: 'guarded', newWork: true, outside: [] });
     expect(controls.take).toMatchObject({ kind: 'next-few', count: 5 });
     expect(controls.nextFew?.taken).toBeGreaterThan(0);
     expect(controls.nextFew?.taken).toBeLessThan(5);

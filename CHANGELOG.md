@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.14.0](https://github.com/the-roganator/cv-software-factory/compare/v0.13.0...v0.14.0) (2026-11-28)
+
+
+### Features
+
+* **patching:** Martin's stops hold, content waits a day, and a move lands only on its own pin ([#1219](https://github.com/the-roganator/cv-software-factory/issues/1219)) ([c0a16da](https://github.com/the-roganator/cv-software-factory/commit/c0a16daa901c55eef275929c1c8c56d23f559b2f))
+* **patching:** what Martin sees and is told of patching ([#1228](https://github.com/the-roganator/cv-software-factory/issues/1228)) ([d692de7](https://github.com/the-roganator/cv-software-factory/commit/d692de757dee00947bd8d02e2da76c5429e4ed95))
+
+
+### Bug Fixes
+
+* **console:** order the stylesheets as Biome 2.6.9's specificity rule asks ([#1225](https://github.com/the-roganator/cv-software-factory/issues/1225)) ([c2866b4](https://github.com/the-roganator/cv-software-factory/commit/c2866b468aff7a324e23b9242d3000268978c1a0))
+
 ## [0.13.0](https://github.com/the-roganator/cv-software-factory/compare/v0.12.0...v0.13.0) (2026-11-26)
 
 

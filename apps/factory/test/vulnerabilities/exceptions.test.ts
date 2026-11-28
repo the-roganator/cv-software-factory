@@ -263,8 +263,31 @@ describe('osv-scanner.toml', () => {
     ]);
   });
 
-  it("is this repository's, beside its lockfile, as the policy gives it", () => {
-    expect(readFileSync(join(ROOT, 'osv-scanner.toml'), 'utf-8')).toBe(osvScannerToml(policy, FACTORY));
+  // The policy with an entry that has expired by the day given still in force: the file as it was written.
+  const unexpired = (p: ReturnType<typeof withEntries>, today: string) => ({
+    ...p,
+    lapsed: (e: Exception, day?: Date | string) => (e.expires < today ? undefined : p.lapsed(e, day)),
+  });
+
+  it("is this repository's, beside its lockfile, as the policy gives it, or gave it before an entry expired", () => {
+    // An expiry is the scan's to report, and the file's own `ignoreUntil` ends the entry for Scorecard: the day after it
+    // the file may still hold the entry, until a pull request renews or removes it, or be written again without it.
+    const today = new Date().toISOString().slice(0, 10);
+    expect([osvScannerToml(policy, FACTORY), osvScannerToml(unexpired(policy, today), FACTORY)]).toContain(
+      readFileSync(join(ROOT, 'osv-scanner.toml'), 'utf-8'),
+    );
+  });
+
+  it('is the file written before an entry expired, the day after, and never one with an entry too far off', () => {
+    const p = withEntries([
+      entry({ expires: '2026-12-01' }),
+      entry({ advisory: 'CVE-2099-10002', expires: '2027-06-01' }),
+    ]);
+    const written = osvScannerToml(p, FACTORY, '2026-12-01');
+    expect(written).toContain('CVE-2099-10001');
+    expect(written).not.toContain('CVE-2099-10002');
+    expect(osvScannerToml(p, FACTORY, '2026-12-02')).not.toContain('CVE-2099-10001');
+    expect(osvScannerToml(unexpired(p, '2026-12-02'), FACTORY, '2026-12-02')).toBe(written);
   });
 });
 

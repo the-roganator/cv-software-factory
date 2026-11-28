@@ -37,7 +37,47 @@ export const MAX_DAYS = 90;
 /** An advisory id the scan's results carry. */
 export const ADVISORY = /^(CVE-\d{4}-\d{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})$/;
 
-export const EXCEPTIONS: Exception[] = [];
+/**
+ * The kernel advisories Trivy rates Critical in `linux-libc-dev`, the kernel's headers, in each repository's dev
+ * container's base, none with a fix: one reason and one expiry, renewed here. An entry names the base's tag, so a move
+ * of the base to another tag is another item, and they are written again with it.
+ */
+const KERNEL_HEADERS = {
+  item: 'mcr.microsoft.com/devcontainers/base:3.0.14-resolute',
+  package: 'linux-libc-dev',
+  reason:
+    "Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container.",
+  expires: '2027-02-26',
+  repositories: ['the-roganator/cv-software-factory', 'the-roganator/cv-worlds-worst-website'],
+  advisories: [
+    'CVE-2026-99287',
+    'CVE-2026-99306',
+    'CVE-2026-99310',
+    'CVE-2026-99343',
+    'CVE-2026-99344',
+    'CVE-2026-99355',
+    'CVE-2026-99362',
+    'CVE-2026-99366',
+    'CVE-2026-99441',
+    'CVE-2026-99460',
+    'CVE-2026-99540',
+    'CVE-2026-99590',
+    'CVE-2026-99676',
+  ],
+};
+
+export const EXCEPTIONS: Exception[] = [
+  ...KERNEL_HEADERS.repositories.flatMap((repository) =>
+    KERNEL_HEADERS.advisories.map((advisory) => ({
+      repository,
+      item: KERNEL_HEADERS.item,
+      advisory,
+      package: KERNEL_HEADERS.package,
+      reason: KERNEL_HEADERS.reason,
+      expires: KERNEL_HEADERS.expires,
+    })),
+  ),
+];
 
 /**
  * A package or an image the scan lists no routine move for (apps/factory/src/vulnerabilities/routine.ts), and why: it

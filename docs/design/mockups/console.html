@@ -2297,6 +2297,14 @@ function renderChrome() {
   $('stop-btn').className = S.stopped ? 'btn primary' : 'btn attn';
 }
 
+// On a phone the line folds into two rows of four, and each row is a belt of its own, wrapped at both ends.
+const FOLD = matchMedia('(max-width: 720px)');
+function beltEnd(i) {
+  const row = FOLD.matches ? 4 : LINE.length;
+  return i % row === 0 ? 'belt="start"' : i % row === row - 1 || i === LINE.length - 1 ? 'belt="end"' : '';
+}
+FOLD.addEventListener('change', () => renderLine());
+
 function renderLine() {
   $('stations').innerHTML = LINE.map((s, i) => {
     const status = S.stopped ? 'blocked' : s.status;
@@ -2306,7 +2314,7 @@ function renderLine() {
       ? `<button type="button" class="add" data-add title="${S.visitor ? 'How Martin asks for an improvement' : 'Request an improvement'}" aria-label="${S.visitor ? 'How Martin asks for an improvement' : 'Request an improvement'}"><span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5 V10.5 M1.5 6 H10.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span></button>` : '';
     return `<div class="cell"><button type="button" class="stage" data-i="${i}" aria-expanded="${S.stage === i}" aria-controls="stage-panel"
         aria-label="${STAGE_NAME[s.kind]}: ${word}, ${esc(s.fig)}. Show what is in this stage">
-      <sf-station kind="${s.kind}" status="${status}" ${s.beacon && !S.stopped ? `beacon="${s.beacon}"` : ''} decorative ${still() ? 'motion="off"' : ''}></sf-station>
+      <sf-station kind="${s.kind}" status="${status}" ${s.beacon && !S.stopped ? `beacon="${s.beacon}"` : ''} ${beltEnd(i)} decorative ${still() ? 'motion="off"' : ''}></sf-station>
       <span class="cap" aria-hidden="true">
         <span class="name">${STAGE_NAME[s.kind]}</span>
         <span class="state"><span class="dot tone-${tone} ${tone === 'attn' ? 'ring' : ''}"></span>${word}</span>

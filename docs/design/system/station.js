@@ -18,6 +18,8 @@
  *   motion   "off" draws the still pose. Motion also stops under prefers-reduced-motion.
  *   bird     "out" empties the Release station's cage: the console draws its bird elsewhere while a
  *            release is in flight, and the cage keeps its bars, its perch and its note.
+ *   belt     start | end: the station is at that end of the line, so its belt wraps round the roller there
+ *            and the belt reads as one loop. Without it, both ends stop at the rollers, to meet the next.
  *   label    Accessible name; defaults to "<Stage>: <state>".
  *   decorative  Present when something else (a button, a caption) already names the station.
  *
@@ -40,6 +42,8 @@ const KINDS = ['sense', 'triage', 'plan', 'build', 'gates', 'review', 'release',
 const STATUSES = ['idle', 'working', 'returning', 'passing', 'blocked', 'failed'];
 
 const BEACONS = ['needs-you', 'failed'];
+
+const BELT_ENDS = ['start', 'end'];
 
 
 const STAGE_NAME = {
@@ -595,8 +599,19 @@ const STATE_ART = {
 const CHEV_RIGHT = Array.from({ length: 10 }, (_, i) => `M${-13 + 21 * i} 169l6 5-6 5`).join('');
 const CHEV_LEFT = Array.from({ length: 10 }, (_, i) => `M${-7 + 21 * i} 169l-6 5 6 5`).join('');
 
-function render(kind      , status        , beacon                    ) {
+/*
+ * The belt's top and bottom runs. At an end of the line they meet in a half circle round the roller, the belt's
+ * half-height from its axle; elsewhere they stop at the rollers, where the next station's belt carries on.
+ */
+const BELT_EDGES = {
+  none: { edges: 'M0 166 H168 M0 182 H168', turn: '' },
+  start: { edges: 'M168 166 H0 A8 8 0 0 0 0 182 H168', turn: 'M0 166 A8 8 0 0 0 0 182 Z' },
+  end: { edges: 'M0 166 H168 A8 8 0 0 1 168 182 H0', turn: 'M168 166 A8 8 0 0 1 168 182 Z' },
+};
+
+function render(kind      , status        , beacon                    , belt                     ) {
   const art = STATE_ART[status]();
+  const { edges, turn } = BELT_EDGES[belt ?? 'none'];
   // Only a station at work shows a beacon: blocked and failed draw their own, and idle or passed has nothing to look at.
   const lit = status === 'working' || status === 'returning' ? beacon : undefined;
   const extra = lit === 'failed' ? RAYS + FAULT : lit ? RAYS : '';
@@ -610,9 +625,9 @@ function render(kind      , status        , beacon                    ) {
   </defs>
 
   <!-- belt -->
-  <rect class="belt" x="0" y="166" width="168" height="16"/>
+  <rect class="belt" x="0" y="166" width="168" height="16"/>${turn ? `<path class="belt" d="${turn}"/>` : ''}
   <g clip-path="url(#belt-clip)"><g class="belt-run"><path class="chev" d="${status === 'returning' ? CHEV_LEFT : CHEV_RIGHT}"/></g></g>
-  <path class="line" stroke-width="1.5" d="M0 166 H168 M0 182 H168"/>
+  <path class="line" stroke-width="1.5" d="${edges}"/>
   <circle class="roller" cx="0" cy="174" r="5"/><circle class="roller" cx="168" cy="174" r="5"/>
 
   <!-- legs stay on the belt; everything above them is the machine -->
@@ -654,7 +669,7 @@ function describe(status        , beacon         ) {
 let sheet;
 
 class Station extends HTMLElement {
-  static observedAttributes = ['kind', 'status', 'beacon', 'label', 'decorative'];
+  static observedAttributes = ['kind', 'status', 'beacon', 'belt', 'label', 'decorative'];
 
            #root;
 
@@ -706,9 +721,19 @@ class Station extends HTMLElement {
     else this.removeAttribute('beacon');
   }
 
+  get belt() {
+    const b = this.getAttribute('belt');
+    return BELT_ENDS.find((end) => end === b);
+  }
+
+  set belt(belt                     ) {
+    if (belt) this.setAttribute('belt', belt);
+    else this.removeAttribute('belt');
+  }
+
   #update() {
-    const { kind, status, beacon } = this;
-    this.#root.innerHTML = render(kind, status, beacon);
+    const { kind, status, beacon, belt } = this;
+    this.#root.innerHTML = render(kind, status, beacon, belt);
     if (this.hasAttribute('decorative')) {
       this.setAttribute('aria-hidden', 'true');
       this.removeAttribute('role');

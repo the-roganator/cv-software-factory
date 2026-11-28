@@ -218,14 +218,14 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; padding
   <div class="line-scroll" role="region" aria-label="The line, sample run" tabindex="0">
     <div class="line">
       <div class="stations">
-        <sf-station kind="sense" status="working" decorative></sf-station>
+        <sf-station kind="sense" status="working" belt="start" decorative></sf-station>
         <sf-station kind="triage" status="passing" decorative></sf-station>
         <sf-station kind="plan" status="blocked" decorative></sf-station>
         <sf-station kind="build" status="working" decorative></sf-station>
         <sf-station kind="gates" status="working" decorative></sf-station>
         <sf-station kind="review" status="returning" decorative></sf-station>
         <sf-station kind="release" status="working" decorative></sf-station>
-        <sf-station kind="verify" status="passing" decorative></sf-station>
+        <sf-station kind="verify" status="passing" belt="end" decorative></sf-station>
       </div>
       <svg class="overlay" viewBox="0 0 1344 220" aria-hidden="true">
         <defs>

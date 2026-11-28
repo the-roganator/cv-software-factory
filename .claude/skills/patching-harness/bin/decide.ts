@@ -40,8 +40,19 @@ export const routineMajorBranch = (branch: string | undefined) =>
  * Whether a pin branch is the kind a test stands on: a finding's moves (any branch that is not of routine updates), or
  * routine updates, and then across a major or not as the test is.
  */
-export const branchFits = (branch: string | undefined, test: { routine?: boolean; major?: boolean }) =>
-  test.routine ? routineBranch(branch) && routineMajorBranch(branch) === Boolean(test.major) : !routineBranch(branch);
+export const branchFits = (
+  branch: string | undefined,
+  test: { routine?: boolean; major?: boolean; thenMajor?: boolean },
+) =>
+  test.routine
+    ? routineBranch(branch) && routineMajorBranch(branch) === Boolean(test.major)
+    : !routineBranch(branch) && !(test.thenMajor && majorBranch(branch));
+/**
+ * Whether a pin branch is of a finding's moves across a major. A test whose move stays within its major (test 2) has
+ * its major listed after as a move of its own, on such a branch, which is that later move's and not the test's.
+ */
+export const majorBranch = (branch: string | undefined) =>
+  /^factory\/pin\/.*-major-[0-9a-f]{8}$/.test(branch ?? '') && !routineBranch(branch);
 /**
  * Whether a scan's move is the kind a test stands on. A routine update and a finding's move may share a name (a
  * lockfile's names no package), and so may a routine update across a major and one within it.

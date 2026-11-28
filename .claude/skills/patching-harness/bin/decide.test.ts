@@ -117,6 +117,11 @@ describe('the kind of move a test stands on', () => {
     const behind = 'factory/pin/pnpm-lock.yaml-routine-0a1b2c3d';
     const across = 'factory/pin/pnpm-lock.yaml-routine-major-0a1b2c3d';
     expect([plain, held, behind, across].map((b) => branchFits(b, {}))).toEqual([true, true, false, false]);
+    // A move within its major (test 2): its major, listed after as a move of its own, is on a branch of its own.
+    const major = 'factory/pin/deploy-base-telemetry-prometheus.yaml-major-3f6ae1f0';
+    const within = 'factory/pin/deploy-base-telemetry-prometheus.yaml-3f6ae1f0';
+    expect([within, major].map((b) => branchFits(b, { thenMajor: true }))).toEqual([true, false]);
+    expect([within, major].map((b) => branchFits(b, {}))).toEqual([true, true]);
     expect([plain, held, behind, across].map((b) => branchFits(b, { routine: true }))).toEqual([
       false,
       false,

@@ -15,8 +15,9 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
-import { STAGE_NAME, STATE } from '../../../../../docs/design/system/station.ts';
+import { type BeltEnd, STAGE_NAME, STATE } from '../../../../../docs/design/system/station.ts';
 import type { Admin } from '../admin.ts';
 import { clock, duration, shortVersion } from '../format.ts';
 import {
@@ -110,15 +111,18 @@ function Parcels({ stations }: { stations: readonly Station[] }) {
     <g>
       {stations.flatMap((s, i) => {
         const x = 168 * i;
+        // Where a pile starts: on the belt before the station, which is the station before's, or for the first,
+        // which has no belt before it, on its own belt under the machine's front.
+        const front = i === 0 ? 8 : x - 32;
         if (s.queued && s.status === 'idle') {
-          // Up to three, stacked two and one, on the belt just before the station.
+          // Up to three, stacked two and one, where the pile goes.
           return [0, 1, 2]
             .slice(0, Math.min(3, s.queued))
             .map((n) => (
               <rect
                 key={`${s.stage}-queued-${n}`}
                 className="parcel"
-                x={x - 36 + (n === 2 ? 8 : n * 16)}
+                x={front - 4 + (n === 2 ? 8 : n * 16)}
                 y={n === 2 ? 162 : 174}
                 width="14"
                 height="12"
@@ -131,7 +135,7 @@ function Parcels({ stations }: { stations: readonly Station[] }) {
           <rect
             key={`${s.stage}-held-${n}`}
             className="parcel"
-            x={x - 32 + n * 16}
+            x={front + n * 16}
             y="174"
             width="14"
             height="12"
@@ -139,8 +143,9 @@ function Parcels({ stations }: { stations: readonly Station[] }) {
           />
         ));
         if (s.status === 'working' || s.status === 'passing') {
+          // The first station's pile is on its own belt, so its parcel sets off from behind the pile, not through it.
           const style = {
-            '--run-from': `${x}px`,
+            '--run-from': `${i === 0 && pile.length ? front + 32 : x}px`,
             '--run-to': `${x + 150}px`,
             '--run-time': s.status === 'passing' ? '6s' : '3.5s',
           } as CSSProperties;
@@ -156,7 +161,7 @@ function Parcels({ stations }: { stations: readonly Station[] }) {
             <rect
               key={`${s.stage}${n}`}
               className="parcel"
-              x={x - 32 + n * 16}
+              x={front + n * 16}
               y="174"
               width="14"
               height="12"
@@ -168,6 +173,23 @@ function Parcels({ stations }: { stations: readonly Station[] }) {
       })}
     </g>
   );
+}
+
+/** On a phone the line folds into two rows of four (line.css), and each row is a belt of its own. */
+const FOLD = '(max-width: 720px)';
+const isFolded = () => matchMedia(FOLD).matches;
+function onFold(change: () => void) {
+  const query = matchMedia(FOLD);
+  query.addEventListener('change', change);
+  return () => query.removeEventListener('change', change);
+}
+
+/** Which end of its belt a station is at, if either: the belt wraps round the roller there. */
+function beltEnd(i: number, stations: number, folded: boolean): BeltEnd | undefined {
+  const row = folded ? 4 : stations;
+  if (i % row === 0) return 'start';
+  if (i % row === row - 1 || i === stations - 1) return 'end';
+  return undefined;
 }
 
 interface LineProps {
@@ -189,6 +211,7 @@ export function Line({ view, motion, onOpen, admin, pending = false, birdOut = f
   const buttons = useRef(new Map<Stage, HTMLButtonElement>());
   const stopped = view.header.stopped !== undefined;
   const current = useReturn(view.returns, motion, stopped);
+  const folded = useSyncExternalStore(onFold, isFolded);
 
   const close = useCallback(() => {
     setOpen((was) => {
@@ -200,7 +223,7 @@ export function Line({ view, motion, onOpen, admin, pending = false, birdOut = f
   return (
     <section className="line" aria-label="The line" ref={line}>
       <ul className="stations">
-        {view.stations.map((s) => {
+        {view.stations.map((s, i) => {
           const sending = current?.from === s.stage;
           const status: Status = stopped ? 'blocked' : whileSending(s.status, sending);
           // A lit beacon names what a person has to do, while the drawing says the station is still at work.
@@ -241,6 +264,7 @@ export function Line({ view, motion, onOpen, admin, pending = false, birdOut = f
                   kind={s.stage}
                   status={status}
                   beacon={beacon}
+                  belt={beltEnd(i, view.stations.length, folded)}
                   decorative
                   motion={motion ? undefined : 'off'}
                   bird={s.stage === 'release' && birdOut ? 'out' : undefined}

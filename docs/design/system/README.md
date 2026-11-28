@@ -93,6 +93,7 @@ One station per stage, in the order and names of [`TERMS.md`](../../TERMS.md): S
 | `status` | `idle` `working` `returning` `passing` `blocked` `failed` |
 | `beacon` | `needs-you` `failed`: a person should look while the machine works on (below) |
 | `motion` | `off` draws the still pose |
+| `belt` | `start` `end`: the station is at that end of the line, so its belt wraps round the roller there; the stations between leave it off, and their belts meet |
 | `bird` | `out` empties the Release station's cage, while the console draws its bird elsewhere (below) |
 | `label` | Overrides the accessible name |
 | `decorative` | Hides it from assistive tech when something else names it |

@@ -692,6 +692,15 @@ reset_one() { # <copy> <dir>
   # the state it writes this many days back (staged/factory/28-…, which reads the variable), so the scan after it
   # lists them: a run reads both scans (test 28).
   gh_retry variable set SCRATCH_CONTENT_SEEN_DAYS_AGO -R "$copy" -b "${CONTENT_SEEN_DAYS_AGO:-2}" >/dev/null
+  # A scan still running (the baseline's own push starts one) would upload its state after the delete below, and the
+  # next scan would read it: each is cancelled, and the delete waits until none runs, five minutes at most.
+  local scans waited=0
+  while scans=$(gh run list -R "$copy" -w vulnerabilities.yml --limit 20 --json databaseId,status \
+    --jq '[.[] | select(.status != "completed") | .databaseId] | join(" ")') && [[ -n "$scans" ]]; do
+    for run in $scans; do gh run cancel "$run" -R "$copy" >/dev/null 2>&1 || true; done
+    (( waited >= 300 )) && die "a scan of $copy is still running five minutes after it was cancelled: $scans"
+    sleep 10; waited=$((waited + 10))
+  done
   gh api --paginate "repos/$copy/actions/artifacts?name=state" --jq '.artifacts[].id' | while read -r id; do
     gh_retry api -X DELETE "repos/$copy/actions/artifacts/$id" >/dev/null || true
   done

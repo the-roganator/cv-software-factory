@@ -1,10 +1,10 @@
 # Test W4, the app's lockfile package at two versions under one advisory: semver back to 5.7.1 under make-dir 2.1.0 (semver ^5.6.0) and 7.5.1 under node-abi 3.99.0 (semver ^7.3.5), development dependencies whose ranges admit both and their fixes, both under CVE-2022-25883 (fixed in 5.7.2 and 7.5.2), as test 9 has it in the factory.
 diff --git a/package.json b/package.json
-index 2f74d61..7b93dfd 100644
+index 9a9b029..dfa5223 100644
 --- a/package.json
 +++ b/package.json
 @@ -32,6 +32,8 @@
-     "@biomejs/biome": "^2.6.6",
+     "@biomejs/biome": "^2.6.9",
      "@types/node": "^24.19.2",
      "lefthook": "^2.1.17",
 +    "make-dir": "2.1.0",
@@ -13,7 +13,7 @@ index 2f74d61..7b93dfd 100644
      "vitest": "^5.1.0"
    }
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 9d65006..a4c84d8 100644
+index 7845b17..e8d43d7 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
 @@ -209,6 +209,12 @@ importers:
@@ -29,7 +29,7 @@ index 9d65006..a4c84d8 100644
        typescript:
          specifier: ^7.0.2
          version: 7.0.2
-@@ -1020,9 +1026,17 @@ packages:
+@@ -1026,9 +1032,17 @@ packages:
      resolution: {integrity: sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==}
      engines: {node: 20 || >=22}
  
@@ -47,7 +47,7 @@ index 9d65006..a4c84d8 100644
    module-details-from-path@1.0.4:
      resolution: {integrity: sha512-EGWKgxALGMgzvxYF1UyGTy0HXX/2vHLkw6+NvDKW2jypWbHpjQuj4UMcqQWXHERJhVGKikolT06G3bcKe4fi7w==}
  
-@@ -1034,6 +1048,10 @@ packages:
+@@ -1040,6 +1054,10 @@ packages:
      engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
      hasBin: true
  
@@ -58,7 +58,7 @@ index 9d65006..a4c84d8 100644
    object-hash@3.0.0:
      resolution: {integrity: sha512-RSn9F68PjH9HqtltsSnqYC1XXoWe9Bju5+213R98cNGttag9q9yAOTzdbsqvIa7aNm5WffBZFpWYr2aWrklWAw==}
      engines: {node: '>= 6'}
-@@ -1053,6 +1071,10 @@ packages:
+@@ -1059,6 +1077,10 @@ packages:
      resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
      engines: {node: '>=12'}
  
@@ -69,7 +69,7 @@ index 9d65006..a4c84d8 100644
    pino-abstract-transport@3.0.0:
      resolution: {integrity: sha512-wlfUczU+n7Hy/Ha5j9a/gZNy7We5+cXp8YL+X+PG8S0KXxw7n/JXA3c46Y0zQznIJ83URJiwy7Lh56WLokNuxg==}
  
-@@ -1097,6 +1119,15 @@ packages:
+@@ -1103,6 +1125,15 @@ packages:
      resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
      engines: {node: '>=10'}
  
@@ -85,7 +85,7 @@ index 9d65006..a4c84d8 100644
    semver@7.8.5:
      resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
      engines: {node: '>=10'}
-@@ -1245,6 +1276,9 @@ packages:
+@@ -1251,6 +1282,9 @@ packages:
      resolution: {integrity: sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA==}
      engines: {node: '>=10'}
  
@@ -95,7 +95,7 @@ index 9d65006..a4c84d8 100644
    yaml@2.9.1:
      resolution: {integrity: sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==}
      engines: {node: '>= 14.6'}
-@@ -1888,16 +1922,29 @@ snapshots:
+@@ -1902,16 +1936,29 @@ snapshots:
  
    lru-cache@11.5.3: {}
  
@@ -125,7 +125,7 @@ index 9d65006..a4c84d8 100644
    object-hash@3.0.0: {}
  
    obug@3.0.0: {}
-@@ -1908,6 +1955,8 @@ snapshots:
+@@ -1922,6 +1969,8 @@ snapshots:
  
    picomatch@4.0.7: {}
  
@@ -134,7 +134,7 @@ index 9d65006..a4c84d8 100644
    pino-abstract-transport@3.0.0:
      dependencies:
        split2: 4.2.0
-@@ -1987,6 +2036,12 @@ snapshots:
+@@ -2001,6 +2050,12 @@ snapshots:
  
    safe-stable-stringify@2.5.0: {}
  
@@ -147,7 +147,7 @@ index 9d65006..a4c84d8 100644
    semver@7.8.5: {}
  
    sonic-boom@4.2.1:
-@@ -2091,6 +2146,8 @@ snapshots:
+@@ -2105,6 +2160,8 @@ snapshots:
  
    y18n@5.0.8: {}
  

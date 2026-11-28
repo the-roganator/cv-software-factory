@@ -138,6 +138,23 @@ export class PullStates {
     return [...this.#repo(repo).seen.values()].filter((each) => each.kind === 'dependabot' && each.state === 'open');
   }
 
+  /** The pull requests last seen open, the pin watch's and Dependabot's: those a queue settles once they leave its list. */
+  openPulls(repo: string): Seen[] {
+    return [...this.#repo(repo).seen.values()].filter((each) => each.kind !== 'issue' && each.state === 'open');
+  }
+
+  /**
+   * Pull requests a queue found merged or closed since a watch saw them open: each in place of what was seen of it,
+   * with the moves it was seen carrying, and the next pass of the watch that saw it says the same.
+   */
+  settle(repo: string, settled: readonly Seen[]): void {
+    const { seen } = this.#repo(repo);
+    for (const each of settled) {
+      const was = seen.get(each.number ?? 0);
+      if (was?.state === 'open') seen.set(each.number ?? 0, { ...each, moves: was.moves });
+    }
+  }
+
   /** Dependabot's pull requests last seen settled: kept while they are within `SETTLED_DAYS`. */
   settledDependabot(repo: string): Seen[] {
     return [...this.#repo(repo).seen.values()].filter((each) => each.kind === 'dependabot' && each.state !== 'open');
@@ -428,10 +445,10 @@ const PULL = z.object({
 });
 
 /**
- * What Dependabot's pull requests the pin watch last saw open became, once gone from the open list: merged or closed,
- * when, and whether by a person; one GitHub no longer has, or still says is open, is left out.
+ * What pull requests last seen open became, once gone from the open list: merged or closed, when, and whether by a
+ * person; one GitHub no longer has, or still says is open, is left out. One conditional read of each.
  */
-export async function settledDependabot(github: GitHub, repo: string, gone: readonly Seen[]): Promise<Seen[]> {
+export async function settledPulls(github: GitHub, repo: string, gone: readonly Seen[]): Promise<Seen[]> {
   const out: Seen[] = [];
   for (const each of gone) {
     if (each.number === undefined) continue;

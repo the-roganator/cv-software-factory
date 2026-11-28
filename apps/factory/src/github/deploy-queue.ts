@@ -130,7 +130,15 @@ import {
 import { guardPinBranch } from './pin-guard.ts';
 import { PIN_LABEL, PIN_REPOS, type PinScope } from './pins.ts';
 import type { Watch } from './poller.ts';
-import { checksAt, gateHold, type PullSource, type PullStates, type QueueSay, ruleAt } from './pull-states.ts';
+import {
+  checksAt,
+  gateHold,
+  type PullSource,
+  type PullStates,
+  type QueueSay,
+  ruleAt,
+  settledPulls,
+} from './pull-states.ts';
 import { type CheckRun, finished, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import { refusalOf } from './server.ts';
@@ -593,12 +601,24 @@ function queueState(deps: DeployQueueDependencies, repo: string, kind: string, s
   const tried = new Map<number, Attempt>();
   const said = new Map<number, string>();
   const pulls = source ? deps.pulls : undefined;
+  /** The heads the level holds this pass, by number. */
+  const held = new Map<number, 'level'>();
   return {
     /** Whether what the queue decides is said for the read `pulls`. */
     noting: pulls !== undefined,
-    /** What the queue decided of a head: in place of what it said there before when `replace`, else added to it. */
+    /**
+     * What the queue decided of a head: in place of what it said there before when `replace`, else added to it. A hold
+     * the level gives this pass (`levelHeld`) stands over any wait said after it: nothing queues the head below it.
+     */
     note(number: number, head: string, say: QueueSay, replace = false) {
-      pulls?.say(repo, number, head, say, replace);
+      if (replace) held.delete(number);
+      const level = held.get(number);
+      pulls?.say(repo, number, head, level && say.hold ? { ...say, hold: level } : say, replace);
+    },
+    /** The level's hold of a head this pass: said, and kept over any later wait's. */
+    levelHeld(number: number, head: string, hold: 'level') {
+      held.set(number, hold);
+      pulls?.say(repo, number, head, { hold });
     },
     /** The pass made, with the pull requests it read as open. */
     passed(open: ReadonlySet<number>) {
@@ -674,6 +694,9 @@ async function queueOne(
   }
   // The rule it passed by, one of `rules`: the verdict was read for this head.
   const rule = verdict.judged?.rule as QueueRule;
+  // A rule the level never queues (a major below Lights-out) waits on Martin whatever else it waits for: said first, as
+  // the waits below may return before the level is read for the enqueue. What the queue does is unchanged.
+  if (state.noting && level && !enqueues(await level(), rule)) state.levelHeld(number, head, 'level');
   const checks = checksWait(runs, required);
   if (checks?.waits === 'failed') {
     if (theirs !== undefined) {
@@ -870,6 +893,27 @@ const CLOSED = z.array(
   }),
 );
 
+/**
+ * The pull requests the record has open that are no longer in the open list a queue read whole: merged or closed since
+ * the pin watch, which reads each hour, last saw them, said so now. A list cut short says nothing of what it left out.
+ */
+async function settleGone(
+  deps: { github: GitHub; pulls?: PullStates | undefined; log: Logger },
+  repo: string,
+  open: readonly QueuePull[],
+): Promise<void> {
+  const { pulls } = deps;
+  if (!pulls || open.length >= OPEN_PAGES * 100) return;
+  const listed = new Set(open.map((pull) => pull.number));
+  const gone = pulls.openPulls(repo).filter((each) => each.number !== undefined && !listed.has(each.number));
+  if (!gone.length) return;
+  try {
+    pulls.settle(repo, await settledPulls(deps.github, repo, gone));
+  } catch (error) {
+    deps.log.warn({ repo, err: error }, 'could not read what became of a pull request that left the open list');
+  }
+}
+
 /** A repository's open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */
 async function openPulls(deps: { github: GitHub; log: Logger }, repo: string, kind: string): Promise<QueuePull[]> {
   const pulls: QueuePull[] = [];
@@ -1000,6 +1044,7 @@ export function pinQueueWatch(deps: PinQueueDependencies, repo: string, only: Pi
       });
     }
     state.passed(new Set(candidates.map((p) => p.number)));
+    await settleGone(deps, repo, pulls);
   };
 }
 
@@ -1091,5 +1136,6 @@ export function workflowPinQueueWatch(deps: WorkflowPinQueueDependencies, repo: 
       });
     }
     state.passed(new Set(candidates.map((p) => p.number)));
+    await settleGone({ github, pulls: deps.pulls, log: deps.log }, repo, pulls);
   };
 }

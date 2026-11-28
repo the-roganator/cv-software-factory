@@ -118,7 +118,7 @@ import {
   pullMoves,
   recent,
   type Seen,
-  settledDependabot,
+  settledPulls,
 } from './pull-states.ts';
 import type { Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -1338,7 +1338,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       const numbers = new Set(listedOpen.map((pull) => pull.number));
       const gone = pulls.openDependabot(repo).filter((each) => !numbers.has(each.number ?? 0));
       const settled = [
-        ...(await settledDependabot(github, repo, gone)),
+        ...(await settledPulls(github, repo, gone)),
         ...pulls.settledDependabot(repo).filter((each) => recent(each.settled, at)),
       ];
       pulls.saw(repo, 'dependabot', [...open, ...settled]);

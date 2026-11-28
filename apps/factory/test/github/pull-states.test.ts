@@ -258,6 +258,9 @@ async function pinQueue(
     queue?: MergeQueue | (() => MergeQueue);
     passes?: number;
     reviewPages?: unknown[][];
+    /** Whether the pull request is in GitHub's open list, and what `/pulls/{n}` says of it once it is not. */
+    listed?: boolean;
+    settled?: { state: string; merged_at: string | null; closed_at: string | null };
     conflicts?: boolean | null;
     events?: LabelEvents;
     reviews?: unknown[];
@@ -270,7 +273,17 @@ async function pinQueue(
     {
       method: 'GET',
       path: /\/pulls\?state=open&per_page=100&sort=created&direction=asc&page=\d+$/,
-      answer: ({ path }) => ({ body: path.endsWith('page=1') ? [pinPull()] : [] }),
+      answer: ({ path }) => ({ body: path.endsWith('page=1') && o.listed !== false ? [pinPull()] : [] }),
+    },
+    {
+      method: 'GET',
+      path: /\/pulls\/\d+$/,
+      answer: () => ({ body: o.settled ?? { state: 'open', merged_at: null, closed_at: null } }),
+    },
+    {
+      method: 'GET',
+      path: /\/issues\/\d+$/,
+      answer: () => ({ body: { closed_by: { login: 'mrogan' } } }),
     },
     { method: 'GET', path: /\/pulls\?state=closed/, answer: () => ({ body: [] }) },
     {
@@ -361,6 +374,37 @@ describe('each hold the queues give', () => {
       rule: 'martin-approved-head',
       hold: 'martin',
     });
+  });
+
+  it('names a major below Lights-out as the level’s, whatever else it waits for, as nothing queues it', async () => {
+    const major = judged('major');
+    expect(await pinQueue({ verdict: major, conflicts: null })).toMatchObject({ rule: 'major', hold: 'level' });
+    const running = [run('lint, types, tests', null), run('image builds')];
+    expect(await pinQueue({ verdict: major, runs: running })).toMatchObject({
+      hold: 'level',
+      checks: { state: 'running' },
+    });
+    expect(await pinQueue({ verdict: major, conflicts: true })).toMatchObject({ hold: 'level' });
+    // At Lights-out a major queues as a move does.
+    expect(await pinQueue({ verdict: major, level: levelAt('lights-out') })).toMatchObject({ queued: true });
+  });
+
+  it('says a pull request merged or closed as soon as it leaves the open list, not at the pin watch’s next pass', async () => {
+    const merged = await pinQueue({
+      listed: false,
+      settled: { state: 'closed', merged_at: at(NOW), closed_at: at(NOW) },
+    });
+    expect(merged).toMatchObject({
+      kind: 'pin',
+      state: 'merged',
+      settled: at(NOW),
+      moves: [{ name: 'zap', lockfile: false }],
+    });
+    expect(merged).not.toHaveProperty('hold');
+    const closed = await pinQueue({ listed: false, settled: { state: 'closed', merged_at: null, closed_at: at(NOW) } });
+    expect(closed).toMatchObject({ state: 'closed', closedByPerson: true });
+    // One GitHub still has open is left as it was.
+    expect(await pinQueue({ listed: false })).toMatchObject({ state: 'open' });
   });
 
   it('names the level and the stop', async () => {
@@ -812,6 +856,27 @@ describe('what the pin watch records in a pass', () => {
         body: marks(['old']),
         merged_at: at(NOW - DAY),
       });
+      // The lockfile's pull requests as the pin step names their moves, open: a lockfile at two files with an image the
+      // step makes with it, and the lockfile's routine updates and routine majors on branches of their own.
+      const both = 'a package in `deploy/overlays/local/factory-image/kustomization.yaml` and `pnpm-lock.yaml`';
+      const lock = 'a package in `pnpm-lock.yaml`';
+      const step = [
+        repo.addPull({
+          head: 'factory/pin/pnpm-lock.yaml-46deb745',
+          labels: ['pin'],
+          body: marks([both, 'mcr.microsoft.com/playwright', both, both]),
+        }),
+        repo.addPull({
+          head: 'factory/pin/pnpm-lock.yaml-routine-major-46deb745',
+          labels: ['pin'],
+          body: marks([lock]),
+        }),
+        repo.addPull({
+          head: 'factory/pin/pnpm-lock.yaml-routine-46deb745',
+          labels: ['pin'],
+          body: marks([lock, lock, lock, lock]),
+        }),
+      ];
       // The day's lockfile moves, merged in one pull request and named by its marks alone; and a lockfile move's issue.
       const lockfiles = repo.addPull({
         head: 'factory/pin/pnpm-lock.yaml',
@@ -821,7 +886,16 @@ describe('what the pin watch records in a pass', () => {
         merged_at: at(NOW - DAY),
       });
       const issue = repo.addIssue({ labels: ['pin'], body: issueOf(lockfile, day(repo.main, [lockfile])).body });
-      return { repo, open, merged, lockfiles, issue };
+      return { repo, open, merged, lockfiles, issue, step };
+    };
+    const expectStep = (pulls: PatchPull[], step: { number: number }[]) => {
+      const [both, major, routine] = step.map((each) => pulls.find((p) => p.number === each.number));
+      expect(both?.moves.map((m) => m.lockfile)).toEqual([true, false, true, true]);
+      expect(major).toMatchObject({
+        state: 'open',
+        moves: [{ name: 'a package in `pnpm-lock.yaml`', lockfile: true }],
+      });
+      expect(routine?.moves).toHaveLength(4);
     };
     const expectLockfiles = (pulls: PatchPull[], lockfiles: number, issue: number) => {
       const lockfileMove = { name: lockfile.name, lockfile: true };
@@ -842,11 +916,12 @@ describe('what the pin watch records in a pass', () => {
     };
 
     it('told no move', async () => {
-      const { repo, open, merged, lockfiles, issue } = fixture();
+      const { repo, open, merged, lockfiles, issue, step } = fixture();
       const h = harness(repo, [], () => [], { only: [] });
       const pulls = await h.pass();
       expectListed(pulls, open.number, merged.number);
       expectLockfiles(pulls, lockfiles.number, issue.number);
+      expectStep(pulls, step);
       // Its queue, told none too, has made its pass.
       const states = new PullStates({ sources: () => ['pin-queue'], now: () => NOW });
       const { github } = client([]);
@@ -867,11 +942,12 @@ describe('what the pin watch records in a pass', () => {
     });
 
     it('on a day the scan wrote no moves.json, or whose moves cannot be read', async () => {
-      const { repo, open, merged, lockfiles, issue } = fixture();
+      const { repo, open, merged, lockfiles, issue, step } = fixture();
       const h = harness(repo, [], () => [], { today: async () => ({ ...day(repo.main, []), file: null }) });
       const pulls = await h.pass();
       expectListed(pulls, open.number, merged.number);
       expectLockfiles(pulls, lockfiles.number, issue.number);
+      expectStep(pulls, step);
       const failing = harness(repo, [], () => [], {
         today: async () => {
           throw new Error('the state cannot be read');

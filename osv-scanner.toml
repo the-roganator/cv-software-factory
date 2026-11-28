@@ -1,3 +1,68 @@
 # Generated from policy/vulnerabilities.ts on cv-software-factory's main by scripts/osv-scanner.ts: do not edit.
 # Each advisory excepted for an item of this repository, until its earliest expiry, for Scorecard. The daily scan
 # warns when this file and the policy differ.
+
+[[IgnoredVulns]]
+id = "CVE-2026-99287"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99306"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99310"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99343"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99344"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99355"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99362"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99366"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99441"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99460"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99540"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99590"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."
+
+[[IgnoredVulns]]
+id = "CVE-2026-99676"
+ignoreUntil = 2027-02-26T23:59:59Z
+reason = "mcr.microsoft.com/devcontainers/base:3.0.14-resolute (linux-libc-dev): Kernel headers only: a container runs its host's kernel, never the one this package describes, so a kernel advisory cannot reach the dev container."

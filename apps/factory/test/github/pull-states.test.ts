@@ -858,7 +858,7 @@ describe('what the pin watch records in a pass', () => {
       });
       // The lockfile's pull requests as the pin step names their moves, open: a lockfile at two files with an image the
       // step makes with it, and the lockfile's routine updates and routine majors on branches of their own.
-      const both = 'a package in `deploy/overlays/local/factory-image/kustomization.yaml` and `pnpm-lock.yaml`';
+      const both = 'a package in `apps/factory/Dockerfile` and `pnpm-lock.yaml`';
       const lock = 'a package in `pnpm-lock.yaml`';
       const step = [
         repo.addPull({

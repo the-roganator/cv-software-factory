@@ -120,6 +120,30 @@ describe('the client', () => {
     expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, '"v1"', '"v1"', '"v1"']);
   });
 
+  it('keeps no answer its caller says not to, so the next is asked for whole: a mergeability GitHub has not worked out', async () => {
+    const PULL = `/repos/${REPO}/pulls/7`;
+    let mergeable: boolean | null = null;
+    const { github, sent } = client([
+      {
+        method: 'GET',
+        path: PULL,
+        // GitHub answering 304 to the unknown answer's ETag, though it has since worked out the answer.
+        answer: ({ headers }) =>
+          headers['if-none-match'] === '"v1"'
+            ? { status: 304, headers: { etag: '"v1"' } }
+            : { body: { mergeable }, headers: { etag: '"v1"' } },
+      },
+    ]);
+    const MERGEABLE = z.object({ mergeable: z.boolean().nullable() });
+    const known = (body: { mergeable: boolean | null }) => body.mergeable !== null;
+    expect(await github.poll(REPO, PULL, MERGEABLE, known)).toEqual({ changed: true, body: { mergeable: null } });
+    mergeable = true;
+    expect(await github.poll(REPO, PULL, MERGEABLE, known)).toEqual({ changed: true, body: { mergeable: true } });
+    // Known, it is kept, and asked for conditionally again.
+    expect(await github.poll(REPO, PULL, MERGEABLE, known)).toEqual({ changed: false, body: { mergeable: true } });
+    expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, undefined, '"v1"']);
+  });
+
   it('keeps no answer its caller could not read, and calls a body that is not JSON malformed', async () => {
     let answer: Record<string, unknown> = { ok: 'yes' };
     const { github, sent } = client([

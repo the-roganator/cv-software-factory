@@ -571,7 +571,13 @@ export class LiveReads implements Reads {
   }
 
   async mergeability(repo: string, number: number): Promise<Mergeability> {
-    const pull = await this.#pull(repo, number);
+    // While GitHub has not worked out whether it conflicts, the answer is not kept, so the next is asked for whole.
+    const { body: pull } = await this.#github.poll(
+      repo,
+      `/repos/${repo}/pulls/${number}`,
+      PULL,
+      (body) => body.mergeable !== null && body.mergeable !== undefined,
+    );
     const state = pull.mergeable_state ?? 'unknown';
     return { number, head: pull.head.sha, conflicts: conflictsOf(pull.mergeable ?? null, state), state };
   }

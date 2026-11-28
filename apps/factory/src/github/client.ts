@@ -165,7 +165,12 @@ export class GitHub {
   }
 
   /** A conditional GET: unchanged answers come from the client's cache and cost nothing against the rate limit. */
-  async poll<T>(repo: string, path: string, schema: z.ZodType<T>): Promise<Polled<T>> {
+  /**
+   * `keep`, when given, says whether an answer may be kept for the next conditional request: one it refuses is asked for
+   * whole next time. GitHub answers a pull request's mergeability as unknown while it works it out, and a conditional
+   * request after that has been seen to keep answering 304, so the unknown answer is never kept.
+   */
+  async poll<T>(repo: string, path: string, schema: z.ZodType<T>, keep?: (body: T) => boolean): Promise<Polled<T>> {
     const key = `${repo} ${path}`;
     const cached = this.#etags.get(key);
     const response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
@@ -177,7 +182,7 @@ export class GitHub {
     const body = parse(schema, json(text, `GET ${path}`), `GET ${path}`);
     const etag = response.headers.get('etag');
     this.#forget(key);
-    if (etag && text.length <= MAX_CACHED_LENGTH) {
+    if (etag && text.length <= MAX_CACHED_LENGTH && (keep?.(body) ?? true)) {
       this.#etags.set(key, { etag, text });
       this.#cachedLength += text.length;
       for (const [oldest] of this.#etags) {

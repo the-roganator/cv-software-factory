@@ -144,6 +144,28 @@ describe('the client', () => {
     expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, undefined, '"v1"']);
   });
 
+  it('asks again whole when another caller kept an answer this caller may not take', async () => {
+    const PULL = `/repos/${REPO}/pulls/8`;
+    let mergeable: boolean | null = null;
+    const { github, sent } = client([
+      {
+        method: 'GET',
+        path: PULL,
+        answer: ({ headers }) =>
+          headers['if-none-match'] === '"v1"'
+            ? { status: 304, headers: { etag: '"v1"' } }
+            : { body: { mergeable }, headers: { etag: '"v1"' } },
+      },
+    ]);
+    const MERGEABLE = z.object({ mergeable: z.boolean().nullable() });
+    // A caller that keeps any answer reads it first, while GitHub works the mergeability out.
+    expect(await github.poll(REPO, PULL, MERGEABLE)).toEqual({ changed: true, body: { mergeable: null } });
+    mergeable = false;
+    const known = (body: { mergeable: boolean | null }) => body.mergeable !== null;
+    expect(await github.poll(REPO, PULL, MERGEABLE, known)).toEqual({ changed: true, body: { mergeable: false } });
+    expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, '"v1"', undefined]);
+  });
+
   it('keeps no answer its caller could not read, and calls a body that is not JSON malformed', async () => {
     let answer: Record<string, unknown> = { ok: 'yes' };
     const { github, sent } = client([

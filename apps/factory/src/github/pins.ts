@@ -1318,10 +1318,16 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
 
     // Dependabot's pull requests for the day's pins: a failure to read them costs those alone, and is tried next pass.
     if (!deps.reads.dependencyPulls) return;
+    // With no day read, nothing says which of them carries a move: what was known of them is kept as it was, and the
+    // watch counts as having passed.
+    if (!read) {
+      pulls.saw(repo, 'dependabot', [...pulls.openDependabot(repo), ...pulls.settledDependabot(repo)]);
+      return;
+    }
     try {
       const listedOpen = await deps.reads.dependencyPulls(repo);
       const open: Seen[] = listedOpen.flatMap((pull) => {
-        const carries = dependabotCarries(pull, read?.moves ?? []);
+        const carries = dependabotCarries(pull, read.moves);
         if (!carries.length) return [];
         const hold = dependabotHold(carries);
         return [

@@ -173,9 +173,13 @@ export class GitHub {
   async poll<T>(repo: string, path: string, schema: z.ZodType<T>, keep?: (body: T) => boolean): Promise<Polled<T>> {
     const key = `${repo} ${path}`;
     const cached = this.#etags.get(key);
-    const response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
+    let response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
     if (response.status === 304 && cached) {
-      return { changed: false, body: parse(schema, json(cached.text, `GET ${path}`), `GET ${path}`) };
+      const body = parse(schema, json(cached.text, `GET ${path}`), `GET ${path}`);
+      if (keep === undefined || keep(body)) return { changed: false, body };
+      // An answer another caller kept that this one may not take (a mergeability not worked out yet): asked again whole.
+      this.#forget(key);
+      response = await this.#authorised(repo, 'GET', path, undefined, undefined);
     }
     const text = await response.text();
     // Read through the caller's schema before it is kept, so an answer no caller has read is asked for again.

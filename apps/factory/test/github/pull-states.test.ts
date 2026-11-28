@@ -953,10 +953,22 @@ describe('what the pin watch records in a pass', () => {
           throw new Error('the state cannot be read');
         },
       });
+      // What was known of Dependabot's pull requests before the day could not be read.
+      const theirs = {
+        kind: 'dependabot' as const,
+        number: 77,
+        moves: [{ name: 'zap', lockfile: false }],
+        opened: new Date(NOW - DAY).toISOString(),
+        state: 'open' as const,
+        hold: 'martin' as const,
+      };
+      failing.states.saw(FACTORY, 'dependabot', [theirs]);
       await expect(failing.pass()).rejects.toThrow('the state cannot be read');
-      // Dependabot's waits on no day; the pin pull requests and issues are said all the same.
-      failing.states.saw(FACTORY, 'dependabot', []);
-      expectListed(failing.states.read(FACTORY).pulls, open.number, merged.number);
+      // With no day, nothing says which carries a move: Dependabot's are kept as they were, and the pin pull requests
+      // and issues are said all the same.
+      const kept = failing.states.read(FACTORY).pulls;
+      expectListed(kept, open.number, merged.number);
+      expect(kept.find((p) => p.number === 77)).toMatchObject({ kind: 'dependabot', state: 'open', hold: 'martin' });
     });
 
     it('in a worker that cannot write, which runs no watch: it answers at once', () => {
